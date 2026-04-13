@@ -7,6 +7,7 @@ import { networkSyncCommand } from './commands/sync-run.js';
 import { networkStatusCommand } from './commands/sync-status.js';
 import { exportCommand } from './commands/export.js';
 import { importCommand } from './commands/import.js';
+import { initCommand } from './commands/init.js';
 
 const program = new Command();
 
@@ -22,6 +23,7 @@ program.addCommand(summaryCommand);
 program.addCommand(deleteCommand);
 program.addCommand(exportCommand);
 program.addCommand(importCommand);
+program.addCommand(initCommand);
 
 const networkCommand = new Command('network')
   .description('P2P sync network commands');
