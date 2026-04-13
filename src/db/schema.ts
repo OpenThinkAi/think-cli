@@ -8,9 +8,16 @@ export function ensureSchema(db: Database.Database): void {
       source TEXT NOT NULL DEFAULT 'manual',
       category TEXT NOT NULL DEFAULT 'note',
       content TEXT NOT NULL,
-      tags TEXT NOT NULL DEFAULT '[]'
+      tags TEXT NOT NULL DEFAULT '[]',
+      deleted_at TEXT
     ) STRICT;
   `);
+
+  // Add deleted_at column if migrating from older schema
+  const columns = db.prepare(`PRAGMA table_info(entries)`).all() as { name: string }[];
+  if (!columns.some(c => c.name === 'deleted_at')) {
+    db.exec(`ALTER TABLE entries ADD COLUMN deleted_at TEXT`);
+  }
 
   // Make entries table CRDT-aware for P2P sync.
   // crsql_as_crr is idempotent if already registered.
