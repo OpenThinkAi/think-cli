@@ -46,6 +46,8 @@ export function getEntries(params: GetEntriesParams): Entry[] {
   const conditions: string[] = [];
   const values: unknown[] = [];
 
+  conditions.push('deleted_at IS NULL');
+
   if (params.since) {
     conditions.push('timestamp >= ?');
     values.push(params.since.toISOString());
@@ -78,6 +80,22 @@ export function getEntriesByWeek(weeksAgo: number = 0): Entry[] {
   const sunday = endOfWeek(targetWeek, { weekStartsOn: 1 });
 
   return getEntries({ since: monday, until: sunday });
+}
+
+export function deleteEntry(id: string): boolean {
+  const db = getDb();
+  const result = db.prepare(
+    'UPDATE entries SET deleted_at = ? WHERE id = ? AND deleted_at IS NULL'
+  ).run(new Date().toISOString(), id);
+  return result.changes > 0;
+}
+
+export function deleteEntriesByContent(pattern: string): number {
+  const db = getDb();
+  const result = db.prepare(
+    'UPDATE entries SET deleted_at = ? WHERE content LIKE ? AND deleted_at IS NULL'
+  ).run(new Date().toISOString(), `%${pattern}%`);
+  return result.changes;
 }
 
 export function getDbVersion(): number {
