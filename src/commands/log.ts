@@ -72,9 +72,11 @@ export const syncCommand = new Command('sync')
           if (!opts.silent) {
             console.log(chalk.dim(`  ${pending.length} pending engrams — triggering curation...`));
           }
+          // Close DB before spawning — the child process will open its own connection
+          // WAL mode ensures the child can read what we just wrote
           closeEngramsDb(cortex);
-          // Spawn curate as a detached background process so sync returns immediately
-          spawn('think', ['curate'], { detached: true, stdio: 'ignore' }).unref();
+          // Use process.execPath + process.argv[1] so it works regardless of how think was invoked
+          spawn(process.execPath, [process.argv[1], 'curate'], { detached: true, stdio: 'ignore' }).unref();
           return;
         }
       }

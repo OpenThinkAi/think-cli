@@ -2,6 +2,15 @@ import { Command } from 'commander';
 import chalk from 'chalk';
 import { getConfig, saveConfig } from '../lib/config.js';
 
+const ALLOWED_KEYS = new Set([
+  'cortex.curateEveryN',
+  'cortex.confirmBeforeCommit',
+  'cortex.author',
+  'cortex.repo',
+  'cortex.active',
+  'paused',
+]);
+
 export const configCommand = new Command('config')
   .description('View or update think configuration');
 
@@ -17,6 +26,12 @@ configCommand.addCommand(new Command('set')
   .argument('<value>', 'Value to set')
   .description('Set a configuration value')
   .action((key: string, value: string) => {
+    if (!ALLOWED_KEYS.has(key)) {
+      console.error(chalk.red(`Unknown config key: ${key}`));
+      console.error(chalk.dim(`Allowed keys: ${[...ALLOWED_KEYS].join(', ')}`));
+      process.exit(1);
+    }
+
     const config = getConfig();
 
     // Parse value
