@@ -5,6 +5,9 @@ import { getConfig, saveConfig } from '../lib/config.js';
 const ALLOWED_KEYS = new Set([
   'cortex.curateEveryN',
   'cortex.confirmBeforeCommit',
+  'cortex.selectivity',
+  'cortex.granularity',
+  'cortex.maxMemoriesPerRun',
   'cortex.author',
   'cortex.repo',
   'cortex.active',

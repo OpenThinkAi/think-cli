@@ -71,6 +71,9 @@ export function assembleCurationPrompt(params: {
   curatorMd: string | null;
   pendingEngrams: Engram[];
   author: string;
+  selectivity?: 'low' | 'medium' | 'high';
+  granularity?: 'detailed' | 'summary';
+  maxMemoriesPerRun?: number;
 }): string {
   const memoriesText = params.existingMemories.length > 0
     ? params.existingMemories
@@ -84,10 +87,35 @@ export function assembleCurationPrompt(params: {
     .map(e => `- [${e.created_at}] (id: ${e.id}) ${e.content}`)
     .join('\n');
 
-  return BASE_CURATION_PROMPT
+  let prompt = BASE_CURATION_PROMPT
     .replace('{existing_memories}', memoriesText)
     .replace('{curator_md}', curatorMdText)
     .replace('{pending_engrams}', engramsText);
+
+  // Append tuning instructions based on config
+  const tuning: string[] = [];
+
+  if (params.selectivity === 'high') {
+    tuning.push('Be very selective. Only promote clearly significant events: major decisions, shipped deliverables, critical blockers, direction changes. Skip routine commits, minor fixes, and incremental progress.');
+  } else if (params.selectivity === 'low') {
+    tuning.push('Be inclusive. Promote most work events that have any team relevance. Only drop purely administrative or personal events.');
+  }
+
+  if (params.granularity === 'summary') {
+    tuning.push('Consolidate related events into single memory entries. Prefer fewer, broader memories over many specific ones.');
+  } else if (params.granularity === 'detailed') {
+    tuning.push('Keep memories specific and granular. Each distinct event or decision should be its own memory entry. Do not roll up multiple events into one.');
+  }
+
+  if (params.maxMemoriesPerRun && params.maxMemoriesPerRun > 0) {
+    tuning.push(`Produce at most ${params.maxMemoriesPerRun} memory entries from this batch. If more events are significant, prioritize the most important.`);
+  }
+
+  if (tuning.length > 0) {
+    prompt += '\n\nAdditional instructions:\n' + tuning.map(t => `- ${t}`).join('\n');
+  }
+
+  return prompt;
 }
 
 export function parseMemoriesJsonl(content: string): MemoryEntry[] {

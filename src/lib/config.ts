@@ -8,6 +8,9 @@ export interface CortexConfig {
   author: string;
   curateEveryN?: number;
   confirmBeforeCommit?: boolean;
+  selectivity?: 'low' | 'medium' | 'high';
+  granularity?: 'detailed' | 'summary';
+  maxMemoriesPerRun?: number;
 }
 
 export interface Config {
