@@ -1,9 +1,10 @@
 import { Command } from 'commander';
+import { spawn } from 'node:child_process';
 import chalk from 'chalk';
 import { insertEntry } from '../db/queries.js';
 import { closeDb } from '../db/client.js';
 import { getConfig } from '../lib/config.js';
-import { insertEngram } from '../db/engram-queries.js';
+import { insertEngram, getPendingEngrams } from '../db/engram-queries.js';
 import { closeEngramsDb } from '../db/engrams.js';
 
 export const logCommand = new Command('log')
@@ -61,6 +62,21 @@ export const syncCommand = new Command('sync')
         const ts = chalk.gray(engram.created_at.slice(0, 16).replace('T', ' '));
         console.log(`${chalk.green('✓')} ${badge} engram saved ${ts}`);
         console.log(`  ${engram.content}`);
+      }
+
+      // Auto-curate if threshold is set and reached
+      const curateEveryN = config.cortex?.curateEveryN;
+      if (curateEveryN && curateEveryN > 0) {
+        const pending = getPendingEngrams(cortex);
+        if (pending.length >= curateEveryN) {
+          if (!opts.silent) {
+            console.log(chalk.dim(`  ${pending.length} pending engrams — triggering curation...`));
+          }
+          closeEngramsDb(cortex);
+          // Spawn curate as a detached background process so sync returns immediately
+          spawn('think', ['curate'], { detached: true, stdio: 'ignore' }).unref();
+          return;
+        }
       }
 
       closeEngramsDb(cortex);

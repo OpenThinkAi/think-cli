@@ -1,4 +1,5 @@
 import { Command } from 'commander';
+import readline from 'node:readline';
 import chalk from 'chalk';
 import { getConfig } from '../lib/config.js';
 import { ensureRepoCloned, fetchBranch, readFileFromBranch, appendAndCommit } from '../lib/git.js';
@@ -99,7 +100,47 @@ export const curateCommand = new Command('curate')
       return;
     }
 
-    // 8. Append to memories.jsonl and push
+    // 8. Confirm before commit (if configured)
+    if (config.cortex?.confirmBeforeCommit && newEntries.length > 0) {
+      console.log();
+      console.log(chalk.cyan('Proposed memories:'));
+      for (let i = 0; i < newEntries.length; i++) {
+        console.log(chalk.green(`  ${i + 1}. `) + newEntries[i].content);
+      }
+      console.log();
+
+      const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+      const answer = await new Promise<string>((resolve) => {
+        rl.question('  Commit these memories? [Y/n/edit] ', (ans) => {
+          rl.close();
+          resolve(ans.trim().toLowerCase());
+        });
+      });
+
+      if (answer === 'n' || answer === 'no') {
+        console.log(chalk.dim('  Aborted. Engrams left as pending.'));
+        closeEngramsDb(cortex);
+        return;
+      }
+
+      if (answer === 'e' || answer === 'edit') {
+        // Let user edit each entry
+        for (let i = 0; i < newEntries.length; i++) {
+          const editRl = readline.createInterface({ input: process.stdin, output: process.stdout });
+          const edited = await new Promise<string>((resolve) => {
+            editRl.question(`  ${i + 1}. ${chalk.dim('(enter to keep, or type replacement)')}\n     ${newEntries[i].content}\n     > `, (ans) => {
+              editRl.close();
+              resolve(ans.trim());
+            });
+          });
+          if (edited) {
+            newEntries[i].content = edited;
+          }
+        }
+      }
+    }
+
+    // 9. Append to memories.jsonl and push
     if (newEntries.length > 0) {
       const newLines = newEntries.map(e => JSON.stringify(e));
       const commitMsg = `curate: ${author}, ${pending.length} engrams, ${newEntries.length} memories`;
