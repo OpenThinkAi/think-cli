@@ -2,10 +2,17 @@ import path from 'node:path';
 import fs from 'node:fs';
 import { v4 as uuidv4 } from 'uuid';
 
+export interface CortexConfig {
+  repo: string;
+  active?: string;
+  author: string;
+}
+
 export interface Config {
   peerId: string;
   syncPort: number;
   anthropicApiKey?: string;
+  cortex?: CortexConfig;
 }
 
 export function getConfigDir(): string {
