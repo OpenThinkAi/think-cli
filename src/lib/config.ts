@@ -13,6 +13,7 @@ export interface Config {
   syncPort: number;
   anthropicApiKey?: string;
   cortex?: CortexConfig;
+  paused?: boolean;
 }
 
 export function getConfigDir(): string {

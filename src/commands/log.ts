@@ -44,6 +44,12 @@ export const syncCommand = new Command('sync')
   .action(function (this: Command, message: string, opts: { source: string; tags?: string; silent?: boolean }) {
     const globalOpts = this.optsWithGlobals() as { cortex?: string };
     const config = getConfig();
+
+    if (config.paused) {
+      // Silently skip — don't break CLAUDE.md auto-logging
+      return;
+    }
+
     const cortex = globalOpts.cortex ?? config.cortex?.active;
 
     if (cortex) {
