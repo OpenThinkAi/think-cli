@@ -4,6 +4,7 @@ import chalk from 'chalk';
 import { getDb } from '../db/client.js';
 import { closeDb } from '../db/client.js';
 import type { Entry } from '../db/queries.js';
+import { logAudit } from '../lib/audit.js';
 
 export const importCommand = new Command('import')
   .description('Import a sync bundle from another device')
@@ -55,8 +56,9 @@ export const importCommand = new Command('import')
     let imported = 0;
     let skipped = 0;
 
-    const importAll = db.transaction((entries: Entry[]) => {
-      for (const entry of entries) {
+    try {
+      db.exec('BEGIN');
+      for (const entry of bundle.entries) {
         const result = insert.run(
           entry.id,
           entry.timestamp,
@@ -72,16 +74,23 @@ export const importCommand = new Command('import')
           skipped++;
         }
       }
-    });
-
-    try {
-      importAll(bundle.entries);
+      db.exec('COMMIT');
     } catch (err) {
+      db.exec('ROLLBACK');
       const message = err instanceof Error ? err.message : String(err);
       console.error(chalk.red(`Import failed: ${message}`));
       closeDb();
       process.exit(1);
     }
+
+    logAudit({
+      timestamp: new Date().toISOString(),
+      type: 'import',
+      peer: bundle.peerId ?? 'unknown',
+      file,
+      entryIds: bundle.entries.map((e) => e.id),
+      count: bundle.entries.length,
+    });
 
     if (imported > 0) {
       console.log(chalk.green('✓') + ` Imported ${imported} entries` + (skipped > 0 ? ` (${skipped} already existed)` : ''));

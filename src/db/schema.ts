@@ -1,6 +1,6 @@
-import Database from 'better-sqlite3';
+import type { DatabaseSync } from 'node:sqlite';
 
-export function ensureSchema(db: Database.Database): void {
+export function ensureSchema(db: DatabaseSync): void {
   db.exec(`
     CREATE TABLE IF NOT EXISTS entries (
       id TEXT PRIMARY KEY NOT NULL,
@@ -17,14 +17,6 @@ export function ensureSchema(db: Database.Database): void {
   const columns = db.prepare(`PRAGMA table_info(entries)`).all() as { name: string }[];
   if (!columns.some(c => c.name === 'deleted_at')) {
     db.exec(`ALTER TABLE entries ADD COLUMN deleted_at TEXT`);
-  }
-
-  // Make entries table CRDT-aware for P2P sync.
-  // crsql_as_crr is idempotent if already registered.
-  try {
-    db.exec(`SELECT crsql_as_crr('entries')`);
-  } catch (_e) {
-    // Already registered — safe to ignore
   }
 
   db.exec(`
