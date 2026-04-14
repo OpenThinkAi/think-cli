@@ -6,18 +6,6 @@ import { getConfig } from '../lib/config.js';
 import { insertEngram } from '../db/engram-queries.js';
 import { closeEngramsDb } from '../db/engrams.js';
 
-function getActiveCortex(): string | undefined {
-  const config = getConfig();
-  // Commander stores global opts on the root program — access via process.argv parsing
-  const cortexFlagIdx = process.argv.indexOf('-C');
-  const cortexFlagLongIdx = process.argv.indexOf('--cortex');
-  const flagIdx = cortexFlagIdx !== -1 ? cortexFlagIdx : cortexFlagLongIdx;
-  if (flagIdx !== -1 && process.argv[flagIdx + 1]) {
-    return process.argv[flagIdx + 1];
-  }
-  return config.cortex?.active;
-}
-
 export const logCommand = new Command('log')
   .description('Log a note or entry')
   .argument('<message>', 'The message to log')
@@ -53,8 +41,10 @@ export const syncCommand = new Command('sync')
   .option('-s, --source <source>', 'Source of the entry', 'manual')
   .option('-t, --tags <tags>', 'Comma-separated tags')
   .option('--silent', 'Suppress output')
-  .action((message: string, opts: { source: string; tags?: string; silent?: boolean }) => {
-    const cortex = getActiveCortex();
+  .action(function (this: Command, message: string, opts: { source: string; tags?: string; silent?: boolean }) {
+    const globalOpts = this.optsWithGlobals() as { cortex?: string };
+    const config = getConfig();
+    const cortex = globalOpts.cortex ?? config.cortex?.active;
 
     if (cortex) {
       // Route to cortex engram DB
