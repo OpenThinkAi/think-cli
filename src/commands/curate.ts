@@ -53,6 +53,9 @@ export const curateCommand = new Command('curate')
       curatorMd,
       pendingEngrams: pending,
       author,
+      selectivity: config.cortex?.selectivity,
+      granularity: config.cortex?.granularity,
+      maxMemoriesPerRun: config.cortex?.maxMemoriesPerRun,
     });
 
     let newEntries;
