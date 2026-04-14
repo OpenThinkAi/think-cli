@@ -1,0 +1,125 @@
+import { execFileSync, execSync } from 'node:child_process';
+import fs from 'node:fs';
+import path from 'node:path';
+import { getRepoPath } from './paths.js';
+import { getConfig } from './config.js';
+
+function runGit(args: string[], cwd?: string): string {
+  const repoPath = cwd ?? getRepoPath();
+  return execFileSync('git', args, {
+    cwd: repoPath,
+    encoding: 'utf-8',
+    stdio: ['pipe', 'pipe', 'pipe'],
+  }).trim();
+}
+
+export function ensureRepoCloned(): void {
+  const config = getConfig();
+  if (!config.cortex?.repo) {
+    throw new Error('No cortex repo configured. Run: think cortex setup');
+  }
+
+  const repoPath = getRepoPath();
+
+  if (fs.existsSync(path.join(repoPath, '.git'))) {
+    const remote = runGit(['remote', 'get-url', 'origin'], repoPath);
+    if (remote !== config.cortex.repo) {
+      throw new Error(`Repo at ${repoPath} points to ${remote}, expected ${config.cortex.repo}`);
+    }
+    return;
+  }
+
+  fs.mkdirSync(repoPath, { recursive: true });
+  execFileSync('git', ['clone', '--no-checkout', config.cortex.repo, repoPath], {
+    encoding: 'utf-8',
+    stdio: ['pipe', 'pipe', 'pipe'],
+  });
+}
+
+export function branchExists(branchName: string): boolean {
+  try {
+    runGit(['ls-remote', '--exit-code', '--heads', 'origin', branchName]);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export function createOrphanBranch(branchName: string): void {
+  runGit(['checkout', '--orphan', branchName]);
+  try {
+    runGit(['rm', '-rf', '.']);
+  } catch {
+    // Empty repo — nothing to remove
+  }
+
+  const repoPath = getRepoPath();
+  fs.writeFileSync(path.join(repoPath, 'memories.jsonl'), '', 'utf-8');
+  runGit(['add', 'memories.jsonl']);
+  runGit(['commit', '-m', `init: create cortex ${branchName}`]);
+  runGit(['push', '--set-upstream', 'origin', branchName]);
+}
+
+export function fetchBranch(branchName: string): void {
+  runGit(['fetch', 'origin', branchName]);
+}
+
+export function readFileFromBranch(branchName: string, filePath: string): string | null {
+  try {
+    return runGit(['show', `origin/${branchName}:${filePath}`]);
+  } catch {
+    return null;
+  }
+}
+
+export function appendAndCommit(
+  branchName: string,
+  newLines: string[],
+  commitMessage: string,
+  maxRetries: number = 3,
+): void {
+  const repoPath = getRepoPath();
+  const memoriesPath = path.join(repoPath, 'memories.jsonl');
+
+  try {
+    runGit(['switch', branchName]);
+  } catch {
+    runGit(['switch', '-c', branchName, `origin/${branchName}`]);
+  }
+
+  try {
+    runGit(['pull', '--rebase', 'origin', branchName]);
+  } catch {
+    // May fail if nothing to pull yet
+  }
+
+  const content = newLines.join('\n') + '\n';
+  fs.appendFileSync(memoriesPath, content, 'utf-8');
+
+  runGit(['add', 'memories.jsonl']);
+  runGit(['commit', '-m', commitMessage]);
+
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      runGit(['push', 'origin', branchName]);
+      return;
+    } catch {
+      if (attempt === maxRetries) {
+        throw new Error(`Push failed after ${maxRetries} attempts. Run 'think curate' again.`);
+      }
+      runGit(['pull', '--rebase', 'origin', branchName]);
+    }
+  }
+}
+
+export function getFileLog(branchName: string, filePath: string): string {
+  return runGit(['log', '--oneline', `origin/${branchName}`, '--', filePath]);
+}
+
+export function listRemoteBranches(): string[] {
+  const output = runGit(['ls-remote', '--heads', 'origin']);
+  return output.trim().split('\n')
+    .filter(Boolean)
+    .map(line => line.split('\t')[1]?.replace('refs/heads/', ''))
+    .filter(Boolean) as string[];
+}
