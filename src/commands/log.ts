@@ -6,6 +6,7 @@ import { closeDb } from '../db/client.js';
 import { getConfig } from '../lib/config.js';
 import { insertEngram, getPendingEngrams } from '../db/engram-queries.js';
 import { closeEngramsDb } from '../db/engrams.js';
+import { checkForUpdate } from '../lib/update-check.js';
 
 export const logCommand = new Command('log')
   .description('Log a note or entry')
@@ -103,5 +104,13 @@ export const syncCommand = new Command('sync')
       }
 
       closeDb();
+    }
+
+    // Non-blocking update check (cached, runs at most once per 24h)
+    if (!opts.silent) {
+      const updateMsg = checkForUpdate();
+      if (updateMsg) {
+        console.log(chalk.yellow(`  ℹ ${updateMsg}`));
+      }
     }
   });
