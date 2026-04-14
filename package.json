@@ -1,14 +1,35 @@
 {
-  "name": "think",
+  "name": "open-think",
   "version": "0.1.0",
   "type": "module",
-  "description": "Local-first CLI tool for capturing notes, work logs, and ideas with P2P sync",
+  "description": "Local-first CLI that gives AI agents persistent, curated memory",
   "bin": {
-    "think": "./dist/index.js"
+    "think": "dist/index.js"
   },
+  "files": [
+    "dist"
+  ],
   "scripts": {
     "build": "tsup && find dist -name '*.js' -exec sed -i '' 's/from \"sqlite\"/from \"node:sqlite\"/g' {} +",
+    "prepublishOnly": "npm run build",
     "dev": "tsx src/index.ts"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/MicroMediaSites/think-cli.git"
+  },
+  "keywords": [
+    "cli",
+    "memory",
+    "ai",
+    "agents",
+    "work-log",
+    "local-first",
+    "curation"
+  ],
+  "license": "MIT",
+  "engines": {
+    "node": ">=22.5.0"
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.2.98",
