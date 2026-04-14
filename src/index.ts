@@ -3,11 +3,10 @@ import { logCommand, syncCommand } from './commands/log.js';
 import { listCommand } from './commands/list.js';
 import { summaryCommand } from './commands/summary.js';
 import { deleteCommand } from './commands/delete.js';
-import { networkSyncCommand } from './commands/sync-run.js';
-import { networkStatusCommand } from './commands/sync-status.js';
 import { exportCommand } from './commands/export.js';
 import { importCommand } from './commands/import.js';
 import { initCommand } from './commands/init.js';
+import { auditCommand } from './commands/audit.js';
 
 const program = new Command();
 
@@ -24,11 +23,6 @@ program.addCommand(deleteCommand);
 program.addCommand(exportCommand);
 program.addCommand(importCommand);
 program.addCommand(initCommand);
-
-const networkCommand = new Command('network')
-  .description('P2P sync network commands');
-networkCommand.addCommand(networkSyncCommand);
-networkCommand.addCommand(networkStatusCommand);
-program.addCommand(networkCommand);
+program.addCommand(auditCommand);
 
 program.parse();

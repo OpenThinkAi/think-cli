@@ -98,31 +98,6 @@ export function deleteEntriesByContent(pattern: string): number {
   return result.changes;
 }
 
-export function getDbVersion(): number {
-  const db = getDb();
-  const row = db.prepare('SELECT crsql_db_version() AS version').get() as { version: number };
-  return row.version;
-}
-
-export function getChangeset(sinceVersion: number): unknown[] {
-  const db = getDb();
-  return db.prepare('SELECT * FROM crsql_changes WHERE db_version > ?').all(sinceVersion);
-}
-
-export function applyChangeset(changes: unknown[]): void {
-  const db = getDb();
-  const stmt = db.prepare(
-    'INSERT INTO crsql_changes ("table", pk, cid, val, col_version, db_version, site_id, cl, seq) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)'
-  );
-  const applyAll = db.transaction((rows: unknown[]) => {
-    for (const row of rows) {
-      const r = row as Record<string, unknown>;
-      stmt.run(r.table, r.pk, r.cid, r.val, r.col_version, r.db_version, r.site_id, r.cl, r.seq);
-    }
-  });
-  applyAll(changes);
-}
-
 export interface PeerInfo {
   peer_id: string;
   last_synced_db_version: number;
