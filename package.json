@@ -7,7 +7,7 @@
     "think": "./dist/index.js"
   },
   "scripts": {
-    "build": "tsup && sed -i '' 's/from \"sqlite\"/from \"node:sqlite\"/' dist/index.js",
+    "build": "tsup && find dist -name '*.js' -exec sed -i '' 's/from \"sqlite\"/from \"node:sqlite\"/g' {} +",
     "dev": "tsx src/index.ts"
   },
   "dependencies": {
