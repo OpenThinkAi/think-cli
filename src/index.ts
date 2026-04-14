@@ -16,6 +16,7 @@ import { curatorCommand } from './commands/curator-cmd.js';
 import { pullCommand } from './commands/pull.js';
 import { pauseCommand, resumeCommand } from './commands/pause.js';
 import { configCommand } from './commands/config-cmd.js';
+import { updateCommand } from './commands/update.js';
 
 const program = new Command();
 
@@ -44,5 +45,6 @@ program.addCommand(pullCommand);
 program.addCommand(pauseCommand);
 program.addCommand(resumeCommand);
 program.addCommand(configCommand);
+program.addCommand(updateCommand);
 
 program.parse();
