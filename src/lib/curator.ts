@@ -92,9 +92,24 @@ export function assembleCurationPrompt(params: {
 
 export function parseMemoriesJsonl(content: string): MemoryEntry[] {
   if (!content.trim()) return [];
-  return content.trim().split('\n')
-    .filter(Boolean)
-    .map(line => JSON.parse(line) as MemoryEntry);
+  const entries: MemoryEntry[] = [];
+  for (const line of content.trim().split('\n')) {
+    if (!line.trim()) continue;
+    try {
+      const parsed = JSON.parse(line);
+      if (parsed && typeof parsed.content === 'string') {
+        entries.push({
+          ts: parsed.ts ?? '',
+          author: parsed.author ?? 'unknown',
+          content: parsed.content,
+          source_ids: Array.isArray(parsed.source_ids) ? parsed.source_ids : [],
+        });
+      }
+    } catch {
+      // Skip malformed lines — don't crash on corrupted JSONL
+    }
+  }
+  return entries;
 }
 
 export async function runCuration(prompt: string): Promise<MemoryEntry[]> {
@@ -124,11 +139,28 @@ export async function runCuration(prompt: string): Promise<MemoryEntry[]> {
     cleaned = cleaned.replace(/^```(?:json)?\n?/, '').replace(/\n?```$/, '');
   }
 
-  const entries = JSON.parse(cleaned) as MemoryEntry[];
+  const raw = JSON.parse(cleaned);
 
-  if (!Array.isArray(entries)) {
+  if (!Array.isArray(raw)) {
     throw new Error('Curation returned non-array response');
   }
+
+  // Validate and normalize each entry
+  const entries: MemoryEntry[] = raw.map((item: unknown, i: number) => {
+    if (!item || typeof item !== 'object') {
+      throw new Error(`Curation entry ${i} is not an object`);
+    }
+    const obj = item as Record<string, unknown>;
+    if (typeof obj.content !== 'string' || !obj.content) {
+      throw new Error(`Curation entry ${i} is missing content`);
+    }
+    return {
+      ts: typeof obj.ts === 'string' ? obj.ts : new Date().toISOString(),
+      author: typeof obj.author === 'string' ? obj.author : 'unknown',
+      content: obj.content,
+      source_ids: Array.isArray(obj.source_ids) ? obj.source_ids.filter((id): id is string => typeof id === 'string') : [],
+    };
+  });
 
   return entries;
 }

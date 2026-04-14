@@ -89,8 +89,14 @@ export function appendAndCommit(
 
   try {
     runGit(['pull', '--rebase', 'origin', branchName]);
-  } catch {
-    // May fail if nothing to pull yet
+  } catch (err) {
+    // Acceptable: fails when local branch has no upstream yet (first push)
+    // Not acceptable: rebase conflict — abort and surface the error
+    const message = err instanceof Error ? err.message : String(err);
+    if (message.includes('CONFLICT') || message.includes('could not apply')) {
+      try { runGit(['rebase', '--abort']); } catch { /* best effort */ }
+      throw new Error(`Rebase conflict on ${branchName}. This should not happen with append-only files — check for manual edits to memories.jsonl.`);
+    }
   }
 
   const content = newLines.join('\n') + '\n';

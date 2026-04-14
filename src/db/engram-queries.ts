@@ -86,9 +86,10 @@ export function searchEngrams(cortexName: string, query: string, limit: number =
        ORDER BY rank LIMIT ?`
     ).all(query, limit) as unknown as Engram[];
   } catch {
-    // FTS match syntax can fail on certain inputs — fall back to LIKE
+    // FTS match syntax can fail on certain inputs — fall back to LIKE with parameterized bind
+    const pattern = `%${query.replace(/%/g, '\\%').replace(/_/g, '\\_')}%`;
     return db.prepare(
-      `SELECT * FROM engrams WHERE content LIKE ? AND deleted_at IS NULL ORDER BY created_at DESC LIMIT ?`
-    ).all(`%${query}%`, limit) as unknown as Engram[];
+      `SELECT * FROM engrams WHERE content LIKE ? ESCAPE '\\' AND deleted_at IS NULL ORDER BY created_at DESC LIMIT ?`
+    ).all(pattern, limit) as unknown as Engram[];
   }
 }

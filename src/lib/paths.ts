@@ -1,8 +1,23 @@
 import path from 'node:path';
 import fs from 'node:fs';
 
+function getHome(): string {
+  const home = process.env.HOME;
+  if (!home) {
+    throw new Error('HOME environment variable is not set');
+  }
+  return home;
+}
+
+function sanitizeName(name: string): string {
+  if (!name || /[\/\\\.]{2}/.test(name) || /[^a-zA-Z0-9_-]/.test(name)) {
+    throw new Error(`Invalid cortex name: "${name}". Use only alphanumeric characters, hyphens, and underscores.`);
+  }
+  return name;
+}
+
 export function getThinkDir(): string {
-  return path.join(process.env.HOME!, '.think');
+  return path.join(getHome(), '.think');
 }
 
 export function getEngramsDir(): string {
@@ -10,7 +25,7 @@ export function getEngramsDir(): string {
 }
 
 export function getEngramDbPath(cortexName: string): string {
-  return path.join(getEngramsDir(), `${cortexName}.db`);
+  return path.join(getEngramsDir(), `${sanitizeName(cortexName)}.db`);
 }
 
 export function getRepoPath(): string {
@@ -22,7 +37,7 @@ export function getLongtermDir(): string {
 }
 
 export function getLongtermPath(cortexName: string): string {
-  return path.join(getLongtermDir(), `${cortexName}.md`);
+  return path.join(getLongtermDir(), `${sanitizeName(cortexName)}.md`);
 }
 
 export function getCuratorMdPath(): string {
