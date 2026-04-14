@@ -1,72 +1,108 @@
 # think
 
-Local-first CLI for capturing notes, work logs, and ideas with P2P sync between machines.
+Local-first CLI that gives AI agents persistent, curated memory.
 
-## Setup
+## Install
 
-Requires **Node 20** (native SQLite extensions don't compile on Node 22+).
+Requires **Node 22.5+** (uses `node:sqlite`).
 
 ```bash
-git clone git@github.com:MicroMediaSites/think-cli.git
-cd think-cli
-nvm use 20
-npm install
-npm run build
-npm link
+npm install -g open-think
 ```
 
-After `npm link`, the `think` command is available globally.
-
-**Note:** The build pins the Node 20 binary path in the shebang, so `think` will always use Node 20 regardless of your active nvm version. If your Node 20 is at a different path than the machine that last ran `npm run build`, just rebuild:
+## Quick start
 
 ```bash
-nvm use 20 && npm run build
+# Log work events
+think sync "shipped the auth fix"
+think sync "EEP prototype demoed to product team"
+
+# List recent entries
+think list --week
+
+# AI-powered summary
+think summary
+think summary --last-week --raw   # raw entries, no AI
+```
+
+## Cortex — shared team memory
+
+Cortexes connect agents across a team via a shared git repo. Engrams (raw events) stay local. A curator agent evaluates them and appends curated memories to the repo.
+
+```bash
+# Set up (once)
+think cortex setup git@github.com:org/hivedb.git
+think cortex create engineering
+
+# Work normally — think sync logs engrams locally
+think sync "deployed auth service to staging"
+
+# Curate — evaluate engrams, append memories to the branch
+think curate              # full run
+think curate --dry-run    # preview without pushing
+
+# Read team memories
+think recall "auth"       # search memories + local engrams
+think memory              # show all memories from branch
+
+# Monitor curation quality
+think monitor             # what got promoted vs dropped
+
+# Pull another team's memories
+think pull product
+```
+
+### Privacy
+
+```bash
+think pause    # suppress engram creation (silent no-op)
+think resume   # re-enable
+```
+
+### Curator guidance
+
+Each contributor can guide their curator with a personal prompt:
+
+```bash
+think curator edit    # opens ~/.think/curator.md in $EDITOR
+think curator show    # print current guidance
 ```
 
 ## Data
 
-- **Database:** `~/.local/share/think/think.db`
-- **Config:** `~/.config/think/config.json` (auto-generated on first run)
+- **Engrams:** `~/.local/share/think/think.db` (no cortex) or `~/.think/engrams/<cortex>.db`
+- **Config:** `~/.config/think/config.json`
+- **Curator guidance:** `~/.think/curator.md`
+- **Memories:** `memories.jsonl` on cortex git branches (append-only JSONL)
 
-Data lives on disk, not in the repo. Use `think network sync` to replicate between machines.
+## All commands
 
-## Usage
-
-```bash
-# Log entries
-think log "idea for caching layer"
-think log "standup — discussed deploy timeline" --category meeting
-think sync "shipped the auth fix"              # shorthand for --category sync
-
-# List entries
-think list --week
-think list --last-week --category sync
-think list --tag architecture
-
-# Weekly summary (uses Claude subscription via Agent SDK)
-think summary                    # AI-powered summary of current week
-think summary --last-week --raw  # raw entries, no AI
-
-# P2P sync (both machines must be on the same LAN)
-think network sync               # discover peers via mDNS and sync
-think network sync --host 192.168.1.50  # sync with a specific machine
-think network status             # show known peers and last sync times
 ```
+think sync <message>           Log a work event
+think log <message>            Log a note (with --category, --tags)
+think list                     List entries (--week, --since, --category)
+think summary                  AI summary (--raw for plain text)
+think delete                   Soft-delete entries
 
-## Categories
+think cortex setup <repo>      Configure git repo for shared memory
+think cortex create <name>     Create a cortex branch
+think cortex list              Show cortex branches
+think cortex switch <name>     Set active cortex
+think cortex current           Show active cortex
 
-- `note` (default) — general notes and ideas
-- `sync` — work log entries for 1:1 meetings
-- `meeting` — meeting notes
-- `decision` — decisions made
-- `idea` — ideas to revisit
+think curate                   Run curation (--dry-run to preview)
+think monitor                  Show promoted vs dropped engrams
+think recall <query>           Search memories + engrams
+think memory                   Show memories (--history for git log)
+think pull <cortex>            Pull another cortex's memories
 
-## Syncing between machines
+think curator edit             Edit personal curator guidance
+think curator show             Show current guidance
+think pause                    Suppress engram creation
+think resume                   Re-enable engram creation
 
-Both machines need `think` installed. When on the same network:
-
-1. Run `think network sync` on either machine
-2. Peers discover each other automatically via mDNS/Bonjour
-3. Entries replicate in both directions using CRDTs (no conflicts)
-
-After syncing, `think summary --week` on either machine produces the same output.
+think init                     Set up CLAUDE.md for auto-logging
+think export                   Export entries as sync bundle
+think import <file>            Import sync bundle
+think audit                    Show sync audit log
+```
