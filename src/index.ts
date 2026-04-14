@@ -14,6 +14,7 @@ import { recallCommand } from './commands/recall.js';
 import { memoryCommand } from './commands/memory.js';
 import { curatorCommand } from './commands/curator-cmd.js';
 import { pullCommand } from './commands/pull.js';
+import { pauseCommand, resumeCommand } from './commands/pause.js';
 
 const program = new Command();
 
@@ -39,5 +40,7 @@ program.addCommand(recallCommand);
 program.addCommand(memoryCommand);
 program.addCommand(curatorCommand);
 program.addCommand(pullCommand);
+program.addCommand(pauseCommand);
+program.addCommand(resumeCommand);
 
 program.parse();
