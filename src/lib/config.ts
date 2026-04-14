@@ -6,6 +6,8 @@ export interface CortexConfig {
   repo: string;
   active?: string;
   author: string;
+  curateEveryN?: number;
+  confirmBeforeCommit?: boolean;
 }
 
 export interface Config {
