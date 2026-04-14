@@ -7,13 +7,21 @@ import { exportCommand } from './commands/export.js';
 import { importCommand } from './commands/import.js';
 import { initCommand } from './commands/init.js';
 import { auditCommand } from './commands/audit.js';
+import { cortexCommand } from './commands/cortex.js';
+import { curateCommand } from './commands/curate.js';
+import { monitorCommand } from './commands/monitor.js';
+import { recallCommand } from './commands/recall.js';
+import { memoryCommand } from './commands/memory.js';
+import { curatorCommand } from './commands/curator-cmd.js';
+import { pullCommand } from './commands/pull.js';
 
 const program = new Command();
 
 program
   .name('think')
-  .description('Local-first CLI tool for capturing notes, work logs, and ideas with P2P sync')
-  .version('0.1.0');
+  .description('Local-first CLI tool for capturing notes, work logs, and ideas')
+  .version('0.1.0')
+  .option('-C, --cortex <name>', 'Use a specific cortex for this command');
 
 program.addCommand(logCommand);
 program.addCommand(syncCommand);
@@ -24,5 +32,12 @@ program.addCommand(exportCommand);
 program.addCommand(importCommand);
 program.addCommand(initCommand);
 program.addCommand(auditCommand);
+program.addCommand(cortexCommand);
+program.addCommand(curateCommand);
+program.addCommand(monitorCommand);
+program.addCommand(recallCommand);
+program.addCommand(memoryCommand);
+program.addCommand(curatorCommand);
+program.addCommand(pullCommand);
 
 program.parse();
