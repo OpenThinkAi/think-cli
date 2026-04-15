@@ -1,3 +1,5 @@
+import fs from 'node:fs';
+import path from 'node:path';
 import { Command } from 'commander';
 import { logCommand, syncCommand } from './commands/log.js';
 import { listCommand } from './commands/list.js';
@@ -18,12 +20,21 @@ import { pauseCommand, resumeCommand } from './commands/pause.js';
 import { configCommand } from './commands/config-cmd.js';
 import { updateCommand } from './commands/update.js';
 
+function readPackageVersion(): string {
+  try {
+    const pkgPath = path.join(import.meta.dirname, '..', 'package.json');
+    return JSON.parse(fs.readFileSync(pkgPath, 'utf-8')).version ?? '0.0.0';
+  } catch {
+    return '0.0.0';
+  }
+}
+
 const program = new Command();
 
 program
   .name('think')
   .description('Local-first CLI tool for capturing notes, work logs, and ideas')
-  .version('0.1.0')
+  .version(readPackageVersion())
   .option('-C, --cortex <name>', 'Use a specific cortex for this command');
 
 program.addCommand(logCommand);
