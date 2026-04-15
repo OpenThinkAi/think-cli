@@ -17,7 +17,7 @@ function sanitizeName(name: string): string {
 }
 
 export function getThinkDir(): string {
-  return path.join(getHome(), '.think');
+  return process.env.THINK_HOME ?? path.join(getHome(), '.think');
 }
 
 export function getEngramsDir(): string {
