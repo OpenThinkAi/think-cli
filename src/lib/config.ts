@@ -1,6 +1,7 @@
 import path from 'node:path';
 import fs from 'node:fs';
 import { v4 as uuidv4 } from 'uuid';
+import { getThinkConfigDir } from './paths.js';
 
 export interface CortexConfig {
   repo: string;
@@ -22,11 +23,7 @@ export interface Config {
 }
 
 export function getConfigDir(): string {
-  if (process.env.THINK_HOME) {
-    return process.env.THINK_HOME;
-  }
-  const xdgConfig = process.env.XDG_CONFIG_HOME || path.join(process.env.HOME!, '.config');
-  return path.join(xdgConfig, 'think');
+  return getThinkConfigDir();
 }
 
 function configPath(): string {

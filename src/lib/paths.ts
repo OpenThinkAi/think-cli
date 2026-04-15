@@ -16,8 +16,28 @@ function sanitizeName(name: string): string {
   return name;
 }
 
+function getThinkHome(): string | null {
+  const thinkHome = process.env.THINK_HOME;
+  if (thinkHome === undefined || thinkHome === '') return null;
+  return thinkHome;
+}
+
 export function getThinkDir(): string {
-  return process.env.THINK_HOME ?? path.join(getHome(), '.think');
+  return getThinkHome() ?? path.join(getHome(), '.think');
+}
+
+export function getThinkConfigDir(): string {
+  const thinkHome = getThinkHome();
+  if (thinkHome) return path.join(thinkHome, 'config');
+  const xdgConfig = process.env.XDG_CONFIG_HOME || path.join(getHome(), '.config');
+  return path.join(xdgConfig, 'think');
+}
+
+export function getThinkDataDir(): string {
+  const thinkHome = getThinkHome();
+  if (thinkHome) return path.join(thinkHome, 'data');
+  const xdgData = process.env.XDG_DATA_HOME || path.join(getHome(), '.local', 'share');
+  return path.join(xdgData, 'think');
 }
 
 export function getEngramsDir(): string {
