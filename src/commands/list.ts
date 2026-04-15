@@ -52,17 +52,26 @@ export const listCommand = new Command('list')
 
     if (cortex) {
       // Read from cortex engram DB
+      if (opts.category || opts.tag) {
+        console.log(chalk.yellow('Note: --category and --tag filters are not supported for cortex engrams.'));
+      }
+
       let since: Date | undefined;
+      let until: Date | undefined;
       if (opts.week) {
         since = startOfWeek(new Date(), { weekStartsOn: 1 });
       } else if (opts.lastWeek) {
-        since = startOfWeek(subWeeks(new Date(), 1), { weekStartsOn: 1 });
-      } else if (opts.since) {
-        since = new Date(opts.since);
+        const lastWeekDate = subWeeks(new Date(), 1);
+        since = startOfWeek(lastWeekDate, { weekStartsOn: 1 });
+        until = endOfWeek(lastWeekDate, { weekStartsOn: 1 });
+      } else {
+        if (opts.since) since = new Date(opts.since);
+        if (opts.until) until = new Date(opts.until);
       }
 
       const engrams = getEngrams(cortex, {
         since,
+        until,
         limit: parseInt(opts.limit, 10),
       });
 

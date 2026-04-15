@@ -31,8 +31,8 @@ function engramsToEntries(engrams: Engram[]): Entry[] {
   return engrams.map((e) => ({
     id: e.id,
     timestamp: e.created_at,
-    source: 'cortex',
-    category: 'sync',
+    source: 'manual',
+    category: 'note',
     content: e.content,
     tags: '[]',
   }));
@@ -73,29 +73,30 @@ export const summaryCommand = new Command('summary')
 
       const engrams = getEngrams(cortex, { since });
 
-      if (engrams.length === 0) {
-        console.log(chalk.dim('No engrams found for the specified period.'));
-        closeEngramsDb(cortex);
-        return;
-      }
-
-      if (opts.raw) {
-        console.log(formatRawEngrams(engrams));
-        console.log(chalk.dim(`\n${engrams.length} engrams`));
-      } else {
-        try {
-          console.log(chalk.dim('Generating summary...'));
-          const summary = await generateSummary(engramsToEntries(engrams));
-          console.log(summary);
-        } catch (err) {
-          const msg = err instanceof Error ? err.message : String(err);
-          console.error(chalk.red(`Error generating summary: ${msg}`));
-          console.log(chalk.dim('\nFalling back to raw output:\n'));
-          console.log(formatRawEngrams(engrams));
+      try {
+        if (engrams.length === 0) {
+          console.log(chalk.dim('No engrams found for the specified period.'));
+          return;
         }
-      }
 
-      closeEngramsDb(cortex);
+        if (opts.raw) {
+          console.log(formatRawEngrams(engrams));
+          console.log(chalk.dim(`\n${engrams.length} engrams`));
+        } else {
+          try {
+            console.log(chalk.dim('Generating summary...'));
+            const summary = await generateSummary(engramsToEntries(engrams));
+            console.log(summary);
+          } catch (err) {
+            const msg = err instanceof Error ? err.message : String(err);
+            console.error(chalk.red(`Error generating summary: ${msg}`));
+            console.log(chalk.dim('\nFalling back to raw output:\n'));
+            console.log(formatRawEngrams(engrams));
+          }
+        }
+      } finally {
+        closeEngramsDb(cortex);
+      }
     } else {
       // Original path — local think.db
       let entries: Entry[];
