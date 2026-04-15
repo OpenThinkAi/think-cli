@@ -1,6 +1,6 @@
 import fs from 'node:fs';
 import { query } from '@anthropic-ai/claude-agent-sdk';
-import { getCuratorMdPath } from './paths.js';
+import { getCuratorMdPath, getLongtermPath, ensureThinkDirs } from './paths.js';
 import type { Engram } from '../db/engram-queries.js';
 
 export interface MemoryEntry {
@@ -12,8 +12,11 @@ export interface MemoryEntry {
 
 const BASE_CURATION_PROMPT = `You are a memory curator. You evaluate recent work events and decide which ones are significant enough to become shared team memory.
 
-## What the team already knows
-{existing_memories}
+## Long-term context (compressed history)
+{longterm_summary}
+
+## Recent team memories (last 2 weeks)
+{recent_memories}
 
 ## What this contributor considers worth sharing
 {curator_md}
@@ -25,7 +28,7 @@ const BASE_CURATION_PROMPT = `You are a memory curator. You evaluate recent work
 
 Your task:
 
-1. Read what the team already knows to avoid redundancy.
+1. Read the long-term context and recent memories to avoid redundancy.
 2. Read the contributor's guidance (if provided) for their priorities.
 3. For each event, decide: is this something the team should remember?
    Look for:
@@ -58,6 +61,28 @@ Rules:
 - Do not repeat information already in the team's memory
 - Only add an entry if there is genuinely new information`;
 
+const CONSOLIDATION_PROMPT = `You are a memory consolidator. You compress older detailed memories into a concise long-term summary.
+
+## Existing long-term summary
+{existing_longterm}
+
+## Memories to consolidate (these are aging out of the short-term window)
+{aging_memories}
+
+---
+
+Your task:
+
+Produce an updated long-term summary that incorporates the aging memories into the existing summary. The summary should:
+
+- Capture key projects, decisions, and milestones — not individual commits
+- Preserve what's still relevant from the existing summary
+- Group related work into coherent themes
+- Be concise — aim for 500-1000 words total
+- Write for an agent that needs historical context, not a detailed log
+
+Return only the updated summary text. No JSON, no formatting, no explanation.`;
+
 export function readCuratorMd(): string | null {
   const mdPath = getCuratorMdPath();
   if (fs.existsSync(mdPath)) {
@@ -66,8 +91,40 @@ export function readCuratorMd(): string | null {
   return null;
 }
 
+export function readLongtermSummary(cortexName: string): string | null {
+  const ltPath = getLongtermPath(cortexName);
+  if (fs.existsSync(ltPath)) {
+    return fs.readFileSync(ltPath, 'utf-8').trim();
+  }
+  return null;
+}
+
+export function writeLongtermSummary(cortexName: string, summary: string): void {
+  ensureThinkDirs();
+  const ltPath = getLongtermPath(cortexName);
+  fs.writeFileSync(ltPath, summary, 'utf-8');
+}
+
+export function filterRecentMemories(memories: MemoryEntry[], windowDays: number = 14): {
+  recent: MemoryEntry[];
+  older: MemoryEntry[];
+} {
+  const cutoff = new Date(Date.now() - windowDays * 86400000).toISOString();
+  const recent: MemoryEntry[] = [];
+  const older: MemoryEntry[] = [];
+  for (const m of memories) {
+    if (m.ts >= cutoff) {
+      recent.push(m);
+    } else {
+      older.push(m);
+    }
+  }
+  return { recent, older };
+}
+
 export function assembleCurationPrompt(params: {
-  existingMemories: MemoryEntry[];
+  recentMemories: MemoryEntry[];
+  longtermSummary: string | null;
   curatorMd: string | null;
   pendingEngrams: Engram[];
   author: string;
@@ -75,11 +132,13 @@ export function assembleCurationPrompt(params: {
   granularity?: 'detailed' | 'summary';
   maxMemoriesPerRun?: number;
 }): string {
-  const memoriesText = params.existingMemories.length > 0
-    ? params.existingMemories
+  const longtermText = params.longtermSummary ?? '(no long-term context yet)';
+
+  const recentText = params.recentMemories.length > 0
+    ? params.recentMemories
         .map(m => `- [${m.ts}] ${m.author}: ${m.content}`)
         .join('\n')
-    : '(no memories yet)';
+    : '(no recent memories)';
 
   const curatorMdText = params.curatorMd ?? '(none provided)';
 
@@ -88,7 +147,8 @@ export function assembleCurationPrompt(params: {
     .join('\n');
 
   let prompt = BASE_CURATION_PROMPT
-    .replace('{existing_memories}', memoriesText)
+    .replace('{longterm_summary}', longtermText)
+    .replace('{recent_memories}', recentText)
     .replace('{curator_md}', curatorMdText)
     .replace('{pending_engrams}', engramsText);
 
@@ -191,4 +251,37 @@ export async function runCuration(prompt: string): Promise<MemoryEntry[]> {
   });
 
   return entries;
+}
+
+export async function runConsolidation(existingLongterm: string | null, agingMemories: MemoryEntry[]): Promise<string> {
+  const existingText = existingLongterm ?? '(no existing summary)';
+  const agingText = agingMemories
+    .map(m => `- [${m.ts}] ${m.author}: ${m.content}`)
+    .join('\n');
+
+  const prompt = CONSOLIDATION_PROMPT
+    .replace('{existing_longterm}', existingText)
+    .replace('{aging_memories}', agingText);
+
+  let result = '';
+
+  for await (const message of query({
+    prompt,
+    options: {
+      systemPrompt: 'You are a memory consolidator. Return only the updated summary text. No JSON, no formatting.',
+      tools: [],
+      model: 'claude-sonnet-4-6',
+      persistSession: false,
+    },
+  })) {
+    if ('result' in message && typeof message.result === 'string') {
+      result = message.result;
+    }
+  }
+
+  if (!result) {
+    throw new Error('No result returned from consolidation');
+  }
+
+  return result.trim();
 }
