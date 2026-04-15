@@ -2,15 +2,12 @@ import path from 'node:path';
 import fs from 'node:fs';
 import { DatabaseSync } from 'node:sqlite';
 import { ensureSchema } from './schema.js';
+import { getThinkDataDir } from '../lib/paths.js';
 
 let db: DatabaseSync | null = null;
 
 export function getDataDir(): string {
-  if (process.env.THINK_HOME) {
-    return process.env.THINK_HOME;
-  }
-  const xdgData = process.env.XDG_DATA_HOME || path.join(process.env.HOME!, '.local', 'share');
-  return path.join(xdgData, 'think');
+  return getThinkDataDir();
 }
 
 export function getDb(): DatabaseSync {
