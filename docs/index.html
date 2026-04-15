@@ -1,0 +1,239 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>open-think — memory for AI agents</title>
+<meta name="description" content="Local-first CLI that gives AI agents persistent, curated memory. Log work as it happens. Let AI decide what matters. Recall it next session.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div class="app">
+
+  <!-- TAB BAR -->
+  <div class="tabbar" role="tablist">
+    <button class="tab" data-tab="home" role="tab"><span class="key">h</span>ome</button>
+    <button class="tab" data-tab="concepts" role="tab"><span class="key">c</span>oncepts</button>
+    <button class="tab" data-tab="install" role="tab"><span class="key">i</span>nstall</button>
+    <button class="tab" data-tab="docs" role="tab"><span class="key">d</span>ocs</button>
+    <div class="tab-spacer"></div>
+    <div class="tab-meta">
+      <span class="pill">v0.1.7</span>
+      <span class="dim">open-think · MIT</span>
+    </div>
+  </div>
+
+  <!-- LAYOUT -->
+  <div class="layout">
+
+    <!-- SIDEBAR -->
+    <aside class="pane sidebar">
+      <div class="pane-title">[<span class="key">N</span>]AV</div>
+      <nav class="nav-tree" id="sidebar-nav">
+        <!-- populated by app.js based on active tab -->
+      </nav>
+    </aside>
+
+    <!-- MAIN -->
+    <main class="pane main-pane">
+      <div class="pane-title">[<span class="key">M</span>]AIN</div>
+
+      <!-- HOME VIEW -->
+      <section class="view" data-view="home">
+        <div class="hero">
+          <div class="badge"><span class="dot"></span>v0.1.7 · open source · MIT</div>
+          <h1>memory for your<br><span class="accent">AI agents</span>.</h1>
+          <p class="lead">A local-first CLI that gives agents persistent, curated memory. Log work as it happens. Let AI decide what matters. Recall it next session.</p>
+          <div class="install-line"><span class="prompt">$</span>npm install -g open-think</div>
+          <div class="install-note">requires Node 22.5+</div>
+        </div>
+
+        <h2 class="section-h" id="problem">// the problem</h2>
+        <p>Every new session, your AI agent wakes up with amnesia. It doesn't know what you shipped yesterday, what decisions you made last week, or what the team is focused on. You paste context. You re-explain. You repeat yourself.</p>
+
+        <h2 class="section-h" id="solution">// the fix</h2>
+        <p><strong>open-think</strong> is a local-first CLI that gives agents persistent, curated memory. Your work gets logged as it happens, curated by AI into what actually matters, and made available to any agent that needs it.</p>
+        <p>Built for Claude Code users and developers who want their tools to remember.</p>
+
+        <h2 class="section-h" id="next">// next</h2>
+        <p>Read the <a href="#" data-goto="concepts">concepts</a> to understand the pipeline, or jump to <a href="#" data-goto="install">install</a> if you want to start using it now.</p>
+      </section>
+
+      <!-- CONCEPTS VIEW -->
+      <section class="view" data-view="concepts">
+        <h2 class="view-title">// concepts</h2>
+        <p class="view-sub">Five concepts. One pipeline. Entries become engrams, engrams become memories, memories get recalled.</p>
+
+        <div class="concept-list">
+          <div class="concept" id="c1">
+            <div class="num">[01]</div>
+            <h3>entries</h3>
+            <p>Timestamped notes and work logs. The raw material. Stored locally in SQLite, always on your machine.</p>
+            <div class="demo">
+              <div><span class="prompt">$</span> think sync "shipped auth refactor"</div>
+              <div class="out"><span class="check">✓</span> Logged <span class="dim">[sync]</span> <span class="dim">2026-04-14 10:23</span></div>
+            </div>
+          </div>
+
+          <div class="concept" id="c2">
+            <div class="num">[02]</div>
+            <h3>engrams</h3>
+            <p>Raw work events awaiting evaluation. When a cortex is active, your syncs become engrams — short-lived signals waiting to be curated. Engrams never leave your machine.</p>
+            <div class="demo">
+              <div><span class="prompt">$</span> think sync "blocked on partner API"</div>
+              <div class="out"><span class="check">✓</span> <span class="cyan">[engineering]</span> engram saved</div>
+            </div>
+          </div>
+
+          <div class="concept" id="c3">
+            <div class="num">[03]</div>
+            <h3>cortex</h3>
+            <p>A memory workspace. Personal or shared. Each cortex is a separate memory space with its own engrams, memories, and curation history, backed by a git repo.</p>
+            <div class="demo">
+              <div><span class="prompt">$</span> think cortex create personal</div>
+              <div class="out"><span class="check">✓</span> Created cortex: personal</div>
+            </div>
+          </div>
+
+          <div class="concept" id="c4">
+            <div class="num">[04]</div>
+            <h3>curator</h3>
+            <p>AI-powered evaluation. Reads engrams, weighs them against what's already known, and promotes what matters to long-term memory. Drops the rest.</p>
+            <div class="demo">
+              <div><span class="prompt">$</span> think curate</div>
+              <div class="out"><span class="cyan">Evaluating 12 engrams...</span></div>
+              <div class="out"><span class="check">✓</span> 12 evaluated, 3 promoted, 9 dropped</div>
+            </div>
+          </div>
+
+          <div class="concept" id="c5">
+            <div class="num">[05]</div>
+            <h3>recall</h3>
+            <p>Search across memories and local engrams. Give your agents context before they start working. The recall surface is what other agents read from.</p>
+            <div class="demo">
+              <div><span class="prompt">$</span> think recall "auth"</div>
+              <div class="out"><span class="cyan">Team memories (last 14d):</span></div>
+              <div class="out"><span class="dim">→ Auth refactor shipped...</span></div>
+            </div>
+          </div>
+        </div>
+
+        <h2 class="section-h" id="arch">// architecture</h2>
+        <p>Local-first, by default. Engrams never leave your machine unless you explicitly curate them. The curator runs locally. Only promoted memories are pushed to your chosen backend.</p>
+        <pre class="arch-ascii">  ┌─ your machine ─────────────────────────────────────────┐    ┌─ backend ─┐
+  │                                                        │    │           │
+  │   <span class="g">entries</span> ──→ <span class="g">engrams</span> ──→ <span class="g">curator</span> ──→ <span class="c">memories</span>   │ ─→ │   <span class="y">git</span>     │
+  │                                  (local AI)            │    │   <span class="dim">S3</span>*     │
+  │                                                        │    │   <span class="dim">PG</span>*     │
+  └────────────────────────────────────────────────────────┘    └───────────┘
+
+  * future backends. today, git is the backend. point think at a repo and go.</pre>
+      </section>
+
+      <!-- INSTALL VIEW -->
+      <section class="view" data-view="install">
+        <h2 class="view-title">// install</h2>
+        <p class="view-sub">Five steps from zero to a working memory pipeline.</p>
+
+        <ol class="steps">
+          <li id="s1">
+            <h3>Install the CLI</h3>
+            <div class="terminal"><span class="prompt">$</span>npm install -g open-think</div>
+            <p class="note">Requires Node 22.5+ (uses the built-in <code>node:sqlite</code> module).</p>
+          </li>
+          <li id="s2">
+            <h3>Log something</h3>
+            <div class="terminal"><span class="prompt">$</span>think sync "first entry"</div>
+            <p class="note">Without an active cortex, syncs are stored locally as plain entries.</p>
+          </li>
+          <li id="s3">
+            <h3>Set up a cortex</h3>
+            <div class="terminal"><span class="prompt">$</span>think cortex setup git@github.com:you/memory.git</div>
+            <div class="terminal"><span class="prompt">$</span>think cortex create personal</div>
+            <p class="note">Point think at any git repo. The cortex becomes the home for curated memories.</p>
+          </li>
+          <li id="s4">
+            <h3>Set up your agents</h3>
+            <div class="terminal"><span class="prompt">$</span>think init</div>
+            <p class="note">Writes work-logging instructions into your project's CLAUDE.md.</p>
+          </li>
+          <li id="s5">
+            <h3>Curate &amp; recall</h3>
+            <div class="terminal"><span class="prompt">$</span>think curate</div>
+            <div class="terminal"><span class="prompt">$</span>think recall "what did I ship?"</div>
+            <p class="note">Curation evaluates pending engrams and promotes the important ones to long-term memory.</p>
+          </li>
+        </ol>
+
+        <h2 class="section-h" id="agents">// built for AI agents</h2>
+        <p>Drop into any Claude Code project, run <code>think init</code>, and your agents start auto-logging work. The curator decides what's worth remembering. Next session, the agent recalls what it needs — no pasting, no re-explaining.</p>
+      </section>
+
+      <!-- DOCS VIEW -->
+      <section class="view" data-view="docs">
+        <h2 class="view-title">// docs</h2>
+        <p class="view-sub">Reference, source, and where to find help.</p>
+
+        <h2 class="section-h" id="commands">// all commands</h2>
+        <p>Run <code>think --help</code> for the full command reference, or browse the <a href="https://github.com/MicroMediaSites/think-cli">README on GitHub</a>.</p>
+
+        <h2 class="section-h" id="links">// links</h2>
+        <ul class="link-list">
+          <li><span class="link-label">github</span><a href="https://github.com/MicroMediaSites/think-cli">github.com/MicroMediaSites/think-cli</a></li>
+          <li><span class="link-label">npm</span><a href="https://www.npmjs.com/package/open-think">npmjs.com/package/open-think</a></li>
+          <li><span class="link-label">issues</span><a href="https://github.com/MicroMediaSites/think-cli/issues">github.com/MicroMediaSites/think-cli/issues</a></li>
+          <li><span class="link-label">license</span>MIT</li>
+        </ul>
+
+        <h2 class="section-h" id="files">// where things live</h2>
+        <ul class="link-list">
+          <li><span class="link-label">~/.think/</span>default data directory (override with <code>$THINK_HOME</code>)</li>
+          <li><span class="link-label">data/think.db</span>local entries (SQLite)</li>
+          <li><span class="link-label">engrams/</span>per-cortex engram buffers</li>
+          <li><span class="link-label">repo/</span>cloned cortex (curated memories live here)</li>
+        </ul>
+      </section>
+
+    </main>
+  </div>
+
+  <!-- STATUS BAR -->
+  <div class="statusbar">
+    <div class="left"><span class="status-dot"></span>open-think · ready</div>
+    <div class="spacer"></div>
+    <div class="right">
+      <span><span class="key-pill">↑↓</span>nav</span>
+      <span><span class="key-pill">⏎</span>select</span>
+      <span><span class="key-pill">g</span>github</span>
+      <span><span class="key-pill">i</span>install</span>
+      <span><span class="key-pill">?</span>help</span>
+    </div>
+  </div>
+</div>
+
+<!-- HELP MODAL -->
+<div class="modal" id="help-modal" hidden>
+  <div class="modal-pane">
+    <div class="pane-title">[<span class="key">?</span>] HELP</div>
+    <button class="modal-close" aria-label="close">×</button>
+    <h3>Keyboard shortcuts</h3>
+    <table class="help-table">
+      <tr><td><span class="key-pill">h</span></td><td>home</td></tr>
+      <tr><td><span class="key-pill">c</span></td><td>concepts</td></tr>
+      <tr><td><span class="key-pill">i</span></td><td>install</td></tr>
+      <tr><td><span class="key-pill">d</span></td><td>docs</td></tr>
+      <tr><td><span class="key-pill">g</span></td><td>open github</td></tr>
+      <tr><td><span class="key-pill">↑</span> <span class="key-pill">↓</span></td><td>navigate sidebar</td></tr>
+      <tr><td><span class="key-pill">⏎</span></td><td>select</td></tr>
+      <tr><td><span class="key-pill">?</span></td><td>toggle this help</td></tr>
+      <tr><td><span class="key-pill">esc</span></td><td>close</td></tr>
+    </table>
+  </div>
+</div>
+
+<script src="app.js"></script>
+</body>
+</html>
