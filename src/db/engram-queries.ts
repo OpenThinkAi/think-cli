@@ -38,7 +38,7 @@ export function getPendingEngrams(cortexName: string): Engram[] {
   ).all(new Date().toISOString()) as unknown as Engram[];
 }
 
-export function getEngrams(cortexName: string, params: { since?: Date; limit?: number }): Engram[] {
+export function getEngrams(cortexName: string, params: { since?: Date; until?: Date; limit?: number }): Engram[] {
   const db = getEngramsDb(cortexName);
   const conditions = ['deleted_at IS NULL'];
   const values: string[] = [];
@@ -46,6 +46,11 @@ export function getEngrams(cortexName: string, params: { since?: Date; limit?: n
   if (params.since) {
     conditions.push('created_at >= ?');
     values.push(params.since.toISOString());
+  }
+
+  if (params.until) {
+    conditions.push('created_at <= ?');
+    values.push(params.until.toISOString());
   }
 
   const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
