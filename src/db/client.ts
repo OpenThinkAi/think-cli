@@ -6,6 +6,9 @@ import { ensureSchema } from './schema.js';
 let db: DatabaseSync | null = null;
 
 export function getDataDir(): string {
+  if (process.env.THINK_HOME) {
+    return process.env.THINK_HOME;
+  }
   const xdgData = process.env.XDG_DATA_HOME || path.join(process.env.HOME!, '.local', 'share');
   return path.join(xdgData, 'think');
 }
