@@ -205,4 +205,15 @@
     if (el.closest('.view')) observer.observe(el);
   });
 
+  // Fetch latest published version from npm registry
+  fetch('https://registry.npmjs.org/open-think/latest')
+    .then(r => r.ok ? r.json() : null)
+    .then(data => {
+      if (!data?.version) return;
+      const label = 'v' + data.version;
+      document.getElementById('version-pill')?.replaceChildren(document.createTextNode(label));
+      document.getElementById('version-badge')?.replaceChildren(document.createTextNode(label));
+    })
+    .catch(() => {});
+
 })();
