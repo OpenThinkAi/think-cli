@@ -12,6 +12,8 @@ export interface CortexConfig {
   selectivity?: 'low' | 'medium' | 'high';
   granularity?: 'detailed' | 'summary';
   maxMemoriesPerRun?: number;
+  bucketSize?: number;
+  onboardingDepth?: number;
 }
 
 export interface Config {
