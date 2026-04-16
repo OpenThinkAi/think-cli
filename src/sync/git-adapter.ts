@@ -69,7 +69,12 @@ export class GitSyncAdapter implements SyncAdapter {
 
     // Single fetch, read file list once, pass to both migration check and bucket determination
     const branchFiles = listBranchFiles(cortex, '.jsonl');
-    this.ensureMigrated(cortex, branchFiles);
+    try {
+      this.ensureMigrated(cortex, branchFiles);
+    } catch (err) {
+      result.errors.push(`Migration failed: ${err instanceof Error ? err.message : String(err)}`);
+      return result;
+    }
 
     // Re-read after potential migration (migration changes the file list)
     const currentFiles = branchFiles.some(f => /^\d{6}\.jsonl$/.test(f))
