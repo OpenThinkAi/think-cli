@@ -68,6 +68,8 @@ export class GitSyncAdapter implements SyncAdapter {
     const lastVersion = cursorStr ? parseInt(cursorStr, 10) : 0;
 
     // Ensure legacy memories.jsonl is migrated to bucketed format
+    // (fetchBranch happens inside appendAndCommit via pull --rebase,
+    // but we need fresh remote state for migration check and bucket determination)
     fetchBranch(cortex);
     this.ensureMigrated(cortex);
 
@@ -184,18 +186,24 @@ export class GitSyncAdapter implements SyncAdapter {
     }
 
     // Process files in ascending order (critical for tombstone correctness)
-    let lastProcessedFile: string | null = null;
+    let lastReadFile: string | null = null;
     for (const file of filesToRead) {
-      const raw = readFileFromBranch(cortex, file) ?? '';
-      if (raw) {
+      const raw = readFileFromBranch(cortex, file);
+      if (raw === null) {
+        // File failed to read (shouldn't happen after fetch) — stop advancing cursor
+        break;
+      }
+      // Advance cursor past this file even if empty (empty file = nothing to process,
+      // but we've confirmed it exists and was read — don't re-read it forever)
+      lastReadFile = file;
+      if (raw.trim()) {
         this.processMemories(cortex, raw, result);
-        lastProcessedFile = file;
       }
     }
 
-    // Only advance cursor to the last file we actually read content from
-    if (lastProcessedFile) {
-      setSyncCursor(cortex, 'git', 'pull_file', lastProcessedFile);
+    // Advance cursor to the last file we successfully read (empty or not)
+    if (lastReadFile) {
+      setSyncCursor(cortex, 'git', 'pull_file', lastReadFile);
     }
 
     return result;
