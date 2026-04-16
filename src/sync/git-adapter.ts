@@ -30,10 +30,8 @@ export class GitSyncAdapter implements SyncAdapter {
     return !!config.cortex?.repo;
   }
 
-  private ensureMigrated(cortex: string): void {
-    fetchBranch(cortex);
-    const files = listBranchFiles(cortex, '.jsonl');
-    const hasNumbered = files.some(f => /^\d{6}\.jsonl$/.test(f));
+  private ensureMigrated(cortex: string, branchFiles: string[]): void {
+    const hasNumbered = branchFiles.some(f => /^\d{6}\.jsonl$/.test(f));
     if (!hasNumbered) {
       const hasLegacy = readFileFromBranch(cortex, 'memories.jsonl') !== null;
       if (hasLegacy) {
@@ -42,14 +40,14 @@ export class GitSyncAdapter implements SyncAdapter {
     }
   }
 
-  private determineBucketFile(cortex: string): string {
+  private determineBucketFile(cortex: string, branchFiles: string[]): string {
     const config = getConfig();
     const bucketSize = config.cortex?.bucketSize ?? 500;
 
-    const files = listBranchFiles(cortex, '.jsonl').filter(f => /^\d{6}\.jsonl$/.test(f));
-    if (files.length === 0) return '000001.jsonl';
+    const numbered = branchFiles.filter(f => /^\d{6}\.jsonl$/.test(f));
+    if (numbered.length === 0) return '000001.jsonl';
 
-    const latestFile = files[files.length - 1];
+    const latestFile = numbered[numbered.length - 1];
     const lineCount = countBranchFileLines(cortex, latestFile);
 
     if (lineCount >= bucketSize) {
@@ -63,20 +61,27 @@ export class GitSyncAdapter implements SyncAdapter {
     const result: SyncResult = { pushed: 0, pulled: 0, errors: [] };
 
     ensureRepoCloned();
+    fetchBranch(cortex);
 
     // Get last push cursor (sync_version)
     const cursorStr = getSyncCursor(cortex, 'git', 'push');
     const lastVersion = cursorStr ? parseInt(cursorStr, 10) : 0;
 
-    // Ensure legacy memories.jsonl is migrated to bucketed format
-    this.ensureMigrated(cortex);
+    // Single fetch, read file list once, pass to both migration check and bucket determination
+    const branchFiles = listBranchFiles(cortex, '.jsonl');
+    this.ensureMigrated(cortex, branchFiles);
+
+    // Re-read after potential migration (migration changes the file list)
+    const currentFiles = branchFiles.some(f => /^\d{6}\.jsonl$/.test(f))
+      ? branchFiles
+      : listBranchFiles(cortex, '.jsonl');
 
     // Get memories created since last push
     const newMemories = getMemoriesBySyncVersion(cortex, lastVersion);
     if (newMemories.length === 0) return result;
 
     // Determine which bucket file to write to
-    const targetFile = this.determineBucketFile(cortex);
+    const targetFile = this.determineBucketFile(cortex, currentFiles);
 
     // Format as JSONL lines (include episode_key and deleted_at when present)
     const newLines = newMemories.map(m => JSON.stringify({

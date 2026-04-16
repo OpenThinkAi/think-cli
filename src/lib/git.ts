@@ -163,6 +163,9 @@ export function migrateToBuckets(branchName: string): void {
   const bucketPath = path.join(repoPath, '000001.jsonl');
 
   if (fs.existsSync(legacyPath) && !fs.existsSync(bucketPath)) {
+    // Save pre-migration ref for rollback
+    const preMigrationRef = runGit(['rev-parse', 'HEAD']);
+
     fs.renameSync(legacyPath, bucketPath);
     runGit(['add', '-A']);
     runGit(['commit', '-m', 'migrate: memories.jsonl -> 000001.jsonl']);
@@ -173,8 +176,8 @@ export function migrateToBuckets(branchName: string): void {
         return;
       } catch {
         if (attempt === 3) {
-          // Rollback local commit and restore working tree to pre-migration state
-          try { runGit(['reset', '--hard', 'HEAD~1']); } catch { /* best effort */ }
+          // Rollback to exact pre-migration state (restores memories.jsonl, removes 000001.jsonl)
+          try { runGit(['reset', '--hard', preMigrationRef]); } catch { /* best effort */ }
           throw new Error('Migration push failed after 3 attempts — local commit rolled back');
         }
         runGit(['pull', '--rebase', 'origin', branchName]);
