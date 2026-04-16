@@ -26,11 +26,12 @@
     concepts: {
       groups: [
         { label: 'pipeline', items: [
-          { label: '01 entries', href: '#c1' },
-          { label: '02 engrams', href: '#c2' },
-          { label: '03 cortex',  href: '#c3' },
-          { label: '04 curator', href: '#c4' },
-          { label: '05 recall',  href: '#c5' },
+          { label: '01 entries',       href: '#c1' },
+          { label: '02 engrams',       href: '#c2' },
+          { label: '03 cortex',        href: '#c3' },
+          { label: '04 curator',       href: '#c4' },
+          { label: '05 episodes',      href: '#c5' },
+          { label: '06 recall & sync', href: '#c6' },
         ]},
         { label: 'design', items: [
           { label: 'architecture', href: '#arch' },
