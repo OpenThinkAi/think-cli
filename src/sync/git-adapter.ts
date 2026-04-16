@@ -92,12 +92,17 @@ export class GitSyncAdapter implements SyncAdapter {
     const commitMsg = `curate: ${config.cortex?.author ?? 'unknown'}, ${newMemories.length} memories`;
     const maxVersion = Math.max(...newMemories.map(m => m.sync_version));
 
+    // Update cursor optimistically — if push fails, restore the old cursor.
+    // If the process dies between push and cursor restore, the next push
+    // re-sends the same memories, but pull uses INSERT OR IGNORE with
+    // deterministic IDs so duplicates in JSONL are harmless.
     setSyncCursor(cortex, 'git', 'push', String(maxVersion));
 
     try {
       appendAndCommit(cortex, newLines, commitMsg, 3, targetFile);
       result.pushed = newMemories.length;
     } catch (err) {
+      // Restore cursor on failure so we retry next time
       setSyncCursor(cortex, 'git', 'push', String(lastVersion));
       result.errors.push(err instanceof Error ? err.message : String(err));
     }
@@ -179,16 +184,18 @@ export class GitSyncAdapter implements SyncAdapter {
     }
 
     // Process files in ascending order (critical for tombstone correctness)
+    let lastProcessedFile: string | null = null;
     for (const file of filesToRead) {
       const raw = readFileFromBranch(cortex, file) ?? '';
       if (raw) {
         this.processMemories(cortex, raw, result);
+        lastProcessedFile = file;
       }
     }
 
-    // Update pull cursor to the latest file
-    if (files.length > 0) {
-      setSyncCursor(cortex, 'git', 'pull_file', files[files.length - 1]);
+    // Only advance cursor to the last file we actually read content from
+    if (lastProcessedFile) {
+      setSyncCursor(cortex, 'git', 'pull_file', lastProcessedFile);
     }
 
     return result;
