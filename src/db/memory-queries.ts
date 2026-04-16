@@ -155,6 +155,7 @@ export function getMemoryCount(cortexName: string): number {
 }
 
 export function getMemoryByEpisodeKey(cortexName: string, episodeKey: string): MemoryRow | null {
+  // getEngramsDb returns the per-cortex DB that holds both engrams and memories tables
   const db = getEngramsDb(cortexName);
   const row = db.prepare(
     'SELECT * FROM memories WHERE episode_key = ? AND deleted_at IS NULL LIMIT 1'

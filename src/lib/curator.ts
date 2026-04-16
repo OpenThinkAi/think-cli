@@ -362,11 +362,16 @@ export async function runEpisodeCuration(prompt: StructuredPrompt): Promise<stri
     cleaned = cleaned.replace(/^```(?:json)?\n?/, '').replace(/\n?```$/, '');
   }
 
-  const raw = JSON.parse(cleaned);
+  let raw: unknown;
+  try {
+    raw = JSON.parse(cleaned);
+  } catch {
+    throw new Error(`Episode curation returned malformed JSON: ${cleaned.slice(0, 200)}`);
+  }
 
-  if (!raw || typeof raw !== 'object' || typeof raw.content !== 'string') {
+  if (!raw || typeof raw !== 'object' || typeof (raw as Record<string, unknown>).content !== 'string') {
     throw new Error('Episode curation returned invalid response — expected { "content": "..." }');
   }
 
-  return raw.content;
+  return (raw as Record<string, unknown>).content as string;
 }

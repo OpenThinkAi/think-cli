@@ -92,7 +92,9 @@ export class GitSyncAdapter implements SyncAdapter {
       const id = deterministicId(m.ts, m.author, m.content);
 
       if (m.deleted_at) {
-        // Tombstone — soft delete the local copy if it exists
+        // Tombstone — soft delete the local copy. The JSONL tombstone line
+        // preserves the original ts/author/content (only deleted_at is added),
+        // so deterministicId produces the same ID as the original entry.
         tombstoneMemory(cortex, id);
         continue;
       }
