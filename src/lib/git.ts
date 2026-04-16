@@ -54,8 +54,8 @@ export function createOrphanBranch(branchName: string): void {
   }
 
   const repoPath = getRepoPath();
-  fs.writeFileSync(path.join(repoPath, 'memories.jsonl'), '', 'utf-8');
-  runGit(['add', 'memories.jsonl']);
+  fs.writeFileSync(path.join(repoPath, '000001.jsonl'), '', 'utf-8');
+  runGit(['add', '000001.jsonl']);
   runGit(['commit', '-m', `init: create cortex ${branchName}`]);
   runGit(['push', '--set-upstream', 'origin', branchName]);
 }
@@ -77,9 +77,10 @@ export function appendAndCommit(
   newLines: string[],
   commitMessage: string,
   maxRetries: number = 3,
+  targetFile: string = 'memories.jsonl',
 ): void {
   const repoPath = getRepoPath();
-  const memoriesPath = path.join(repoPath, 'memories.jsonl');
+  const filePath = path.join(repoPath, targetFile);
 
   try {
     runGit(['switch', branchName]);
@@ -95,14 +96,14 @@ export function appendAndCommit(
     const message = err instanceof Error ? err.message : String(err);
     if (message.includes('CONFLICT') || message.includes('could not apply')) {
       try { runGit(['rebase', '--abort']); } catch { /* best effort */ }
-      throw new Error(`Rebase conflict on ${branchName}. This should not happen with append-only files — check for manual edits to memories.jsonl.`);
+      throw new Error(`Rebase conflict on ${branchName}. This should not happen with append-only files.`);
     }
   }
 
   const content = newLines.join('\n') + '\n';
-  fs.appendFileSync(memoriesPath, content, 'utf-8');
+  fs.appendFileSync(filePath, content, 'utf-8');
 
-  runGit(['add', 'memories.jsonl']);
+  runGit(['add', targetFile]);
   runGit(['commit', '-m', commitMessage]);
 
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
@@ -128,4 +129,43 @@ export function listRemoteBranches(): string[] {
     .filter(Boolean)
     .map(line => line.split('\t')[1]?.replace('refs/heads/', ''))
     .filter(Boolean) as string[];
+}
+
+export function listBranchFiles(branchName: string, extension?: string): string[] {
+  try {
+    const output = runGit(['ls-tree', '--name-only', `origin/${branchName}`]);
+    let files = output.split('\n').filter(Boolean);
+    if (extension) {
+      files = files.filter(f => f.endsWith(extension));
+    }
+    return files.sort();
+  } catch {
+    return [];
+  }
+}
+
+export function countBranchFileLines(branchName: string, filePath: string): number {
+  const content = readFileFromBranch(branchName, filePath);
+  if (!content) return 0;
+  return content.trim().split('\n').filter(Boolean).length;
+}
+
+export function migrateToBuckets(branchName: string): void {
+  const repoPath = getRepoPath();
+
+  try { runGit(['switch', branchName]); }
+  catch { runGit(['switch', '-c', branchName, `origin/${branchName}`]); }
+
+  try { runGit(['pull', '--rebase', 'origin', branchName]); }
+  catch { /* same as appendAndCommit — tolerate upstream issues */ }
+
+  const legacyPath = path.join(repoPath, 'memories.jsonl');
+  const bucketPath = path.join(repoPath, '000001.jsonl');
+
+  if (fs.existsSync(legacyPath) && !fs.existsSync(bucketPath)) {
+    fs.renameSync(legacyPath, bucketPath);
+    runGit(['add', '-A']);
+    runGit(['commit', '-m', 'migrate: memories.jsonl -> 000001.jsonl']);
+    runGit(['push', 'origin', branchName]);
+  }
 }
