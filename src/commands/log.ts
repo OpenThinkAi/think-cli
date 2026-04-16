@@ -51,8 +51,9 @@ export const syncCommand = new Command('sync')
   .argument('<message>', 'The message to log')
   .option('-s, --source <source>', 'Source of the entry', 'manual')
   .option('-t, --tags <tags>', 'Comma-separated tags')
+  .option('-e, --episode <key>', 'Tag this engram with an episode identifier')
   .option('--silent', 'Suppress output')
-  .action(function (this: Command, message: string, opts: { source: string; tags?: string; silent?: boolean }) {
+  .action(function (this: Command, message: string, opts: { source: string; tags?: string; episode?: string; silent?: boolean }) {
     const globalOpts = this.optsWithGlobals() as { cortex?: string };
     const config = getConfig();
 
@@ -74,12 +75,13 @@ export const syncCommand = new Command('sync')
       }
 
       // Route to cortex engram DB
-      const engram = insertEngram(cortex, { content: message });
+      const engram = insertEngram(cortex, { content: message, episodeKey: opts.episode });
 
       if (!opts.silent) {
         const badge = chalk.cyan(`[${cortex}]`);
         const ts = chalk.gray(engram.created_at.slice(0, 16).replace('T', ' '));
-        console.log(`${chalk.green('✓')} ${badge} engram saved ${ts}`);
+        const episodeLabel = opts.episode ? chalk.dim(` (episode: ${opts.episode})`) : '';
+        console.log(`${chalk.green('✓')} ${badge} engram saved ${ts}${episodeLabel}`);
         console.log(`  ${engram.content}`);
       }
 
