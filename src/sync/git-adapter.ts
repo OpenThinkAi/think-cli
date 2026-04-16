@@ -31,6 +31,7 @@ export class GitSyncAdapter implements SyncAdapter {
   }
 
   private ensureMigrated(cortex: string): void {
+    fetchBranch(cortex);
     const files = listBranchFiles(cortex, '.jsonl');
     const hasNumbered = files.some(f => /^\d{6}\.jsonl$/.test(f));
     if (!hasNumbered) {
@@ -68,9 +69,6 @@ export class GitSyncAdapter implements SyncAdapter {
     const lastVersion = cursorStr ? parseInt(cursorStr, 10) : 0;
 
     // Ensure legacy memories.jsonl is migrated to bucketed format
-    // (fetchBranch happens inside appendAndCommit via pull --rebase,
-    // but we need fresh remote state for migration check and bucket determination)
-    fetchBranch(cortex);
     this.ensureMigrated(cortex);
 
     // Get memories created since last push
@@ -190,11 +188,10 @@ export class GitSyncAdapter implements SyncAdapter {
     for (const file of filesToRead) {
       const raw = readFileFromBranch(cortex, file);
       if (raw === null) {
-        // File failed to read (shouldn't happen after fetch) — stop advancing cursor
-        break;
+        // Transient read failure — skip this file but continue processing remaining
+        // files. Cursor won't advance past it, so it gets retried on next pull.
+        continue;
       }
-      // Advance cursor past this file even if empty (empty file = nothing to process,
-      // but we've confirmed it exists and was read — don't re-read it forever)
       lastReadFile = file;
       if (raw.trim()) {
         this.processMemories(cortex, raw, result);
