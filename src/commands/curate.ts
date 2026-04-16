@@ -12,6 +12,7 @@ import {
   runCuration,
   runConsolidation,
 } from '../lib/curator.js';
+import { getSyncAdapter } from '../sync/registry.js';
 import type { MemoryEntry } from '../lib/curator.js';
 
 export const curateCommand = new Command('curate')
@@ -28,6 +29,19 @@ export const curateCommand = new Command('curate')
     }
 
     const author = config.cortex!.author;
+
+    // 0. Sync: pull latest memories from remote before curation
+    const adapter = getSyncAdapter();
+    if (adapter?.isAvailable()) {
+      try {
+        const pullResult = await adapter.pull(cortex);
+        if (pullResult.pulled > 0) {
+          console.log(chalk.dim(`  Pulled ${pullResult.pulled} memories from ${adapter.name}`));
+        }
+      } catch {
+        console.log(chalk.dim('  Sync pull skipped (remote unavailable)'));
+      }
+    }
 
     // 1. Read all memories from local SQLite and split into recent vs older
     const allMemories = getMemories(cortex);
@@ -213,7 +227,19 @@ export const curateCommand = new Command('curate')
       }
     }
 
-    // 13. Report
+    // 13. Sync: push new memories to remote after curation
+    if (adapter?.isAvailable() && newEntries.length > 0) {
+      try {
+        const pushResult = await adapter.push(cortex);
+        if (pushResult.pushed > 0) {
+          console.log(chalk.dim(`  Pushed ${pushResult.pushed} memories to ${adapter.name}`));
+        }
+      } catch {
+        console.log(chalk.dim('  Sync push skipped (remote unavailable) — will push on next sync'));
+      }
+    }
+
+    // 14. Report
     console.log();
     console.log(`${chalk.green('✓')} Curation complete`);
     console.log(`  ${pending.length} evaluated, ${newEntries.length} promoted, ${droppedIds.length} dropped`);
