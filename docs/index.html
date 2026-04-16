@@ -55,8 +55,9 @@
         <p>Every new session, your AI agent wakes up with amnesia. It doesn't know what you shipped yesterday, what decisions you made last week, or what the team is focused on. You paste context. You re-explain. You repeat yourself.</p>
 
         <h2 class="section-h" id="solution">// the fix</h2>
-        <p><strong>open-think</strong> is a local-first CLI that gives agents persistent, curated memory. Your work gets logged as it happens, curated by AI into what actually matters, and made available to any agent that needs it.</p>
-        <p>Built for Claude Code users and developers who want their tools to remember.</p>
+        <p><strong>open-think</strong> is a local-first CLI that gives agents persistent, curated memory. Your work gets logged as it happens, curated by AI into what actually matters, and recalled next session.</p>
+        <p>All reads and writes hit local SQLite. Sync is optional and eventual &mdash; your agents work fully offline. When you're ready to share, push memories to a git repo (Postgres adapter coming soon).</p>
+        <p>Built for Claude Code users, review bots, and any AI agent that needs to remember.</p>
 
         <h2 class="section-h" id="next">// next</h2>
         <p>Read the <a href="#" data-goto="concepts">concepts</a> to understand the pipeline, or jump to <a href="#" data-goto="install">install</a> if you want to start using it now.</p>
@@ -91,17 +92,17 @@
           <div class="concept" id="c3">
             <div class="num">[03]</div>
             <h3>cortex</h3>
-            <p>A memory workspace. Personal or shared. Each cortex is a separate memory space with its own engrams, memories, and curation history, backed by a git repo.</p>
+            <p>A memory workspace. Personal or shared. Each cortex is a local SQLite database with its own engrams, memories, and sync state. Optionally backed by a git repo for team sync.</p>
             <div class="demo">
               <div><span class="prompt">$</span> think cortex create personal</div>
-              <div class="out"><span class="check">✓</span> Created cortex: personal</div>
+              <div class="out"><span class="check">✓</span> Created cortex: personal (local only)</div>
             </div>
           </div>
 
           <div class="concept" id="c4">
             <div class="num">[04]</div>
             <h3>curator</h3>
-            <p>AI-powered evaluation. Reads engrams, weighs them against what's already known, and promotes what matters to long-term memory. Drops the rest.</p>
+            <p>AI-powered evaluation. Reads engrams, weighs them against what's already known, and promotes what matters to long-term memory. Drops the rest. Two modes: <strong>standard</strong> (filter many events into few memories) and <strong>episode</strong> (synthesize a bounded task into a narrative).</p>
             <div class="demo">
               <div><span class="prompt">$</span> think curate</div>
               <div class="out"><span class="cyan">Evaluating 12 engrams...</span></div>
@@ -111,26 +112,41 @@
 
           <div class="concept" id="c5">
             <div class="num">[05]</div>
-            <h3>recall</h3>
-            <p>Search across memories and local engrams. Give your agents context before they start working. The recall surface is what other agents read from.</p>
+            <h3>episodes</h3>
+            <p>For task-oriented agents (review bots, bug fixers) that work across multiple rounds. Tag engrams with an episode key. When curated, they synthesize into a narrative story &mdash; not a log, but a recap of what happened and why it mattered.</p>
+            <div class="demo">
+              <div><span class="prompt">$</span> think sync -e "org/repo#42" "found SQL injection"</div>
+              <div><span class="prompt">$</span> think curate --episode "org/repo#42"</div>
+              <div class="out"><span class="check">✓</span> Episode curated: org/repo#42</div>
+            </div>
+          </div>
+
+          <div class="concept" id="c6">
+            <div class="num">[06]</div>
+            <h3>recall &amp; sync</h3>
+            <p>Search across memories and local engrams. Sync pushes and pulls memories to a remote backend. All reads hit local SQLite &mdash; instant and offline.</p>
             <div class="demo">
               <div><span class="prompt">$</span> think recall "auth"</div>
               <div class="out"><span class="cyan">Team memories (last 14d):</span></div>
-              <div class="out"><span class="dim">→ Auth refactor shipped...</span></div>
+              <div class="out"><span class="dim">&#8594; Auth refactor shipped...</span></div>
+              <div><span class="prompt">$</span> think cortex sync</div>
+              <div class="out"><span class="check">✓</span> Pulled 3, pushed 1</div>
             </div>
           </div>
         </div>
 
         <h2 class="section-h" id="arch">// architecture</h2>
-        <p>Local-first, by default. Engrams never leave your machine unless you explicitly curate them. The curator runs locally. Only promoted memories are pushed to your chosen backend.</p>
-        <pre class="arch-ascii">  ┌─ your machine ─────────────────────────────────────────┐    ┌─ backend ─┐
-  │                                                        │    │           │
-  │   <span class="g">entries</span> ──→ <span class="g">engrams</span> ──→ <span class="g">curator</span> ──→ <span class="c">memories</span>   │ ─→ │   <span class="y">git</span>     │
-  │                                  (local AI)            │    │   <span class="dim">S3</span>*     │
-  │                                                        │    │   <span class="dim">PG</span>*     │
-  └────────────────────────────────────────────────────────┘    └───────────┘
+        <p>Local-first, by design. All reads and writes go to local SQLite. Sync is optional and eventual. Engrams never leave your machine &mdash; only curated memories sync to the remote.</p>
+        <pre class="arch-ascii">  ┌─ your machine (SQLite) ─────────────────────────────────┐    ┌─ remote ──┐
+  │                                                         │    │           │
+  │   <span class="g">entries</span> ──&#8594; <span class="g">engrams</span> ──&#8594; <span class="g">curator</span> ──&#8594; <span class="c">memories</span>   │ &#8596;  │   <span class="y">git</span>     │
+  │                                  (local AI)             │    │   <span class="dim">PG</span>*     │
+  │   <span class="g">episodes</span> ──&#8594; <span class="g">narrative curation</span> ──&#8594; <span class="c">memories</span>   │    │           │
+  │                                                         │    │           │
+  └─────────────────────────────────────────────────────────┘    └───────────┘
 
-  * future backends. today, git is the backend. point think at a repo and go.</pre>
+  cortex push / cortex pull &#8596; pluggable sync adapter
+  * Postgres adapter coming soon</pre>
       </section>
 
       <!-- INSTALL VIEW -->
@@ -153,7 +169,7 @@
             <h3>Set up a cortex</h3>
             <div class="terminal"><span class="prompt">$</span>think cortex setup git@github.com:you/memory.git</div>
             <div class="terminal"><span class="prompt">$</span>think cortex create personal</div>
-            <p class="note">Point think at any git repo. The cortex becomes the home for curated memories.</p>
+            <p class="note">Point think at any git repo for team sync, or leave the repo empty for offline-only. The cortex is a local SQLite database for your memories.</p>
           </li>
           <li id="s4">
             <h3>Set up your agents</h3>
@@ -161,15 +177,17 @@
             <p class="note">Writes work-logging instructions into your project's CLAUDE.md.</p>
           </li>
           <li id="s5">
-            <h3>Curate &amp; recall</h3>
+            <h3>Curate, recall, sync</h3>
             <div class="terminal"><span class="prompt">$</span>think curate</div>
             <div class="terminal"><span class="prompt">$</span>think recall "what did I ship?"</div>
-            <p class="note">Curation evaluates pending engrams and promotes the important ones to long-term memory.</p>
+            <div class="terminal"><span class="prompt">$</span>think cortex sync</div>
+            <p class="note">Curation promotes engrams to memory. Recall searches locally. Sync shares memories with the team.</p>
           </li>
         </ol>
 
         <h2 class="section-h" id="agents">// built for AI agents</h2>
-        <p>Drop into any Claude Code project, run <code>think init</code>, and your agents start auto-logging work. The curator decides what's worth remembering. Next session, the agent recalls what it needs — no pasting, no re-explaining.</p>
+        <p>Drop into any Claude Code project, run <code>think init</code>, and your agents start auto-logging work. The curator decides what's worth remembering. Next session, the agent recalls what it needs &mdash; no pasting, no re-explaining.</p>
+        <p>For task-oriented agents (review bots, bug fixers), use <strong>episodes</strong>: tag work with <code>--episode</code>, curate into narrative memories that tell the story of what happened.</p>
       </section>
 
       <!-- DOCS VIEW -->
@@ -178,7 +196,41 @@
         <p class="view-sub">Reference, source, and where to find help.</p>
 
         <h2 class="section-h" id="commands">// all commands</h2>
-        <p>Run <code>think --help</code> for the full command reference, or browse the <a href="https://github.com/MicroMediaSites/think-cli">README on GitHub</a>.</p>
+        <pre class="arch-ascii">think sync &lt;message&gt;           Log a work event
+think sync -e &lt;key&gt; &lt;msg&gt;     Log an episode-tagged event
+think log &lt;message&gt;            Log a note (--category, --tags)
+think list                     List entries (--week, --since, --category)
+think summary                  AI summary (--raw for plain text)
+think delete                   Soft-delete entries
+
+think cortex setup [repo]      Configure sync backend (or offline-only)
+think cortex create &lt;name&gt;     Create a cortex
+think cortex list              Show all cortexes (local + remote)
+think cortex switch &lt;name&gt;     Set active cortex
+think cortex current           Show active cortex
+think cortex push              Push local memories to remote
+think cortex pull              Pull remote memories to local
+think cortex sync              Push + pull
+think cortex status            Show sync state
+
+think curate                   Run curation (--dry-run to preview)
+think curate --episode &lt;key&gt;   Curate episode into narrative memory
+think curate --consolidate     Compress older memories into summary
+think monitor                  Show promoted vs dropped engrams
+think recall &lt;query&gt;           Search memories + engrams
+think memory                   Show memories (--history for timeline)
+think pull &lt;cortex&gt;            Read another cortex's memories
+
+think curator edit             Edit personal curator guidance
+think curator show             Show current guidance
+think pause                    Suppress engram creation
+think resume                   Re-enable engram creation
+
+think migrate-data             Import git memories into local SQLite
+think init                     Set up CLAUDE.md for auto-logging
+think config show              Print configuration
+think config set &lt;key&gt; &lt;val&gt;   Update a config value
+think update                   Update to latest version</pre>
 
         <h2 class="section-h" id="links">// links</h2>
         <ul class="link-list">
@@ -191,9 +243,10 @@
         <h2 class="section-h" id="files">// where things live</h2>
         <ul class="link-list">
           <li><span class="link-label">~/.think/</span>default data directory (override with <code>$THINK_HOME</code>)</li>
-          <li><span class="link-label">data/think.db</span>local entries (SQLite)</li>
-          <li><span class="link-label">engrams/</span>per-cortex engram buffers</li>
-          <li><span class="link-label">repo/</span>cloned cortex (curated memories live here)</li>
+          <li><span class="link-label">engrams/*.db</span>per-cortex SQLite (engrams, memories, sync state)</li>
+          <li><span class="link-label">curator.md</span>personal curator guidance</li>
+          <li><span class="link-label">repo/</span>cloned git remote (for sync)</li>
+          <li><span class="link-label">config.json</span>in <code>~/.config/think/</code></li>
         </ul>
       </section>
 
