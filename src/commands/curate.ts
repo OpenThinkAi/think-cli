@@ -89,7 +89,7 @@ export const curateCommand = new Command('curate')
     const curatorMd = readCuratorMd();
 
     // 6. Assemble and run curation prompt (recent memories + longterm summary, not all memories)
-    const prompt = assembleCurationPrompt({
+    const curationPrompt = assembleCurationPrompt({
       recentMemories: recent,
       longtermSummary,
       curatorMd,
@@ -102,7 +102,7 @@ export const curateCommand = new Command('curate')
 
     let newEntries;
     try {
-      newEntries = await runCuration(prompt);
+      newEntries = await runCuration(curationPrompt);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       console.error(chalk.red(`Curation failed: ${message}`));

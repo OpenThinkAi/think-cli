@@ -7,6 +7,7 @@ import { getConfig } from '../lib/config.js';
 import { insertEngram, getPendingEngrams } from '../db/engram-queries.js';
 import { closeEngramsDb } from '../db/engrams.js';
 import { checkForUpdate } from '../lib/update-check.js';
+import { validateEngramContent } from '../lib/sanitize.js';
 
 export const logCommand = new Command('log')
   .description('Log a note or entry')
@@ -16,6 +17,14 @@ export const logCommand = new Command('log')
   .option('-t, --tags <tags>', 'Comma-separated tags')
   .option('--silent', 'Suppress output')
   .action((message: string, opts: { source: string; category: string; tags?: string; silent?: boolean }) => {
+    const validated = validateEngramContent(message);
+    message = validated.content;
+    if (!opts.silent && validated.warnings.length > 0) {
+      for (const w of validated.warnings) {
+        console.log(chalk.yellow(`  ⚠ ${w}`));
+      }
+    }
+
     const tags = opts.tags ? opts.tags.split(',').map(t => t.trim()) : undefined;
     const entry = insertEntry({
       content: message,
@@ -55,6 +64,15 @@ export const syncCommand = new Command('sync')
     const cortex = globalOpts.cortex ?? config.cortex?.active;
 
     if (cortex) {
+      // Validate and sanitize content before storage
+      const validated = validateEngramContent(message);
+      message = validated.content;
+      if (!opts.silent && validated.warnings.length > 0) {
+        for (const w of validated.warnings) {
+          console.log(chalk.yellow(`  ⚠ ${w}`));
+        }
+      }
+
       // Route to cortex engram DB
       const engram = insertEngram(cortex, { content: message });
 
