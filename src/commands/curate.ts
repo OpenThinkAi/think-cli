@@ -2,14 +2,16 @@ import { Command } from 'commander';
 import readline from 'node:readline';
 import chalk from 'chalk';
 import { getConfig } from '../lib/config.js';
-import { getPendingEngrams, markEvaluated, pruneExpiredEngrams } from '../db/engram-queries.js';
-import { getMemories, getLongtermSummary, setLongtermSummary, insertMemory } from '../db/memory-queries.js';
+import { getPendingEngrams, getPendingEpisodeEngrams, markEvaluated, pruneExpiredEngrams } from '../db/engram-queries.js';
+import { getMemories, getLongtermSummary, setLongtermSummary, insertMemory, getMemoryByEpisodeKey, tombstoneMemory } from '../db/memory-queries.js';
 import { closeEngramsDb } from '../db/engrams.js';
 import {
   readCuratorMd,
   assembleCurationPrompt,
+  assembleEpisodeCurationPrompt,
   filterRecentMemories,
   runCuration,
+  runEpisodeCuration,
   runConsolidation,
 } from '../lib/curator.js';
 import { getSyncAdapter } from '../sync/registry.js';
@@ -19,7 +21,8 @@ export const curateCommand = new Command('curate')
   .description('Run curation: evaluate pending engrams and promote to memories')
   .option('--dry-run', 'Preview what would be committed without saving')
   .option('--consolidate', 'Run long-term memory consolidation only (no curation)')
-  .action(async (opts: { dryRun?: boolean; consolidate?: boolean }) => {
+  .option('--episode <key>', 'Curate a specific episode into a narrative memory')
+  .action(async (opts: { dryRun?: boolean; consolidate?: boolean; episode?: string }) => {
     const config = getConfig();
     const cortex = config.cortex?.active;
 
@@ -41,6 +44,97 @@ export const curateCommand = new Command('curate')
       } catch {
         console.log(chalk.dim('  Sync pull skipped (remote unavailable)'));
       }
+    }
+
+    // Episode curation: separate flow for narrative synthesis
+    if (opts.episode) {
+      const episodeEngrams = getPendingEpisodeEngrams(cortex, opts.episode);
+      if (episodeEngrams.length === 0) {
+        console.log(chalk.dim(`No pending engrams for episode: ${opts.episode}`));
+        closeEngramsDb(cortex);
+        return;
+      }
+
+      // Get existing narrative for this episode (if re-curating after new rounds)
+      const existingMemoryRow = getMemoryByEpisodeKey(cortex, opts.episode);
+      const existingMemory: MemoryEntry | null = existingMemoryRow ? {
+        ts: existingMemoryRow.ts,
+        author: existingMemoryRow.author,
+        content: existingMemoryRow.content,
+        source_ids: JSON.parse(existingMemoryRow.source_ids),
+      } : null;
+
+      console.log(chalk.cyan(`Curating episode: ${opts.episode} (${episodeEngrams.length} engrams${existingMemory ? ', updating existing narrative' : ''})...`));
+
+      const prompt = assembleEpisodeCurationPrompt({
+        episodeKey: opts.episode,
+        pendingEngrams: episodeEngrams,
+        existingMemory,
+        author,
+      });
+
+      if (opts.dryRun) {
+        console.log();
+        console.log(chalk.cyan('Episode prompt would be sent to LLM:'));
+        console.log(chalk.dim(`  ${episodeEngrams.length} engrams, ${existingMemory ? 'updating' : 'creating'} narrative`));
+        for (const e of episodeEngrams) {
+          const ts = e.created_at.slice(0, 16).replace('T', ' ');
+          console.log(chalk.dim(`  ${ts}: ${e.content.slice(0, 100)}${e.content.length > 100 ? '...' : ''}`));
+        }
+        closeEngramsDb(cortex);
+        return;
+      }
+
+      let narrative: string;
+      try {
+        narrative = await runEpisodeCuration(prompt);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        console.error(chalk.red(`Episode curation failed: ${message}`));
+        closeEngramsDb(cortex);
+        process.exit(1);
+      }
+
+      // Tombstone old memory if re-curating
+      if (existingMemoryRow) {
+        tombstoneMemory(cortex, existingMemoryRow.id);
+      }
+
+      // Accumulate all source IDs across all rounds
+      const allSourceIds = [
+        ...(existingMemory?.source_ids ?? []),
+        ...episodeEngrams.map(e => e.id),
+      ];
+
+      // Insert new narrative memory
+      insertMemory(cortex, {
+        ts: new Date().toISOString(),
+        author,
+        content: narrative,
+        source_ids: allSourceIds,
+        episode_key: opts.episode,
+      });
+
+      // Mark episode engrams as evaluated
+      markEvaluated(cortex, episodeEngrams.map(e => e.id), true);
+
+      // Push if adapter available
+      if (adapter?.isAvailable()) {
+        try {
+          const pushResult = await adapter.push(cortex);
+          if (pushResult.pushed > 0) {
+            console.log(chalk.dim(`  Pushed ${pushResult.pushed} memories to ${adapter.name}`));
+          }
+        } catch {
+          console.log(chalk.dim('  Sync push skipped (remote unavailable)'));
+        }
+      }
+
+      console.log();
+      console.log(`${chalk.green('✓')} Episode curated: ${opts.episode}`);
+      console.log(`  ${episodeEngrams.length} engrams synthesized into narrative`);
+      closeEngramsDb(cortex);
+      return;
     }
 
     // 1. Read all memories from local SQLite and split into recent vs older
