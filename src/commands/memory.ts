@@ -2,7 +2,7 @@ import { Command } from 'commander';
 import chalk from 'chalk';
 import { getConfig } from '../lib/config.js';
 import { getMemories } from '../db/memory-queries.js';
-import { closeEngramsDb } from '../db/engrams.js';
+import { closeCortexDb } from '../db/engrams.js';
 
 export const memoryCommand = new Command('memory')
   .description('Show current memories from local store')
@@ -20,7 +20,7 @@ export const memoryCommand = new Command('memory')
 
     if (memories.length === 0) {
       console.log(chalk.dim('No memories yet. Run: think curate'));
-      closeEngramsDb(cortex);
+      closeCortexDb(cortex);
       return;
     }
 
@@ -38,5 +38,5 @@ export const memoryCommand = new Command('memory')
     }
 
     console.log(chalk.dim(`\n${memories.length} memories`));
-    closeEngramsDb(cortex);
+    closeCortexDb(cortex);
   });
