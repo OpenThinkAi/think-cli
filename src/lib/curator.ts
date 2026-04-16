@@ -31,7 +31,6 @@ Your task:
    - Blockers encountered or resolved
    - Clusters — multiple events around the same topic signal importance
    - Weight — urgency, frustration, or surprise in the language suggests significance
-   - Decisions — events with explicit decisions attached are high-signal and should almost always be promoted. Preserve the decision rationale in the memory.
 4. Routine, administrative, or low-signal events should be dropped.
    Dropping is correct, not a failure.
 
@@ -121,21 +120,7 @@ export function assembleCurationPrompt(params: {
   const curatorMdText = params.curatorMd ?? '(none provided)';
 
   const engramsText = params.pendingEngrams
-    .map(e => {
-      let line = `- [${e.created_at}] (id: ${e.id}) ${e.content}`;
-      if (e.decisions) {
-        try {
-          const decisions = JSON.parse(e.decisions) as string[];
-          if (decisions.length > 0) {
-            line += `\n  Decisions: ${decisions.map(d => `"${d}"`).join('; ')}`;
-          }
-        } catch { /* skip malformed */ }
-      }
-      if (e.context) {
-        line += `\n  Context: ${e.context}`;
-      }
-      return line;
-    })
+    .map(e => `- [${e.created_at}] (id: ${e.id}) ${e.content}`)
     .join('\n');
 
   // Build user message with data wrapped in delimiter tags
@@ -325,21 +310,7 @@ export function assembleEpisodeCurationPrompt(params: {
   author: string;
 }): StructuredPrompt {
   const engramsText = params.pendingEngrams
-    .map(e => {
-      let line = `- [${e.created_at}] ${e.content}`;
-      if (e.decisions) {
-        try {
-          const decisions = JSON.parse(e.decisions) as string[];
-          if (decisions.length > 0) {
-            line += `\n  Decisions: ${decisions.map(d => `"${d}"`).join('; ')}`;
-          }
-        } catch { /* skip malformed */ }
-      }
-      if (e.context) {
-        line += `\n  Context: ${e.context}`;
-      }
-      return line;
-    })
+    .map(e => `- [${e.created_at}] ${e.content}`)
     .join('\n');
 
   const sections = [
