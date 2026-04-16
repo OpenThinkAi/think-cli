@@ -156,8 +156,12 @@ export function migrateToBuckets(branchName: string): void {
   try { runGit(['switch', branchName]); }
   catch { runGit(['switch', '-c', branchName, `origin/${branchName}`]); }
 
+  // pull --rebase updates local branch pointer + working tree from remote.
+  // Caller already called fetchBranch (updates remote refs), so this pull
+  // is fast. appendAndCommit also does pull --rebase, but that's a no-op
+  // if nothing changed between migration and append.
   try { runGit(['pull', '--rebase', 'origin', branchName]); }
-  catch { /* same as appendAndCommit — tolerate upstream issues */ }
+  catch { /* tolerate upstream issues (e.g. first push) */ }
 
   const legacyPath = path.join(repoPath, 'memories.jsonl');
   const bucketPath = path.join(repoPath, '000001.jsonl');
@@ -176,7 +180,9 @@ export function migrateToBuckets(branchName: string): void {
         return;
       } catch {
         if (attempt === 3) {
-          // Rollback to exact pre-migration state (restores memories.jsonl, removes 000001.jsonl)
+          // Rollback to pre-migration commit. That commit has memories.jsonl
+          // (the rename to 000001.jsonl happened after it), so --hard reset
+          // restores memories.jsonl and removes 000001.jsonl from working tree.
           try { runGit(['reset', '--hard', preMigrationRef]); } catch { /* best effort */ }
           throw new Error('Migration push failed after 3 attempts — local commit rolled back');
         }
