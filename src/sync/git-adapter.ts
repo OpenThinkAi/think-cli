@@ -6,6 +6,9 @@ import {
   createOrphanBranch,
   branchExists,
   listRemoteBranches,
+  listBranchFiles,
+  countBranchFileLines,
+  migrateToBuckets,
 } from '../lib/git.js';
 import { parseMemoriesJsonl } from '../lib/curator.js';
 import {
@@ -27,6 +30,34 @@ export class GitSyncAdapter implements SyncAdapter {
     return !!config.cortex?.repo;
   }
 
+  private ensureMigrated(cortex: string): void {
+    const files = listBranchFiles(cortex, '.jsonl');
+    const hasNumbered = files.some(f => /^\d{6}\.jsonl$/.test(f));
+    if (!hasNumbered) {
+      const hasLegacy = readFileFromBranch(cortex, 'memories.jsonl') !== null;
+      if (hasLegacy) {
+        migrateToBuckets(cortex);
+      }
+    }
+  }
+
+  private determineBucketFile(cortex: string): string {
+    const config = getConfig();
+    const bucketSize = config.cortex?.bucketSize ?? 500;
+
+    const files = listBranchFiles(cortex, '.jsonl').filter(f => /^\d{6}\.jsonl$/.test(f));
+    if (files.length === 0) return '000001.jsonl';
+
+    const latestFile = files[files.length - 1];
+    const lineCount = countBranchFileLines(cortex, latestFile);
+
+    if (lineCount >= bucketSize) {
+      const nextNum = parseInt(latestFile.replace('.jsonl', ''), 10) + 1;
+      return String(nextNum).padStart(6, '0') + '.jsonl';
+    }
+    return latestFile;
+  }
+
   async push(cortex: string): Promise<SyncResult> {
     const result: SyncResult = { pushed: 0, pulled: 0, errors: [] };
 
@@ -36,9 +67,16 @@ export class GitSyncAdapter implements SyncAdapter {
     const cursorStr = getSyncCursor(cortex, 'git', 'push');
     const lastVersion = cursorStr ? parseInt(cursorStr, 10) : 0;
 
+    // Ensure legacy memories.jsonl is migrated to bucketed format
+    fetchBranch(cortex);
+    this.ensureMigrated(cortex);
+
     // Get memories created since last push
     const newMemories = getMemoriesBySyncVersion(cortex, lastVersion);
     if (newMemories.length === 0) return result;
+
+    // Determine which bucket file to write to
+    const targetFile = this.determineBucketFile(cortex);
 
     // Format as JSONL lines (include episode_key and deleted_at when present)
     const newLines = newMemories.map(m => JSON.stringify({
@@ -54,17 +92,12 @@ export class GitSyncAdapter implements SyncAdapter {
     const commitMsg = `curate: ${config.cortex?.author ?? 'unknown'}, ${newMemories.length} memories`;
     const maxVersion = Math.max(...newMemories.map(m => m.sync_version));
 
-    // Update cursor optimistically — if push fails, restore the old cursor.
-    // If the process dies between push and cursor restore, the next push
-    // re-sends the same memories, but pull uses INSERT OR IGNORE with
-    // deterministic IDs so duplicates in JSONL are harmless.
     setSyncCursor(cortex, 'git', 'push', String(maxVersion));
 
     try {
-      appendAndCommit(cortex, newLines, commitMsg);
+      appendAndCommit(cortex, newLines, commitMsg, 3, targetFile);
       result.pushed = newMemories.length;
     } catch (err) {
-      // Restore cursor on failure so we retry next time
       setSyncCursor(cortex, 'git', 'push', String(lastVersion));
       result.errors.push(err instanceof Error ? err.message : String(err));
     }
@@ -72,29 +105,14 @@ export class GitSyncAdapter implements SyncAdapter {
     return result;
   }
 
-  async pull(cortex: string): Promise<SyncResult> {
-    const result: SyncResult = { pushed: 0, pulled: 0, errors: [] };
-
-    try {
-      ensureRepoCloned();
-      fetchBranch(cortex);
-    } catch (err) {
-      result.errors.push(err instanceof Error ? err.message : String(err));
-      return result;
-    }
-
-    // Read full memories.jsonl from git
-    const memoriesRaw = readFileFromBranch(cortex, 'memories.jsonl') ?? '';
+  private processMemories(cortex: string, memoriesRaw: string, result: SyncResult): void {
     const memories = parseMemoriesJsonl(memoriesRaw);
 
-    // Diff against local — insert new, process tombstones
     for (const m of memories) {
       const id = deterministicId(m.ts, m.author, m.content);
 
       if (m.deleted_at) {
-        // Tombstone — soft delete the local copy. The JSONL tombstone line
-        // preserves the original ts/author/content (only deleted_at is added),
-        // so deterministicId produces the same ID as the original entry.
+        // Tombstone — preserves original ts/author/content so deterministicId matches
         tombstoneMemory(cortex, id);
         continue;
       }
@@ -108,6 +126,69 @@ export class GitSyncAdapter implements SyncAdapter {
         episode_key: m.episode_key,
       });
       if (wasInserted) result.pulled++;
+    }
+  }
+
+  async pull(cortex: string): Promise<SyncResult> {
+    const result: SyncResult = { pushed: 0, pulled: 0, errors: [] };
+
+    try {
+      ensureRepoCloned();
+      fetchBranch(cortex);
+    } catch (err) {
+      result.errors.push(err instanceof Error ? err.message : String(err));
+      return result;
+    }
+
+    const config = getConfig();
+    const onboardingDepth = config.cortex?.onboardingDepth ?? 1500;
+    const bucketSize = config.cortex?.bucketSize ?? 500;
+
+    // List numbered bucket files
+    const files = listBranchFiles(cortex, '.jsonl')
+      .filter(f => /^\d{6}\.jsonl$/.test(f))
+      .sort();
+
+    if (files.length === 0) {
+      // Legacy fallback: try memories.jsonl
+      const memoriesRaw = readFileFromBranch(cortex, 'memories.jsonl') ?? '';
+      if (memoriesRaw) {
+        this.processMemories(cortex, memoriesRaw, result);
+      }
+      return result;
+    }
+
+    // Determine which files to read
+    const pullCursor = getSyncCursor(cortex, 'git', 'pull_file');
+    let filesToRead: string[];
+
+    if (!pullCursor) {
+      // Onboarding: read last N files based on configured depth
+      const numFiles = Math.ceil(onboardingDepth / bucketSize);
+      filesToRead = files.slice(-numFiles);
+    } else {
+      // Incremental: read from cursor file onward (re-read cursor file to catch appends)
+      const cursorIndex = files.indexOf(pullCursor);
+      if (cursorIndex === -1) {
+        // Cursor file not found — fall back to onboarding
+        const numFiles = Math.ceil(onboardingDepth / bucketSize);
+        filesToRead = files.slice(-numFiles);
+      } else {
+        filesToRead = files.slice(cursorIndex);
+      }
+    }
+
+    // Process files in ascending order (critical for tombstone correctness)
+    for (const file of filesToRead) {
+      const raw = readFileFromBranch(cortex, file) ?? '';
+      if (raw) {
+        this.processMemories(cortex, raw, result);
+      }
+    }
+
+    // Update pull cursor to the latest file
+    if (files.length > 0) {
+      setSyncCursor(cortex, 'git', 'pull_file', files[files.length - 1]);
     }
 
     return result;
