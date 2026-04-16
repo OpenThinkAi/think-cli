@@ -1,5 +1,5 @@
 import { v7 as uuidv7 } from 'uuid';
-import { getEngramsDb } from './engrams.js';
+import { getCortexDb } from './engrams.js';
 
 export interface Engram {
   id: string;
@@ -19,7 +19,7 @@ export interface InsertEngramParams {
 }
 
 export function insertEngram(cortexName: string, params: InsertEngramParams): Engram {
-  const db = getEngramsDb(cortexName);
+  const db = getCortexDb(cortexName);
   const id = uuidv7();
   const now = new Date();
   const created_at = now.toISOString();
@@ -36,21 +36,21 @@ export function insertEngram(cortexName: string, params: InsertEngramParams): En
 }
 
 export function getPendingEngrams(cortexName: string): Engram[] {
-  const db = getEngramsDb(cortexName);
+  const db = getCortexDb(cortexName);
   return db.prepare(
     `SELECT * FROM engrams WHERE evaluated_at IS NULL AND deleted_at IS NULL AND episode_key IS NULL AND expires_at > ? ORDER BY created_at ASC`
   ).all(new Date().toISOString()) as unknown as Engram[];
 }
 
 export function getPendingEpisodeEngrams(cortexName: string, episodeKey: string): Engram[] {
-  const db = getEngramsDb(cortexName);
+  const db = getCortexDb(cortexName);
   return db.prepare(
     `SELECT * FROM engrams WHERE episode_key = ? AND evaluated_at IS NULL AND deleted_at IS NULL ORDER BY created_at ASC`
   ).all(episodeKey) as unknown as Engram[];
 }
 
 export function getEngrams(cortexName: string, params: { since?: Date; until?: Date; limit?: number }): Engram[] {
-  const db = getEngramsDb(cortexName);
+  const db = getCortexDb(cortexName);
   const conditions = ['deleted_at IS NULL'];
   const values: string[] = [];
 
@@ -73,7 +73,7 @@ export function getEngrams(cortexName: string, params: { since?: Date; until?: D
 }
 
 export function markEvaluated(cortexName: string, ids: string[], promoted: boolean): void {
-  const db = getEngramsDb(cortexName);
+  const db = getCortexDb(cortexName);
   const now = new Date().toISOString();
   const promotedVal = promoted ? 1 : 0;
   const stmt = db.prepare(
@@ -86,7 +86,7 @@ export function markEvaluated(cortexName: string, ids: string[], promoted: boole
 }
 
 export function pruneExpiredEngrams(cortexName: string): number {
-  const db = getEngramsDb(cortexName);
+  const db = getCortexDb(cortexName);
   const result = db.prepare(
     `DELETE FROM engrams WHERE expires_at < ? AND evaluated_at IS NOT NULL`
   ).run(new Date().toISOString());
@@ -94,7 +94,7 @@ export function pruneExpiredEngrams(cortexName: string): number {
 }
 
 export function searchEngrams(cortexName: string, query: string, limit: number = 20): Engram[] {
-  const db = getEngramsDb(cortexName);
+  const db = getCortexDb(cortexName);
   try {
     return db.prepare(
       `SELECT e.* FROM engrams e JOIN engrams_fts f ON e.rowid = f.rowid

@@ -106,7 +106,8 @@ const migrations: Migration[] = [
   },
 ];
 
-export function getEngramsDb(cortexName: string): DatabaseSync {
+/** Returns the per-cortex SQLite connection (holds engrams, memories, longterm_summary, and sync_cursors tables) */
+export function getCortexDb(cortexName: string): DatabaseSync {
   const cached = dbs.get(cortexName);
   if (cached) return cached;
 
@@ -123,7 +124,7 @@ export function getEngramsDb(cortexName: string): DatabaseSync {
   return db;
 }
 
-export function closeEngramsDb(cortexName: string): void {
+export function closeCortexDb(cortexName: string): void {
   const db = dbs.get(cortexName);
   if (db) {
     db.close();
@@ -131,7 +132,7 @@ export function closeEngramsDb(cortexName: string): void {
   }
 }
 
-export function closeAllEngramsDbs(): void {
+export function closeAllCortexDbs(): void {
   for (const [name, db] of dbs) {
     db.close();
     dbs.delete(name);

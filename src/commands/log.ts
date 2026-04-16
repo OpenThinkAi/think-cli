@@ -5,7 +5,7 @@ import { insertEntry } from '../db/queries.js';
 import { closeDb } from '../db/client.js';
 import { getConfig } from '../lib/config.js';
 import { insertEngram, getPendingEngrams } from '../db/engram-queries.js';
-import { closeEngramsDb } from '../db/engrams.js';
+import { closeCortexDb } from '../db/engrams.js';
 import { checkForUpdate } from '../lib/update-check.js';
 import { validateEngramContent } from '../lib/sanitize.js';
 
@@ -95,14 +95,14 @@ export const syncCommand = new Command('sync')
           }
           // Close DB before spawning — the child process will open its own connection
           // WAL mode ensures the child can read what we just wrote
-          closeEngramsDb(cortex);
+          closeCortexDb(cortex);
           // Use process.execPath + process.argv[1] so it works regardless of how think was invoked
           spawn(process.execPath, [process.argv[1], 'curate'], { detached: true, stdio: 'ignore' }).unref();
           return;
         }
       }
 
-      closeEngramsDb(cortex);
+      closeCortexDb(cortex);
     } else {
       // Original path — local think.db
       const tags = opts.tags ? opts.tags.split(',').map(t => t.trim()) : undefined;

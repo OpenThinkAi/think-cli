@@ -3,7 +3,7 @@ import chalk from 'chalk';
 import { getEntries, getEntriesByWeek, type Entry } from '../db/queries.js';
 import { getEngrams, type Engram } from '../db/engram-queries.js';
 import { closeDb } from '../db/client.js';
-import { closeEngramsDb } from '../db/engrams.js';
+import { closeCortexDb } from '../db/engrams.js';
 import { getConfig } from '../lib/config.js';
 import { subWeeks, startOfWeek, endOfWeek } from 'date-fns';
 
@@ -84,7 +84,7 @@ export const listCommand = new Command('list')
         console.log(chalk.dim(`\n${engrams.length} engrams`));
       }
 
-      closeEngramsDb(cortex);
+      closeCortexDb(cortex);
     } else {
       // Original path — local think.db
       let entries: Entry[];

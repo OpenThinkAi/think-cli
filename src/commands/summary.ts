@@ -4,7 +4,7 @@ import { getEntries, getEntriesByWeek, type Entry } from '../db/queries.js';
 import { getEngrams, type Engram } from '../db/engram-queries.js';
 import { generateSummary } from '../lib/claude.js';
 import { closeDb } from '../db/client.js';
-import { closeEngramsDb } from '../db/engrams.js';
+import { closeCortexDb } from '../db/engrams.js';
 import { getConfig } from '../lib/config.js';
 import { subWeeks, startOfWeek } from 'date-fns';
 
@@ -95,7 +95,7 @@ export const summaryCommand = new Command('summary')
           }
         }
       } finally {
-        closeEngramsDb(cortex);
+        closeCortexDb(cortex);
       }
     } else {
       // Original path — local think.db

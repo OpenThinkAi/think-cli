@@ -3,7 +3,7 @@ import chalk from 'chalk';
 import { subDays } from 'date-fns';
 import { getConfig } from '../lib/config.js';
 import { getEngrams } from '../db/engram-queries.js';
-import { closeEngramsDb } from '../db/engrams.js';
+import { closeCortexDb } from '../db/engrams.js';
 
 export const monitorCommand = new Command('monitor')
   .description('Show what got promoted to memory vs. dropped')
@@ -23,7 +23,7 @@ export const monitorCommand = new Command('monitor')
 
     if (engrams.length === 0) {
       console.log(chalk.dim(`No engrams in the last ${days} days.`));
-      closeEngramsDb(cortex);
+      closeCortexDb(cortex);
       return;
     }
 
@@ -50,5 +50,5 @@ export const monitorCommand = new Command('monitor')
     console.log();
     console.log(`${engrams.length} total: ${chalk.green(`${promoted} promoted`)}, ${chalk.dim(`${dropped} dropped`)}, ${chalk.yellow(`${pending} pending`)}`);
 
-    closeEngramsDb(cortex);
+    closeCortexDb(cortex);
   });
