@@ -10,16 +10,12 @@ export interface Engram {
   promoted: number | null;
   deleted_at: string | null;
   episode_key: string | null;
-  context: string | null;
-  decisions: string | null;
 }
 
 export interface InsertEngramParams {
   content: string;
   expiresInDays?: number;
   episodeKey?: string;
-  context?: string;
-  decisions?: string[];
 }
 
 export function insertEngram(cortexName: string, params: InsertEngramParams): Engram {
@@ -31,14 +27,12 @@ export function insertEngram(cortexName: string, params: InsertEngramParams): En
   const expires_at = new Date(now.getTime() + expiresInDays * 86400000).toISOString();
 
   const episodeKey = params.episodeKey ?? null;
-  const context = params.context ?? null;
-  const decisions = params.decisions?.length ? JSON.stringify(params.decisions) : null;
 
   db.prepare(
-    `INSERT INTO engrams (id, content, created_at, expires_at, episode_key, context, decisions) VALUES (?, ?, ?, ?, ?, ?, ?)`
-  ).run(id, params.content, created_at, expires_at, episodeKey, context, decisions);
+    `INSERT INTO engrams (id, content, created_at, expires_at, episode_key) VALUES (?, ?, ?, ?, ?)`
+  ).run(id, params.content, created_at, expires_at, episodeKey);
 
-  return { id, content: params.content, created_at, expires_at, evaluated_at: null, promoted: null, deleted_at: null, episode_key: episodeKey, context, decisions };
+  return { id, content: params.content, created_at, expires_at, evaluated_at: null, promoted: null, deleted_at: null, episode_key: episodeKey };
 }
 
 export function getPendingEngrams(cortexName: string): Engram[] {
