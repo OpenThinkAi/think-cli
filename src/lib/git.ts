@@ -166,6 +166,15 @@ export function migrateToBuckets(branchName: string): void {
     fs.renameSync(legacyPath, bucketPath);
     runGit(['add', '-A']);
     runGit(['commit', '-m', 'migrate: memories.jsonl -> 000001.jsonl']);
-    runGit(['push', 'origin', branchName]);
+
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      try {
+        runGit(['push', 'origin', branchName]);
+        return;
+      } catch {
+        if (attempt === 3) throw new Error('Migration push failed after 3 attempts');
+        runGit(['pull', '--rebase', 'origin', branchName]);
+      }
+    }
   }
 }
