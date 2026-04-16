@@ -2,23 +2,21 @@ import { Command } from 'commander';
 import readline from 'node:readline';
 import chalk from 'chalk';
 import { getConfig } from '../lib/config.js';
-import { ensureRepoCloned, fetchBranch, readFileFromBranch, appendAndCommit } from '../lib/git.js';
 import { getPendingEngrams, markEvaluated, pruneExpiredEngrams } from '../db/engram-queries.js';
+import { getMemories, getLongtermSummary, setLongtermSummary, insertMemory } from '../db/memory-queries.js';
 import { closeEngramsDb } from '../db/engrams.js';
 import {
   readCuratorMd,
-  readLongtermSummary,
-  writeLongtermSummary,
   assembleCurationPrompt,
-  parseMemoriesJsonl,
   filterRecentMemories,
   runCuration,
   runConsolidation,
 } from '../lib/curator.js';
+import type { MemoryEntry } from '../lib/curator.js';
 
 export const curateCommand = new Command('curate')
-  .description('Run curation: evaluate pending engrams and append memories to the cortex branch')
-  .option('--dry-run', 'Preview what would be committed without pushing')
+  .description('Run curation: evaluate pending engrams and promote to memories')
+  .option('--dry-run', 'Preview what would be committed without saving')
   .option('--consolidate', 'Run long-term memory consolidation only (no curation)')
   .action(async (opts: { dryRun?: boolean; consolidate?: boolean }) => {
     const config = getConfig();
@@ -29,24 +27,20 @@ export const curateCommand = new Command('curate')
       process.exit(1);
     }
 
-    if (!config.cortex?.repo) {
-      console.error(chalk.red('No cortex repo configured. Run: think cortex setup'));
-      process.exit(1);
-    }
+    const author = config.cortex!.author;
 
-    const author = config.cortex.author;
+    // 1. Read all memories from local SQLite and split into recent vs older
+    const allMemories = getMemories(cortex);
+    const memoryEntries: MemoryEntry[] = allMemories.map(m => ({
+      ts: m.ts,
+      author: m.author,
+      content: m.content,
+      source_ids: JSON.parse(m.source_ids),
+    }));
+    const { recent, older } = filterRecentMemories(memoryEntries);
 
-    // 1. Ensure repo is cloned and fetch latest
-    ensureRepoCloned();
-    fetchBranch(cortex);
-
-    // 2. Read all memories from branch and split into recent vs older
-    const memoriesRaw = readFileFromBranch(cortex, 'memories.jsonl') ?? '';
-    const allMemories = parseMemoriesJsonl(memoriesRaw);
-    const { recent, older } = filterRecentMemories(allMemories);
-
-    // 3. Read existing long-term summary
-    const longtermSummary = readLongtermSummary(cortex);
+    // 2. Read existing long-term summary from local SQLite
+    const longtermSummary = getLongtermSummary(cortex);
 
     // Handle --consolidate: just run long-term memory consolidation
     if (opts.consolidate) {
@@ -65,7 +59,7 @@ export const curateCommand = new Command('curate')
           console.log(newSummary);
           return;
         }
-        writeLongtermSummary(cortex, newSummary);
+        setLongtermSummary(cortex, newSummary);
         console.log(chalk.green('✓') + ` Long-term summary updated (${older.length} memories consolidated)`);
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
@@ -75,7 +69,7 @@ export const curateCommand = new Command('curate')
       return;
     }
 
-    // 4. Read pending engrams
+    // 3. Read pending engrams
     const pending = getPendingEngrams(cortex);
     if (pending.length === 0) {
       console.log(chalk.dim('No pending engrams to evaluate.'));
@@ -85,10 +79,10 @@ export const curateCommand = new Command('curate')
 
     console.log(chalk.cyan(`Evaluating ${pending.length} engrams (${recent.length} recent memories, long-term summary ${longtermSummary ? 'loaded' : 'absent'})...`));
 
-    // 5. Read curator.md
+    // 4. Read curator.md
     const curatorMd = readCuratorMd();
 
-    // 6. Assemble and run curation prompt (recent memories + longterm summary, not all memories)
+    // 5. Assemble and run curation prompt
     const curationPrompt = assembleCurationPrompt({
       recentMemories: recent,
       longtermSummary,
@@ -116,7 +110,7 @@ export const curateCommand = new Command('curate')
       if (!entry.ts) entry.ts = new Date().toISOString();
     }
 
-    // 7. Identify promoted and dropped engram IDs
+    // 6. Identify promoted and dropped engram IDs
     const promotedIds = new Set<string>();
     for (const entry of newEntries) {
       for (const id of entry.source_ids) {
@@ -128,7 +122,7 @@ export const curateCommand = new Command('curate')
       .filter(e => !promotedIds.has(e.id))
       .map(e => e.id);
 
-    // 8. Dry run — show preview and exit
+    // 7. Dry run — show preview and exit
     if (opts.dryRun) {
       console.log();
       if (newEntries.length === 0) {
@@ -145,7 +139,7 @@ export const curateCommand = new Command('curate')
       return;
     }
 
-    // 9. Confirm before commit (if configured)
+    // 8. Confirm before commit (if configured)
     if (config.cortex?.confirmBeforeCommit && newEntries.length > 0) {
       console.log();
       console.log(chalk.cyan('Proposed memories:'));
@@ -156,7 +150,7 @@ export const curateCommand = new Command('curate')
 
       const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
       const answer = await new Promise<string>((resolve) => {
-        rl.question('  Commit these memories? [Y/n/edit] ', (ans) => {
+        rl.question('  Save these memories? [Y/n/edit] ', (ans) => {
           rl.close();
           resolve(ans.trim().toLowerCase());
         });
@@ -184,22 +178,19 @@ export const curateCommand = new Command('curate')
       }
     }
 
-    // 10. Append to memories.jsonl and push
+    // 9. Write memories to local SQLite
     if (newEntries.length > 0) {
-      const newLines = newEntries.map(e => JSON.stringify(e));
-      const commitMsg = `curate: ${author}, ${pending.length} engrams, ${newEntries.length} memories`;
-
-      try {
-        appendAndCommit(cortex, newLines, commitMsg);
-      } catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
-        console.error(chalk.red(`Failed to push memories: ${message}`));
-        closeEngramsDb(cortex);
-        process.exit(1);
+      for (const entry of newEntries) {
+        insertMemory(cortex, {
+          ts: entry.ts,
+          author: entry.author,
+          content: entry.content,
+          source_ids: entry.source_ids,
+        });
       }
     }
 
-    // 11. Mark engrams as evaluated
+    // 10. Mark engrams as evaluated
     if (promotedIds.size > 0) {
       markEvaluated(cortex, [...promotedIds], true);
     }
@@ -207,22 +198,22 @@ export const curateCommand = new Command('curate')
       markEvaluated(cortex, droppedIds, false);
     }
 
-    // 12. Prune expired engrams
+    // 11. Prune expired engrams
     const pruned = pruneExpiredEngrams(cortex);
 
-    // 13. Auto-consolidate if there are older memories and no long-term summary yet (or it's stale)
+    // 12. Auto-consolidate if there are older memories and no long-term summary yet
     if (older.length > 0 && !longtermSummary) {
       console.log(chalk.dim(`  Consolidating ${older.length} older memories into long-term summary...`));
       try {
         const newSummary = await runConsolidation(null, older);
-        writeLongtermSummary(cortex, newSummary);
+        setLongtermSummary(cortex, newSummary);
         console.log(chalk.dim(`  Long-term summary created`));
       } catch {
         console.log(chalk.dim(`  Long-term consolidation skipped (will retry next run)`));
       }
     }
 
-    // 14. Report
+    // 13. Report
     console.log();
     console.log(`${chalk.green('✓')} Curation complete`);
     console.log(`  ${pending.length} evaluated, ${newEntries.length} promoted, ${droppedIds.length} dropped`);
