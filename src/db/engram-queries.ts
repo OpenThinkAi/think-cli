@@ -9,11 +9,13 @@ export interface Engram {
   evaluated_at: string | null;
   promoted: number | null;
   deleted_at: string | null;
+  episode_key: string | null;
 }
 
 export interface InsertEngramParams {
   content: string;
   expiresInDays?: number;
+  episodeKey?: string;
 }
 
 export function insertEngram(cortexName: string, params: InsertEngramParams): Engram {
@@ -24,18 +26,27 @@ export function insertEngram(cortexName: string, params: InsertEngramParams): En
   const expiresInDays = params.expiresInDays ?? 60;
   const expires_at = new Date(now.getTime() + expiresInDays * 86400000).toISOString();
 
-  db.prepare(
-    `INSERT INTO engrams (id, content, created_at, expires_at) VALUES (?, ?, ?, ?)`
-  ).run(id, params.content, created_at, expires_at);
+  const episodeKey = params.episodeKey ?? null;
 
-  return { id, content: params.content, created_at, expires_at, evaluated_at: null, promoted: null, deleted_at: null };
+  db.prepare(
+    `INSERT INTO engrams (id, content, created_at, expires_at, episode_key) VALUES (?, ?, ?, ?, ?)`
+  ).run(id, params.content, created_at, expires_at, episodeKey);
+
+  return { id, content: params.content, created_at, expires_at, evaluated_at: null, promoted: null, deleted_at: null, episode_key: episodeKey };
 }
 
 export function getPendingEngrams(cortexName: string): Engram[] {
   const db = getEngramsDb(cortexName);
   return db.prepare(
-    `SELECT * FROM engrams WHERE evaluated_at IS NULL AND deleted_at IS NULL AND expires_at > ? ORDER BY created_at ASC`
+    `SELECT * FROM engrams WHERE evaluated_at IS NULL AND deleted_at IS NULL AND episode_key IS NULL AND expires_at > ? ORDER BY created_at ASC`
   ).all(new Date().toISOString()) as unknown as Engram[];
+}
+
+export function getPendingEpisodeEngrams(cortexName: string, episodeKey: string): Engram[] {
+  const db = getEngramsDb(cortexName);
+  return db.prepare(
+    `SELECT * FROM engrams WHERE episode_key = ? AND evaluated_at IS NULL AND deleted_at IS NULL ORDER BY created_at ASC`
+  ).all(episodeKey) as unknown as Engram[];
 }
 
 export function getEngrams(cortexName: string, params: { since?: Date; until?: Date; limit?: number }): Engram[] {
