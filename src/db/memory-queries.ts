@@ -21,36 +21,20 @@ export interface InsertMemoryParams {
   deleted_at?: string | null;
 }
 
-export function getNextSyncVersion(cortexName: string): number {
-  const db = getEngramsDb(cortexName);
-  const row = db.prepare(
-    'SELECT COALESCE(MAX(sync_version), 0) + 1 as next_version FROM memories'
-  ).get() as { next_version: number };
-  return row.next_version;
-}
-
 export function insertMemory(cortexName: string, params: InsertMemoryParams): MemoryRow {
   const db = getEngramsDb(cortexName);
   const id = params.id ?? uuidv7();
   const now = new Date().toISOString();
   const sourceIds = JSON.stringify(params.source_ids ?? []);
-  const syncVersion = getNextSyncVersion(cortexName);
 
+  // Atomic sync_version assignment via subquery — no race between read and write
   db.prepare(
     `INSERT INTO memories (id, ts, author, content, source_ids, created_at, deleted_at, sync_version)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
-  ).run(id, params.ts, params.author, params.content, sourceIds, now, params.deleted_at ?? null, syncVersion);
+     VALUES (?, ?, ?, ?, ?, ?, ?, (SELECT COALESCE(MAX(sync_version), 0) + 1 FROM memories))`
+  ).run(id, params.ts, params.author, params.content, sourceIds, now, params.deleted_at ?? null);
 
-  return {
-    id,
-    ts: params.ts,
-    author: params.author,
-    content: params.content,
-    source_ids: sourceIds,
-    created_at: now,
-    deleted_at: params.deleted_at ?? null,
-    sync_version: syncVersion,
-  };
+  const row = db.prepare('SELECT * FROM memories WHERE id = ?').get(id) as unknown as MemoryRow;
+  return row;
 }
 
 export function insertMemoryIfNotExists(cortexName: string, params: InsertMemoryParams & { id: string }): boolean {
@@ -82,11 +66,16 @@ export function getMemories(cortexName: string, params: {
   }
 
   const where = `WHERE ${conditions.join(' AND ')}`;
-  const limit = params.limit ?? 10000;
-  values.push(limit);
+
+  if (params.limit) {
+    values.push(params.limit);
+    return db.prepare(
+      `SELECT * FROM memories ${where} ORDER BY ts ASC LIMIT ?`
+    ).all(...values) as unknown as MemoryRow[];
+  }
 
   return db.prepare(
-    `SELECT * FROM memories ${where} ORDER BY ts ASC LIMIT ?`
+    `SELECT * FROM memories ${where} ORDER BY ts ASC`
   ).all(...values) as unknown as MemoryRow[];
 }
 
@@ -115,10 +104,11 @@ export function searchMemories(cortexName: string, query: string, limit: number 
 
 export function tombstoneMemory(cortexName: string, id: string): void {
   const db = getEngramsDb(cortexName);
-  const syncVersion = getNextSyncVersion(cortexName);
+  // Atomic sync_version assignment via subquery
   db.prepare(
-    'UPDATE memories SET deleted_at = ?, sync_version = ? WHERE id = ? AND deleted_at IS NULL'
-  ).run(new Date().toISOString(), syncVersion, id);
+    `UPDATE memories SET deleted_at = ?, sync_version = (SELECT COALESCE(MAX(sync_version), 0) + 1 FROM memories)
+     WHERE id = ? AND deleted_at IS NULL`
+  ).run(new Date().toISOString(), id);
 }
 
 export function getLongtermSummary(cortexName: string): string | null {
@@ -129,12 +119,12 @@ export function getLongtermSummary(cortexName: string): string | null {
 
 export function setLongtermSummary(cortexName: string, content: string): void {
   const db = getEngramsDb(cortexName);
-  const syncVersion = getNextSyncVersion(cortexName);
+  // Atomic sync_version via subquery
   db.prepare(
     `INSERT INTO longterm_summary (id, content, updated_at, sync_version)
-     VALUES (1, ?, ?, ?)
+     VALUES (1, ?, ?, (SELECT COALESCE(MAX(sync_version), 0) + 1 FROM memories))
      ON CONFLICT(id) DO UPDATE SET content = excluded.content, updated_at = excluded.updated_at, sync_version = excluded.sync_version`
-  ).run(content, new Date().toISOString(), syncVersion);
+  ).run(content, new Date().toISOString());
 }
 
 export function getSyncCursor(cortexName: string, backend: string, direction: string): string | null {

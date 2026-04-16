@@ -1,7 +1,5 @@
 import { Command } from 'commander';
 import fs from 'node:fs';
-import crypto from 'node:crypto';
-import { v5 as uuidv5 } from 'uuid';
 import chalk from 'chalk';
 import { getConfig } from '../lib/config.js';
 import { ensureRepoCloned, fetchBranch, readFileFromBranch } from '../lib/git.js';
@@ -9,14 +7,7 @@ import { parseMemoriesJsonl } from '../lib/curator.js';
 import { insertMemoryIfNotExists, setLongtermSummary, getMemoryCount } from '../db/memory-queries.js';
 import { closeEngramsDb } from '../db/engrams.js';
 import { getLongtermPath } from '../lib/paths.js';
-
-// Stable namespace for deterministic ID generation
-const THINK_UUID_NAMESPACE = '6ba7b810-9dad-11d1-80b4-00c04fd430c8';
-
-function deterministicId(ts: string, author: string, content: string): string {
-  const hash = crypto.createHash('sha256').update(`${ts}|${author}|${content}`).digest('hex');
-  return uuidv5(hash, THINK_UUID_NAMESPACE);
-}
+import { deterministicId } from '../lib/deterministic-id.js';
 
 export const migrateDataCommand = new Command('migrate-data')
   .description('Import existing memories from git into local SQLite (one-time migration)')
