@@ -1,6 +1,6 @@
 import fs from 'node:fs';
 import { query } from '@anthropic-ai/claude-agent-sdk';
-import { getCuratorMdPath, getLongtermPath, ensureThinkDirs } from './paths.js';
+import { getCuratorMdPath } from './paths.js';
 import { wrapData } from './sanitize.js';
 import type { Engram } from '../db/engram-queries.js';
 
@@ -78,20 +78,6 @@ export function readCuratorMd(): string | null {
     return fs.readFileSync(mdPath, 'utf-8').trim();
   }
   return null;
-}
-
-export function readLongtermSummary(cortexName: string): string | null {
-  const ltPath = getLongtermPath(cortexName);
-  if (fs.existsSync(ltPath)) {
-    return fs.readFileSync(ltPath, 'utf-8').trim();
-  }
-  return null;
-}
-
-export function writeLongtermSummary(cortexName: string, summary: string): void {
-  ensureThinkDirs();
-  const ltPath = getLongtermPath(cortexName);
-  fs.writeFileSync(ltPath, summary, 'utf-8');
 }
 
 export function filterRecentMemories(memories: MemoryEntry[], windowDays: number = 14): {

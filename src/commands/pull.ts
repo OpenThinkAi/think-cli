@@ -1,39 +1,29 @@
 import { Command } from 'commander';
 import chalk from 'chalk';
-import { getConfig } from '../lib/config.js';
-import { ensureRepoCloned, fetchBranch, readFileFromBranch, branchExists } from '../lib/git.js';
-import { parseMemoriesJsonl } from '../lib/curator.js';
+import { getMemories, getMemoryCount } from '../db/memory-queries.js';
+import { closeEngramsDb } from '../db/engrams.js';
 
 export const pullCommand = new Command('pull')
-  .argument('<cortex>', 'Cortex branch to pull memories from')
-  .description("Pull another cortex's memories (read-only)")
+  .argument('<cortex>', 'Cortex to read memories from')
+  .description("Read another cortex's memories from local store")
   .option('--days <n>', 'Days of memories to include', '14')
   .action(async (cortex: string, opts: { days: string }) => {
-    const config = getConfig();
+    const count = getMemoryCount(cortex);
 
-    if (!config.cortex?.repo) {
-      console.error(chalk.red('No cortex repo configured. Run: think cortex setup'));
-      process.exit(1);
+    if (count === 0) {
+      console.log(chalk.dim(`No local memories for cortex '${cortex}'.`));
+      console.log(chalk.dim('Run: think cortex pull  (to sync from remote first)'));
+      closeEngramsDb(cortex);
+      return;
     }
-
-    ensureRepoCloned();
-
-    if (!branchExists(cortex)) {
-      console.error(chalk.red(`Cortex '${cortex}' does not exist.`));
-      process.exit(1);
-    }
-
-    fetchBranch(cortex);
-
-    const memoriesRaw = readFileFromBranch(cortex, 'memories.jsonl') ?? '';
-    const allMemories = parseMemoriesJsonl(memoriesRaw);
 
     const days = parseInt(opts.days, 10);
     const cutoff = new Date(Date.now() - days * 86400000).toISOString();
-    const recentMemories = allMemories.filter(m => m.ts >= cutoff);
+    const recentMemories = getMemories(cortex, { since: cutoff });
 
     if (recentMemories.length === 0) {
       console.log(chalk.dim(`No memories in ${cortex} from the last ${days} days.`));
+      closeEngramsDb(cortex);
       return;
     }
 
@@ -43,4 +33,6 @@ export const pullCommand = new Command('pull')
       console.log(`  ${chalk.gray(ts)} ${chalk.dim(m.author + ':')} ${m.content}`);
     }
     console.log(chalk.dim(`\n${recentMemories.length} memories`));
+
+    closeEngramsDb(cortex);
   });
