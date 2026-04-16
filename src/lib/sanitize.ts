@@ -10,7 +10,6 @@ const SUSPICIOUS_PATTERNS = [
   /disregard\s+(all\s+)?(previous|above|prior)/i,
   /forget\s+(all\s+)?(previous|above|prior)\s+(instructions|rules)/i,
   /\bdo\s+not\s+evaluate\b/i,
-  /\brespond\s+only\s+with\b/i,
 ];
 
 export function validateEngramContent(content: string): {
@@ -35,5 +34,7 @@ export function validateEngramContent(content: string): {
 }
 
 export function wrapData(label: string, content: string): string {
-  return `<data source="${label}">\n${content}\n</data>`;
+  // Escape closing tags in content to prevent delimiter breakout
+  const escaped = content.replace(/<\/data/gi, '&lt;/data');
+  return `<data source="${label}">\n${escaped}\n</data>`;
 }
