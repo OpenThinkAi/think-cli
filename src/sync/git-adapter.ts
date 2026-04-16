@@ -1,5 +1,3 @@
-import crypto from 'node:crypto';
-import { v5 as uuidv5 } from 'uuid';
 import {
   ensureRepoCloned,
   fetchBranch,
@@ -17,14 +15,8 @@ import {
   setSyncCursor,
 } from '../db/memory-queries.js';
 import { getConfig } from '../lib/config.js';
+import { deterministicId } from '../lib/deterministic-id.js';
 import type { SyncAdapter, SyncResult } from './types.js';
-
-const THINK_UUID_NAMESPACE = '6ba7b810-9dad-11d1-80b4-00c04fd430c8';
-
-function deterministicId(ts: string, author: string, content: string): string {
-  const hash = crypto.createHash('sha256').update(`${ts}|${author}|${content}`).digest('hex');
-  return uuidv5(hash, THINK_UUID_NAMESPACE);
-}
 
 export class GitSyncAdapter implements SyncAdapter {
   readonly name = 'git';
@@ -57,14 +49,20 @@ export class GitSyncAdapter implements SyncAdapter {
 
     const config = getConfig();
     const commitMsg = `curate: ${config.cortex?.author ?? 'unknown'}, ${newMemories.length} memories`;
+    const maxVersion = Math.max(...newMemories.map(m => m.sync_version));
+
+    // Update cursor optimistically — if push fails, restore the old cursor.
+    // If the process dies between push and cursor restore, the next push
+    // re-sends the same memories, but pull uses INSERT OR IGNORE with
+    // deterministic IDs so duplicates in JSONL are harmless.
+    setSyncCursor(cortex, 'git', 'push', String(maxVersion));
 
     try {
       appendAndCommit(cortex, newLines, commitMsg);
-      // Update cursor to the highest sync_version we just pushed
-      const maxVersion = Math.max(...newMemories.map(m => m.sync_version));
-      setSyncCursor(cortex, 'git', 'push', String(maxVersion));
       result.pushed = newMemories.length;
     } catch (err) {
+      // Restore cursor on failure so we retry next time
+      setSyncCursor(cortex, 'git', 'push', String(lastVersion));
       result.errors.push(err instanceof Error ? err.message : String(err));
     }
 

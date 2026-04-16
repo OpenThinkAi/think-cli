@@ -43,7 +43,7 @@ const migrations: Migration[] = [
     version: 2,
     up: (db) => {
       db.exec(`
-        CREATE TABLE memories (
+        CREATE TABLE IF NOT EXISTS memories (
           id TEXT PRIMARY KEY NOT NULL,
           ts TEXT NOT NULL,
           author TEXT NOT NULL,
@@ -55,28 +55,28 @@ const migrations: Migration[] = [
         ) STRICT;
       `);
 
-      db.exec('CREATE INDEX idx_memories_ts ON memories(ts);');
-      db.exec('CREATE INDEX idx_memories_sync_version ON memories(sync_version);');
+      db.exec('CREATE INDEX IF NOT EXISTS idx_memories_ts ON memories(ts);');
+      db.exec('CREATE INDEX IF NOT EXISTS idx_memories_sync_version ON memories(sync_version);');
 
       db.exec(`
-        CREATE VIRTUAL TABLE memories_fts
+        CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts
           USING fts5(content, content='memories', content_rowid='rowid');
       `);
 
       db.exec(`
-        CREATE TRIGGER memories_ai AFTER INSERT ON memories BEGIN
+        CREATE TRIGGER IF NOT EXISTS memories_ai AFTER INSERT ON memories BEGIN
           INSERT INTO memories_fts(rowid, content) VALUES (new.rowid, new.content);
         END;
       `);
 
       db.exec(`
-        CREATE TRIGGER memories_ad AFTER DELETE ON memories BEGIN
+        CREATE TRIGGER IF NOT EXISTS memories_ad AFTER DELETE ON memories BEGIN
           INSERT INTO memories_fts(memories_fts, rowid, content) VALUES ('delete', old.rowid, old.content);
         END;
       `);
 
       db.exec(`
-        CREATE TABLE longterm_summary (
+        CREATE TABLE IF NOT EXISTS longterm_summary (
           id INTEGER PRIMARY KEY CHECK (id = 1),
           content TEXT NOT NULL,
           updated_at TEXT NOT NULL,
@@ -85,7 +85,7 @@ const migrations: Migration[] = [
       `);
 
       db.exec(`
-        CREATE TABLE sync_cursors (
+        CREATE TABLE IF NOT EXISTS sync_cursors (
           backend TEXT NOT NULL,
           direction TEXT NOT NULL,
           cursor_value TEXT NOT NULL,
