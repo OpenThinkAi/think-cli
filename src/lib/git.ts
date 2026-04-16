@@ -172,7 +172,11 @@ export function migrateToBuckets(branchName: string): void {
         runGit(['push', 'origin', branchName]);
         return;
       } catch {
-        if (attempt === 3) throw new Error('Migration push failed after 3 attempts');
+        if (attempt === 3) {
+          // Rollback local commit to avoid diverged state
+          try { runGit(['reset', 'HEAD~1']); } catch { /* best effort */ }
+          throw new Error('Migration push failed after 3 attempts — local commit rolled back');
+        }
         runGit(['pull', '--rebase', 'origin', branchName]);
       }
     }
