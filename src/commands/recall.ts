@@ -3,7 +3,7 @@ import chalk from 'chalk';
 import { getConfig } from '../lib/config.js';
 import { searchEngrams } from '../db/engram-queries.js';
 import { getMemories, getLongtermSummary } from '../db/memory-queries.js';
-import { closeEngramsDb } from '../db/engrams.js';
+import { closeCortexDb } from '../db/engrams.js';
 
 export const recallCommand = new Command('recall')
   .argument('<query>', 'What to recall')
@@ -61,5 +61,5 @@ export const recallCommand = new Command('recall')
       console.log(chalk.dim('No results found.'));
     }
 
-    closeEngramsDb(cortex);
+    closeCortexDb(cortex);
   });

@@ -5,7 +5,7 @@ import { getConfig } from '../lib/config.js';
 import { ensureRepoCloned, fetchBranch, readFileFromBranch } from '../lib/git.js';
 import { parseMemoriesJsonl } from '../lib/curator.js';
 import { insertMemoryIfNotExists, setLongtermSummary, getMemoryCount } from '../db/memory-queries.js';
-import { closeEngramsDb } from '../db/engrams.js';
+import { closeCortexDb } from '../db/engrams.js';
 import { getLongtermPath } from '../lib/paths.js';
 import { deterministicId } from '../lib/deterministic-id.js';
 
@@ -37,7 +37,7 @@ export const migrateDataCommand = new Command('migrate-data')
 
     if (memories.length === 0) {
       console.log(chalk.dim('No memories found on git branch.'));
-      closeEngramsDb(cortex);
+      closeCortexDb(cortex);
       return;
     }
 
@@ -75,5 +75,5 @@ export const migrateDataCommand = new Command('migrate-data')
       console.log(chalk.dim(`  (${beforeCount} already existed from prior migration)`));
     }
 
-    closeEngramsDb(cortex);
+    closeCortexDb(cortex);
   });

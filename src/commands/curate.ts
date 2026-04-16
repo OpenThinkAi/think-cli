@@ -4,7 +4,7 @@ import chalk from 'chalk';
 import { getConfig } from '../lib/config.js';
 import { getPendingEngrams, getPendingEpisodeEngrams, markEvaluated, pruneExpiredEngrams } from '../db/engram-queries.js';
 import { getMemories, getLongtermSummary, setLongtermSummary, insertMemory, getMemoryByEpisodeKey, tombstoneMemory } from '../db/memory-queries.js';
-import { closeEngramsDb } from '../db/engrams.js';
+import { closeCortexDb } from '../db/engrams.js';
 import {
   readCuratorMd,
   assembleCurationPrompt,
@@ -51,7 +51,7 @@ export const curateCommand = new Command('curate')
       const episodeEngrams = getPendingEpisodeEngrams(cortex, opts.episode);
       if (episodeEngrams.length === 0) {
         console.log(chalk.dim(`No pending engrams for episode: ${opts.episode}`));
-        closeEngramsDb(cortex);
+        closeCortexDb(cortex);
         return;
       }
 
@@ -81,7 +81,7 @@ export const curateCommand = new Command('curate')
           const ts = e.created_at.slice(0, 16).replace('T', ' ');
           console.log(chalk.dim(`  ${ts}: ${e.content.slice(0, 100)}${e.content.length > 100 ? '...' : ''}`));
         }
-        closeEngramsDb(cortex);
+        closeCortexDb(cortex);
         return;
       }
 
@@ -91,7 +91,7 @@ export const curateCommand = new Command('curate')
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         console.error(chalk.red(`Episode curation failed: ${message}`));
-        closeEngramsDb(cortex);
+        closeCortexDb(cortex);
         process.exit(1);
       }
 
@@ -133,7 +133,7 @@ export const curateCommand = new Command('curate')
       console.log();
       console.log(`${chalk.green('✓')} Episode curated: ${opts.episode}`);
       console.log(`  ${episodeEngrams.length} engrams synthesized into narrative`);
-      closeEngramsDb(cortex);
+      closeCortexDb(cortex);
       return;
     }
 
@@ -181,7 +181,7 @@ export const curateCommand = new Command('curate')
     const pending = getPendingEngrams(cortex);
     if (pending.length === 0) {
       console.log(chalk.dim('No pending engrams to evaluate.'));
-      closeEngramsDb(cortex);
+      closeCortexDb(cortex);
       return;
     }
 
@@ -208,7 +208,7 @@ export const curateCommand = new Command('curate')
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       console.error(chalk.red(`Curation failed: ${message}`));
-      closeEngramsDb(cortex);
+      closeCortexDb(cortex);
       process.exit(1);
     }
 
@@ -243,7 +243,7 @@ export const curateCommand = new Command('curate')
       }
       console.log();
       console.log(`${pending.length} evaluated, ${newEntries.length} would promote, ${droppedIds.length} would drop`);
-      closeEngramsDb(cortex);
+      closeCortexDb(cortex);
       return;
     }
 
@@ -266,7 +266,7 @@ export const curateCommand = new Command('curate')
 
       if (answer === 'n' || answer === 'no') {
         console.log(chalk.dim('  Aborted. Engrams left as pending.'));
-        closeEngramsDb(cortex);
+        closeCortexDb(cortex);
         return;
       }
 
@@ -341,5 +341,5 @@ export const curateCommand = new Command('curate')
       console.log(`  ${pruned} expired engrams pruned`);
     }
 
-    closeEngramsDb(cortex);
+    closeCortexDb(cortex);
   });

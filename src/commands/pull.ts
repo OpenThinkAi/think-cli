@@ -1,7 +1,7 @@
 import { Command } from 'commander';
 import chalk from 'chalk';
 import { getMemories, getMemoryCount } from '../db/memory-queries.js';
-import { closeEngramsDb } from '../db/engrams.js';
+import { closeCortexDb } from '../db/engrams.js';
 
 export const pullCommand = new Command('pull')
   .argument('<cortex>', 'Cortex to read memories from')
@@ -13,7 +13,7 @@ export const pullCommand = new Command('pull')
     if (count === 0) {
       console.log(chalk.dim(`No local memories for cortex '${cortex}'.`));
       console.log(chalk.dim('Run: think cortex pull  (to sync from remote first)'));
-      closeEngramsDb(cortex);
+      closeCortexDb(cortex);
       return;
     }
 
@@ -23,7 +23,7 @@ export const pullCommand = new Command('pull')
 
     if (recentMemories.length === 0) {
       console.log(chalk.dim(`No memories in ${cortex} from the last ${days} days.`));
-      closeEngramsDb(cortex);
+      closeCortexDb(cortex);
       return;
     }
 
@@ -34,5 +34,5 @@ export const pullCommand = new Command('pull')
     }
     console.log(chalk.dim(`\n${recentMemories.length} memories`));
 
-    closeEngramsDb(cortex);
+    closeCortexDb(cortex);
   });

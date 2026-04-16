@@ -3,7 +3,7 @@ import { Command } from 'commander';
 import chalk from 'chalk';
 import readline from 'node:readline';
 import { getConfig, saveConfig } from '../lib/config.js';
-import { getEngramsDb, closeEngramsDb } from '../db/engrams.js';
+import { getCortexDb, closeCortexDb } from '../db/engrams.js';
 import { getMemoryCount, getSyncCursor } from '../db/memory-queries.js';
 import { getEngramsDir } from '../lib/paths.js';
 import { getSyncAdapter } from '../sync/registry.js';
@@ -86,8 +86,8 @@ cortexCommand.addCommand(new Command('create')
     }
 
     // Initialize the local engram DB for this cortex (also creates memories table via migrations)
-    getEngramsDb(name);
-    closeEngramsDb(name);
+    getCortexDb(name);
+    closeCortexDb(name);
 
     // Create on remote if sync adapter is available
     const adapter = getSyncAdapter();
@@ -139,7 +139,7 @@ cortexCommand.addCommand(new Command('list')
       const count = getMemoryCount(name);
       const countLabel = count > 0 ? chalk.dim(` (${count} memories)`) : '';
       console.log(`${marker}${name}${countLabel}`);
-      closeEngramsDb(name);
+      closeCortexDb(name);
     }
 
     // Show remote cortexes if adapter is available
@@ -240,7 +240,7 @@ cortexCommand.addCommand(new Command('push')
     }
 
     console.log(chalk.green('✓') + ` Pushed ${result.pushed} memories`);
-    closeEngramsDb(cortex);
+    closeCortexDb(cortex);
   }));
 
 // think cortex pull
@@ -271,7 +271,7 @@ cortexCommand.addCommand(new Command('pull')
     }
 
     console.log(chalk.green('✓') + ` Pulled ${result.pulled} new memories`);
-    closeEngramsDb(cortex);
+    closeCortexDb(cortex);
   }));
 
 // think cortex sync
@@ -302,7 +302,7 @@ cortexCommand.addCommand(new Command('sync')
     }
 
     console.log(chalk.green('✓') + ` Pulled ${result.pulled}, pushed ${result.pushed}`);
-    closeEngramsDb(cortex);
+    closeCortexDb(cortex);
   }));
 
 // think cortex status
@@ -330,5 +330,5 @@ cortexCommand.addCommand(new Command('status')
       console.log(`Last push cursor: ${pushCursor ?? chalk.dim('(never synced)')}`);
     }
 
-    closeEngramsDb(cortex);
+    closeCortexDb(cortex);
   }));

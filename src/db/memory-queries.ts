@@ -1,5 +1,5 @@
 import { v7 as uuidv7 } from 'uuid';
-import { getEngramsDb } from './engrams.js';
+import { getCortexDb } from './engrams.js';
 
 export interface MemoryRow {
   id: string;
@@ -24,7 +24,7 @@ export interface InsertMemoryParams {
 }
 
 export function insertMemory(cortexName: string, params: InsertMemoryParams): MemoryRow {
-  const db = getEngramsDb(cortexName);
+  const db = getCortexDb(cortexName);
   const id = params.id ?? uuidv7();
   const now = new Date().toISOString();
   const sourceIds = JSON.stringify(params.source_ids ?? []);
@@ -42,7 +42,7 @@ export function insertMemory(cortexName: string, params: InsertMemoryParams): Me
 }
 
 export function insertMemoryIfNotExists(cortexName: string, params: InsertMemoryParams & { id: string }): boolean {
-  const db = getEngramsDb(cortexName);
+  const db = getCortexDb(cortexName);
   const existing = db.prepare('SELECT id FROM memories WHERE id = ?').get(params.id);
   if (existing) return false;
 
@@ -55,7 +55,7 @@ export function getMemories(cortexName: string, params: {
   until?: string;
   limit?: number;
 } = {}): MemoryRow[] {
-  const db = getEngramsDb(cortexName);
+  const db = getCortexDb(cortexName);
   const conditions = ['deleted_at IS NULL'];
   const values: (string | number)[] = [];
 
@@ -84,14 +84,14 @@ export function getMemories(cortexName: string, params: {
 }
 
 export function getMemoriesBySyncVersion(cortexName: string, sinceVersion: number): MemoryRow[] {
-  const db = getEngramsDb(cortexName);
+  const db = getCortexDb(cortexName);
   return db.prepare(
     'SELECT * FROM memories WHERE sync_version > ? ORDER BY sync_version ASC'
   ).all(sinceVersion) as unknown as MemoryRow[];
 }
 
 export function searchMemories(cortexName: string, query: string, limit: number = 20): MemoryRow[] {
-  const db = getEngramsDb(cortexName);
+  const db = getCortexDb(cortexName);
   try {
     return db.prepare(
       `SELECT m.* FROM memories m JOIN memories_fts f ON m.rowid = f.rowid
@@ -107,8 +107,9 @@ export function searchMemories(cortexName: string, query: string, limit: number 
 }
 
 export function tombstoneMemory(cortexName: string, id: string): void {
-  const db = getEngramsDb(cortexName);
-  // Atomic sync_version assignment via subquery
+  const db = getCortexDb(cortexName);
+  // Only sets deleted_at + sync_version — ts, author, content are preserved
+  // so deterministicId matches during sync (tombstone line keeps original content)
   db.prepare(
     `UPDATE memories SET deleted_at = ?, sync_version = (SELECT COALESCE(MAX(sync_version), 0) + 1 FROM memories)
      WHERE id = ? AND deleted_at IS NULL`
@@ -116,13 +117,13 @@ export function tombstoneMemory(cortexName: string, id: string): void {
 }
 
 export function getLongtermSummary(cortexName: string): string | null {
-  const db = getEngramsDb(cortexName);
+  const db = getCortexDb(cortexName);
   const row = db.prepare('SELECT content FROM longterm_summary WHERE id = 1').get() as { content: string } | undefined;
   return row?.content ?? null;
 }
 
 export function setLongtermSummary(cortexName: string, content: string): void {
-  const db = getEngramsDb(cortexName);
+  const db = getCortexDb(cortexName);
   // Atomic sync_version via subquery
   db.prepare(
     `INSERT INTO longterm_summary (id, content, updated_at, sync_version)
@@ -132,7 +133,7 @@ export function setLongtermSummary(cortexName: string, content: string): void {
 }
 
 export function getSyncCursor(cortexName: string, backend: string, direction: string): string | null {
-  const db = getEngramsDb(cortexName);
+  const db = getCortexDb(cortexName);
   const row = db.prepare(
     'SELECT cursor_value FROM sync_cursors WHERE backend = ? AND direction = ?'
   ).get(backend, direction) as { cursor_value: string } | undefined;
@@ -140,7 +141,7 @@ export function getSyncCursor(cortexName: string, backend: string, direction: st
 }
 
 export function setSyncCursor(cortexName: string, backend: string, direction: string, cursorValue: string): void {
-  const db = getEngramsDb(cortexName);
+  const db = getCortexDb(cortexName);
   db.prepare(
     `INSERT INTO sync_cursors (backend, direction, cursor_value, updated_at)
      VALUES (?, ?, ?, ?)
@@ -149,14 +150,13 @@ export function setSyncCursor(cortexName: string, backend: string, direction: st
 }
 
 export function getMemoryCount(cortexName: string): number {
-  const db = getEngramsDb(cortexName);
+  const db = getCortexDb(cortexName);
   const row = db.prepare('SELECT COUNT(*) as count FROM memories WHERE deleted_at IS NULL').get() as { count: number };
   return row.count;
 }
 
 export function getMemoryByEpisodeKey(cortexName: string, episodeKey: string): MemoryRow | null {
-  // getEngramsDb returns the per-cortex DB that holds both engrams and memories tables
-  const db = getEngramsDb(cortexName);
+  const db = getCortexDb(cortexName);
   const row = db.prepare(
     'SELECT * FROM memories WHERE episode_key = ? AND deleted_at IS NULL LIMIT 1'
   ).get(episodeKey) as unknown as MemoryRow | undefined;
