@@ -9,6 +9,8 @@ export interface MemoryEntry {
   author: string;
   content: string;
   source_ids: string[];
+  episode_key?: string;
+  deleted_at?: string;
 }
 
 export interface StructuredPrompt {
@@ -176,6 +178,8 @@ export function parseMemoriesJsonl(content: string): MemoryEntry[] {
           author: parsed.author ?? 'unknown',
           content: parsed.content,
           source_ids: Array.isArray(parsed.source_ids) ? parsed.source_ids : [],
+          ...(parsed.episode_key ? { episode_key: parsed.episode_key } : {}),
+          ...(parsed.deleted_at ? { deleted_at: parsed.deleted_at } : {}),
         });
       }
     } catch {

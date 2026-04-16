@@ -11,6 +11,7 @@ import { parseMemoriesJsonl } from '../lib/curator.js';
 import {
   getMemoriesBySyncVersion,
   insertMemoryIfNotExists,
+  tombstoneMemory,
   getSyncCursor,
   setSyncCursor,
 } from '../db/memory-queries.js';
@@ -39,12 +40,14 @@ export class GitSyncAdapter implements SyncAdapter {
     const newMemories = getMemoriesBySyncVersion(cortex, lastVersion);
     if (newMemories.length === 0) return result;
 
-    // Format as JSONL lines
+    // Format as JSONL lines (include episode_key and deleted_at when present)
     const newLines = newMemories.map(m => JSON.stringify({
       ts: m.ts,
       author: m.author,
       content: m.content,
       source_ids: JSON.parse(m.source_ids),
+      ...(m.episode_key ? { episode_key: m.episode_key } : {}),
+      ...(m.deleted_at ? { deleted_at: m.deleted_at } : {}),
     }));
 
     const config = getConfig();
@@ -84,15 +87,23 @@ export class GitSyncAdapter implements SyncAdapter {
     const memoriesRaw = readFileFromBranch(cortex, 'memories.jsonl') ?? '';
     const memories = parseMemoriesJsonl(memoriesRaw);
 
-    // Diff against local — insert any that don't exist
+    // Diff against local — insert new, process tombstones
     for (const m of memories) {
       const id = deterministicId(m.ts, m.author, m.content);
+
+      if (m.deleted_at) {
+        // Tombstone — soft delete the local copy if it exists
+        tombstoneMemory(cortex, id);
+        continue;
+      }
+
       const wasInserted = insertMemoryIfNotExists(cortex, {
         id,
         ts: m.ts,
         author: m.author,
         content: m.content,
         source_ids: m.source_ids,
+        episode_key: m.episode_key,
       });
       if (wasInserted) result.pulled++;
     }
