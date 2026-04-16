@@ -104,6 +104,13 @@ const migrations: Migration[] = [
       db.exec('CREATE INDEX IF NOT EXISTS idx_memories_episode_key ON memories(episode_key);');
     },
   },
+  {
+    version: 4,
+    up: (db) => {
+      db.exec('ALTER TABLE engrams ADD COLUMN context TEXT;');
+      db.exec('ALTER TABLE engrams ADD COLUMN decisions TEXT;');
+    },
+  },
 ];
 
 /** Returns the per-cortex SQLite connection (holds engrams, memories, longterm_summary, and sync_cursors tables) */

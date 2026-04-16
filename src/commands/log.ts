@@ -52,8 +52,10 @@ export const syncCommand = new Command('sync')
   .option('-s, --source <source>', 'Source of the entry', 'manual')
   .option('-t, --tags <tags>', 'Comma-separated tags')
   .option('-e, --episode <key>', 'Tag this engram with an episode identifier')
+  .option('--context <json>', 'Attach structured JSON metadata to this engram')
+  .option('-d, --decision <text>', 'Record a decision (repeatable)', (val: string, prev: string[]) => [...prev, val], [] as string[])
   .option('--silent', 'Suppress output')
-  .action(function (this: Command, message: string, opts: { source: string; tags?: string; episode?: string; silent?: boolean }) {
+  .action(function (this: Command, message: string, opts: { source: string; tags?: string; episode?: string; context?: string; decision?: string[]; silent?: boolean }) {
     const globalOpts = this.optsWithGlobals() as { cortex?: string };
     const config = getConfig();
 
@@ -74,8 +76,20 @@ export const syncCommand = new Command('sync')
         }
       }
 
+      // Validate --context is valid JSON if provided
+      if (opts.context) {
+        try {
+          JSON.parse(opts.context);
+        } catch {
+          console.error(chalk.red('Error: --context must be valid JSON'));
+          process.exitCode = 1;
+          return;
+        }
+      }
+
       // Route to cortex engram DB
-      const engram = insertEngram(cortex, { content: message, episodeKey: opts.episode });
+      const decisions = opts.decision?.length ? opts.decision : undefined;
+      const engram = insertEngram(cortex, { content: message, episodeKey: opts.episode, context: opts.context, decisions });
 
       if (!opts.silent) {
         const badge = chalk.cyan(`[${cortex}]`);
