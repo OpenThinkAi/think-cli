@@ -23,7 +23,6 @@ export function runMigrations(db: DatabaseSync, migrations: Migration[]): void {
     .sort((a, b) => a.version - b.version);
 
   for (const migration of pending) {
-    console.error(`[migrate] running v${migration.version}`);
     db.exec('BEGIN');
     try {
       migration.up(db);

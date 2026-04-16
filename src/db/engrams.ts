@@ -95,6 +95,15 @@ const migrations: Migration[] = [
       `);
     },
   },
+  {
+    version: 3,
+    up: (db) => {
+      db.exec('ALTER TABLE engrams ADD COLUMN episode_key TEXT;');
+      db.exec('CREATE INDEX IF NOT EXISTS idx_engrams_episode_key ON engrams(episode_key);');
+      db.exec('ALTER TABLE memories ADD COLUMN episode_key TEXT;');
+      db.exec('CREATE INDEX IF NOT EXISTS idx_memories_episode_key ON memories(episode_key);');
+    },
+  },
 ];
 
 export function getEngramsDb(cortexName: string): DatabaseSync {
