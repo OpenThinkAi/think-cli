@@ -183,14 +183,15 @@ export class GitSyncAdapter implements SyncAdapter {
       }
     }
 
-    // Process files in ascending order (critical for tombstone correctness)
+    // Process files in ascending order (critical for tombstone correctness).
+    // Stop at the first read failure — don't advance cursor past a gap.
     let lastReadFile: string | null = null;
     for (const file of filesToRead) {
       const raw = readFileFromBranch(cortex, file);
       if (raw === null) {
-        // Transient read failure — skip this file but continue processing remaining
-        // files. Cursor won't advance past it, so it gets retried on next pull.
-        continue;
+        // Read failure — stop here. Cursor stays at lastReadFile so this
+        // file and all subsequent files get retried on next pull.
+        break;
       }
       lastReadFile = file;
       if (raw.trim()) {
