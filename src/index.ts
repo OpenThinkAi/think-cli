@@ -19,6 +19,7 @@ import { pullCommand } from './commands/pull.js';
 import { pauseCommand, resumeCommand } from './commands/pause.js';
 import { configCommand } from './commands/config-cmd.js';
 import { updateCommand } from './commands/update.js';
+import { migrateDataCommand } from './commands/migrate-data.js';
 
 function readPackageVersion(): string {
   try {
@@ -57,5 +58,6 @@ program.addCommand(pauseCommand);
 program.addCommand(resumeCommand);
 program.addCommand(configCommand);
 program.addCommand(updateCommand);
+program.addCommand(migrateDataCommand);
 
 program.parse();
