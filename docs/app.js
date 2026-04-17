@@ -2,7 +2,7 @@
   'use strict';
 
   const TABS = ['home', 'concepts', 'install', 'docs'];
-  const GITHUB_URL = 'https://github.com/MicroMediaSites/think-cli';
+  const GITHUB_URL = 'https://github.com/OpenThinkAi/think-cli';
 
   const SIDEBAR = {
     home: {
