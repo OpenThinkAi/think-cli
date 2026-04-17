@@ -46,51 +46,92 @@
         <div class="hero">
           <div class="badge"><span class="dot"></span><span id="version-badge">v0.3.0</span> · open source · MIT</div>
           <h1>memory for your<br><span class="accent">AI agents</span>.</h1>
-          <p class="lead">A local-first CLI that gives agents persistent, curated memory. Log work as it happens. Let AI decide what matters. Recall it next session.</p>
+          <p class="lead">Your agents forget everything between sessions. open-think fixes that.</p>
           <div class="install-line"><span class="prompt">$</span>npm install -g open-think</div>
-          <div class="install-note">requires Node 22.5+</div>
+          <div class="install-note">requires Node 22.5+ · works with Claude Code out of the box</div>
         </div>
 
-        <h2 class="section-h" id="problem">// the problem</h2>
-        <p>Every new session, your AI agent wakes up with amnesia. It doesn't know what you shipped yesterday, what decisions you made last week, or what the team is focused on. You paste context. You re-explain. You repeat yourself.</p>
+        <h2 class="section-h" id="demo">// see it work</h2>
 
-        <h2 class="section-h" id="solution">// the fix</h2>
-        <p><strong>open-think</strong> is a local-first CLI that gives agents persistent, curated memory. Your work gets logged as it happens, curated by AI into what actually matters, and recalled next session.</p>
-        <p>All reads and writes hit local SQLite. Sync is optional and eventual &mdash; your agents work fully offline. When you're ready to share, push memories to a git repo (Postgres adapter coming soon).</p>
-        <p>Built for Claude Code users, review bots, and any AI agent that needs to remember.</p>
+        <div class="demo-flow">
+          <div class="demo-step">
+            <div class="demo-label">your agent logs work as it happens</div>
+            <div class="demo-terminal">
+              <div><span class="prompt">$</span> think sync "shipped auth refactor, replaced plaintext tokens with AES-256-GCM"</div>
+              <div class="out"><span class="check">✓</span> <span class="cyan">[engineering]</span> engram saved</div>
+              <div><span class="prompt">$</span> think sync "fixed race condition in session refresh — was hitting 401s on concurrent requests"</div>
+              <div class="out"><span class="check">✓</span> <span class="cyan">[engineering]</span> engram saved</div>
+              <div><span class="prompt">$</span> think sync "deployed auth service to staging, load test passed at 2x prod traffic"</div>
+              <div class="out"><span class="check">✓</span> <span class="cyan">[engineering]</span> engram saved</div>
+            </div>
+          </div>
 
-        <h2 class="section-h" id="next">// next</h2>
-        <p>Read the <a href="#" data-goto="concepts">concepts</a> to understand the pipeline, or jump to <a href="#" data-goto="install">install</a> if you want to start using it now.</p>
+          <div class="demo-step">
+            <div class="demo-label">AI curates what matters, drops what doesn't</div>
+            <div class="demo-terminal">
+              <div><span class="prompt">$</span> think curate</div>
+              <div class="out"><span class="cyan">Evaluating 8 engrams...</span></div>
+              <div class="out"><span class="check">✓</span> 8 evaluated, 2 promoted, 6 dropped</div>
+            </div>
+          </div>
+
+          <div class="demo-step">
+            <div class="demo-label">next session, the agent recalls what it needs</div>
+            <div class="demo-terminal">
+              <div><span class="prompt">$</span> think recall "auth"</div>
+              <div class="out"><span class="cyan">Memories:</span></div>
+              <div class="out"><span class="dim">Auth service was rewritten to use AES-256-GCM encryption for all session tokens,</span></div>
+              <div class="out"><span class="dim">replacing the previous plaintext storage. A race condition in the token refresh</span></div>
+              <div class="out"><span class="dim">flow was discovered and fixed — concurrent requests were invalidating each</span></div>
+              <div class="out"><span class="dim">other's sessions. Deployed to staging and load tested at 2x production traffic.</span></div>
+            </div>
+          </div>
+        </div>
+
+        <h2 class="section-h" id="why">// the moment it clicks</h2>
+        <div class="demo-step">
+          <div class="demo-label">you ask your agent to build something</div>
+          <div class="demo-terminal">
+            <div><span class="prompt">&gt;</span> Build a quick prototype for the new settings page</div>
+          </div>
+        </div>
+        <div class="demo-step">
+          <div class="demo-label">the agent recalls context and changes course</div>
+          <div class="demo-terminal">
+            <div><span class="prompt">$</span> think recall "prototyping"</div>
+            <div class="out"><span class="cyan">Memories:</span></div>
+            <div class="out"><span class="dim">Team retro flagged prototype ambiguity as a top issue &mdash; a previous</span></div>
+            <div class="out"><span class="dim">prototype became a de facto spec with no scope annotations. Action</span></div>
+            <div class="out"><span class="dim">item: define prototype levels and bring them to engineers earlier.</span></div>
+            <div class="out">&nbsp;</div>
+            <div class="out"><span class="check">!</span> Before I start, let me pin down the scope. Your team retro called</div>
+            <div class="out">  out "quick prototypes" as exactly the shape that caused trouble.</div>
+          </div>
+        </div>
+        <p>The agent was alerted to a decision from a meeting hours ago &mdash; and used it to avoid repeating a mistake. That's the difference between an agent with memory and one without.</p>
+
+        <h2 class="section-h" id="next">// get started</h2>
+        <p>Jump to <a href="#" data-goto="install">install</a> to set it up in 2 minutes, or read the <a href="#" data-goto="concepts">concepts</a> to understand the full pipeline.</p>
       </section>
 
       <!-- CONCEPTS VIEW -->
       <section class="view" data-view="concepts">
         <h2 class="view-title">// concepts</h2>
-        <p class="view-sub">Five concepts. One pipeline. Entries become engrams, engrams become memories, memories get recalled.</p>
+        <p class="view-sub">Five concepts. One pipeline. Engrams become memories, memories get recalled.</p>
 
         <div class="concept-list">
           <div class="concept" id="c1">
             <div class="num">[01]</div>
-            <h3>entries</h3>
-            <p>Timestamped notes and work logs. The raw material. Stored locally in SQLite, always on your machine.</p>
+            <h3>engrams</h3>
+            <p>Raw work events. Every <code>think sync</code> creates an engram &mdash; a short-lived signal waiting to be curated. Stored locally in SQLite. Engrams never leave your machine.</p>
             <div class="demo">
               <div><span class="prompt">$</span> think sync "shipped auth refactor"</div>
-              <div class="out"><span class="check">✓</span> Logged <span class="dim">[sync]</span> <span class="dim">2026-04-14 10:23</span></div>
+              <div class="out"><span class="check">✓</span> <span class="cyan">[engineering]</span> engram saved</div>
             </div>
           </div>
 
           <div class="concept" id="c2">
             <div class="num">[02]</div>
-            <h3>engrams</h3>
-            <p>Raw work events awaiting evaluation. When a cortex is active, your syncs become engrams — short-lived signals waiting to be curated. Engrams never leave your machine.</p>
-            <div class="demo">
-              <div><span class="prompt">$</span> think sync "blocked on partner API"</div>
-              <div class="out"><span class="check">✓</span> <span class="cyan">[engineering]</span> engram saved</div>
-            </div>
-          </div>
-
-          <div class="concept" id="c3">
-            <div class="num">[03]</div>
             <h3>cortex</h3>
             <p>A memory workspace. Personal or shared. Each cortex is a local SQLite database with its own engrams, memories, and sync state. Optionally backed by a git repo for team sync.</p>
             <div class="demo">
@@ -99,10 +140,10 @@
             </div>
           </div>
 
-          <div class="concept" id="c4">
-            <div class="num">[04]</div>
+          <div class="concept" id="c3">
+            <div class="num">[03]</div>
             <h3>curator</h3>
-            <p>AI-powered evaluation. Reads engrams, weighs them against what's already known, and promotes what matters to long-term memory. Drops the rest. Two modes: <strong>standard</strong> (filter many events into few memories) and <strong>episode</strong> (synthesize a bounded task into a narrative).</p>
+            <p>AI-powered evaluation. Reads your engrams, weighs them against what's already known, and promotes what matters to long-term memory. Drops the rest.</p>
             <div class="demo">
               <div><span class="prompt">$</span> think curate</div>
               <div class="out"><span class="cyan">Evaluating 12 engrams...</span></div>
@@ -110,8 +151,8 @@
             </div>
           </div>
 
-          <div class="concept" id="c5">
-            <div class="num">[05]</div>
+          <div class="concept" id="c4">
+            <div class="num">[04]</div>
             <h3>episodes</h3>
             <p>For task-oriented agents (review bots, bug fixers) that work across multiple rounds. Tag engrams with an episode key. When curated, they synthesize into a narrative story &mdash; not a log, but a recap of what happened and why it mattered.</p>
             <div class="demo">
@@ -121,8 +162,8 @@
             </div>
           </div>
 
-          <div class="concept" id="c6">
-            <div class="num">[06]</div>
+          <div class="concept" id="c5">
+            <div class="num">[05]</div>
             <h3>recall &amp; sync</h3>
             <p>Search across memories and local engrams. Sync pushes and pulls memories to a remote backend. All reads hit local SQLite &mdash; instant and offline.</p>
             <div class="demo">
@@ -137,57 +178,41 @@
 
         <h2 class="section-h" id="arch">// architecture</h2>
         <p>Local-first, by design. All reads and writes go to local SQLite. Sync is optional and eventual. Engrams never leave your machine &mdash; only curated memories sync to the remote.</p>
-        <pre class="arch-ascii">  ┌─ your machine (SQLite) ─────────────────────────────────┐    ┌─ remote ──┐
-  │                                                         │    │           │
-  │   <span class="g">entries</span> ──&#8594; <span class="g">engrams</span> ──&#8594; <span class="g">curator</span> ──&#8594; <span class="c">memories</span>   │ &#8596;  │   <span class="y">git</span>     │
-  │                                  (local AI)             │    │   <span class="dim">PG</span>*     │
-  │   <span class="g">episodes</span> ──&#8594; <span class="g">narrative curation</span> ──&#8594; <span class="c">memories</span>   │    │           │
-  │                                                         │    │           │
-  └─────────────────────────────────────────────────────────┘    └───────────┘
-
-  cortex push / cortex pull &#8596; pluggable sync adapter
-  * Postgres adapter coming soon</pre>
+        <pre class="arch-ascii">+-- your machine (SQLite) -----------------------------+ +- remote --+
+|                                                     | |            |
+| <span class="g">engrams</span> --&gt; <span class="g">curator</span> --&gt; <span class="c">memories</span>                    | | <span class="y">git</span>        |
+|                   (local AI)                        | | <span class="dim">PG*</span>        |
+| <span class="g">episodes</span> --&gt; <span class="g">narrative curation</span> --&gt; <span class="c">memories</span>        | |            |
+|                                                     | |            |
++-----------------------------------------------------+ +------------+</pre>
       </section>
 
       <!-- INSTALL VIEW -->
       <section class="view" data-view="install">
         <h2 class="view-title">// install</h2>
-        <p class="view-sub">Five steps from zero to a working memory pipeline.</p>
+        <p class="view-sub">Two minutes from zero to persistent agent memory.</p>
 
         <ol class="steps">
           <li id="s1">
-            <h3>Install the CLI</h3>
+            <h3>Install &amp; initialize</h3>
             <div class="terminal"><span class="prompt">$</span>npm install -g open-think</div>
-            <p class="note">Requires Node 22.5+ (uses the built-in <code>node:sqlite</code> module). The curator and summary features use the <a href="https://www.npmjs.com/package/@anthropic-ai/claude-agent-sdk">Claude Agent SDK</a> (Anthropic commercial terms) and require a Claude subscription. All other features work without it.</p>
+            <div class="terminal"><span class="prompt">$</span>think init</div>
+            <p class="note">Requires Node 22.5+. <code>think init</code> writes auto-logging instructions into your project's CLAUDE.md &mdash; your agents start logging work immediately. The curator and summary features use the <a href="https://www.npmjs.com/package/@anthropic-ai/claude-agent-sdk">Claude Agent SDK</a> and require a Claude subscription.</p>
           </li>
           <li id="s2">
-            <h3>Log something</h3>
-            <div class="terminal"><span class="prompt">$</span>think sync "first entry"</div>
-            <p class="note">Without an active cortex, syncs are stored locally as plain entries.</p>
+            <h3>Create a cortex</h3>
+            <div class="terminal"><span class="prompt">$</span>think cortex setup git@github.com:you/memory.git</div>
+            <div class="terminal"><span class="prompt">$</span>think cortex create engineering</div>
+            <p class="note">A cortex is a memory workspace. Point it at a git repo for team sync, or skip the repo for offline-only. Each cortex has its own engrams, memories, and sync state.</p>
           </li>
           <li id="s3">
-            <h3>Set up a cortex</h3>
-            <div class="terminal"><span class="prompt">$</span>think cortex setup git@github.com:you/memory.git</div>
-            <div class="terminal"><span class="prompt">$</span>think cortex create personal</div>
-            <p class="note">Point think at any git repo for team sync, or leave the repo empty for offline-only. The cortex is a local SQLite database for your memories.</p>
-          </li>
-          <li id="s4">
-            <h3>Set up your agents</h3>
-            <div class="terminal"><span class="prompt">$</span>think init</div>
-            <p class="note">Writes work-logging instructions into your project's CLAUDE.md.</p>
-          </li>
-          <li id="s5">
-            <h3>Curate, recall, sync</h3>
+            <h3>You're done</h3>
+            <div class="terminal"><span class="prompt">$</span>think sync "shipped the feature"</div>
             <div class="terminal"><span class="prompt">$</span>think curate</div>
             <div class="terminal"><span class="prompt">$</span>think recall "what did I ship?"</div>
-            <div class="terminal"><span class="prompt">$</span>think cortex sync</div>
-            <p class="note">Curation promotes engrams to memory. Recall searches locally. Sync shares memories with the team.</p>
+            <p class="note">Agents log work with <code>think sync</code>. Curation promotes the important stuff to long-term memory. Recall pulls it back next session. <code>think cortex sync</code> shares with the team.</p>
           </li>
         </ol>
-
-        <h2 class="section-h" id="agents">// built for AI agents</h2>
-        <p>Drop into any Claude Code project, run <code>think init</code>, and your agents start auto-logging work. The curator decides what's worth remembering. Next session, the agent recalls what it needs &mdash; no pasting, no re-explaining.</p>
-        <p>For task-oriented agents (review bots, bug fixers), use <strong>episodes</strong>: tag work with <code>--episode</code>, curate into narrative memories that tell the story of what happened.</p>
       </section>
 
       <!-- DOCS VIEW -->

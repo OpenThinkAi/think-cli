@@ -8,9 +8,9 @@
     home: {
       groups: [
         { label: 'overview', items: [
-          { label: 'problem', href: '#problem' },
-          { label: 'the fix', href: '#solution' },
-          { label: 'next', href: '#next' },
+          { label: 'see it work', href: '#demo' },
+          { label: 'the moment it clicks', href: '#why' },
+          { label: 'get started', href: '#next' },
         ]},
         { label: 'jump to', items: [
           { label: 'concepts', tab: 'concepts' },
@@ -26,12 +26,11 @@
     concepts: {
       groups: [
         { label: 'pipeline', items: [
-          { label: '01 entries',       href: '#c1' },
-          { label: '02 engrams',       href: '#c2' },
-          { label: '03 cortex',        href: '#c3' },
-          { label: '04 curator',       href: '#c4' },
-          { label: '05 episodes',      href: '#c5' },
-          { label: '06 recall & sync', href: '#c6' },
+          { label: '01 engrams',       href: '#c1' },
+          { label: '02 cortex',        href: '#c2' },
+          { label: '03 curator',       href: '#c3' },
+          { label: '04 episodes',      href: '#c4' },
+          { label: '05 recall & sync', href: '#c5' },
         ]},
         { label: 'design', items: [
           { label: 'architecture', href: '#arch' },
@@ -41,14 +40,9 @@
     install: {
       groups: [
         { label: 'steps', items: [
-          { label: '1. install',    href: '#s1' },
-          { label: '2. log',        href: '#s2' },
-          { label: '3. cortex',     href: '#s3' },
-          { label: '4. agents',     href: '#s4' },
-          { label: '5. curate',     href: '#s5' },
-        ]},
-        { label: 'related', items: [
-          { label: 'agent setup', href: '#agents' },
+          { label: '1. install & init', href: '#s1' },
+          { label: '2. create cortex',  href: '#s2' },
+          { label: '3. use it',         href: '#s3' },
         ]},
       ],
     },

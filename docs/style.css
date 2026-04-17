@@ -230,6 +230,31 @@ button { font: inherit; background: none; border: none; color: inherit; cursor: 
   letter-spacing: 0.02em;
 }
 
+/* ── Demo flow (Home view) ── */
+.demo-flow { margin: 1.25rem 0 0.5rem; }
+.demo-step { margin-bottom: 1.5rem; }
+.demo-step:last-child { margin-bottom: 0; }
+.demo-label {
+  color: var(--fg-dim);
+  font-size: 11.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  margin-bottom: 0.5rem;
+  padding-left: 0.2rem;
+}
+.demo-terminal {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  padding: 0.7rem 0.9rem;
+  font-size: 12px;
+  line-height: 1.7;
+}
+.demo-terminal .prompt { color: var(--green); }
+.demo-terminal .out { color: var(--fg-dim); }
+.demo-terminal .check { color: var(--green); }
+.demo-terminal .dim { color: var(--fg-faint); }
+.demo-terminal .cyan { color: var(--cyan); }
+
 /* ── Section headers ── */
 .view-title {
   color: var(--accent);
@@ -259,16 +284,24 @@ h2.section-h {
 /* ── Concept grid ── */
 .concept-list {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  grid-template-columns: repeat(6, 1fr);
   gap: 0;
   margin: 0 0 1rem;
 }
+.concept { grid-column: span 2; }
+.concept:nth-last-child(2):nth-child(3n + 1),
+.concept:nth-last-child(1):nth-child(3n + 2) { grid-column: span 3; }
 .concept {
   border: 1px solid var(--border);
   padding: 1.1rem 1.2rem 1.2rem;
   margin: -1px 0 0 -1px;
   position: relative;
   transition: background 0.15s, border-color 0.15s;
+  display: flex;
+  flex-direction: column;
+}
+.concept .demo {
+  margin-top: auto;
 }
 .concept:hover {
   background: var(--pane-bg-soft);
@@ -490,4 +523,6 @@ ul.link-list .link-label {
 @media (max-width: 480px) {
   .statusbar .right span:nth-child(n+4) { display: none; }
   .concept-list { grid-template-columns: 1fr; }
+  .concept, .concept:nth-last-child(2):nth-child(3n + 1),
+  .concept:nth-last-child(1):nth-child(3n + 2) { grid-column: span 1; }
 }
