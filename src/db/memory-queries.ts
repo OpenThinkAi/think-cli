@@ -11,6 +11,7 @@ export interface MemoryRow {
   deleted_at: string | null;
   sync_version: number;
   episode_key: string | null;
+  decisions: string | null;
 }
 
 export interface InsertMemoryParams {
@@ -21,6 +22,7 @@ export interface InsertMemoryParams {
   source_ids?: string[];
   deleted_at?: string | null;
   episode_key?: string;
+  decisions?: string[];
 }
 
 export function insertMemory(cortexName: string, params: InsertMemoryParams): MemoryRow {
@@ -30,12 +32,13 @@ export function insertMemory(cortexName: string, params: InsertMemoryParams): Me
   const sourceIds = JSON.stringify(params.source_ids ?? []);
 
   const episodeKey = params.episode_key ?? null;
+  const decisions = params.decisions?.length ? JSON.stringify(params.decisions) : null;
 
   // Atomic sync_version assignment via subquery — no race between read and write
   db.prepare(
-    `INSERT INTO memories (id, ts, author, content, source_ids, created_at, deleted_at, sync_version, episode_key)
-     VALUES (?, ?, ?, ?, ?, ?, ?, (SELECT COALESCE(MAX(sync_version), 0) + 1 FROM memories), ?)`
-  ).run(id, params.ts, params.author, params.content, sourceIds, now, params.deleted_at ?? null, episodeKey);
+    `INSERT INTO memories (id, ts, author, content, source_ids, created_at, deleted_at, sync_version, episode_key, decisions)
+     VALUES (?, ?, ?, ?, ?, ?, ?, (SELECT COALESCE(MAX(sync_version), 0) + 1 FROM memories), ?, ?)`
+  ).run(id, params.ts, params.author, params.content, sourceIds, now, params.deleted_at ?? null, episodeKey, decisions);
 
   const row = db.prepare('SELECT * FROM memories WHERE id = ?').get(id) as unknown as MemoryRow;
   return row;

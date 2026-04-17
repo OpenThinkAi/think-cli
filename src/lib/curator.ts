@@ -11,6 +11,7 @@ export interface MemoryEntry {
   source_ids: string[];
   episode_key?: string;
   deleted_at?: string;
+  decisions?: string[];
 }
 
 export interface StructuredPrompt {
@@ -43,9 +44,12 @@ Output format — return a JSON array of entries to append:
     "ts": "ISO 8601 timestamp",
     "author": "contributor name",
     "content": "the memory — specific, factual, written for an agent",
-    "source_ids": ["id1", "id2"]
+    "source_ids": ["id1", "id2"],
+    "decisions": ["decision text 1", "decision text 2"]
   }
 ]
+
+The "decisions" field is optional. Include it when the source engrams contain explicit decisions. Each decision should be a concise statement of what was decided and why. Omit the field (or use an empty array) when there are no decisions.
 
 If nothing warrants a new entry, return an empty array: []
 
@@ -188,6 +192,9 @@ export function parseMemoriesJsonl(content: string): MemoryEntry[] {
     try {
       const parsed = JSON.parse(line);
       if (parsed && typeof parsed.content === 'string') {
+        const decisions = Array.isArray(parsed.decisions)
+          ? parsed.decisions.filter((d: unknown): d is string => typeof d === 'string' && d.length > 0)
+          : [];
         entries.push({
           ts: parsed.ts ?? '',
           author: parsed.author ?? 'unknown',
@@ -195,6 +202,7 @@ export function parseMemoriesJsonl(content: string): MemoryEntry[] {
           source_ids: Array.isArray(parsed.source_ids) ? parsed.source_ids : [],
           ...(parsed.episode_key ? { episode_key: parsed.episode_key } : {}),
           ...(parsed.deleted_at ? { deleted_at: parsed.deleted_at } : {}),
+          ...(decisions.length > 0 ? { decisions } : {}),
         });
       }
     } catch {
@@ -246,11 +254,16 @@ export async function runCuration(curationPrompt: StructuredPrompt): Promise<Mem
     if (typeof obj.content !== 'string' || !obj.content) {
       throw new Error(`Curation entry ${i} is missing content`);
     }
+    const decisions = Array.isArray(obj.decisions)
+      ? obj.decisions.filter((d): d is string => typeof d === 'string' && d.length > 0)
+      : [];
+
     return {
       ts: typeof obj.ts === 'string' ? obj.ts : new Date().toISOString(),
       author: typeof obj.author === 'string' ? obj.author : 'unknown',
       content: obj.content,
       source_ids: Array.isArray(obj.source_ids) ? obj.source_ids.filter((id): id is string => typeof id === 'string') : [],
+      ...(decisions.length > 0 ? { decisions } : {}),
     };
   });
 

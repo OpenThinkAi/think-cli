@@ -6,19 +6,21 @@ import chalk from 'chalk';
 
 const CLAUDE_MD_SECTION = `# Work Logging
 
-**After every commit, push, PR, deploy, Linear update, or non-trivial tool-assisted action, immediately run \`think sync\` before responding to the user's next request. This is not optional.**
+**After every commit, push, PR, deploy, Linear update, non-trivial tool-assisted action, or decision made in conversation, immediately run \`think sync\` before responding to the user's next request. This is not optional.**
 
 \`\`\`
 think sync "concise summary of what was done" --silent
+think sync "explored X, decided against it" --decision "Decided against X because Y" --silent
 \`\`\`
 
-**Do log:** features built, bugs fixed, PRs created/reviewed, deploys, config changes, refactors completed, investigations concluded, decisions made, documents written, Linear/external system updates
+**Do log:** features built, bugs fixed, PRs created/reviewed, deploys, config changes, refactors completed, investigations concluded, decisions made (including decisions to NOT do something), documents written, Linear/external system updates
 
 **Don't log:** clarifying questions, exploration, failed attempts, reading code, debugging dead ends, conversation that didn't produce an outcome
 
 **How to log:**
 - One entry per completed task, not per tool call or file edit
 - Frame as accomplishments: "Implemented X", "Fixed Y", "Reviewed Z"
+- Decisions to not pursue something are logged as: "Decided against X because Y"
 - If a task spans the whole session, log at the end
 - If multiple distinct things were done, log each separately
 - Keep entries concise but specific enough to be useful in a weekly summary

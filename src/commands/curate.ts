@@ -294,6 +294,7 @@ export const curateCommand = new Command('curate')
           author: entry.author,
           content: entry.content,
           source_ids: entry.source_ids,
+          decisions: entry.decisions,
         });
       }
     }
