@@ -91,7 +91,10 @@ export class GitSyncAdapter implements SyncAdapter {
 
     // Format as JSONL lines (include episode_key, deleted_at, and decisions when present)
     const newLines = newMemories.map(m => {
-      const decisions = m.decisions ? JSON.parse(m.decisions) as string[] : [];
+      let decisions: string[] = [];
+      if (m.decisions) {
+        try { decisions = JSON.parse(m.decisions) as string[]; } catch { /* skip malformed */ }
+      }
       return JSON.stringify({
         ts: m.ts,
         author: m.author,

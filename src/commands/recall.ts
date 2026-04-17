@@ -3,7 +3,18 @@ import chalk from 'chalk';
 import { getConfig } from '../lib/config.js';
 import { searchEngrams } from '../db/engram-queries.js';
 import { searchMemories, getLongtermSummary } from '../db/memory-queries.js';
+import type { MemoryRow } from '../db/memory-queries.js';
 import { closeCortexDb } from '../db/engrams.js';
+
+function printDecisions(m: MemoryRow): void {
+  if (!m.decisions) return;
+  try {
+    const decisions = JSON.parse(m.decisions) as string[];
+    for (const d of decisions) {
+      console.log(`    ${chalk.yellow('⚡')} ${chalk.yellow(d)}`);
+    }
+  } catch { /* skip malformed */ }
+}
 
 export const recallCommand = new Command('recall')
   .argument('<query>', 'What to recall')
@@ -37,14 +48,7 @@ export const recallCommand = new Command('recall')
         for (const m of recentMemories) {
           const ts = m.ts.slice(0, 16).replace('T', ' ');
           console.log(`  ${chalk.gray(ts)} ${chalk.dim(m.author + ':')} ${m.content}`);
-          if (m.decisions) {
-            try {
-              const decisions = JSON.parse(m.decisions) as string[];
-              for (const d of decisions) {
-                console.log(`    ${chalk.yellow('⚡')} ${chalk.yellow(d)}`);
-              }
-            } catch { /* skip malformed */ }
-          }
+          printDecisions(m);
         }
         console.log();
       }
@@ -80,14 +84,7 @@ export const recallCommand = new Command('recall')
       for (const m of matchingMemories) {
         const ts = m.ts.slice(0, 16).replace('T', ' ');
         console.log(`  ${chalk.gray(ts)} ${chalk.dim(m.author + ':')} ${m.content}`);
-        if (m.decisions) {
-          try {
-            const decisions = JSON.parse(m.decisions) as string[];
-            for (const d of decisions) {
-              console.log(`    ${chalk.yellow('⚡')} ${chalk.yellow(d)}`);
-            }
-          } catch { /* skip malformed */ }
-        }
+        printDecisions(m);
       }
       console.log();
     } else {
