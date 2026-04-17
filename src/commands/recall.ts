@@ -6,7 +6,7 @@ import { searchMemories, getLongtermSummary } from '../db/memory-queries.js';
 import type { MemoryRow } from '../db/memory-queries.js';
 import { closeCortexDb } from '../db/engrams.js';
 
-function printDecisions(m: MemoryRow): void {
+export function printDecisions(m: MemoryRow): void {
   if (!m.decisions) return;
   try {
     const decisions = JSON.parse(m.decisions) as string[];
