@@ -158,7 +158,7 @@
           <li id="s1">
             <h3>Install the CLI</h3>
             <div class="terminal"><span class="prompt">$</span>npm install -g open-think</div>
-            <p class="note">Requires Node 22.5+ (uses the built-in <code>node:sqlite</code> module).</p>
+            <p class="note">Requires Node 22.5+ (uses the built-in <code>node:sqlite</code> module). The curator and summary features use the <a href="https://www.npmjs.com/package/@anthropic-ai/claude-agent-sdk">Claude Agent SDK</a> (Anthropic commercial terms) and require a Claude subscription. All other features work without it.</p>
           </li>
           <li id="s2">
             <h3>Log something</h3>
@@ -228,6 +228,9 @@ think resume                   Re-enable engram creation
 
 think migrate-data             Import git memories into local SQLite
 think init                     Set up CLAUDE.md for auto-logging
+think export                   Export entries as sync bundle
+think import &lt;file&gt;            Import sync bundle
+think audit                    Show sync audit log
 think config show              Print configuration
 think config set &lt;key&gt; &lt;val&gt;   Update a config value
 think update                   Update to latest version</pre>
