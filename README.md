@@ -10,6 +10,8 @@ Requires **Node 22.5+** (uses `node:sqlite`).
 npm install -g open-think
 ```
 
+> **Note:** The curator and summary features use the [Claude Agent SDK](https://www.npmjs.com/package/@anthropic-ai/claude-agent-sdk), which is distributed under Anthropic's commercial terms. You'll need a Claude subscription for these features to work. All other functionality (logging, recall, sync, export) works without it.
+
 ## Quick start
 
 ```bash
