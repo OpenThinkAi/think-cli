@@ -408,7 +408,7 @@ ul.link-list {
 }
 ul.link-list li {
   display: grid;
-  grid-template-columns: 140px 1fr;
+  grid-template-columns: 160px 1fr;
   padding: 0.5rem 0;
   border-bottom: 1px dashed var(--border);
   font-size: 13px;
