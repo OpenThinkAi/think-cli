@@ -11,7 +11,8 @@ const addCommand = new Command('add')
   .argument('<message>', 'The memory content')
   .option('--no-push', 'Skip pushing to remote after adding')
   .option('--silent', 'Suppress output')
-  .action(async function (this: Command, message: string, opts: { push: boolean; silent?: boolean }) {
+  .option('-d, --decision <text>', 'Record a decision (repeatable)', (val: string, prev: string[]) => [...prev, val], [] as string[])
+  .action(async function (this: Command, message: string, opts: { push: boolean; silent?: boolean; decision: string[] }) {
     const globalOpts = this.optsWithGlobals() as { cortex?: string };
     const config = getConfig();
     const cortex = globalOpts.cortex ?? config.cortex?.active;
@@ -37,6 +38,7 @@ const addCommand = new Command('add')
       author,
       content: message,
       source_ids: [],
+      decisions: opts.decision.length > 0 ? opts.decision : undefined,
     });
 
     if (!opts.silent) {

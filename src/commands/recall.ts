@@ -37,6 +37,14 @@ export const recallCommand = new Command('recall')
         for (const m of recentMemories) {
           const ts = m.ts.slice(0, 16).replace('T', ' ');
           console.log(`  ${chalk.gray(ts)} ${chalk.dim(m.author + ':')} ${m.content}`);
+          if (m.decisions) {
+            try {
+              const decisions = JSON.parse(m.decisions) as string[];
+              for (const d of decisions) {
+                console.log(`    ${chalk.yellow('⚡')} ${chalk.yellow(d)}`);
+              }
+            } catch { /* skip malformed */ }
+          }
         }
         console.log();
       }
@@ -72,6 +80,14 @@ export const recallCommand = new Command('recall')
       for (const m of matchingMemories) {
         const ts = m.ts.slice(0, 16).replace('T', ' ');
         console.log(`  ${chalk.gray(ts)} ${chalk.dim(m.author + ':')} ${m.content}`);
+        if (m.decisions) {
+          try {
+            const decisions = JSON.parse(m.decisions) as string[];
+            for (const d of decisions) {
+              console.log(`    ${chalk.yellow('⚡')} ${chalk.yellow(d)}`);
+            }
+          } catch { /* skip malformed */ }
+        }
       }
       console.log();
     } else {

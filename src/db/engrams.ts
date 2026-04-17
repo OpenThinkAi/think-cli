@@ -111,6 +111,12 @@ const migrations: Migration[] = [
       db.exec('ALTER TABLE engrams ADD COLUMN decisions TEXT;');
     },
   },
+  {
+    version: 5,
+    up: (db) => {
+      db.exec('ALTER TABLE memories ADD COLUMN decisions TEXT;');
+    },
+  },
 ];
 
 /** Returns the per-cortex SQLite connection (holds engrams, memories, longterm_summary, and sync_cursors tables) */

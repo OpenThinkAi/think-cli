@@ -89,15 +89,19 @@ export class GitSyncAdapter implements SyncAdapter {
     // Determine which bucket file to write to
     const targetFile = this.determineBucketFile(cortex, currentFiles);
 
-    // Format as JSONL lines (include episode_key and deleted_at when present)
-    const newLines = newMemories.map(m => JSON.stringify({
-      ts: m.ts,
-      author: m.author,
-      content: m.content,
-      source_ids: JSON.parse(m.source_ids),
-      ...(m.episode_key ? { episode_key: m.episode_key } : {}),
-      ...(m.deleted_at ? { deleted_at: m.deleted_at } : {}),
-    }));
+    // Format as JSONL lines (include episode_key, deleted_at, and decisions when present)
+    const newLines = newMemories.map(m => {
+      const decisions = m.decisions ? JSON.parse(m.decisions) as string[] : [];
+      return JSON.stringify({
+        ts: m.ts,
+        author: m.author,
+        content: m.content,
+        source_ids: JSON.parse(m.source_ids),
+        ...(m.episode_key ? { episode_key: m.episode_key } : {}),
+        ...(m.deleted_at ? { deleted_at: m.deleted_at } : {}),
+        ...(decisions.length > 0 ? { decisions } : {}),
+      });
+    });
 
     const config = getConfig();
     const commitMsg = `curate: ${config.cortex?.author ?? 'unknown'}, ${newMemories.length} memories`;
@@ -145,6 +149,7 @@ export class GitSyncAdapter implements SyncAdapter {
         content: sanitizedContent,
         source_ids: m.source_ids,
         episode_key: m.episode_key,
+        decisions: m.decisions,
       });
       if (wasInserted) result.pulled++;
     }
