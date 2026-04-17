@@ -17,7 +17,7 @@
   "homepage": "https://openthink.dev",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/MicroMediaSites/think-cli.git"
+    "url": "git+https://github.com/OpenThinkAi/think-cli.git"
   },
   "keywords": [
     "cli",
