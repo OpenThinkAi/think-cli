@@ -2,6 +2,7 @@ import { Command } from 'commander';
 import chalk from 'chalk';
 import { getConfig } from '../lib/config.js';
 import { getMemories, insertMemory } from '../db/memory-queries.js';
+import { printDecisions } from './recall.js';
 import { closeCortexDb } from '../db/engrams.js';
 import { getSyncAdapter } from '../sync/registry.js';
 import { validateEngramContent } from '../lib/sanitize.js';
@@ -90,11 +91,13 @@ async function showMemories(opts: { history?: boolean }): Promise<void> {
       const ts = m.ts.slice(0, 16).replace('T', ' ');
       const preview = m.content.length > 80 ? m.content.slice(0, 80) + '...' : m.content;
       console.log(`${chalk.gray(ts)}  ${chalk.dim(m.author + ':')} ${preview}`);
+      printDecisions(m);
     }
   } else {
     for (const m of memories) {
       const ts = m.ts.slice(0, 16).replace('T', ' ');
       console.log(`${chalk.gray(ts)}  ${chalk.dim(m.author + ':')} ${m.content}`);
+      printDecisions(m);
     }
   }
 
