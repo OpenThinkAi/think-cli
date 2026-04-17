@@ -20,6 +20,7 @@ import {
 } from '../db/memory-queries.js';
 import { getConfig } from '../lib/config.js';
 import { deterministicId } from '../lib/deterministic-id.js';
+import { validateEngramContent } from '../lib/sanitize.js';
 import type { SyncAdapter, SyncResult } from './types.js';
 
 export class GitSyncAdapter implements SyncAdapter {
@@ -132,11 +133,16 @@ export class GitSyncAdapter implements SyncAdapter {
         continue;
       }
 
+      const { content: sanitizedContent, warnings } = validateEngramContent(m.content);
+      if (warnings.length > 0) {
+        result.errors.push(`Pulled memory from ${m.author} flagged: ${warnings.join(', ')}`);
+      }
+
       const wasInserted = insertMemoryIfNotExists(cortex, {
         id,
         ts: m.ts,
         author: m.author,
-        content: m.content,
+        content: sanitizedContent,
         source_ids: m.source_ids,
         episode_key: m.episode_key,
       });

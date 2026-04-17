@@ -1,15 +1,41 @@
-import { execFileSync, execSync } from 'node:child_process';
+import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { getRepoPath } from './paths.js';
 import { getConfig } from './config.js';
 
+// Sanitized environment for git subprocesses — strips variables that could
+// alter git behavior (hook injection, credential interception, path redirection)
+function safeGitEnv(): NodeJS.ProcessEnv {
+  const env = { ...process.env };
+  // Prevent attacker-controlled env vars from influencing git operations
+  delete env.GIT_SSH_COMMAND;
+  delete env.GIT_PROXY_COMMAND;
+  delete env.GIT_ASKPASS;
+  delete env.GIT_CONFIG_GLOBAL;
+  delete env.GIT_CONFIG_SYSTEM;
+  delete env.GIT_WORK_TREE;
+  delete env.GIT_DIR;
+  delete env.GIT_EXEC_PATH;
+  // Prevent system-level config and templates from injecting hooks
+  env.GIT_CONFIG_NOSYSTEM = '1';
+  env.GIT_TEMPLATE_DIR = '';
+  return env;
+}
+
 function runGit(args: string[], cwd?: string): string {
   const repoPath = cwd ?? getRepoPath();
-  return execFileSync('git', args, {
+  // Disable hooks and fsmonitor to prevent code execution from cloned repos
+  const safeArgs = [
+    '-c', 'core.hooksPath=/dev/null',
+    '-c', 'core.fsmonitor=',
+    ...args,
+  ];
+  return execFileSync('git', safeArgs, {
     cwd: repoPath,
     encoding: 'utf-8',
     stdio: ['pipe', 'pipe', 'pipe'],
+    env: safeGitEnv(),
   }).trim();
 }
 
@@ -30,9 +56,10 @@ export function ensureRepoCloned(): void {
   }
 
   fs.mkdirSync(repoPath, { recursive: true });
-  execFileSync('git', ['clone', '--no-checkout', config.cortex.repo, repoPath], {
+  execFileSync('git', ['-c', 'core.hooksPath=/dev/null', '-c', 'core.fsmonitor=', 'clone', '--no-checkout', config.cortex.repo, repoPath], {
     encoding: 'utf-8',
     stdio: ['pipe', 'pipe', 'pipe'],
+    env: safeGitEnv(),
   });
 }
 

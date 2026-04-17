@@ -34,7 +34,7 @@ export function validateEngramContent(content: string): {
 }
 
 export function wrapData(label: string, content: string): string {
-  // Escape closing tags in content to prevent delimiter breakout
-  const escaped = content.replace(/<\/data/gi, '&lt;/data');
+  // Escape data tags in content to prevent delimiter breakout and fake block injection
+  const escaped = content.replace(/<\/?data/gi, (match) => `&lt;${match.slice(1)}`);
   return `<data source="${label}">\n${escaped}\n</data>`;
 }

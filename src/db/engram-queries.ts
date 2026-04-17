@@ -41,11 +41,11 @@ export function insertEngram(cortexName: string, params: InsertEngramParams): En
   return { id, content: params.content, created_at, expires_at, evaluated_at: null, promoted: null, deleted_at: null, episode_key: episodeKey, context, decisions };
 }
 
-export function getPendingEngrams(cortexName: string): Engram[] {
+export function getPendingEngrams(cortexName: string, limit: number = 200): Engram[] {
   const db = getCortexDb(cortexName);
   return db.prepare(
-    `SELECT * FROM engrams WHERE evaluated_at IS NULL AND deleted_at IS NULL AND episode_key IS NULL AND expires_at > ? ORDER BY created_at ASC`
-  ).all(new Date().toISOString()) as unknown as Engram[];
+    `SELECT * FROM engrams WHERE evaluated_at IS NULL AND deleted_at IS NULL AND episode_key IS NULL AND expires_at > ? ORDER BY created_at ASC LIMIT ?`
+  ).all(new Date().toISOString(), limit) as unknown as Engram[];
 }
 
 export function getPendingEpisodeEngrams(cortexName: string, episodeKey: string): Engram[] {

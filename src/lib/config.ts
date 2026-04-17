@@ -19,7 +19,6 @@ export interface CortexConfig {
 export interface Config {
   peerId: string;
   syncPort: number;
-  anthropicApiKey?: string;
   cortex?: CortexConfig;
   paused?: boolean;
 }
@@ -34,8 +33,8 @@ function configPath(): string {
 
 export function saveConfig(config: Config): void {
   const dir = getConfigDir();
-  fs.mkdirSync(dir, { recursive: true });
-  fs.writeFileSync(configPath(), JSON.stringify(config, null, 2) + '\n', 'utf-8');
+  fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+  fs.writeFileSync(configPath(), JSON.stringify(config, null, 2) + '\n', { encoding: 'utf-8', mode: 0o600 });
 }
 
 export function getConfig(): Config {

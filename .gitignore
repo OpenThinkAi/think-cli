@@ -2,3 +2,12 @@ node_modules
 dist
 data
 *.db
+
+# Build session artifacts — never commit
+LOG.raw.jsonl
+LOG.md
+PROMPT.md
+QUEUE.md
+STATUS.md
+run.sh
+design-drafts/
