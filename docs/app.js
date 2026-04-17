@@ -8,7 +8,7 @@
     home: {
       groups: [
         { label: 'overview', items: [
-          { label: 'see it work', href: '#demo' },
+          { label: 'shared memory', href: '#demo' },
           { label: 'the moment it clicks', href: '#why' },
           { label: 'get started', href: '#next' },
         ]},

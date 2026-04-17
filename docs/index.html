@@ -46,44 +46,47 @@
         <div class="hero">
           <div class="badge"><span class="dot"></span><span id="version-badge">v0.3.0</span> · open source · MIT</div>
           <h1>memory for your<br><span class="accent">AI agents</span>.</h1>
-          <p class="lead">Your agents forget everything between sessions. open-think fixes that.</p>
+          <p class="lead">Persistent, shared memory for distributed agents and teams.</p>
           <div class="install-line"><span class="prompt">$</span>npm install -g open-think</div>
           <div class="install-note">requires Node 22.5+ · works with Claude Code out of the box</div>
         </div>
 
-        <h2 class="section-h" id="demo">// see it work</h2>
+        <h2 class="section-h" id="demo">// one team, shared memory</h2>
 
         <div class="demo-flow">
           <div class="demo-step">
-            <div class="demo-label">your agent logs work as it happens</div>
+            <div class="demo-label">alice's agent ships a feature and logs the work</div>
             <div class="demo-terminal">
-              <div><span class="prompt">$</span> think sync "shipped auth refactor, replaced plaintext tokens with AES-256-GCM"</div>
+              <div><span class="prompt">$</span> think sync "rewrote auth middleware &mdash; AES-256-GCM for all session tokens"</div>
               <div class="out"><span class="check">✓</span> <span class="cyan">[engineering]</span> engram saved</div>
-              <div><span class="prompt">$</span> think sync "fixed race condition in session refresh — was hitting 401s on concurrent requests"</div>
+              <div><span class="prompt">$</span> think sync "fixed race condition in token refresh &mdash; concurrent 401s resolved"</div>
               <div class="out"><span class="check">✓</span> <span class="cyan">[engineering]</span> engram saved</div>
-              <div><span class="prompt">$</span> think sync "deployed auth service to staging, load test passed at 2x prod traffic"</div>
-              <div class="out"><span class="check">✓</span> <span class="cyan">[engineering]</span> engram saved</div>
+              <div><span class="prompt">$</span> think cortex push</div>
+              <div class="out"><span class="check">✓</span> Pushed 2 memories</div>
             </div>
           </div>
 
           <div class="demo-step">
-            <div class="demo-label">AI curates what matters, drops what doesn't</div>
+            <div class="demo-label">bob's agent, different machine, pulls the latest</div>
             <div class="demo-terminal">
-              <div><span class="prompt">$</span> think curate</div>
-              <div class="out"><span class="cyan">Evaluating 8 engrams...</span></div>
-              <div class="out"><span class="check">✓</span> 8 evaluated, 2 promoted, 6 dropped</div>
-            </div>
-          </div>
-
-          <div class="demo-step">
-            <div class="demo-label">next session, the agent recalls what it needs</div>
-            <div class="demo-terminal">
+              <div><span class="prompt">$</span> think cortex pull</div>
+              <div class="out"><span class="check">✓</span> Pulled 2 memories</div>
               <div><span class="prompt">$</span> think recall "auth"</div>
-              <div class="out"><span class="cyan">Memories:</span></div>
-              <div class="out"><span class="dim">Auth service was rewritten to use AES-256-GCM encryption for all session tokens,</span></div>
-              <div class="out"><span class="dim">replacing the previous plaintext storage. A race condition in the token refresh</span></div>
-              <div class="out"><span class="dim">flow was discovered and fixed — concurrent requests were invalidating each</span></div>
-              <div class="out"><span class="dim">other's sessions. Deployed to staging and load tested at 2x production traffic.</span></div>
+              <div class="out"><span class="cyan">Team memories:</span></div>
+              <div class="out"><span class="dim">Auth middleware was rewritten to use AES-256-GCM encryption for session</span></div>
+              <div class="out"><span class="dim">tokens. A race condition in the refresh flow was causing concurrent 401s</span></div>
+              <div class="out"><span class="dim">&mdash; fixed by serializing token rotation.</span></div>
+            </div>
+          </div>
+
+          <div class="demo-step">
+            <div class="demo-label">bob's agent uses that context before touching the same code</div>
+            <div class="demo-terminal">
+              <div><span class="prompt">&gt;</span> Refactor the session middleware</div>
+              <div class="out">&nbsp;</div>
+              <div class="out"><span class="check">!</span> Before I refactor, I should note: Alice just rewrote the auth</div>
+              <div class="out">  middleware with AES-256-GCM and fixed a token refresh race condition.</div>
+              <div class="out">  Let me build on her work rather than duplicate it.</div>
             </div>
           </div>
         </div>
@@ -108,7 +111,7 @@
             <div class="out">  out "quick prototypes" as exactly the shape that caused trouble.</div>
           </div>
         </div>
-        <p>The agent was alerted to a decision from a meeting hours ago &mdash; and used it to avoid repeating a mistake. That's the difference between an agent with memory and one without.</p>
+        <p>Agents that share memory don't duplicate work, don't contradict decisions, and don't repeat mistakes the team already learned from.</p>
 
         <h2 class="section-h" id="next">// get started</h2>
         <p>Jump to <a href="#" data-goto="install">install</a> to set it up in 2 minutes, or read the <a href="#" data-goto="concepts">concepts</a> to understand the full pipeline.</p>
@@ -117,7 +120,7 @@
       <!-- CONCEPTS VIEW -->
       <section class="view" data-view="concepts">
         <h2 class="view-title">// concepts</h2>
-        <p class="view-sub">Five concepts. One pipeline. Engrams become memories, memories get recalled.</p>
+        <p class="view-sub">Engrams become memories.<br>Memories get recalled.<br>You control what gets promoted.<br>Tune curation, customize prompts, or pause logging entirely.</p>
 
         <div class="concept-list">
           <div class="concept" id="c1">
@@ -178,13 +181,12 @@
 
         <h2 class="section-h" id="arch">// architecture</h2>
         <p>Local-first, by design. All reads and writes go to local SQLite. Sync is optional and eventual. Engrams never leave your machine &mdash; only curated memories sync to the remote.</p>
-        <pre class="arch-ascii">+-- your machine (SQLite) -----------------------------+ +- remote --+
-|                                                     | |            |
-| <span class="g">engrams</span> --&gt; <span class="g">curator</span> --&gt; <span class="c">memories</span>                    | | <span class="y">git</span>        |
-|                   (local AI)                        | | <span class="dim">PG*</span>        |
-| <span class="g">episodes</span> --&gt; <span class="g">narrative curation</span> --&gt; <span class="c">memories</span>        | |            |
-|                                                     | |            |
-+-----------------------------------------------------+ +------------+</pre>
+        <pre class="arch-ascii">+- your machine -------------------+       +- remote --------+       +- another machine -----+
+|                                  |       |                  |       |                       |
+| <span class="g">engrams</span> --&gt; <span class="g">curator</span> --&gt; <span class="c">memories</span> |------&gt;| <span class="y">store</span>            |&lt;------| <span class="c">recall</span> &lt;-- <span class="g">context</span>    |
+|                                  |       |                  |       |                       |
+|                                  |       |                  |       |                       |
++----------------------------------+       +------------------+       +-----------------------+</pre>
       </section>
 
       <!-- INSTALL VIEW -->
