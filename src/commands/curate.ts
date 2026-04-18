@@ -17,6 +17,7 @@ import {
 } from '../lib/curator.js';
 import { getSyncAdapter } from '../sync/registry.js';
 import type { MemoryEntry } from '../lib/curator.js';
+import { acquireCurateLock } from '../lib/curate-lock.js';
 
 export const curateCommand = new Command('curate')
   .description('Run curation: evaluate pending engrams and promote to memories')
@@ -38,6 +39,25 @@ export const curateCommand = new Command('curate')
     }
 
     const author = config.cortex!.author;
+
+    // Concurrency lock: prevent two curation runs from writing to the same
+    // cortex DB at once. Scheduler firings can overlap if curation takes
+    // longer than the scheduler interval. Skip for --dry-run (read-only).
+    if (!opts.dryRun) {
+      const lock = acquireCurateLock(cortex);
+      if (!lock.acquired) {
+        if (opts.ifIdle) {
+          if (process.env.THINK_IDLE_DEBUG) {
+            console.log(chalk.dim(`[auto-curate] skipped: another curation is running (pid ${lock.heldByPid ?? '?'})`));
+          }
+        } else {
+          console.log(chalk.yellow(`Another curation is already running (pid ${lock.heldByPid ?? '?'}). Skipping.`));
+        }
+        closeCortexDb(cortex);
+        return;
+      }
+      // Lock released automatically on process exit via registered hooks.
+    }
 
     // --if-idle: bail early unless conditions are right. The scheduler fires
     // on a fixed cadence, so most firings should exit here in milliseconds.
