@@ -126,7 +126,9 @@ export const recallCommand = new Command('recall')
       const cutoff = new Date(Date.now() - days * 86400000).toISOString();
       const recentMemories = getMemories(cortex, { since: cutoff });
       const longterm = getLongtermSummary(cortex);
-      const allEvents = getLongTermEvents(cortex);
+      // Cap long-term events by the same day-window the user asked for,
+      // with a hard limit so this can't explode as the log grows.
+      const allEvents = getLongTermEvents(cortex, { since: cutoff, limit: 200 });
       const matchingEngrams = searchEngrams(cortex, query);
 
       if (allEvents.length > 0) {
