@@ -7,6 +7,7 @@ import { getCortexDb, closeCortexDb } from '../db/engrams.js';
 import { getMemoryCount, getSyncCursor } from '../db/memory-queries.js';
 import { getEngramsDir } from '../lib/paths.js';
 import { getSyncAdapter } from '../sync/registry.js';
+import { installAgent, uninstallAgent, getAgentStatus } from '../lib/auto-curate.js';
 
 function prompt(question: string, defaultValue?: string): Promise<string> {
   const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
@@ -332,3 +333,56 @@ cortexCommand.addCommand(new Command('status')
 
     closeCortexDb(cortex);
   }));
+
+// think cortex auto-curate — scheduled background curation
+const autoCurateCommand = new Command('auto-curate')
+  .description('Manage scheduled background curation (macOS LaunchAgent)');
+
+autoCurateCommand.addCommand(new Command('enable')
+  .description('Install a LaunchAgent that runs `think curate --if-idle` every 5 minutes')
+  .option('--interval <seconds>', 'Scheduler cadence in seconds (default 300)', (v) => parseInt(v, 10))
+  .action((opts: { interval?: number }) => {
+    try {
+      const { label, plistPath } = installAgent({ intervalSeconds: opts.interval });
+      console.log(chalk.green('✓') + ` Auto-curation enabled`);
+      console.log(chalk.dim(`  Label: ${label}`));
+      console.log(chalk.dim(`  Plist: ${plistPath}`));
+      if (process.env.THINK_HOME) {
+        console.log(chalk.dim(`  THINK_HOME: ${process.env.THINK_HOME}`));
+      }
+    } catch (err) {
+      console.error(chalk.red(err instanceof Error ? err.message : String(err)));
+      process.exit(1);
+    }
+  }));
+
+autoCurateCommand.addCommand(new Command('disable')
+  .description('Remove the auto-curation LaunchAgent for this workspace')
+  .action(() => {
+    const { removed, plistPath } = uninstallAgent();
+    if (removed) {
+      console.log(chalk.green('✓') + ` Auto-curation disabled (${plistPath})`);
+    } else {
+      console.log(chalk.dim(`No auto-curation agent installed (${plistPath})`));
+    }
+  }));
+
+autoCurateCommand.addCommand(new Command('status')
+  .description('Show auto-curation scheduler status')
+  .action(() => {
+    const s = getAgentStatus();
+    console.log(`Label:     ${chalk.cyan(s.label)}`);
+    console.log(`Installed: ${s.installed ? chalk.green('yes') : chalk.dim('no')}`);
+    console.log(`Loaded:    ${s.loaded ? chalk.green('yes') : chalk.dim('no')}`);
+    if (s.intervalSeconds) {
+      console.log(`Interval:  ${s.intervalSeconds}s`);
+    }
+    console.log(`Plist:     ${s.plistPath}`);
+    if (s.lastRunAt) {
+      console.log(`Last log:  ${s.lastRunAt.toISOString()}`);
+    } else {
+      console.log(`Last log:  ${chalk.dim('(no log file yet)')}`);
+    }
+  }));
+
+cortexCommand.addCommand(autoCurateCommand);
