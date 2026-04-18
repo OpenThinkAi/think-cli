@@ -78,18 +78,40 @@ export function acquireCurateLock(cortex: string): LockResult {
 
 function makeAcquired(lockPath: string): LockAcquired {
   let released = false;
-  const release = () => {
+
+  // Core unlink — idempotent via the `released` flag so the exit/signal
+  // handlers can't race with an explicit release() call.
+  const unlinkIfHeld = () => {
     if (released) return;
     released = true;
     try { fs.unlinkSync(lockPath); } catch { /* already gone */ }
   };
 
-  // Best-effort release on abnormal exit. finally-blocks cover the normal
-  // path; these cover SIGTERM / SIGINT / uncaught exceptions.
-  const cleanup = () => release();
-  process.once('exit', cleanup);
-  process.once('SIGINT', () => { cleanup(); process.exit(130); });
-  process.once('SIGTERM', () => { cleanup(); process.exit(143); });
+  // Signal handlers: clean up *this* lock, then propagate the signal's
+  // usual exit code. Each lock owns its own handler instances so release()
+  // can remove them precisely — important for long-running processes that
+  // acquire/release multiple times (tests, future daemons).
+  const exitHandler = () => { unlinkIfHeld(); };
+  const sigintHandler = () => { unlinkIfHeld(); process.exit(130); };
+  const sigtermHandler = () => { unlinkIfHeld(); process.exit(143); };
+
+  process.on('exit', exitHandler);
+  process.on('SIGINT', sigintHandler);
+  process.on('SIGTERM', sigtermHandler);
+
+  const release = () => {
+    if (released) {
+      // Even on double-release, drop the handlers so they don't linger.
+      process.removeListener('exit', exitHandler);
+      process.removeListener('SIGINT', sigintHandler);
+      process.removeListener('SIGTERM', sigtermHandler);
+      return;
+    }
+    unlinkIfHeld();
+    process.removeListener('exit', exitHandler);
+    process.removeListener('SIGINT', sigintHandler);
+    process.removeListener('SIGTERM', sigtermHandler);
+  };
 
   return { acquired: true, release };
 }
