@@ -371,10 +371,10 @@ export const curateCommand = new Command('curate')
     //     against the events the curator was shown — ignore links to
     //     unknown ids to avoid orphan references.
     const knownEventIds = new Set(recentEventRows.map(r => r.id));
-    const insertedEvents: number = curationResult.longTermEvents.length;
+    let insertedEvents = 0;
     for (const ev of curationResult.longTermEvents) {
       const supersedes = ev.supersedes && knownEventIds.has(ev.supersedes) ? ev.supersedes : null;
-      insertLongTermEvent(cortex, {
+      const { inserted } = insertLongTermEvent(cortex, {
         ts: ev.ts,
         author,
         kind: ev.kind,
@@ -384,6 +384,7 @@ export const curateCommand = new Command('curate')
         supersedes,
         source_memory_ids: ev.source_memory_ids,
       });
+      if (inserted) insertedEvents++;
     }
 
     // 10. Mark engrams by outcome. Anything not promoted or purged stays pending.

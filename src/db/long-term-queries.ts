@@ -37,10 +37,21 @@ export interface InsertLongTermEventParams {
   deleted_at?: string | null;
 }
 
+export interface InsertLongTermEventResult {
+  row: LongTermEventRow;
+  /** true if this call actually inserted a new row; false if a row with this
+   *  (deterministic) id already existed and the insert was skipped. The row
+   *  returned in that case is the pre-existing one, which may have differed
+   *  on fields the caller passed in (e.g. supersedes). Callers that need to
+   *  act on the distinction — like backfill, which feeds inserted events
+   *  forward as supersession context — should branch on this flag. */
+  inserted: boolean;
+}
+
 export function insertLongTermEvent(
   cortexName: string,
   params: InsertLongTermEventParams,
-): LongTermEventRow {
+): InsertLongTermEventResult {
   const db = getCortexDb(cortexName);
   // Deterministic by default so locally-inserted events have the same id as
   // they will after round-tripping through git sync. Supersession links work
@@ -51,9 +62,9 @@ export function insertLongTermEvent(
   const sourceIds = JSON.stringify(params.source_memory_ids ?? []);
 
   // OR IGNORE so re-inserting a deterministic-id duplicate is a no-op.
-  // The curator shouldn't produce exact duplicates when it's given the
-  // existing events in its prompt, but a belt-and-suspenders helps.
-  db.prepare(
+  // `changes` tells us whether the insert actually added a row or was a
+  // dedup no-op.
+  const runResult = db.prepare(
     `INSERT OR IGNORE INTO long_term_events
        (id, ts, author, kind, title, content, topics, supersedes, source_memory_ids, created_at, deleted_at, sync_version)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, (SELECT COALESCE(MAX(sync_version), 0) + 1 FROM long_term_events))`,
@@ -71,7 +82,8 @@ export function insertLongTermEvent(
     params.deleted_at ?? null,
   );
 
-  return db.prepare('SELECT * FROM long_term_events WHERE id = ?').get(id) as unknown as LongTermEventRow;
+  const row = db.prepare('SELECT * FROM long_term_events WHERE id = ?').get(id) as unknown as LongTermEventRow;
+  return { row, inserted: Number(runResult.changes) > 0 };
 }
 
 export function insertLongTermEventIfNotExists(
@@ -82,8 +94,7 @@ export function insertLongTermEventIfNotExists(
   const existing = db.prepare('SELECT id FROM long_term_events WHERE id = ?').get(params.id);
   if (existing) return false;
 
-  insertLongTermEvent(cortexName, params);
-  return true;
+  return insertLongTermEvent(cortexName, params).inserted;
 }
 
 export function getLongTermEvents(
@@ -164,20 +175,33 @@ export function getRecentLongTermEventsForContext(
   ).all(limit) as unknown as LongTermEventRow[];
 }
 
+/**
+ * Wrap a user query as an FTS5 phrase so special tokens (AND, OR, NOT, ", *, etc.)
+ * don't break parsing. FTS5 escapes a literal double quote inside a phrase by
+ * doubling it. This gives substring-y phrase semantics, which is what a naive
+ * user expects from `recall "some text"`.
+ */
+function sanitizeFtsQuery(q: string): string {
+  return `"${q.replace(/"/g, '""')}"`;
+}
+
 export function searchLongTermEvents(
   cortexName: string,
   query: string,
   limit: number = 20,
 ): LongTermEventRow[] {
   const db = getCortexDb(cortexName);
+  const ftsQuery = sanitizeFtsQuery(query);
   try {
     return db.prepare(
       `SELECT lte.* FROM long_term_events lte
        JOIN long_term_events_fts f ON lte.rowid = f.rowid
        WHERE long_term_events_fts MATCH ? AND lte.deleted_at IS NULL
        ORDER BY rank LIMIT ?`,
-    ).all(query, limit) as unknown as LongTermEventRow[];
+    ).all(ftsQuery, limit) as unknown as LongTermEventRow[];
   } catch {
+    // FTS itself failed (rare with sanitized phrase syntax, but empty-string
+    // or adversarial input can still trip it). Fall back to LIKE.
     const pattern = `%${query.replace(/%/g, '\\%').replace(/_/g, '\\_')}%`;
     return db.prepare(
       `SELECT * FROM long_term_events

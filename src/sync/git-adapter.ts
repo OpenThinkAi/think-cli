@@ -117,18 +117,16 @@ export class GitSyncAdapter implements SyncAdapter {
     const commitMsg = `curate: ${config.cortex?.author ?? 'unknown'}, ${newMemories.length} memories`;
     const maxVersion = Math.max(...newMemories.map(m => m.sync_version));
 
-    // Update cursor optimistically — if push fails, restore the old cursor.
-    // If the process dies between push and cursor restore, the next push
-    // re-sends the same memories, but pull uses INSERT OR IGNORE with
-    // deterministic IDs so duplicates in JSONL are harmless.
-    setSyncCursor(cortex, 'git', 'push', String(maxVersion));
-
+    // Advance cursor only after the commit succeeds. If we advanced before
+    // and the process crashed between setSyncCursor and appendAndCommit,
+    // the cursor would be permanently past memories that never shipped.
+    // Pull-side INSERT OR IGNORE with deterministic ids makes resending
+    // safe, so advancing late is correct.
     try {
       appendAndCommit(cortex, newLines, commitMsg, 3, targetFile);
+      setSyncCursor(cortex, 'git', 'push', String(maxVersion));
       result.pushed = newMemories.length;
     } catch (err) {
-      // Restore cursor on failure so we retry next time
-      setSyncCursor(cortex, 'git', 'push', String(lastVersion));
       result.errors.push(err instanceof Error ? err.message : String(err));
     }
 
@@ -167,13 +165,12 @@ export class GitSyncAdapter implements SyncAdapter {
     const commitMsg = `long-term: ${config.cortex?.author ?? 'unknown'}, ${newEvents.length} event${newEvents.length === 1 ? '' : 's'}`;
     const maxVersion = Math.max(...newEvents.map(e => e.sync_version));
 
-    setSyncCursor(cortex, 'git', 'push_lt', String(maxVersion));
-
+    // Advance cursor only after commit succeeds (see memory push rationale).
     try {
       appendAndCommit(cortex, newLines, commitMsg, 3, LONG_TERM_FILE);
+      setSyncCursor(cortex, 'git', 'push_lt', String(maxVersion));
       result.pushed += newEvents.length;
     } catch (err) {
-      setSyncCursor(cortex, 'git', 'push_lt', String(lastVersion));
       result.errors.push(err instanceof Error ? err.message : String(err));
     }
   }

@@ -7,6 +7,7 @@ import {
   getLongTermEvents,
   getLongTermEventCount,
   insertLongTermEvent,
+  getLongTermEventById,
 } from '../db/long-term-queries.js';
 import { closeCortexDb } from '../db/engrams.js';
 import { wrapData } from '../lib/sanitize.js';
@@ -267,9 +268,11 @@ longTermCommand.addCommand(new Command('backfill')
         }
 
         const knownIds = new Set(priorEvents.map(e => e.id));
+        let newInBatch = 0;
+        let skippedInBatch = 0;
         for (const ev of proposals) {
           const supersedes = ev.supersedes && knownIds.has(ev.supersedes) ? ev.supersedes : null;
-          const inserted = insertLongTermEvent(cortex, {
+          const { row, inserted } = insertLongTermEvent(cortex, {
             ts: ev.ts,
             author,
             kind: ev.kind,
@@ -279,18 +282,27 @@ longTermCommand.addCommand(new Command('backfill')
             supersedes,
             source_memory_ids: ev.source_memory_ids,
           });
-          priorEvents.push({
-            id: inserted.id,
-            ts: inserted.ts,
-            kind: inserted.kind,
-            title: inserted.title,
-            content: inserted.content,
-            topics: JSON.parse(inserted.topics) as string[],
-            supersedes: inserted.supersedes,
-          });
-          totalInserted++;
+          if (inserted) {
+            // Feed forward as context for later batches. We only push newly
+            // inserted rows: pre-existing ones are already visible via the
+            // previous batches (or via the prompt's prior-events section).
+            priorEvents.push({
+              id: row.id,
+              ts: row.ts,
+              kind: row.kind,
+              title: row.title,
+              content: row.content,
+              topics: JSON.parse(row.topics) as string[],
+              supersedes: row.supersedes,
+            });
+            newInBatch++;
+            totalInserted++;
+          } else {
+            skippedInBatch++;
+          }
         }
-        console.log(chalk.green(`${proposals.length} events`));
+        const skipNote = skippedInBatch > 0 ? chalk.dim(` (${skippedInBatch} duplicate${skippedInBatch === 1 ? '' : 's'} skipped)`) : '';
+        console.log(chalk.green(`${newInBatch} events`) + skipNote);
       } catch (err) {
         console.log(chalk.red(`failed: ${err instanceof Error ? err.message : String(err)}`));
       }
@@ -384,12 +396,25 @@ longTermCommand.addCommand(new Command('record')
     const topicsRaw = await ask(`  Topics (comma-separated): `);
     const topics = topicsRaw.split(',').map(t => t.trim()).filter(Boolean);
     const supersedesRaw = await ask(`  Supersedes (event id, blank for none): `);
-    const supersedes = supersedesRaw || null;
     const tsRaw = await ask(`  When did this happen? (ISO date, blank for now): `);
     const ts = tsRaw || new Date().toISOString();
     rl.close();
 
-    insertLongTermEvent(cortex, {
+    // Validate supersedes — dangling references sync badly and break chain
+    // rendering. Reject unknown ids rather than silently dropping.
+    let supersedes: string | null = null;
+    if (supersedesRaw) {
+      const existing = getLongTermEventById(cortex, supersedesRaw);
+      if (!existing) {
+        console.error(chalk.red(`Unknown event id '${supersedesRaw}' — supersedes must reference an existing event.`));
+        console.error(chalk.dim(`  Run 'think long-term list' to see valid ids.`));
+        closeCortexDb(cortex);
+        process.exit(1);
+      }
+      supersedes = supersedesRaw;
+    }
+
+    const { inserted } = insertLongTermEvent(cortex, {
       ts,
       author,
       kind,
@@ -400,10 +425,14 @@ longTermCommand.addCommand(new Command('record')
       source_memory_ids: [],
     });
 
-    console.log(chalk.green('✓') + ' Event recorded.');
+    if (inserted) {
+      console.log(chalk.green('✓') + ' Event recorded.');
+    } else {
+      console.log(chalk.yellow('⚠') + ' An event with identical ts/author/title/content already exists — no new row written.');
+    }
 
     const adapter = getSyncAdapter();
-    if (adapter?.isAvailable()) {
+    if (adapter?.isAvailable() && inserted) {
       try { await adapter.push(cortex); } catch { /* best effort */ }
     }
     closeCortexDb(cortex);
