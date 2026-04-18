@@ -20,6 +20,7 @@ import { pauseCommand, resumeCommand } from './commands/pause.js';
 import { configCommand } from './commands/config-cmd.js';
 import { updateCommand } from './commands/update.js';
 import { migrateDataCommand } from './commands/migrate-data.js';
+import { longTermCommand } from './commands/long-term.js';
 
 function readPackageVersion(): string {
   try {
@@ -59,5 +60,6 @@ program.addCommand(resumeCommand);
 program.addCommand(configCommand);
 program.addCommand(updateCommand);
 program.addCommand(migrateDataCommand);
+program.addCommand(longTermCommand);
 
 program.parse();

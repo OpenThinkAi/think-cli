@@ -18,10 +18,17 @@ import {
   getSyncCursor,
   setSyncCursor,
 } from '../db/memory-queries.js';
+import {
+  getLongTermEventsBySyncVersion,
+  insertLongTermEventIfNotExists,
+  tombstoneLongTermEvent,
+} from '../db/long-term-queries.js';
 import { getConfig } from '../lib/config.js';
-import { deterministicId } from '../lib/deterministic-id.js';
+import { deterministicId, deterministicEventId } from '../lib/deterministic-id.js';
 import { validateEngramContent } from '../lib/sanitize.js';
 import type { SyncAdapter, SyncResult } from './types.js';
+
+const LONG_TERM_FILE = 'long-term.jsonl';
 
 export class GitSyncAdapter implements SyncAdapter {
   readonly name = 'git';
@@ -125,7 +132,50 @@ export class GitSyncAdapter implements SyncAdapter {
       result.errors.push(err instanceof Error ? err.message : String(err));
     }
 
+    // Long-term events push — same cursor-driven pattern, separate file.
+    this.pushLongTermEvents(cortex, result);
+
     return result;
+  }
+
+  private pushLongTermEvents(cortex: string, result: SyncResult): void {
+    const cursorStr = getSyncCursor(cortex, 'git', 'push_lt');
+    const lastVersion = cursorStr ? parseInt(cursorStr, 10) : 0;
+
+    const newEvents = getLongTermEventsBySyncVersion(cortex, lastVersion);
+    if (newEvents.length === 0) return;
+
+    const newLines = newEvents.map(ev => {
+      let topics: string[] = [];
+      let sourceMemoryIds: string[] = [];
+      try { topics = JSON.parse(ev.topics) as string[]; } catch { /* skip malformed */ }
+      try { sourceMemoryIds = JSON.parse(ev.source_memory_ids) as string[]; } catch { /* skip malformed */ }
+      return JSON.stringify({
+        ts: ev.ts,
+        author: ev.author,
+        kind: ev.kind,
+        title: ev.title,
+        content: ev.content,
+        topics,
+        ...(ev.supersedes ? { supersedes: ev.supersedes } : {}),
+        source_memory_ids: sourceMemoryIds,
+        ...(ev.deleted_at ? { deleted_at: ev.deleted_at } : {}),
+      });
+    });
+
+    const config = getConfig();
+    const commitMsg = `long-term: ${config.cortex?.author ?? 'unknown'}, ${newEvents.length} event${newEvents.length === 1 ? '' : 's'}`;
+    const maxVersion = Math.max(...newEvents.map(e => e.sync_version));
+
+    setSyncCursor(cortex, 'git', 'push_lt', String(maxVersion));
+
+    try {
+      appendAndCommit(cortex, newLines, commitMsg, 3, LONG_TERM_FILE);
+      result.pushed += newEvents.length;
+    } catch (err) {
+      setSyncCursor(cortex, 'git', 'push_lt', String(lastVersion));
+      result.errors.push(err instanceof Error ? err.message : String(err));
+    }
   }
 
   private processMemories(cortex: string, memoriesRaw: string, result: SyncResult): void {
@@ -228,7 +278,67 @@ export class GitSyncAdapter implements SyncAdapter {
       setSyncCursor(cortex, 'git', 'pull_file', lastReadFile);
     }
 
+    // Pull long-term events — single file, not bucketed.
+    this.pullLongTermEvents(cortex, result);
+
     return result;
+  }
+
+  private pullLongTermEvents(cortex: string, result: SyncResult): void {
+    const raw = readFileFromBranch(cortex, LONG_TERM_FILE);
+    if (raw === null || !raw.trim()) return; // file doesn't exist or is empty
+
+    for (const line of raw.trim().split('\n')) {
+      if (!line.trim()) continue;
+      let parsed: Record<string, unknown>;
+      try {
+        parsed = JSON.parse(line) as Record<string, unknown>;
+      } catch {
+        continue; // skip malformed
+      }
+
+      const ts = typeof parsed.ts === 'string' ? parsed.ts : null;
+      const author = typeof parsed.author === 'string' ? parsed.author : null;
+      const title = typeof parsed.title === 'string' ? parsed.title : null;
+      const content = typeof parsed.content === 'string' ? parsed.content : null;
+      const kind = typeof parsed.kind === 'string' ? parsed.kind : null;
+
+      if (!ts || !author || !title || !content || !kind) continue;
+
+      const id = deterministicEventId(ts, author, title, content);
+      const deletedAt = typeof parsed.deleted_at === 'string' ? parsed.deleted_at : null;
+
+      if (deletedAt) {
+        tombstoneLongTermEvent(cortex, id);
+        continue;
+      }
+
+      const topics = Array.isArray(parsed.topics)
+        ? (parsed.topics as unknown[]).filter((t): t is string => typeof t === 'string')
+        : [];
+      const sourceMemoryIds = Array.isArray(parsed.source_memory_ids)
+        ? (parsed.source_memory_ids as unknown[]).filter((s): s is string => typeof s === 'string')
+        : [];
+      const supersedes = typeof parsed.supersedes === 'string' ? parsed.supersedes : null;
+
+      const { content: sanitizedContent, warnings } = validateEngramContent(content);
+      if (warnings.length > 0) {
+        result.errors.push(`Pulled long-term event from ${author} flagged: ${warnings.join(', ')}`);
+      }
+
+      const inserted = insertLongTermEventIfNotExists(cortex, {
+        id,
+        ts,
+        author,
+        kind,
+        title,
+        content: sanitizedContent,
+        topics,
+        supersedes,
+        source_memory_ids: sourceMemoryIds,
+      });
+      if (inserted) result.pulled++;
+    }
   }
 
   async sync(cortex: string): Promise<SyncResult> {

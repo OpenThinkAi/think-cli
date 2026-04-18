@@ -5,6 +5,7 @@ import { getConfig } from '../lib/config.js';
 import type { CortexConfig } from '../lib/config.js';
 import { getPendingEngrams, getPendingEpisodeEngrams, markPromoted, markPurged, pruneExpiredEngrams } from '../db/engram-queries.js';
 import { getMemories, getLongtermSummary, setLongtermSummary, insertMemory, getMemoryByEpisodeKey, tombstoneMemory } from '../db/memory-queries.js';
+import { insertLongTermEvent, getRecentLongTermEventsForContext } from '../db/long-term-queries.js';
 import { closeCortexDb } from '../db/engrams.js';
 import {
   readCuratorMd,
@@ -230,7 +231,21 @@ export const curateCommand = new Command('curate')
       return;
     }
 
-    console.log(chalk.cyan(`Evaluating ${pending.length} engrams (${recent.length} recent memories, long-term summary ${longtermSummary ? 'loaded' : 'absent'})...`));
+    // 3b. Read recent long-term events so the curator can assess supersession
+    //     and topic reuse. We pass the whole recent slice since we don't know
+    //     memory topics yet — the LLM scopes by topic itself.
+    const recentEventRows = getRecentLongTermEventsForContext(cortex, { limit: 30 });
+    const recentEventContext = recentEventRows.map(r => ({
+      id: r.id,
+      ts: r.ts,
+      kind: r.kind,
+      title: r.title,
+      content: r.content,
+      topics: (() => { try { return JSON.parse(r.topics) as string[]; } catch { return []; } })(),
+      supersedes: r.supersedes,
+    }));
+
+    console.log(chalk.cyan(`Evaluating ${pending.length} engrams (${recent.length} recent memories, ${recentEventContext.length} long-term events in context)...`));
 
     // 4. Read curator.md
     const curatorMd = readCuratorMd();
@@ -239,6 +254,7 @@ export const curateCommand = new Command('curate')
     const curationPrompt = assembleCurationPrompt({
       recentMemories: recent,
       longtermSummary,
+      recentLongTermEvents: recentEventContext,
       curatorMd,
       pendingEngrams: pending,
       author,
@@ -351,6 +367,25 @@ export const curateCommand = new Command('curate')
       }
     }
 
+    // 9b. Write long-term events to local SQLite. Validate supersession
+    //     against the events the curator was shown — ignore links to
+    //     unknown ids to avoid orphan references.
+    const knownEventIds = new Set(recentEventRows.map(r => r.id));
+    const insertedEvents: number = curationResult.longTermEvents.length;
+    for (const ev of curationResult.longTermEvents) {
+      const supersedes = ev.supersedes && knownEventIds.has(ev.supersedes) ? ev.supersedes : null;
+      insertLongTermEvent(cortex, {
+        ts: ev.ts,
+        author,
+        kind: ev.kind,
+        title: ev.title,
+        content: ev.content,
+        topics: ev.topics,
+        supersedes,
+        source_memory_ids: ev.source_memory_ids,
+      });
+    }
+
     // 10. Mark engrams by outcome. Anything not promoted or purged stays pending.
     if (promotedIds.size > 0) {
       markPromoted(cortex, [...promotedIds]);
@@ -374,12 +409,12 @@ export const curateCommand = new Command('curate')
       }
     }
 
-    // 13. Sync: push new memories to remote after curation
-    if (adapter?.isAvailable() && newEntries.length > 0) {
+    // 13. Sync: push new memories and long-term events to remote after curation
+    if (adapter?.isAvailable() && (newEntries.length > 0 || insertedEvents > 0)) {
       try {
         const pushResult = await adapter.push(cortex);
         if (pushResult.pushed > 0) {
-          console.log(chalk.dim(`  Pushed ${pushResult.pushed} memories to ${adapter.name}`));
+          console.log(chalk.dim(`  Pushed ${pushResult.pushed} items to ${adapter.name}`));
         }
       } catch {
         console.log(chalk.dim('  Sync push skipped (remote unavailable) — will push on next sync'));
@@ -390,6 +425,9 @@ export const curateCommand = new Command('curate')
     console.log();
     console.log(`${chalk.green('✓')} Curation complete`);
     console.log(`  ${pending.length} evaluated, ${newEntries.length} promoted, ${purgedIds.length} purged, ${heldCount} still pending`);
+    if (insertedEvents > 0) {
+      console.log(`  ${insertedEvents} long-term event${insertedEvents === 1 ? '' : 's'} recorded`);
+    }
     if (pruned > 0) {
       console.log(`  ${pruned} expired engrams pruned`);
     }
