@@ -43,6 +43,7 @@ export const curateCommand = new Command('curate')
     // Concurrency lock: prevent two curation runs from writing to the same
     // cortex DB at once. Scheduler firings can overlap if curation takes
     // longer than the scheduler interval. Skip for --dry-run (read-only).
+    let releaseLock: () => void = () => {};
     if (!opts.dryRun) {
       const lock = acquireCurateLock(cortex);
       if (!lock.acquired) {
@@ -56,9 +57,10 @@ export const curateCommand = new Command('curate')
         closeCortexDb(cortex);
         return;
       }
-      // Lock released automatically on process exit via registered hooks.
+      releaseLock = lock.release;
     }
 
+    try {
     // --if-idle: bail early unless conditions are right. The scheduler fires
     // on a fixed cadence, so most firings should exit here in milliseconds.
     // Skip the check for explicit episode/consolidate runs — those are manual.
@@ -393,6 +395,9 @@ export const curateCommand = new Command('curate')
     }
 
     closeCortexDb(cortex);
+    } finally {
+      releaseLock();
+    }
   });
 
 const DEFAULT_IDLE_WINDOW_MINUTES = 3;
