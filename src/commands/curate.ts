@@ -2,6 +2,7 @@ import { Command } from 'commander';
 import readline from 'node:readline';
 import chalk from 'chalk';
 import { getConfig } from '../lib/config.js';
+import type { CortexConfig } from '../lib/config.js';
 import { getPendingEngrams, getPendingEpisodeEngrams, markPromoted, markPurged, pruneExpiredEngrams } from '../db/engram-queries.js';
 import { getMemories, getLongtermSummary, setLongtermSummary, insertMemory, getMemoryByEpisodeKey, tombstoneMemory } from '../db/memory-queries.js';
 import { closeCortexDb } from '../db/engrams.js';
@@ -22,16 +23,38 @@ export const curateCommand = new Command('curate')
   .option('--dry-run', 'Preview what would be committed without saving')
   .option('--consolidate', 'Run long-term memory consolidation only (no curation)')
   .option('--episode <key>', 'Curate a specific episode into a narrative memory')
-  .action(async (opts: { dryRun?: boolean; consolidate?: boolean; episode?: string }) => {
+  .option('--if-idle', 'Only curate if the user appears idle (used by auto-curation scheduler)')
+  .action(async (opts: { dryRun?: boolean; consolidate?: boolean; episode?: string; ifIdle?: boolean }) => {
     const config = getConfig();
     const cortex = config.cortex?.active;
 
     if (!cortex) {
+      if (opts.ifIdle) {
+        // Silent no-op when the scheduler fires with no cortex configured
+        return;
+      }
       console.error(chalk.red('No active cortex. Run: think cortex switch <name>'));
       process.exit(1);
     }
 
     const author = config.cortex!.author;
+
+    // --if-idle: bail early unless conditions are right. The scheduler fires
+    // on a fixed cadence, so most firings should exit here in milliseconds.
+    // Skip the check for explicit episode/consolidate runs — those are manual.
+    if (opts.ifIdle && !opts.episode && !opts.consolidate) {
+      const shouldRun = shouldRunIdleCuration(cortex, config.cortex);
+      if (!shouldRun.run) {
+        if (process.env.THINK_IDLE_DEBUG) {
+          console.log(chalk.dim(`[auto-curate] skipped: ${shouldRun.reason}`));
+        }
+        closeCortexDb(cortex);
+        return;
+      }
+      if (process.env.THINK_IDLE_DEBUG) {
+        console.log(chalk.dim(`[auto-curate] running: ${shouldRun.reason}`));
+      }
+    }
 
     // 0. Sync: pull latest memories from remote before curation
     const adapter = getSyncAdapter();
@@ -351,3 +374,43 @@ export const curateCommand = new Command('curate')
 
     closeCortexDb(cortex);
   });
+
+const DEFAULT_IDLE_WINDOW_MINUTES = 3;
+const DEFAULT_STALE_WINDOW_MINUTES = 60;
+
+// Decide whether an auto-curation run should proceed. Returns a reason
+// string either way — useful for --if-idle telemetry and debugging.
+function shouldRunIdleCuration(
+  cortex: string,
+  cortexConfig: CortexConfig | undefined,
+): { run: boolean; reason: string } {
+  const pending = getPendingEngrams(cortex);
+
+  if (pending.length === 0) {
+    return { run: false, reason: 'no pending engrams' };
+  }
+
+  const idleMinutes = cortexConfig?.idleWindowMinutes ?? DEFAULT_IDLE_WINDOW_MINUTES;
+  const staleMinutes = cortexConfig?.staleWindowMinutes ?? DEFAULT_STALE_WINDOW_MINUTES;
+  const now = Date.now();
+
+  // pending is ordered created_at ASC — oldest first, newest last.
+  const oldest = pending[0];
+  const newest = pending[pending.length - 1];
+  const oldestAgeMin = (now - new Date(oldest.created_at).getTime()) / 60000;
+  const newestAgeMin = (now - new Date(newest.created_at).getTime()) / 60000;
+
+  // Staleness cap wins: if the oldest engram is too old, curate regardless
+  // of how recently the user synced.
+  if (oldestAgeMin >= staleMinutes) {
+    return { run: true, reason: `staleness cap hit (oldest pending ${oldestAgeMin.toFixed(1)}min old)` };
+  }
+
+  // Otherwise, respect the idle window — if the user is still actively
+  // syncing, let the burst settle.
+  if (newestAgeMin < idleMinutes) {
+    return { run: false, reason: `still active (newest engram ${newestAgeMin.toFixed(1)}min old, idle threshold ${idleMinutes}min)` };
+  }
+
+  return { run: true, reason: `idle (${pending.length} pending, newest ${newestAgeMin.toFixed(1)}min old)` };
+}

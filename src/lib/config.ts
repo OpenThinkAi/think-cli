@@ -15,6 +15,8 @@ export interface CortexConfig {
   bucketSize?: number;
   onboardingDepth?: number;
   engramTTLDays?: number;
+  idleWindowMinutes?: number;
+  staleWindowMinutes?: number;
 }
 
 export interface Config {
