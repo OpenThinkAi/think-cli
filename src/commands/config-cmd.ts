@@ -11,6 +11,7 @@ const ALLOWED_KEYS = new Set([
   'cortex.author',
   'cortex.repo',
   'cortex.active',
+  'cortex.engramTTLDays',
   'paused',
 ]);
 

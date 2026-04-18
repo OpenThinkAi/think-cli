@@ -1,5 +1,8 @@
 import { v7 as uuidv7 } from 'uuid';
 import { getCortexDb } from './engrams.js';
+import { getConfig } from '../lib/config.js';
+
+const DEFAULT_ENGRAM_TTL_DAYS = 14;
 
 export interface Engram {
   id: string;
@@ -27,7 +30,7 @@ export function insertEngram(cortexName: string, params: InsertEngramParams): En
   const id = uuidv7();
   const now = new Date();
   const created_at = now.toISOString();
-  const expiresInDays = params.expiresInDays ?? 60;
+  const expiresInDays = params.expiresInDays ?? getConfig().cortex?.engramTTLDays ?? DEFAULT_ENGRAM_TTL_DAYS;
   const expires_at = new Date(now.getTime() + expiresInDays * 86400000).toISOString();
 
   const episodeKey = params.episodeKey ?? null;
@@ -78,7 +81,16 @@ export function getEngrams(cortexName: string, params: { since?: Date; until?: D
   ).all(...values, limit) as unknown as Engram[];
 }
 
-export function markEvaluated(cortexName: string, ids: string[], promoted: boolean): void {
+export function markPromoted(cortexName: string, ids: string[]): void {
+  setEvaluatedStatus(cortexName, ids, true);
+}
+
+export function markPurged(cortexName: string, ids: string[]): void {
+  setEvaluatedStatus(cortexName, ids, false);
+}
+
+function setEvaluatedStatus(cortexName: string, ids: string[], promoted: boolean): void {
+  if (ids.length === 0) return;
   const db = getCortexDb(cortexName);
   const now = new Date().toISOString();
   const promotedVal = promoted ? 1 : 0;
@@ -91,10 +103,12 @@ export function markEvaluated(cortexName: string, ids: string[], promoted: boole
   }
 }
 
+// Purge any engram past its TTL — including pending ones. If the curator
+// hasn't found a story in them by now, they're not going to.
 export function pruneExpiredEngrams(cortexName: string): number {
   const db = getCortexDb(cortexName);
   const result = db.prepare(
-    `DELETE FROM engrams WHERE expires_at < ? AND evaluated_at IS NOT NULL`
+    `DELETE FROM engrams WHERE expires_at < ?`
   ).run(new Date().toISOString());
   return Number(result.changes);
 }
