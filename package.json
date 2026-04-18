@@ -1,6 +1,6 @@
 {
   "name": "open-think",
-  "version": "0.3.4",
+  "version": "0.4.0",
   "type": "module",
   "description": "Local-first CLI that gives AI agents persistent, curated memory",
   "bin": {
