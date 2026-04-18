@@ -14,6 +14,7 @@ export interface CortexConfig {
   maxMemoriesPerRun?: number;
   bucketSize?: number;
   onboardingDepth?: number;
+  engramTTLDays?: number;
 }
 
 export interface Config {

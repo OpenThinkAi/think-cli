@@ -2,7 +2,7 @@ import { Command } from 'commander';
 import readline from 'node:readline';
 import chalk from 'chalk';
 import { getConfig } from '../lib/config.js';
-import { getPendingEngrams, getPendingEpisodeEngrams, markEvaluated, pruneExpiredEngrams } from '../db/engram-queries.js';
+import { getPendingEngrams, getPendingEpisodeEngrams, markPromoted, markPurged, pruneExpiredEngrams } from '../db/engram-queries.js';
 import { getMemories, getLongtermSummary, setLongtermSummary, insertMemory, getMemoryByEpisodeKey, tombstoneMemory } from '../db/memory-queries.js';
 import { closeCortexDb } from '../db/engrams.js';
 import {
@@ -115,8 +115,8 @@ export const curateCommand = new Command('curate')
         episode_key: opts.episode,
       });
 
-      // Mark episode engrams as evaluated
-      markEvaluated(cortex, episodeEngrams.map(e => e.id), true);
+      // Mark episode engrams as promoted
+      markPromoted(cortex, episodeEngrams.map(e => e.id));
 
       // Push if adapter available
       if (adapter?.isAvailable()) {
@@ -202,9 +202,9 @@ export const curateCommand = new Command('curate')
       maxMemoriesPerRun: config.cortex?.maxMemoriesPerRun,
     });
 
-    let newEntries;
+    let curationResult;
     try {
-      newEntries = await runCuration(curationPrompt);
+      curationResult = await runCuration(curationPrompt);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       console.error(chalk.red(`Curation failed: ${message}`));
@@ -212,13 +212,16 @@ export const curateCommand = new Command('curate')
       process.exit(1);
     }
 
+    const newEntries = curationResult.memories;
+
     // Always set author and timestamp — don't trust the LLM to fill these correctly
     for (const entry of newEntries) {
       entry.author = author;
       if (!entry.ts) entry.ts = new Date().toISOString();
     }
 
-    // 6. Identify promoted and dropped engram IDs
+    // 6. Classify engrams: promoted (fed into a memory), purged (curator said noise),
+    //    or held (implicit — neither promoted nor purged; stays pending for next run).
     const promotedIds = new Set<string>();
     for (const entry of newEntries) {
       for (const id of entry.source_ids) {
@@ -226,9 +229,13 @@ export const curateCommand = new Command('curate')
       }
     }
 
-    const droppedIds = pending
-      .filter(e => !promotedIds.has(e.id))
-      .map(e => e.id);
+    const pendingIdSet = new Set(pending.map(e => e.id));
+    // Only purge IDs the curator actually saw this run, and don't let an engram
+    // be both promoted and purged (promotion wins).
+    const purgedIds = curationResult.purgeIds
+      .filter(id => pendingIdSet.has(id) && !promotedIds.has(id));
+
+    const heldCount = pending.length - promotedIds.size - purgedIds.length;
 
     // 7. Dry run — show preview and exit
     if (opts.dryRun) {
@@ -242,7 +249,7 @@ export const curateCommand = new Command('curate')
         }
       }
       console.log();
-      console.log(`${pending.length} evaluated, ${newEntries.length} would promote, ${droppedIds.length} would drop`);
+      console.log(`${pending.length} evaluated, ${newEntries.length} would promote, ${purgedIds.length} would purge, ${heldCount} would stay pending`);
       closeCortexDb(cortex);
       return;
     }
@@ -299,12 +306,12 @@ export const curateCommand = new Command('curate')
       }
     }
 
-    // 10. Mark engrams as evaluated
+    // 10. Mark engrams by outcome. Anything not promoted or purged stays pending.
     if (promotedIds.size > 0) {
-      markEvaluated(cortex, [...promotedIds], true);
+      markPromoted(cortex, [...promotedIds]);
     }
-    if (droppedIds.length > 0) {
-      markEvaluated(cortex, droppedIds, false);
+    if (purgedIds.length > 0) {
+      markPurged(cortex, purgedIds);
     }
 
     // 11. Prune expired engrams
@@ -337,7 +344,7 @@ export const curateCommand = new Command('curate')
     // 14. Report
     console.log();
     console.log(`${chalk.green('✓')} Curation complete`);
-    console.log(`  ${pending.length} evaluated, ${newEntries.length} promoted, ${droppedIds.length} dropped`);
+    console.log(`  ${pending.length} evaluated, ${newEntries.length} promoted, ${purgedIds.length} purged, ${heldCount} still pending`);
     if (pruned > 0) {
       console.log(`  ${pruned} expired engrams pruned`);
     }
