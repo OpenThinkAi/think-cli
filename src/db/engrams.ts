@@ -117,6 +117,49 @@ const migrations: Migration[] = [
       db.exec('ALTER TABLE memories ADD COLUMN decisions TEXT;');
     },
   },
+  {
+    version: 6,
+    up: (db) => {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS long_term_events (
+          id TEXT PRIMARY KEY NOT NULL,
+          ts TEXT NOT NULL,
+          author TEXT NOT NULL,
+          kind TEXT NOT NULL,
+          title TEXT NOT NULL,
+          content TEXT NOT NULL,
+          topics TEXT NOT NULL DEFAULT '[]',
+          supersedes TEXT,
+          source_memory_ids TEXT NOT NULL DEFAULT '[]',
+          created_at TEXT NOT NULL,
+          deleted_at TEXT,
+          sync_version INTEGER NOT NULL DEFAULT 0
+        ) STRICT;
+      `);
+
+      db.exec('CREATE INDEX IF NOT EXISTS idx_lte_ts ON long_term_events(ts);');
+      db.exec('CREATE INDEX IF NOT EXISTS idx_lte_sync_version ON long_term_events(sync_version);');
+      db.exec('CREATE INDEX IF NOT EXISTS idx_lte_supersedes ON long_term_events(supersedes);');
+
+      // FTS over title + content for keyword search during recall.
+      db.exec(`
+        CREATE VIRTUAL TABLE IF NOT EXISTS long_term_events_fts
+          USING fts5(title, content, content='long_term_events', content_rowid='rowid');
+      `);
+
+      db.exec(`
+        CREATE TRIGGER IF NOT EXISTS long_term_events_ai AFTER INSERT ON long_term_events BEGIN
+          INSERT INTO long_term_events_fts(rowid, title, content) VALUES (new.rowid, new.title, new.content);
+        END;
+      `);
+
+      db.exec(`
+        CREATE TRIGGER IF NOT EXISTS long_term_events_ad AFTER DELETE ON long_term_events BEGIN
+          INSERT INTO long_term_events_fts(long_term_events_fts, rowid, title, content) VALUES ('delete', old.rowid, old.title, old.content);
+        END;
+      `);
+    },
+  },
 ];
 
 /** Returns the per-cortex SQLite connection (holds engrams, memories, longterm_summary, and sync_cursors tables) */

@@ -9,3 +9,10 @@ export function deterministicId(ts: string, author: string, content: string): st
   const hash = crypto.createHash('sha256').update(`${ts}|${author}|${content}`).digest('hex');
   return uuidv5(hash, THINK_UUID_NAMESPACE);
 }
+
+// Separate namespace-prefixed hash for long-term events so they can't
+// collide with memory IDs even if ts/author/content happen to match.
+export function deterministicEventId(ts: string, author: string, title: string, content: string): string {
+  const hash = crypto.createHash('sha256').update(`lte|${ts}|${author}|${title}|${content}`).digest('hex');
+  return uuidv5(hash, THINK_UUID_NAMESPACE);
+}
