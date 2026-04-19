@@ -68,9 +68,23 @@ export class GitSyncAdapter implements SyncAdapter {
   async push(cortex: string): Promise<SyncResult> {
     const result: SyncResult = { pushed: 0, pulled: 0, errors: [] };
 
-    ensureRepoCloned();
-    fetchBranch(cortex);
+    try {
+      ensureRepoCloned();
+      fetchBranch(cortex);
+    } catch (err) {
+      result.errors.push(err instanceof Error ? err.message : String(err));
+      return result;
+    }
 
+    // Memory push and long-term event push are independent. Keep them as
+    // separate steps so one having nothing to send doesn't starve the other.
+    this.pushMemories(cortex, result);
+    this.pushLongTermEvents(cortex, result);
+
+    return result;
+  }
+
+  private pushMemories(cortex: string, result: SyncResult): void {
     // Get last push cursor (sync_version)
     const cursorStr = getSyncCursor(cortex, 'git', 'push');
     const lastVersion = cursorStr ? parseInt(cursorStr, 10) : 0;
@@ -81,7 +95,7 @@ export class GitSyncAdapter implements SyncAdapter {
       this.ensureMigrated(cortex, branchFiles);
     } catch (err) {
       result.errors.push(`Migration failed: ${err instanceof Error ? err.message : String(err)}`);
-      return result;
+      return;
     }
 
     // Re-read after potential migration (migration changes the file list)
@@ -91,7 +105,7 @@ export class GitSyncAdapter implements SyncAdapter {
 
     // Get memories created since last push
     const newMemories = getMemoriesBySyncVersion(cortex, lastVersion);
-    if (newMemories.length === 0) return result;
+    if (newMemories.length === 0) return;
 
     // Determine which bucket file to write to
     const targetFile = this.determineBucketFile(cortex, currentFiles);
@@ -125,15 +139,10 @@ export class GitSyncAdapter implements SyncAdapter {
     try {
       appendAndCommit(cortex, newLines, commitMsg, 3, targetFile);
       setSyncCursor(cortex, 'git', 'push', String(maxVersion));
-      result.pushed = newMemories.length;
+      result.pushed += newMemories.length;
     } catch (err) {
       result.errors.push(err instanceof Error ? err.message : String(err));
     }
-
-    // Long-term events push — same cursor-driven pattern, separate file.
-    this.pushLongTermEvents(cortex, result);
-
-    return result;
   }
 
   private pushLongTermEvents(cortex: string, result: SyncResult): void {
@@ -216,6 +225,15 @@ export class GitSyncAdapter implements SyncAdapter {
       return result;
     }
 
+    // Memory pull and long-term event pull are independent. Running both
+    // unconditionally ensures an empty memory side doesn't strand events.
+    this.pullMemories(cortex, result);
+    this.pullLongTermEvents(cortex, result);
+
+    return result;
+  }
+
+  private pullMemories(cortex: string, result: SyncResult): void {
     const config = getConfig();
     const onboardingDepth = config.cortex?.onboardingDepth ?? 1500;
     const bucketSize = config.cortex?.bucketSize ?? 500;
@@ -231,7 +249,7 @@ export class GitSyncAdapter implements SyncAdapter {
       if (memoriesRaw) {
         this.processMemories(cortex, memoriesRaw, result);
       }
-      return result;
+      return;
     }
 
     // Determine which files to read
@@ -274,11 +292,6 @@ export class GitSyncAdapter implements SyncAdapter {
     if (lastReadFile) {
       setSyncCursor(cortex, 'git', 'pull_file', lastReadFile);
     }
-
-    // Pull long-term events — single file, not bucketed.
-    this.pullLongTermEvents(cortex, result);
-
-    return result;
   }
 
   private pullLongTermEvents(cortex: string, result: SyncResult): void {
