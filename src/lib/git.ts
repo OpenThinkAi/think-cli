@@ -62,11 +62,12 @@ function assertSafePositional(value: string, fieldName: string): void {
 // practice, but both call sites (initial pull + retry-loop pull) need the
 // same behavior.
 //
-// Contract: callers MUST call assertSafePositional(branchName, ...) before
-// invoking this helper. Every current caller does. The inner `--` separator
-// already defangs a hypothetical leading-hyphen branchName at the git
-// argv boundary, so a forgotten caller guard wouldn't be a security
-// regression — it would just produce a less specific git error.
+// Re-validates branchName here as defense-in-depth even though every
+// current caller validates first. Future callers could forget the contract,
+// and the cost of the redundant check is negligible. The inner `--`
+// separator already defangs a leading-hyphen branchName at the git argv
+// boundary, so this assertion mostly improves error specificity (named
+// field vs opaque git error).
 //
 // Tolerates only the no-upstream / first-push case by matching git's own
 // error text. Network failures, auth errors, and other unexpected git
@@ -74,6 +75,7 @@ function assertSafePositional(value: string, fieldName: string): void {
 // non-CONFLICT error, which silently masked real problems and produced
 // confusing downstream push failures.
 function pullRebaseOrAbort(branchName: string): void {
+  assertSafePositional(branchName, 'branchName');
   try {
     runGit(['pull', '--rebase', 'origin', '--', branchName]);
   } catch (err) {
@@ -117,6 +119,10 @@ export function ensureRepoCloned(): void {
   }
 
   fs.mkdirSync(repoPath, { recursive: true });
+  // Both args after `--` are positionals: config.cortex.repo (validated above
+  // via assertSafePositional) and repoPath. repoPath is constructed by
+  // getRepoPath() from THINK_HOME / HOME — fully internally derived, no user
+  // input flows into it, so it doesn't need a separate validator.
   execFileSync('git', ['-c', 'core.hooksPath=/dev/null', '-c', 'core.fsmonitor=', 'clone', '--no-checkout', '--', config.cortex.repo, repoPath], {
     encoding: 'utf-8',
     stdio: ['pipe', 'pipe', 'pipe'],
