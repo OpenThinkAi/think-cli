@@ -28,7 +28,7 @@ Use PR branches on GitHub for external visibility (Claudini-style advisory revie
 - **Required reviewers on `main`:** `security`, `standards`, `product` (see `.stamp/reviewers/`)
 - **Required checks on `main`:** `build` via `npm run build` (see `.stamp/config.yml`)
 - **Mirror destination:** `OpenThinkAi/think-cli` on GitHub (see `.stamp/mirror.yml`)
-- **Trusted signer:** the Ed25519 key at `.stamp/trusted-keys/sha256_a8a6320842....pub` — maintainer's operator key
+- **Trusted signer:** the Ed25519 key at `.stamp/trusted-keys/sha256_<fingerprint>.pub` — currently the maintainer's operator key. Actual filenames on disk carry the full 64-hex-char SHA-256 fingerprint; `ls .stamp/trusted-keys/` to see them.
 
 ## Reviewer prompts
 
@@ -41,13 +41,13 @@ Prompt-tuning without polluting verdict history: `stamp reviewers test <name> --
 Solo-operator setup today. To add someone else who'd push stamped merges:
 
 1. They run `stamp keys generate` on their machine to create a local keypair
-2. They run `stamp keys export` and give you the public key
+2. They run `stamp keys export` (prints their public key to stdout) and give you the output
 3. You commit their `.pub` file to `.stamp/trusted-keys/` via a stamped merge
 4. They also need SSH access to the Railway stamp server — you add their SSH public key to the `AUTHORIZED_KEYS` env var on Railway (the CONTAINER-side SSH credentials, separate from the stamp signing key)
 
 ## Troubleshooting
 
-- **Server rejects a push as "untrusted signer"**: your stamp signing key isn't in `.stamp/trusted-keys/`. Run `stamp keys export --pub`, commit the output to the repo, merge.
+- **Server rejects a push as "untrusted signer"**: your stamp signing key isn't in `.stamp/trusted-keys/`. Run `stamp keys export` (prints the public key to stdout), save it to `.stamp/trusted-keys/sha256_<your-fingerprint>.pub`, commit, and merge via a stamped PR.
 - **SSH host key warnings**: the Railway container regenerates SSH host keys on rebuild. `ssh-keygen -R stamp && ssh stamp 'ls /srv/git/'` accepts the new key. All stamp repos share this host; one acceptance fixes them all.
 - **`stamp review` says the gate is closed**: run `stamp status --diff main..HEAD` to see which reviewers haven't approved, then re-invoke them (edit the diff, `stamp review` again) or iterate on the prompts if they're wrong.
 
