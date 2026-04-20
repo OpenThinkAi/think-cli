@@ -52,9 +52,11 @@ function isNewer(latest: string, current: string): boolean {
 
 export function checkForUpdate(): string | null {
   // Opt-out for air-gapped machines, privacy-minded users, and environments
-  // where outbound network calls are undesirable. Set THINK_NO_UPDATE_CHECK=1
-  // to skip the background `npm view` call entirely.
-  if (process.env.THINK_NO_UPDATE_CHECK === '1') return null;
+  // where outbound network calls are undesirable. Any common truthy value
+  // (1, true, yes — case-insensitive) skips the background `npm view` call
+  // entirely.
+  const optOut = (process.env.THINK_NO_UPDATE_CHECK ?? '').trim().toLowerCase();
+  if (optOut === '1' || optOut === 'true' || optOut === 'yes') return null;
 
   const installed = getInstalledVersion();
   if (!installed) return null;
