@@ -62,13 +62,18 @@ function assertSafePositional(value: string, fieldName: string): void {
 // practice, but both call sites (initial pull + retry-loop pull) need the
 // same behavior.
 //
+// Contract: callers MUST call assertSafePositional(branchName, ...) before
+// invoking this helper. Every current caller does. The inner `--` separator
+// already defangs a hypothetical leading-hyphen branchName at the git
+// argv boundary, so a forgotten caller guard wouldn't be a security
+// regression — it would just produce a less specific git error.
+//
 // Tolerates only the no-upstream / first-push case by matching git's own
 // error text. Network failures, auth errors, and other unexpected git
 // failures surface — an earlier revision of this helper swallowed every
 // non-CONFLICT error, which silently masked real problems and produced
 // confusing downstream push failures.
 function pullRebaseOrAbort(branchName: string): void {
-  assertSafePositional(branchName, 'branchName');
   try {
     runGit(['pull', '--rebase', 'origin', '--', branchName]);
   } catch (err) {
