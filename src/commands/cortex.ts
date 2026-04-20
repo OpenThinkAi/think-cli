@@ -9,10 +9,11 @@ import { getEngramDbPath, getEngramsDir } from '../lib/paths.js';
 import { getSyncAdapter } from '../sync/registry.js';
 import { installAgent, uninstallAgent, getAgentStatus } from '../lib/auto-curate.js';
 
-// Accepted repo-URL prefixes. Rejects values starting with '-' so the URL
-// can never be parsed by git as a CLI option (e.g. '--upload-pack=<cmd>'),
-// and rejects empty-non-empty input so typos don't produce offline-only
-// mode by accident.
+// Repo-URL validation. Empty input is a valid choice — it selects offline-only
+// mode (no sync backend configured). Non-empty input must start with one of
+// the accepted transport prefixes and must not start with '-', so a value
+// from a tampered config.json can't be parsed by git as a CLI option
+// (e.g. '--upload-pack=<cmd>').
 function validateRepoUrl(url: string): void {
   if (!url) return; // empty is valid — offline-only mode
   if (url.startsWith('-')) {
@@ -23,7 +24,7 @@ function validateRepoUrl(url: string): void {
   const allowed = /^(https?:\/\/|git@[^:\s]+:|ssh:\/\/|git:\/\/)/;
   if (!allowed.test(url)) {
     throw new Error(
-      `Invalid repo URL: "${url}". Must start with https://, http://, git@host:, ssh://, or git://.`,
+      `Invalid repo URL: "${url}". Must start with https:// (preferred), ssh://, git://, git@<host>:<path>, or http:// (not recommended — traffic is unencrypted).`,
     );
   }
 }

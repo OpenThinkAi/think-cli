@@ -62,7 +62,7 @@ function assertSafePositional(value: string, fieldName: string): void {
 // practice, but both call sites (initial pull + retry-loop pull) need the
 // same behavior.
 function pullRebaseOrAbort(branchName: string): void {
-  assertSafePositional(branchName, 'branchName');
+  assertSafePositional(branchName, 'branch name');
   try {
     runGit(['pull', '--rebase', 'origin', '--', branchName]);
   } catch (err) {
@@ -105,7 +105,7 @@ export function ensureRepoCloned(): void {
 }
 
 export function branchExists(branchName: string): boolean {
-  assertSafePositional(branchName, 'branchName');
+  assertSafePositional(branchName, 'branch name');
   try {
     runGit(['ls-remote', '--exit-code', '--heads', 'origin', '--', branchName]);
     return true;
@@ -115,7 +115,7 @@ export function branchExists(branchName: string): boolean {
 }
 
 export function createOrphanBranch(branchName: string): void {
-  assertSafePositional(branchName, 'branchName');
+  assertSafePositional(branchName, 'branch name');
   // Note: `git checkout --orphan` consumes its branch-name argument directly
   // and doesn't support `--` before it (the separator would be parsed as the
   // branch name). assertSafePositional above is the defense for this call
@@ -135,12 +135,12 @@ export function createOrphanBranch(branchName: string): void {
 }
 
 export function fetchBranch(branchName: string): void {
-  assertSafePositional(branchName, 'branchName');
+  assertSafePositional(branchName, 'branch name');
   runGit(['fetch', 'origin', '--', branchName]);
 }
 
 export function readFileFromBranch(branchName: string, filePath: string): string | null {
-  assertSafePositional(branchName, 'branchName');
+  assertSafePositional(branchName, 'branch name');
   try {
     // `show` takes a single composed ref:path argument, so `--` doesn't help
     // here. assertSafePositional on branchName handles the leading-hyphen
@@ -158,7 +158,7 @@ export function appendAndCommit(
   maxRetries: number = 3,
   targetFile: string = 'memories.jsonl',
 ): void {
-  assertSafePositional(branchName, 'branchName');
+  assertSafePositional(branchName, 'branch name');
   const repoPath = getRepoPath();
   const filePath = path.join(repoPath, targetFile);
 
@@ -193,7 +193,7 @@ export function appendAndCommit(
 }
 
 export function getFileLog(branchName: string, filePath: string): string {
-  assertSafePositional(branchName, 'branchName');
+  assertSafePositional(branchName, 'branch name');
   return runGit(['log', '--oneline', `origin/${branchName}`, '--', filePath]);
 }
 
@@ -206,7 +206,7 @@ export function listRemoteBranches(): string[] {
 }
 
 export function listBranchFiles(branchName: string, extension?: string): string[] {
-  assertSafePositional(branchName, 'branchName');
+  assertSafePositional(branchName, 'branch name');
   try {
     // `origin/${branchName}` is a composed ref, not a positional that git
     // would parse as a flag — a ref like `origin/--foo` is a ref name, not
@@ -230,7 +230,7 @@ export function countBranchFileLines(branchName: string, filePath: string): numb
 }
 
 export function migrateToBuckets(branchName: string): void {
-  assertSafePositional(branchName, 'branchName');
+  assertSafePositional(branchName, 'branch name');
   const repoPath = getRepoPath();
 
   try { runGit(['switch', '--', branchName]); }
