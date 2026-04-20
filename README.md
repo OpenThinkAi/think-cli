@@ -164,3 +164,11 @@ think config show              Print configuration
 think config set <key> <val>   Update a config value
 think update                   Update to latest version
 ```
+
+## Security model
+
+See [SECURITY.md](./SECURITY.md) for the full threat model and vulnerability disclosure process. A few points worth surfacing up-front:
+
+- **Pulled engrams from peers are untrusted content.** When you pull a cortex from another peer, the memories that land in your local DB were written by them. We escape `<data>` delimiters when feeding those memories to your Claude agent, and pattern-match a short list of common injection phrasings, but this is opportunistic warning, not a security boundary. A malicious peer can trivially bypass with paraphrase, translation, or novel phrasing. **Treat a cortex peer with the same trust level you'd give any other source of data your AI agent will read — do not add a cortex peer you don't trust.**
+- **`cortex.repo` is security-sensitive configuration.** `think cortex setup` validates the URL shape on input, but if you edit `~/.config/think/config.json` by hand (or follow a tutorial that tells you to), a malformed URL can give an attacker code execution the next time you run a cortex-syncing command. Stick to URLs that start with `https://`, `ssh://`, `git://`, or `git@host:`.
+- **`THINK_NO_UPDATE_CHECK=1`** disables the once-per-24-hours `npm view open-think` call that powers the update banner. Useful for air-gapped machines, privacy-sensitive environments, or CI where outbound network calls aren't desirable.

@@ -5,9 +5,28 @@ import readline from 'node:readline';
 import { getConfig, saveConfig } from '../lib/config.js';
 import { getCortexDb, closeCortexDb } from '../db/engrams.js';
 import { getMemoryCount, getSyncCursor } from '../db/memory-queries.js';
-import { getEngramsDir } from '../lib/paths.js';
+import { getEngramDbPath, getEngramsDir } from '../lib/paths.js';
 import { getSyncAdapter } from '../sync/registry.js';
 import { installAgent, uninstallAgent, getAgentStatus } from '../lib/auto-curate.js';
+
+// Accepted repo-URL prefixes. Rejects values starting with '-' so the URL
+// can never be parsed by git as a CLI option (e.g. '--upload-pack=<cmd>'),
+// and rejects empty-non-empty input so typos don't produce offline-only
+// mode by accident.
+function validateRepoUrl(url: string): void {
+  if (!url) return; // empty is valid — offline-only mode
+  if (url.startsWith('-')) {
+    throw new Error(
+      `Invalid repo URL: "${url}" starts with '-'. URLs cannot begin with a hyphen.`,
+    );
+  }
+  const allowed = /^(https?:\/\/|git@[^:\s]+:|ssh:\/\/|git:\/\/)/;
+  if (!allowed.test(url)) {
+    throw new Error(
+      `Invalid repo URL: "${url}". Must start with https://, http://, git@host:, ssh://, or git://.`,
+    );
+  }
+}
 
 function prompt(question: string, defaultValue?: string): Promise<string> {
   const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
@@ -31,6 +50,13 @@ cortexCommand.addCommand(new Command('setup')
 
     if (!repo) {
       repo = await prompt('Git repo URL for cortex storage (leave empty for offline-only): ');
+    }
+
+    try {
+      validateRepoUrl(repo);
+    } catch (err) {
+      console.error(chalk.red(err instanceof Error ? err.message : String(err)));
+      process.exit(1);
     }
 
     const author = await prompt(`Your name (for memory attribution): `, config.cortex?.author);
@@ -173,9 +199,11 @@ cortexCommand.addCommand(new Command('switch')
       process.exit(1);
     }
 
-    // Check if local DB exists
-    const engramsDir = getEngramsDir();
-    const dbPath = `${engramsDir}/${name}.db`;
+    // Check if local DB exists. Route path construction through
+    // getEngramDbPath so `name` flows through sanitizeName (rejects '..',
+    // path separators, and non-alphanumeric characters). Matches how every
+    // other engram-path site resolves.
+    const dbPath = getEngramDbPath(name);
     if (!fs.existsSync(dbPath)) {
       // Check if it exists remotely
       const adapter = getSyncAdapter();
