@@ -8,26 +8,7 @@ import { getMemoryCount, getSyncCursor } from '../db/memory-queries.js';
 import { getEngramDbPath, getEngramsDir } from '../lib/paths.js';
 import { getSyncAdapter } from '../sync/registry.js';
 import { installAgent, uninstallAgent, getAgentStatus } from '../lib/auto-curate.js';
-
-// Repo-URL validation. Empty input is a valid choice — it selects offline-only
-// mode (no sync backend configured). Non-empty input must start with one of
-// the accepted transport prefixes and must not start with '-', so a value
-// from a tampered config.json can't be parsed by git as a CLI option
-// (e.g. '--upload-pack=<cmd>').
-function validateRepoUrl(url: string): void {
-  if (!url) return; // empty is valid — offline-only mode
-  if (url.startsWith('-')) {
-    throw new Error(
-      `Invalid repo URL: "${url}" starts with '-'. URLs cannot begin with a hyphen.`,
-    );
-  }
-  const allowed = /^(https?:\/\/|git@[^:\s]+:|ssh:\/\/|git:\/\/)/;
-  if (!allowed.test(url)) {
-    throw new Error(
-      `Invalid repo URL: "${url}". Must start with https:// (preferred), ssh://, git://, git@<host>:<path>, or http:// (not recommended — traffic is unencrypted).`,
-    );
-  }
-}
+import { validateRepoUrl } from '../lib/repo-url.js';
 
 function prompt(question: string, defaultValue?: string): Promise<string> {
   const rl = readline.createInterface({ input: process.stdin, output: process.stdout });

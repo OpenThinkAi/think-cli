@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { getRepoPath } from './paths.js';
 import { getConfig } from './config.js';
+import { validateRepoUrl } from './repo-url.js';
 
 // Sanitized environment for git subprocesses — strips variables that could
 // alter git behavior (hook injection, credential interception, path redirection)
@@ -49,9 +50,13 @@ function assertSafePositional(value: string, fieldName: string): void {
     throw new Error(`Invalid ${fieldName}: empty or undefined.`);
   }
   if (value.startsWith('-')) {
+    const remediation = fieldName.startsWith('cortex.')
+      ? ` Fix with 'think cortex setup' or edit ~/.config/think/config.json.`
+      : ``;
     throw new Error(
       `Invalid ${fieldName}: "${value}" starts with '-'. ` +
-        `Values passed to git as positional arguments cannot begin with a hyphen.`,
+        `Values passed to git as positional arguments cannot begin with a hyphen.` +
+        remediation,
     );
   }
 }
@@ -69,7 +74,10 @@ function pullRebaseOrAbort(branchName: string): void {
     const message = err instanceof Error ? err.message : String(err);
     if (message.includes('CONFLICT') || message.includes('could not apply')) {
       try { runGit(['rebase', '--abort']); } catch { /* best effort */ }
-      throw new Error(`Rebase conflict on ${branchName}. This should not happen with append-only files.`);
+      throw new Error(
+        `Rebase conflict on ${branchName}. This should not happen with append-only files — ` +
+          `if it recurs, open an issue at https://github.com/OpenThinkAi/think-cli/issues with the git output above.`,
+      );
     }
     // Acceptable: rebase fails when local branch has no upstream yet (first push).
     // Swallow and return; caller's subsequent push will either succeed or surface a clearer error.
@@ -81,10 +89,13 @@ export function ensureRepoCloned(): void {
   if (!config.cortex?.repo) {
     throw new Error('No cortex repo configured. Run: think cortex setup');
   }
-  // Read-time validation — config.json tampering that injected a leading
-  // '-' into cortex.repo would otherwise get interpreted by git as a flag
-  // (e.g. '--upload-pack=<cmd>' → RCE).
-  assertSafePositional(config.cortex.repo, 'cortex.repo');
+  // Read-time validation uses the same regex as `think cortex setup` — a
+  // value that smuggled past setup-time validation (because the config file
+  // was edited directly) still gets rejected here. Rejects leading '-'
+  // (--upload-pack=<cmd>-style argv injection) AND non-allowlisted
+  // transport schemes (file://, bare paths, custom protocols), so the
+  // "upgrade breaking change" callout in the README is actually enforced.
+  validateRepoUrl(config.cortex.repo);
 
   const repoPath = getRepoPath();
 
