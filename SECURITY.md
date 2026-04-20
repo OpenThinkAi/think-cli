@@ -61,7 +61,7 @@ Do not add a cortex peer you don't trust at the same level as any other source o
 
 We defend against this with two layers:
 
-1. `think cortex setup` validates the repo URL on input — must match `^(https?://|git@host:|ssh://|git://)`, cannot start with `-`.
+1. `think cortex setup` validates the repo URL on input — the regex `^(https?://|git@[^:\s]+:|ssh://|git://)` matches the four accepted forms (any hostname in the ssh-shortcut form, not the literal word "host"), and leading `-` is rejected separately.
 2. The git wrapper validates repo and branch-name values at every subprocess invocation site and inserts `--` separators where git supports them. A value that smuggled past input validation (because the config file was edited directly) still gets rejected at the subprocess boundary.
 
 Neither layer defends against an attacker who has full write access to your home directory — at that point they could install a trojaned `think` binary directly. The layered validation exists to make less-privileged compromises (a tutorial with a malicious "paste this command" step, a stale onboarding link) unexploitable.

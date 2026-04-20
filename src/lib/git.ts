@@ -61,6 +61,12 @@ function assertSafePositional(value: string, fieldName: string): void {
 // across retry attempts. Append-only files shouldn't produce conflicts in
 // practice, but both call sites (initial pull + retry-loop pull) need the
 // same behavior.
+//
+// Tolerates only the no-upstream / first-push case by matching git's own
+// error text. Network failures, auth errors, and other unexpected git
+// failures surface — an earlier revision of this helper swallowed every
+// non-CONFLICT error, which silently masked real problems and produced
+// confusing downstream push failures.
 function pullRebaseOrAbort(branchName: string): void {
   assertSafePositional(branchName, 'branchName');
   try {
@@ -71,8 +77,17 @@ function pullRebaseOrAbort(branchName: string): void {
       try { runGit(['rebase', '--abort']); } catch { /* best effort */ }
       throw new Error(`Rebase conflict on ${branchName}. This should not happen with append-only files.`);
     }
-    // Acceptable: rebase fails when local branch has no upstream yet (first push).
-    // Swallow and return; caller's subsequent push will either succeed or surface a clearer error.
+    // Acceptable: the remote branch doesn't exist yet (first push), or the
+    // local branch has no tracking information. git prints these specific
+    // strings; anything else is a real failure worth surfacing.
+    if (
+      message.includes("Couldn't find remote ref") ||
+      message.includes("couldn't find remote ref") ||
+      message.includes('no tracking information')
+    ) {
+      return;
+    }
+    throw new Error(`git pull --rebase failed on ${branchName}: ${message}`);
   }
 }
 
@@ -239,7 +254,9 @@ export function migrateToBuckets(branchName: string): void {
   // pull --rebase updates local branch pointer + working tree from remote.
   // Caller already called fetchBranch (updates remote refs), so this pull
   // is fast. appendAndCommit also does pull --rebase, but that's a no-op
-  // if nothing changed between migration and append.
+  // if nothing changed between migration and append. The helper tolerates
+  // first-push / no-upstream cases internally (prior inline catch
+  // commented it as "tolerate upstream issues (e.g. first push)").
   pullRebaseOrAbort(branchName);
 
   const legacyPath = path.join(repoPath, 'memories.jsonl');

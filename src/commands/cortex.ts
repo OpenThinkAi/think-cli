@@ -23,7 +23,7 @@ function validateRepoUrl(url: string): void {
   const allowed = /^(https?:\/\/|git@[^:\s]+:|ssh:\/\/|git:\/\/)/;
   if (!allowed.test(url)) {
     throw new Error(
-      `Invalid repo URL: "${url}". Must start with https://, http://, git@host:, ssh://, or git://.`,
+      `Invalid repo URL: "${url}". Must start with https://, http://, git@<host>:<path>, ssh://, or git://.`,
     );
   }
 }
