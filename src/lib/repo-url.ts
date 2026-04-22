@@ -28,3 +28,37 @@ export function validateRepoUrl(url: string): void {
     );
   }
 }
+
+// Parse any accepted repo URL into (host, path) so callers can decide two URLs
+// point at the same repo despite transport differences. Returns null when the
+// input doesn't match a known shape — callers fall back to strict comparison.
+function parseRepoUrl(url: string): { host: string; path: string } | null {
+  if (!url) return null;
+  let host: string;
+  let path: string;
+
+  const scp = url.match(/^[\w.-]+@([^:\s]+):(.+)$/);
+  if (scp) {
+    host = scp[1];
+    path = scp[2];
+  } else {
+    const withScheme = url.match(/^(?:https?|ssh|git):\/\/(?:[^@/]+@)?([^/\s]+)\/(.+)$/i);
+    if (!withScheme) return null;
+    host = withScheme[1];
+    path = withScheme[2];
+  }
+
+  path = path.replace(/\/+$/, '').replace(/\.git$/i, '').replace(/\/+$/, '');
+  return { host: host.toLowerCase(), path };
+}
+
+// Two remote URLs are equivalent when they resolve to the same host and path,
+// ignoring transport (ssh vs https), `.git` suffix, trailing slashes, and
+// userinfo. Falls back to strict equality if either URL can't be parsed.
+export function repoUrlsEquivalent(a: string, b: string): boolean {
+  if (a === b) return true;
+  const pa = parseRepoUrl(a);
+  const pb = parseRepoUrl(b);
+  if (!pa || !pb) return false;
+  return pa.host === pb.host && pa.path === pb.path;
+}

@@ -13,6 +13,7 @@ import { closeCortexDb } from '../db/engrams.js';
 import { wrapData } from '../lib/sanitize.js';
 import type { LongTermEventProposal } from '../lib/curator.js';
 import { getSyncAdapter } from '../sync/registry.js';
+import { formatSyncError } from '../sync/errors.js';
 
 const BACKFILL_SYSTEM_PROMPT = `You are a long-term memory curator performing a one-time backfill. You receive a batch of historical memories from a single month and produce the durable long-term events that summarize what happened.
 
@@ -332,8 +333,11 @@ longTermCommand.addCommand(new Command('backfill')
         if (pushResult.pushed > 0) {
           console.log(chalk.dim(`  Pushed ${pushResult.pushed} items to ${adapter.name}`));
         }
-      } catch {
-        console.log(chalk.dim('  Sync push skipped (remote unavailable) — will push on next sync'));
+        for (const msg of pushResult.errors) {
+          console.log(chalk.yellow(`  ⚠ Push: ${formatSyncError(msg)}`));
+        }
+      } catch (err) {
+        console.log(chalk.yellow(`  ⚠ Push failed: ${formatSyncError(err)}`));
       }
     }
 

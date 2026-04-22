@@ -5,6 +5,7 @@ import { getMemories, insertMemory } from '../db/memory-queries.js';
 import { printDecisions } from './recall.js';
 import { closeCortexDb } from '../db/engrams.js';
 import { getSyncAdapter } from '../sync/registry.js';
+import { formatSyncError } from '../sync/errors.js';
 import { validateEngramContent } from '../lib/sanitize.js';
 
 const addCommand = new Command('add')
@@ -58,9 +59,14 @@ const addCommand = new Command('add')
           if (!opts.silent && result.pushed > 0) {
             console.log(chalk.dim(`  Pushed ${result.pushed} memories to ${adapter.name}`));
           }
-        } catch {
           if (!opts.silent) {
-            console.log(chalk.dim('  Push skipped (remote unavailable) — will push on next sync'));
+            for (const msg of result.errors) {
+              console.log(chalk.yellow(`  ⚠ Push: ${formatSyncError(msg)}`));
+            }
+          }
+        } catch (err) {
+          if (!opts.silent) {
+            console.log(chalk.yellow(`  ⚠ Push failed: ${formatSyncError(err)}`));
           }
         }
       }
