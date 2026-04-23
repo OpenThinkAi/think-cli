@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { getRepoPath } from './paths.js';
 import { getConfig } from './config.js';
-import { validateRepoUrl } from './repo-url.js';
+import { validateRepoUrl, repoUrlsEquivalent } from './repo-url.js';
 
 // Sanitized environment for git subprocesses — strips variables that could
 // alter git behavior (hook injection, credential interception, path redirection)
@@ -101,7 +101,11 @@ export function ensureRepoCloned(): void {
 
   if (fs.existsSync(path.join(repoPath, '.git'))) {
     const remote = runGit(['remote', 'get-url', 'origin'], repoPath);
-    if (remote !== config.cortex.repo) {
+    // Compare by normalized (host, path) so ssh://, https://, and the SCP
+    // shortcut for the same repo don't trigger a false mismatch — the common
+    // case is a user flipping the on-disk remote's transport without touching
+    // config (or vice versa). If they actually point elsewhere, still throw.
+    if (!repoUrlsEquivalent(remote, config.cortex.repo)) {
       throw new Error(`Repo at ${repoPath} points to ${remote}, expected ${config.cortex.repo}`);
     }
     return;

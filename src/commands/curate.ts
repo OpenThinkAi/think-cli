@@ -17,6 +17,7 @@ import {
   runConsolidation,
 } from '../lib/curator.js';
 import { getSyncAdapter } from '../sync/registry.js';
+import { formatSyncError } from '../sync/errors.js';
 import type { MemoryEntry } from '../lib/curator.js';
 import { acquireCurateLock } from '../lib/curate-lock.js';
 
@@ -87,8 +88,11 @@ export const curateCommand = new Command('curate')
         if (pullResult.pulled > 0) {
           console.log(chalk.dim(`  Pulled ${pullResult.pulled} memories from ${adapter.name}`));
         }
-      } catch {
-        console.log(chalk.dim('  Sync pull skipped (remote unavailable)'));
+        for (const msg of pullResult.errors) {
+          console.log(chalk.yellow(`  ⚠ Pull: ${formatSyncError(msg)}`));
+        }
+      } catch (err) {
+        console.log(chalk.yellow(`  ⚠ Pull failed: ${formatSyncError(err)}`));
       }
     }
 
@@ -171,8 +175,11 @@ export const curateCommand = new Command('curate')
           if (pushResult.pushed > 0) {
             console.log(chalk.dim(`  Pushed ${pushResult.pushed} memories to ${adapter.name}`));
           }
-        } catch {
-          console.log(chalk.dim('  Sync push skipped (remote unavailable)'));
+          for (const msg of pushResult.errors) {
+            console.log(chalk.yellow(`  ⚠ Push: ${formatSyncError(msg)}`));
+          }
+        } catch (err) {
+          console.log(chalk.yellow(`  ⚠ Push failed: ${formatSyncError(err)}`));
         }
       }
 
@@ -417,8 +424,11 @@ export const curateCommand = new Command('curate')
         if (pushResult.pushed > 0) {
           console.log(chalk.dim(`  Pushed ${pushResult.pushed} items to ${adapter.name}`));
         }
-      } catch {
-        console.log(chalk.dim('  Sync push skipped (remote unavailable) — will push on next sync'));
+        for (const msg of pushResult.errors) {
+          console.log(chalk.yellow(`  ⚠ Push: ${formatSyncError(msg)}`));
+        }
+      } catch (err) {
+        console.log(chalk.yellow(`  ⚠ Push failed: ${formatSyncError(err)}`));
       }
     }
 
