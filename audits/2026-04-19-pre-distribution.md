@@ -1,5 +1,7 @@
 # Security TODO
 
+> **Status (2026-04-22): RESOLVED.** All five priorities in this document shipped via PR [#27](https://github.com/OpenThinkAi/think-cli/pull/27) (and the stamp-gate setup via [#28](https://github.com/OpenThinkAi/think-cli/pull/28)). The "Pending" framing + unchecked verification boxes below are the original as-delivered content, preserved verbatim per the convention in [`README.md`](./README.md). This status banner is the only edit.
+
 Pending hardening work identified in a pre-distribution audit of `open-think` (think-cli). The audit was run on 2026-04-19 against commit `a5750d0` (v0.4.1). Line numbers in this doc reference that commit; verify against `main` before editing — several files have churned since then.
 
 Everything in this document is actionable in one PR, roughly 20–40 lines of real changes. Nothing is blocked on external review or design.
