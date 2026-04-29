@@ -90,41 +90,19 @@ function renderLongTermEvents(cortex: string, events: LongTermEventRow[]): void 
   for (const s of standalone) printChain(s);
 }
 
-function dedupeEvents(events: LongTermEventRow[]): LongTermEventRow[] {
-  const seen = new Set<string>();
-  const out: LongTermEventRow[] = [];
-  for (const e of events) {
-    if (seen.has(e.id)) continue;
-    seen.add(e.id);
-    out.push(e);
-  }
-  return out;
-}
-
-// Memories occasionally land in the table with identical (ts, author, content)
-// but distinct uuids — e.g. when the curate flow promotes overlapping engrams
-// across runs. They're indistinguishable to a human reader, so collapse them
-// before display. Preserves first-occurrence order, which keeps FTS rank
-// (default search) and recency order (--all path) intact.
-function dedupeMemories<T extends { ts: string; author: string; content: string }>(rows: T[]): T[] {
+// Long-term events dedupe by id (deterministic, append-only). Memories and
+// engrams have no stable dedupe id — same (ts, author, content) can land
+// twice with distinct uuidv7s when the curate flow promotes overlapping
+// engrams across runs. Callers pick the visible-identity key. First
+// occurrence wins, preserving FTS rank in the default path and recency in
+// --all.
+function dedupeBy<T>(rows: T[], key: (r: T) => string): T[] {
   const seen = new Set<string>();
   const out: T[] = [];
   for (const r of rows) {
-    const key = JSON.stringify([r.ts, r.author, r.content]);
-    if (seen.has(key)) continue;
-    seen.add(key);
-    out.push(r);
-  }
-  return out;
-}
-
-function dedupeEngrams<T extends { created_at: string; content: string }>(rows: T[]): T[] {
-  const seen = new Set<string>();
-  const out: T[] = [];
-  for (const r of rows) {
-    const key = JSON.stringify([r.created_at, r.content]);
-    if (seen.has(key)) continue;
-    seen.add(key);
+    const k = key(r);
+    if (seen.has(k)) continue;
+    seen.add(k);
     out.push(r);
   }
   return out;
@@ -153,12 +131,18 @@ export const recallCommand = new Command('recall')
       const { getMemories } = await import('../db/memory-queries.js');
       const days = parseInt(opts.days, 10);
       const cutoff = new Date(Date.now() - days * 86400000).toISOString();
-      const recentMemories = dedupeMemories(getMemories(cortex, { since: cutoff }));
+      const recentMemories = dedupeBy(
+        getMemories(cortex, { since: cutoff }),
+        m => JSON.stringify([m.ts, m.author, m.content]),
+      );
       const longterm = getLongtermSummary(cortex);
       // Cap long-term events by the same day-window the user asked for,
       // with a hard limit so this can't explode as the log grows.
       const allEvents = getLongTermEvents(cortex, { since: cutoff, limit: 200 });
-      const matchingEngrams = dedupeEngrams(searchEngrams(cortex, query));
+      const matchingEngrams = dedupeBy(
+        searchEngrams(cortex, query),
+        e => JSON.stringify([e.created_at, e.content]),
+      );
 
       if (allEvents.length > 0) {
         console.log(chalk.cyan('Long-term history:'));
@@ -201,13 +185,16 @@ export const recallCommand = new Command('recall')
     }
 
     // Default: FTS search against memories AND long-term events.
-    const matchingMemories = dedupeMemories(searchMemories(cortex, query, limit));
+    const matchingMemories = dedupeBy(
+      searchMemories(cortex, query, limit),
+      m => JSON.stringify([m.ts, m.author, m.content]),
+    );
 
     // Long-term: FTS match on title/content + topic match (free-form tokens).
     const queryTopics = query.toLowerCase().split(/[\s,]+/).filter(Boolean);
     const ftsEvents = searchLongTermEvents(cortex, query, limit);
     const topicEvents = getRecentLongTermEventsForContext(cortex, { topics: queryTopics, limit });
-    const matchingEvents = dedupeEvents([...ftsEvents, ...topicEvents]);
+    const matchingEvents = dedupeBy([...ftsEvents, ...topicEvents], e => e.id);
 
     if (matchingEvents.length > 0) {
       console.log(chalk.cyan(`Long-term history (${matchingEvents.length}):`));
@@ -238,7 +225,10 @@ export const recallCommand = new Command('recall')
 
     // Optionally include engrams
     if (opts.engrams) {
-      const matchingEngrams = dedupeEngrams(searchEngrams(cortex, query, limit));
+      const matchingEngrams = dedupeBy(
+        searchEngrams(cortex, query, limit),
+        e => JSON.stringify([e.created_at, e.content]),
+      );
       if (matchingEngrams.length > 0) {
         console.log(chalk.cyan(`Matching engrams (${matchingEngrams.length}):`));
         for (const e of matchingEngrams) {
