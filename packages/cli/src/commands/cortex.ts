@@ -400,7 +400,7 @@ cortexCommand.addCommand(new Command('pull')
 // think cortex sync
 cortexCommand.addCommand(new Command('sync')
   .description('Sync memories with remote (pull + push)')
-  .option('--if-online', 'Skip silently if remote is unreachable. Used by the auto-sync LaunchAgent to avoid log spam when offline (VPN down, server unreachable). Real errors during sync (auth, push conflicts) still surface — only the precondition probe is allowed to soft-fail.')
+  .option('--if-online', 'Skip silently if remote is unreachable (used by the auto-sync LaunchAgent).')
   .action(async (opts: { ifOnline?: boolean }) => {
     const config = getConfig();
     const cortex = config.cortex?.active;
@@ -448,7 +448,7 @@ cortexCommand.addCommand(new Command('sync')
     // when there's something to report.
     if (opts.ifOnline) {
       if (result.pulled > 0 || result.pushed > 0) {
-        console.log(chalk.green('✓') + ` [auto-sync] pulled ${result.pulled}, pushed ${result.pushed}`);
+        console.log(chalk.green('✓') + ` [auto-sync] Pulled ${result.pulled}, pushed ${result.pushed}`);
       }
     } else {
       console.log(chalk.green('✓') + ` Pulled ${result.pulled}, pushed ${result.pushed}`);
@@ -549,7 +549,17 @@ const autoSyncCommand = new Command('auto-sync')
 
 autoSyncCommand.addCommand(new Command('enable')
   .description('Install a LaunchAgent that runs `think cortex sync --if-online` on session load and every 60 seconds')
-  .option('--interval <seconds>', 'Scheduler cadence in seconds (default 60)', (v) => parseInt(v, 10))
+  .option('--interval <seconds>', 'Scheduler cadence in seconds (default 60)', (v) => {
+    const n = parseInt(v, 10);
+    // commander's parser ignores throws here in some configs and we'd write
+    // <integer>NaN</integer> into the plist with stdio:'ignore' on launchctl,
+    // so the user would walk away with a broken agent. Reject loudly.
+    if (!Number.isInteger(n) || n <= 0 || String(n) !== v.trim()) {
+      console.error(chalk.red(`--interval must be a positive integer (got: '${v}')`));
+      process.exit(1);
+    }
+    return n;
+  })
   .action((opts: { interval?: number }) => {
     try {
       const { label, plistPath } = installSyncAgent({ intervalSeconds: opts.interval });

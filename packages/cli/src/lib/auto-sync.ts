@@ -42,7 +42,7 @@ export function getLogPath(): string {
 function resolveThinkBinary(): string {
   const arg1 = process.argv[1];
   if (arg1 && fs.existsSync(arg1)) return arg1;
-  throw new Error('Could not resolve think binary path');
+  throw new Error('Could not resolve think binary path (could not locate the think CLI; reinstall or run `which think`).');
 }
 
 function resolveNodeBinary(): string {
