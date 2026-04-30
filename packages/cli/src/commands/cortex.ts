@@ -25,11 +25,55 @@ export const cortexCommand = new Command('cortex')
 
 // think cortex setup
 cortexCommand.addCommand(new Command('setup')
-  .description('Configure a sync backend for cortex storage')
-  .argument('[repo]', 'Git remote URL (e.g., git@github.com:org/hivedb.git)')
-  .action(async (repo?: string) => {
+  .description('Configure a sync backend for cortex storage (git or http)')
+  .argument('[repo]', 'Git remote URL (e.g., git@github.com:org/hivedb.git). Mutually exclusive with --server.')
+  .option('--server <url>', 'Use an open-think-server backend instead of git (e.g., https://think.mycorp.com)')
+  .option('--token <token>', 'Bearer token for the open-think-server backend (required with --server)')
+  .action(async (repo: string | undefined, opts: { server?: string; token?: string }) => {
     const config = getConfig();
 
+    if (opts.server && repo) {
+      console.error(chalk.red('Pick one of `--server <url>` or a git repo argument, not both.'));
+      process.exit(1);
+    }
+
+    // HTTP server backend
+    if (opts.server) {
+      if (!opts.token) {
+        console.error(chalk.red('--server requires --token (the bearer token your server expects).'));
+        process.exit(1);
+      }
+      try {
+        new URL(opts.server);
+      } catch {
+        console.error(chalk.red(`Invalid --server URL: ${opts.server}`));
+        process.exit(1);
+      }
+
+      const author = await prompt(`Your name (for memory attribution): `, config.cortex?.author);
+      if (!author) {
+        console.error(chalk.red('Author name is required.'));
+        process.exit(1);
+      }
+
+      config.cortex = {
+        ...config.cortex,
+        author,
+        active: config.cortex?.active,
+        server: { url: opts.server, token: opts.token },
+      };
+      // Drop a stale repo when switching to a server backend so the registry
+      // doesn't keep handing back the git adapter.
+      delete config.cortex.repo;
+
+      saveConfig(config);
+
+      console.log(chalk.green('✓') + ` Cortex server: ${opts.server}`);
+      console.log(chalk.green('✓') + ` Author: ${author}`);
+      return;
+    }
+
+    // Git backend (existing path)
     if (!repo) {
       repo = await prompt('Git repo URL for cortex storage (leave empty for offline-only): ');
     }
