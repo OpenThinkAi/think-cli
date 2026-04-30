@@ -54,8 +54,11 @@ All endpoints except `/v1/health` require `Authorization: Bearer <THINK_TOKEN>`.
 | LT event `kind` | 64 chars |
 | LT event `title` | 512 chars |
 | LT event `supersedes` | 128 chars |
+| LT event `deleted_at` | 64 chars |
 | events per request | 500 |
 | cortex name | 64 chars (a-z, A-Z, 0-9, `_`, `-`) |
+
+`topics` and `source_memory_ids` are arrays of strings without an explicit per-element or array-length cap on the server side. The CLI controls what gets sent. If you need to lock those down for a public-facing deploy, add a reverse-proxy body-size limit.
 
 ### Cursor format
 

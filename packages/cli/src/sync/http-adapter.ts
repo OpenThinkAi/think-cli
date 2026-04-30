@@ -156,7 +156,7 @@ export class HttpSyncAdapter implements SyncAdapter {
     let lastVersion = cursorStr ? parseInt(cursorStr, 10) : 0;
 
     for (;;) {
-      const slice = getLongTermEventsBySyncVersion(cortex, lastVersion).slice(0, SYNC_BATCH);
+      const slice = getLongTermEventsBySyncVersion(cortex, lastVersion, SYNC_BATCH);
       if (slice.length === 0) break;
       const cursorTo = slice[slice.length - 1].sync_version;
 
@@ -272,10 +272,14 @@ export class HttpSyncAdapter implements SyncAdapter {
             source_memory_ids: ev.source_memory_ids ?? [],
             deleted_at: ev.deleted_at,
           });
+          // Both branches represent state changes pulled from the server:
+          // a freshly-inserted-as-tombstoned row and an existing live row
+          // we just tombstoned both count as one "pulled" event.
           if (wasInserted) {
             result.pulled++;
           } else {
             tombstoneLongTermEvent(cortex, ev.id);
+            result.pulled++;
           }
           continue;
         }

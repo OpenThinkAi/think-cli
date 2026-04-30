@@ -172,20 +172,20 @@ describe('open-think-server', () => {
         source_memory_ids: ['mem-1'],
       };
 
-      const first = await request<{ accepted: number; affected: number }>({
+      const first = await request<{ accepted: number; inserted: number }>({
         method: 'POST',
         path: `/v1/cortexes/${cortexName}/long-term-events`,
         body: { events: [event] },
       });
       expect(first.status).toBe(200);
-      expect(first.body.affected).toBe(1);
+      expect(first.body.inserted).toBe(1);
 
-      const second = await request<{ accepted: number; affected: number }>({
+      const second = await request<{ accepted: number; inserted: number }>({
         method: 'POST',
         path: `/v1/cortexes/${cortexName}/long-term-events`,
         body: { events: [event] },
       });
-      expect(second.body.affected).toBe(0);
+      expect(second.body.inserted).toBe(0);
     });
 
     it('paginates pull by server_seq', async () => {

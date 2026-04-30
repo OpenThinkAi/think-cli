@@ -99,12 +99,15 @@ longTermEvents.post('/v1/cortexes/:name/long-term-events', async (c) => {
     );
 
     await client.query('COMMIT');
+    // Same field name as the memories endpoint for cross-resource consistency.
+    // For memories `inserted` is strictly insert-count (memories are immutable);
+    // for LT events `inserted` also counts the tombstone-update path because
+    // that's the only update path a row can take, and it represents new
+    // information the server didn't have before. Both endpoints answer the
+    // same question: how many of these did you newly observe?
     return c.json({
       accepted: parsed.data.events.length,
-      // rowCount counts both inserts and the conditional updates, which is
-      // what callers actually want to know ("how many rows did the server
-      // newly observe").
-      affected: result.rowCount ?? 0,
+      inserted: result.rowCount ?? 0,
     });
   } catch (err) {
     await client.query('ROLLBACK');
