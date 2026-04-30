@@ -386,10 +386,13 @@ export class GitSyncAdapter implements SyncAdapter {
 
   // Probe by running `git ls-remote --exit-code <repo> HEAD` against the
   // configured remote with a 5s timeout. Network failures (DNS, TCP, VPN)
-  // exit non-zero quickly. SSH auth failures also exit non-zero — the spike
-  // accepts that trade-off: the next manual `cortex sync` will surface the
-  // real auth error loudly, matching how curate behaves when sync is broken
-  // but the engram DB is fine.
+  // exit non-zero quickly and we report unreachable. Auth failures (bad SSH
+  // key, expired token, host key mismatch) ALSO exit non-zero, but the
+  // SyncAdapter contract requires us to report those as reachable so the
+  // caller's subsequent sync surfaces the real auth error loudly. We
+  // distinguish by inspecting stderr for known auth-failure patterns —
+  // imperfect (locale-dependent), but catches every failure mode git
+  // produces in English.
   async isReachable(): Promise<boolean> {
     const config = getConfig();
     const repo = config.cortex?.repo;
@@ -398,11 +401,38 @@ export class GitSyncAdapter implements SyncAdapter {
       execFileSync(
         'git',
         ['-c', 'core.hooksPath=/dev/null', 'ls-remote', '--exit-code', '--', repo, 'HEAD'],
-        { stdio: 'ignore', timeout: 5000, env: { ...process.env, GIT_TERMINAL_PROMPT: '0' } },
+        { stdio: ['ignore', 'pipe', 'pipe'], timeout: 5000, env: { ...process.env, GIT_TERMINAL_PROMPT: '0' } },
       );
       return true;
-    } catch {
+    } catch (err) {
+      // execFileSync surfaces stderr on the thrown error. If stderr looks
+      // like an auth/credential failure, treat the host as reachable so the
+      // caller runs the full sync and the real error surfaces — see the
+      // SyncAdapter.isReachable contract.
+      const stderr = (err as NodeJS.ErrnoException & { stderr?: Buffer | string })?.stderr;
+      const stderrText = stderr ? (Buffer.isBuffer(stderr) ? stderr.toString('utf8') : stderr) : '';
+      if (looksLikeAuthFailure(stderrText)) return true;
       return false;
     }
   }
+}
+
+// English-only matchers covering every auth-flavored failure git surfaces:
+// SSH publickey rejection, HTTPS Basic auth, host key verification failure,
+// suppressed-prompt empty-credential paths, and protocol-error variants
+// servers send when an authenticated request is malformed.
+function looksLikeAuthFailure(stderr: string): boolean {
+  if (!stderr) return false;
+  const patterns = [
+    /Permission denied/i,
+    /publickey/i,
+    /Authentication failed/i,
+    /could not read (Username|Password)/i,
+    /Host key verification failed/i,
+    /access denied/i,
+    /403\s+Forbidden/,
+    /401\s+Unauthorized/,
+    /access rights/i,
+  ];
+  return patterns.some((re) => re.test(stderr));
 }

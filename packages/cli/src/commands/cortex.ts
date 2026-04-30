@@ -12,6 +12,7 @@ import {
   installAgent as installSyncAgent,
   uninstallAgent as uninstallSyncAgent,
   getAgentStatus as getSyncAgentStatus,
+  getLogPath as getSyncLogPath,
 } from '../lib/auto-sync.js';
 import { validateRepoUrl } from '../lib/repo-url.js';
 
@@ -569,6 +570,10 @@ autoSyncCommand.addCommand(new Command('enable')
       if (process.env.THINK_HOME) {
         console.log(chalk.dim(`  THINK_HOME: ${process.env.THINK_HOME}`));
       }
+      // RunAtLoad: true → first sync fires immediately on `launchctl load`.
+      // Tell the user where to watch so "did it work?" is answerable.
+      console.log(chalk.dim(`  First run fires immediately; tail the log to watch:`));
+      console.log(chalk.dim(`    tail -f ${getSyncLogPath()}`));
     } catch (err) {
       console.error(chalk.red(err instanceof Error ? err.message : String(err)));
       process.exit(1);
@@ -598,9 +603,9 @@ autoSyncCommand.addCommand(new Command('status')
     }
     console.log(`Plist:     ${s.plistPath}`);
     if (s.lastRunAt) {
-      console.log(`Last log:  ${s.lastRunAt.toISOString()}`);
+      console.log(`Last log entry:  ${s.lastRunAt.toISOString()}`);
     } else {
-      console.log(`Last log:  ${chalk.dim('(no log file yet)')}`);
+      console.log(`Last log entry:  ${chalk.dim('(no log file yet)')}`);
     }
   }));
 
