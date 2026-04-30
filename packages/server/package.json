@@ -1,0 +1,44 @@
+{
+  "name": "open-think-server",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "HTTP backend for the open-think CLI — sync cortex memories over an authenticated REST API backed by Postgres.",
+  "bin": {
+    "open-think-server": "dist/index.js"
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsup",
+    "prepublishOnly": "npm run build",
+    "dev": "tsx watch src/index.ts",
+    "start": "node dist/index.js",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "homepage": "https://openthink.dev",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/OpenThinkAi/think-cli.git",
+    "directory": "packages/server"
+  },
+  "license": "MIT",
+  "engines": {
+    "node": ">=22.5.0"
+  },
+  "dependencies": {
+    "@hono/node-server": "^1.13.7",
+    "hono": "^4.12.15",
+    "pg": "^8.13.1",
+    "zod": "^4.4.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.14.1",
+    "@types/pg": "^8.11.10",
+    "tsup": "^8.4.0",
+    "tsx": "^4.19.3",
+    "typescript": "^5.8.3",
+    "vitest": "^4.1.5"
+  }
+}
