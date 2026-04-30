@@ -33,7 +33,7 @@ function isLoopbackHost(host: string): boolean {
 cortexCommand.addCommand(new Command('setup')
   .description('Configure a sync backend for cortex storage (git or http)')
   .argument('[repo]', 'Git remote URL (e.g., git@github.com:org/hivedb.git). Mutually exclusive with --server.')
-  .option('--server <url>', 'Use an open-think-server backend instead of git (e.g., https://think.mycorp.com)')
+  .option('--server <url>', 'Use an open-think-server backend instead of git (e.g., https://think.mycorp.com). Mutually exclusive with the [repo] positional argument.')
   .option('--token <token>', 'Bearer token for the open-think-server backend. Reads $THINK_SERVER_TOKEN if omitted to keep the secret out of shell history.')
   .action(async (repo: string | undefined, opts: { server?: string; token?: string }) => {
     const config = getConfig();
@@ -80,10 +80,16 @@ cortexCommand.addCommand(new Command('setup')
         process.exit(1);
       }
 
+      // Normalize the URL at write time so what's stored matches what the
+      // adapter actually uses (no trailing slash). `cortex status` then
+      // displays the same canonical form.
+      const canonicalUrl = opts.server.replace(/\/+$/, '');
+
+      const hadRepo = !!config.cortex?.repo;
       config.cortex = {
         ...config.cortex,
         author,
-        server: { url: opts.server, token },
+        server: { url: canonicalUrl, token },
       };
       // Drop a stale repo when switching to a server backend so the registry
       // doesn't keep handing back the git adapter.
@@ -91,8 +97,11 @@ cortexCommand.addCommand(new Command('setup')
 
       saveConfig(config);
 
-      console.log(chalk.green('✓') + ` Cortex server: ${opts.server}`);
+      console.log(chalk.green('✓') + ` Cortex server: ${canonicalUrl}`);
       console.log(chalk.green('✓') + ` Author: ${author}`);
+      if (hadRepo) {
+        console.log(chalk.dim('  (cleared previous git repo backend)'));
+      }
 
       // Fail-fast on credential mistakes: hit the server once so a wrong
       // token / unreachable host is surfaced now rather than at first sync.
@@ -427,7 +436,7 @@ cortexCommand.addCommand(new Command('status')
     console.log(`Backend: ${backendName}`);
 
     if (config.cortex?.server?.url) {
-      console.log(`Server: ${config.cortex.server.url} ${chalk.dim('(token redacted)')}`);
+      console.log(`Server: ${config.cortex.server.url} ${chalk.dim('(token configured)')}`);
     } else if (config.cortex?.repo) {
       console.log(`Repo: ${config.cortex.repo}`);
     }
