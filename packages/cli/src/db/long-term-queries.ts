@@ -129,8 +129,14 @@ export function getLongTermEvents(
 export function getLongTermEventsBySyncVersion(
   cortexName: string,
   sinceVersion: number,
+  limit?: number,
 ): LongTermEventRow[] {
   const db = getCortexDb(cortexName);
+  if (limit != null) {
+    return db.prepare(
+      'SELECT * FROM long_term_events WHERE sync_version > ? ORDER BY sync_version ASC LIMIT ?'
+    ).all(sinceVersion, limit) as unknown as LongTermEventRow[];
+  }
   return db.prepare(
     'SELECT * FROM long_term_events WHERE sync_version > ? ORDER BY sync_version ASC',
   ).all(sinceVersion) as unknown as LongTermEventRow[];

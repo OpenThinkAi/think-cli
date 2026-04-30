@@ -5,7 +5,6 @@ import readline from 'node:readline';
 import { getConfig, saveConfig } from '../lib/config.js';
 import { getCortexDb, closeCortexDb } from '../db/engrams.js';
 import { getMemoryCount, getSyncCursor } from '../db/memory-queries.js';
-import { getLongTermEventCount } from '../db/long-term-queries.js';
 import { getEngramDbPath, getEngramsDir } from '../lib/paths.js';
 import { getSyncAdapter } from '../sync/registry.js';
 import { installAgent, uninstallAgent, getAgentStatus } from '../lib/auto-curate.js';
@@ -110,24 +109,6 @@ cortexCommand.addCommand(new Command('setup')
       console.log(chalk.green('✓') + ` Author: ${author}`);
       if (hadRepo) {
         console.log(chalk.dim('  (cleared previous git repo backend)'));
-      }
-
-      // Long-term events sync via git but not (yet) via http. Surface this
-      // explicitly when there's existing local data so the user isn't
-      // surprised by a silent feature gap on the next sync.
-      const activeCortex = config.cortex.active;
-      if (activeCortex) {
-        try {
-          const ltCount = getLongTermEventCount(activeCortex);
-          if (ltCount > 0) {
-            console.log(chalk.yellow(
-              `  ⚠ ${ltCount} long-term event(s) on cortex "${activeCortex}" will not propagate over the http backend yet. ` +
-              `They stay local until http long-term sync ships. The git backend syncs them today.`,
-            ));
-          }
-        } catch {
-          // Cortex DB may not exist yet — fine, nothing to warn about.
-        }
       }
 
       // Fail-fast on credential mistakes: hit the server once so a wrong
