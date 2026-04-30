@@ -44,6 +44,14 @@ cortexCommand.addCommand(new Command('setup')
       process.exit(1);
     }
 
+    // --token only makes sense with --server. Silently dropping it would let a
+    // user think they configured an http backend when they actually configured
+    // a git one.
+    if (opts.token && !opts.server) {
+      console.error(chalk.red('--token requires --server. The git backend does not use bearer tokens.'));
+      process.exit(1);
+    }
+
     // HTTP server backend
     if (opts.server) {
       const token = opts.token ?? process.env.THINK_SERVER_TOKEN;
