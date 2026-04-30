@@ -1,0 +1,35 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: think
+      POSTGRES_PASSWORD: think
+      POSTGRES_DB: think
+    ports:
+      # 5434 on host to avoid colliding with common Postgres ports (5432 default,
+      # 5433 also commonly used). Override with `THINK_PG_PORT` if needed.
+      - "${THINK_PG_PORT:-5434}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U think"]
+      interval: 2s
+      timeout: 2s
+      retries: 20
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+  server:
+    build:
+      context: .
+      dockerfile: packages/server/Dockerfile
+    environment:
+      DATABASE_URL: postgres://think:think@postgres:5432/think
+      THINK_TOKEN: dev-token-change-me
+      PORT: "3000"
+    ports:
+      - "3000:3000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+volumes:
+  pgdata:
