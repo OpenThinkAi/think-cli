@@ -22,6 +22,12 @@ export function validateRepoUrl(url: string): void {
       `Invalid repo URL: "${url}" starts with '-'. URLs cannot begin with a hyphen.`,
     );
   }
+  // Test-only escape hatch: file:// URLs are blocked in production because
+  // they're a foot-gun (clone-of-doom from attacker-controlled paths), but
+  // the contract test suite needs them to drive a local bare repo as the
+  // shared remote between two peer fixtures. Gated behind an env var so
+  // it cannot be enabled by accident in real installs.
+  if (process.env.THINK_TEST_ALLOW_FILE_URL && url.startsWith('file://')) return;
   if (!ALLOWED.test(url)) {
     throw new Error(
       `Invalid repo URL: "${url}". Must start with https:// (preferred), ssh://, git://, <user>@<host>:<path> (ssh shortcut — any username), or http:// (not recommended — traffic is unencrypted). Fix with 'think cortex setup' or edit ~/.config/think/config.json.`,
