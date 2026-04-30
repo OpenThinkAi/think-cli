@@ -7,8 +7,18 @@ import {
 import { getConfig } from '../lib/config.js';
 import type { SyncAdapter, SyncResult } from './types.js';
 
-const PUSH_BATCH = 500;
-const PULL_BATCH = 500;
+/** Per-request batch size for both push and pull. Server's hard cap is 500. */
+const SYNC_BATCH = 500;
+
+function safeParseArray(raw: string | null): string[] | undefined {
+  if (raw == null) return undefined;
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    return Array.isArray(parsed) ? (parsed as string[]) : undefined;
+  } catch {
+    return undefined; // skip malformed — matches git-adapter behavior
+  }
+}
 
 interface RemoteMemory {
   id: string;
@@ -77,7 +87,7 @@ export class HttpSyncAdapter implements SyncAdapter {
     // ones, and advances the cursor past the whole window — including any
     // tombstones we silently dropped (memories are immutable via sync).
     for (;;) {
-      const slice = getMemoriesBySyncVersion(cortex, lastVersion).slice(0, PUSH_BATCH);
+      const slice = getMemoriesBySyncVersion(cortex, lastVersion, SYNC_BATCH);
       if (slice.length === 0) break;
 
       const live = slice.filter(m => !m.deleted_at);
@@ -90,9 +100,9 @@ export class HttpSyncAdapter implements SyncAdapter {
             ts: m.ts,
             author: m.author,
             content: m.content,
-            source_ids: JSON.parse(m.source_ids),
+            source_ids: safeParseArray(m.source_ids) ?? [],
             episode_key: m.episode_key ?? undefined,
-            decisions: m.decisions ? JSON.parse(m.decisions) : undefined,
+            decisions: safeParseArray(m.decisions) ?? undefined,
           })),
         };
 
@@ -107,7 +117,7 @@ export class HttpSyncAdapter implements SyncAdapter {
           return result;
         }
 
-        const json = await res.json() as { accepted: number; inserted: number };
+        const json = await res.json() as { accepted: number };
         result.pushed += json.accepted;
       }
 
@@ -115,7 +125,7 @@ export class HttpSyncAdapter implements SyncAdapter {
       lastVersion = cursorTo;
 
       // Drained the queue when the slice was a partial batch.
-      if (slice.length < PUSH_BATCH) break;
+      if (slice.length < SYNC_BATCH) break;
     }
 
     return result;
@@ -126,7 +136,7 @@ export class HttpSyncAdapter implements SyncAdapter {
     let since = getSyncCursor(cortex, this.name, 'pull') ?? '0';
 
     for (;;) {
-      const path = `/v1/cortexes/${encodeURIComponent(cortex)}/memories?since=${encodeURIComponent(since)}&limit=${PULL_BATCH}`;
+      const path = `/v1/cortexes/${encodeURIComponent(cortex)}/memories?since=${encodeURIComponent(since)}&limit=${SYNC_BATCH}`;
       const res = await this.authedFetch(path);
       if (!res.ok) {
         const text = await res.text().catch(() => '');
@@ -153,7 +163,7 @@ export class HttpSyncAdapter implements SyncAdapter {
       since = json.next_since;
       setSyncCursor(cortex, this.name, 'pull', since);
 
-      if (json.memories.length < PULL_BATCH) break;
+      if (json.memories.length < SYNC_BATCH) break;
     }
 
     return result;

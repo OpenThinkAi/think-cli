@@ -1,4 +1,5 @@
 import { randomBytes } from 'node:crypto';
+import path from 'node:path';
 import { beforeAll, afterAll, describe } from 'vitest';
 import pg from 'pg';
 import { serve } from '@hono/node-server';
@@ -102,7 +103,7 @@ const factory: AdapterFactory<HttpRemote> = {
       ...existing,
       cortex: {
         ...existing.cortex,
-        author: `test-peer-${peer.thinkHome.split('/').pop()}`,
+        author: `test-peer-${path.basename(peer.thinkHome)}`,
         server: { url: remote.url, token: remote.token },
         // Make sure no stale repo config makes the registry pick the git adapter.
         repo: undefined,

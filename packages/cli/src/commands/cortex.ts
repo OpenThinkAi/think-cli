@@ -5,6 +5,7 @@ import readline from 'node:readline';
 import { getConfig, saveConfig } from '../lib/config.js';
 import { getCortexDb, closeCortexDb } from '../db/engrams.js';
 import { getMemoryCount, getSyncCursor } from '../db/memory-queries.js';
+import { getLongTermEventCount } from '../db/long-term-queries.js';
 import { getEngramDbPath, getEngramsDir } from '../lib/paths.js';
 import { getSyncAdapter } from '../sync/registry.js';
 import { installAgent, uninstallAgent, getAgentStatus } from '../lib/auto-curate.js';
@@ -34,7 +35,7 @@ cortexCommand.addCommand(new Command('setup')
   .description('Configure a sync backend for cortex storage (git or http)')
   .argument('[repo]', 'Git remote URL (e.g., git@github.com:org/hivedb.git). Mutually exclusive with --server.')
   .option('--server <url>', 'Use an open-think-server backend instead of git (e.g., https://think.mycorp.com). Mutually exclusive with the [repo] positional argument.')
-  .option('--token <token>', 'Bearer token for the open-think-server backend. Reads $THINK_SERVER_TOKEN if omitted to keep the secret out of shell history.')
+  .option('--token <token>', 'Bearer token for the open-think-server backend. Falls back to $THINK_SERVER_TOKEN, which is preferred to avoid leaking the token into shell history.')
   .action(async (repo: string | undefined, opts: { server?: string; token?: string }) => {
     const config = getConfig();
 
@@ -103,13 +104,31 @@ cortexCommand.addCommand(new Command('setup')
         console.log(chalk.dim('  (cleared previous git repo backend)'));
       }
 
+      // Long-term events sync via git but not (yet) via http. Surface this
+      // explicitly when there's existing local data so the user isn't
+      // surprised by a silent feature gap on the next sync.
+      const activeCortex = config.cortex.active;
+      if (activeCortex) {
+        try {
+          const ltCount = getLongTermEventCount(activeCortex);
+          if (ltCount > 0) {
+            console.log(chalk.yellow(
+              `  ⚠ ${ltCount} long-term event(s) on cortex "${activeCortex}" will not propagate over the http backend yet. ` +
+              `They stay local until http long-term sync ships. The git backend syncs them today.`,
+            ));
+          }
+        } catch {
+          // Cortex DB may not exist yet — fine, nothing to warn about.
+        }
+      }
+
       // Fail-fast on credential mistakes: hit the server once so a wrong
       // token / unreachable host is surfaced now rather than at first sync.
       const adapter = getSyncAdapter();
       if (adapter?.isAvailable()) {
         try {
           await adapter.listRemoteCortexes();
-          console.log(chalk.green('✓') + ' Server reachable, token accepted');
+          console.log(chalk.green('✓') + ' Server reachable');
         } catch (err) {
           console.log(chalk.yellow(
             '  ⚠ Could not reach the server: ' + (err instanceof Error ? err.message : String(err)),
