@@ -3,8 +3,18 @@ import fs from 'node:fs';
 import { v4 as uuidv4 } from 'uuid';
 import { getThinkConfigDir } from './paths.js';
 
+export interface ServerBackendConfig {
+  /** Base URL of an open-think-server instance, e.g. `https://think.mycorp.com`. */
+  url: string;
+  /** Bearer token presented as `Authorization: Bearer <token>`. */
+  token: string;
+}
+
 export interface CortexConfig {
-  repo: string;
+  /** Git remote URL. Optional — only used by the git sync backend. */
+  repo?: string;
+  /** open-think-server backend. Mutually exclusive with `repo`. */
+  server?: ServerBackendConfig;
   active?: string;
   author: string;
   curateEveryN?: number;

@@ -86,8 +86,17 @@ export function getMemories(cortexName: string, params: {
   ).all(...values) as unknown as MemoryRow[];
 }
 
-export function getMemoriesBySyncVersion(cortexName: string, sinceVersion: number): MemoryRow[] {
+export function getMemoriesBySyncVersion(
+  cortexName: string,
+  sinceVersion: number,
+  limit?: number,
+): MemoryRow[] {
   const db = getCortexDb(cortexName);
+  if (limit != null) {
+    return db.prepare(
+      'SELECT * FROM memories WHERE sync_version > ? ORDER BY sync_version ASC LIMIT ?'
+    ).all(sinceVersion, limit) as unknown as MemoryRow[];
+  }
   return db.prepare(
     'SELECT * FROM memories WHERE sync_version > ? ORDER BY sync_version ASC'
   ).all(sinceVersion) as unknown as MemoryRow[];
