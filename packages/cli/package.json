@@ -1,0 +1,53 @@
+{
+  "name": "open-think",
+  "version": "0.4.1",
+  "type": "module",
+  "description": "Local-first CLI that gives AI agents persistent, curated memory",
+  "bin": {
+    "think": "dist/index.js"
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsup && find dist -name '*.js' -exec sed -i '' 's/from \"sqlite\"/from \"node:sqlite\"/g' {} +",
+    "prepublishOnly": "npm run build",
+    "dev": "tsx src/index.ts",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "homepage": "https://openthink.dev",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/OpenThinkAi/think-cli.git",
+    "directory": "packages/cli"
+  },
+  "keywords": [
+    "cli",
+    "memory",
+    "ai",
+    "agents",
+    "work-log",
+    "local-first",
+    "curation"
+  ],
+  "license": "MIT",
+  "engines": {
+    "node": ">=22.5.0"
+  },
+  "dependencies": {
+    "@anthropic-ai/claude-agent-sdk": "^0.2.98",
+    "chalk": "^5.4.1",
+    "commander": "^13.1.0",
+    "date-fns": "^4.1.0",
+    "uuid": "^11.1.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.14.1",
+    "@types/uuid": "^10.0.0",
+    "tsup": "^8.4.0",
+    "tsx": "^4.19.3",
+    "typescript": "^5.8.3",
+    "vitest": "^4.1.5"
+  }
+}
