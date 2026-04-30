@@ -18,13 +18,4 @@ export function ensureSchema(db: DatabaseSync): void {
   if (!columns.some(c => c.name === 'deleted_at')) {
     db.exec(`ALTER TABLE entries ADD COLUMN deleted_at TEXT`);
   }
-
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS sync_peers (
-      peer_id TEXT PRIMARY KEY,
-      last_synced_db_version INTEGER NOT NULL DEFAULT 0,
-      hostname TEXT,
-      last_seen TEXT
-    );
-  `);
 }

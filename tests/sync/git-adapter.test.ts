@@ -69,7 +69,6 @@ const factory: AdapterFactory<GitRemote> = {
   },
 };
 
-// `enforceImmutableMemories: false` because today's git adapter still propagates
-// memory tombstones — the immutable-memory contract test would fail. BLOOM-122
-// removes that propagation; flip this flag to `true` in that PR.
-runSyncAdapterContractTests(factory, { enforceImmutableMemories: false });
+// Memory tombstones are not propagated by sync (BLOOM-122). The contract
+// suite enforces this for every adapter.
+runSyncAdapterContractTests(factory, { enforceImmutableMemories: true });

@@ -98,31 +98,3 @@ export function deleteEntriesByContent(pattern: string): number {
   return result.changes;
 }
 
-export interface PeerInfo {
-  peer_id: string;
-  last_synced_db_version: number;
-  hostname: string | null;
-  last_seen: string | null;
-}
-
-export function getAllPeers(): PeerInfo[] {
-  const db = getDb();
-  return db.prepare('SELECT * FROM sync_peers ORDER BY last_seen DESC').all() as PeerInfo[];
-}
-
-export function getPeerInfo(peerId: string): PeerInfo | undefined {
-  const db = getDb();
-  return db.prepare('SELECT * FROM sync_peers WHERE peer_id = ?').get(peerId) as PeerInfo | undefined;
-}
-
-export function updatePeerInfo(peerId: string, dbVersion: number, hostname: string): void {
-  const db = getDb();
-  db.prepare(
-    `INSERT INTO sync_peers (peer_id, last_synced_db_version, hostname, last_seen)
-     VALUES (?, ?, ?, ?)
-     ON CONFLICT(peer_id) DO UPDATE SET
-       last_synced_db_version = excluded.last_synced_db_version,
-       hostname = excluded.hostname,
-       last_seen = excluded.last_seen`
-  ).run(peerId, dbVersion, hostname, new Date().toISOString());
-}

@@ -14,7 +14,6 @@ import { parseMemoriesJsonl } from '../lib/curator.js';
 import {
   getMemoriesBySyncVersion,
   insertMemoryIfNotExists,
-  tombstoneMemory,
   getSyncCursor,
   setSyncCursor,
 } from '../db/memory-queries.js';
@@ -110,26 +109,38 @@ export class GitSyncAdapter implements SyncAdapter {
     // Determine which bucket file to write to
     const targetFile = this.determineBucketFile(cortex, currentFiles);
 
-    // Format as JSONL lines (include episode_key, deleted_at, and decisions when present)
-    const newLines = newMemories.map(m => {
-      let decisions: string[] = [];
-      if (m.decisions) {
-        try { decisions = JSON.parse(m.decisions) as string[]; } catch { /* skip malformed */ }
-      }
-      return JSON.stringify({
-        ts: m.ts,
-        author: m.author,
-        content: m.content,
-        source_ids: JSON.parse(m.source_ids),
-        ...(m.episode_key ? { episode_key: m.episode_key } : {}),
-        ...(m.deleted_at ? { deleted_at: m.deleted_at } : {}),
-        ...(decisions.length > 0 ? { decisions } : {}),
+    // Format as JSONL lines (include episode_key and decisions when present).
+    // Memories are immutable via sync — local tombstones are intentionally not
+    // emitted here. See SyncAdapter docs for the invariant.
+    const newLines = newMemories
+      .filter(m => !m.deleted_at)
+      .map(m => {
+        let decisions: string[] = [];
+        if (m.decisions) {
+          try { decisions = JSON.parse(m.decisions) as string[]; } catch { /* skip malformed */ }
+        }
+        return JSON.stringify({
+          ts: m.ts,
+          author: m.author,
+          content: m.content,
+          source_ids: JSON.parse(m.source_ids),
+          ...(m.episode_key ? { episode_key: m.episode_key } : {}),
+          ...(decisions.length > 0 ? { decisions } : {}),
+        });
       });
-    });
 
     const config = getConfig();
-    const commitMsg = `curate: ${config.cortex?.author ?? 'unknown'}, ${newMemories.length} memories`;
     const maxVersion = Math.max(...newMemories.map(m => m.sync_version));
+
+    // If every row in this batch was a tombstone, nothing to commit, but the
+    // cursor must still advance — otherwise the same batch comes back next
+    // push and we re-evaluate them forever.
+    if (newLines.length === 0) {
+      setSyncCursor(cortex, 'git', 'push', String(maxVersion));
+      return;
+    }
+
+    const commitMsg = `curate: ${config.cortex?.author ?? 'unknown'}, ${newLines.length} memories`;
 
     // Advance cursor only after the commit succeeds. If we advanced before
     // and the process crashed between setSyncCursor and appendAndCommit,
@@ -139,7 +150,7 @@ export class GitSyncAdapter implements SyncAdapter {
     try {
       appendAndCommit(cortex, newLines, commitMsg, 3, targetFile);
       setSyncCursor(cortex, 'git', 'push', String(maxVersion));
-      result.pushed += newMemories.length;
+      result.pushed += newLines.length;
     } catch (err) {
       result.errors.push(err instanceof Error ? err.message : String(err));
     }
@@ -188,13 +199,12 @@ export class GitSyncAdapter implements SyncAdapter {
     const memories = parseMemoriesJsonl(memoriesRaw);
 
     for (const m of memories) {
-      const id = deterministicId(m.ts, m.author, m.content);
+      // Memories are immutable via sync — any `deleted_at` field on a pulled
+      // line is from a pre-BLOOM-122 emitter and must be ignored. Engram
+      // deletes are local-only and do not propagate.
+      if (m.deleted_at) continue;
 
-      if (m.deleted_at) {
-        // Tombstone — preserves original ts/author/content so deterministicId matches
-        tombstoneMemory(cortex, id);
-        continue;
-      }
+      const id = deterministicId(m.ts, m.author, m.content);
 
       const { content: sanitizedContent, warnings } = validateEngramContent(m.content);
       if (warnings.length > 0) {
