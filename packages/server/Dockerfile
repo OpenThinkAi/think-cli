@@ -1,11 +1,14 @@
 FROM node:22-alpine AS builder
 WORKDIR /app
 
-# Copy workspace manifests first for cache-friendly install
+# Copy ALL workspace package.json files so npm can resolve the workspace
+# graph; the `packages/*` glob in the root manifest expects every workspace
+# directory to have a package.json. Using `--workspace=open-think-server`
+# narrows the actual install to the server's deps tree.
 COPY package.json package-lock.json ./
+COPY packages/cli/package.json ./packages/cli/
 COPY packages/server/package.json ./packages/server/
 
-# Install only the server workspace and its deps
 RUN npm ci --workspace=open-think-server --include-workspace-root
 
 COPY packages/server ./packages/server

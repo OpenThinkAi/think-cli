@@ -27,9 +27,11 @@ cortex.post('/v1/cortex', async (c) => {
     return c.json({ error: 'invalid cortex name (use a-z, A-Z, 0-9, _, -)' }, 400);
   }
 
-  await getPool().query(
+  const result = await getPool().query(
     'INSERT INTO cortexes (name) VALUES ($1) ON CONFLICT (name) DO NOTHING',
     [name],
   );
-  return c.json({ name }, 201);
+  // 201 only when a row was actually created. 200 on idempotent no-op so
+  // clients can distinguish "I made it" from "it was already there."
+  return c.json({ name }, (result.rowCount ?? 0) > 0 ? 201 : 200);
 });

@@ -39,7 +39,9 @@ All endpoints except `/v1/health` require `Authorization: Bearer <THINK_TOKEN>`.
 | `POST` | `/v1/cortex/:name/memories` | Bulk-upsert memories. Idempotent on `(cortex, id)`; existing rows are never overwritten (memories are immutable per the SyncAdapter contract). Body: `{ "memories": [{ id, ts, author, content, source_ids, episode_key?, decisions? }] }`. Max 500 per request. |
 | `GET` | `/v1/cortex/:name/memories?since=<server_seq>&limit=<n>` | Paginated pull. Returns memories with `server_seq > since`, ascending. Response includes `next_since` for the cursor. `limit` defaults to 500, max 1000. |
 
-`server_seq` is opaque to clients — treat it as a string.
+### Cursor format
+
+`server_seq` is a non-negative integer encoded as a string (Postgres BIGSERIAL — the JSON-string encoding preserves precision past 2^53). Pass it back verbatim as `since=`. The wire format is stable for the v1 routes; a future cursor change would require a new route version.
 
 ## Deploying
 
@@ -77,5 +79,7 @@ Until then, the server is reachable directly via `curl` for testing.
 docker compose up -d postgres
 TEST_DATABASE_URL=postgres://think:think@localhost:5434/think npm test -w open-think-server
 ```
+
+Port 5434 is the docker-compose default (chosen to avoid collisions with common dev Postgres setups on 5432 and 5433). Override with `THINK_PG_PORT=<port> docker compose up -d postgres` and matching `TEST_DATABASE_URL`.
 
 Each test suite gets an isolated Postgres schema (`test_<random>`) that's dropped on teardown.

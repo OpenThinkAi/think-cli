@@ -22,7 +22,7 @@ export const memories = new Hono();
 memories.post('/v1/cortex/:name/memories', async (c) => {
   const cortexName = c.req.param('name');
   if (!isValidCortexName(cortexName)) {
-    return c.json({ error: 'invalid cortex name' }, 400);
+    return c.json({ error: 'invalid cortex name (use a-z, A-Z, 0-9, _, -)' }, 400);
   }
 
   const body = await c.req.json().catch(() => null);
@@ -43,29 +43,32 @@ memories.post('/v1/cortex/:name/memories', async (c) => {
       [cortexName],
     );
 
-    let inserted = 0;
-    for (const m of parsed.data.memories) {
-      const result = await client.query(
-        `INSERT INTO memories
-           (cortex_name, id, ts, author, content, source_ids, episode_key, decisions)
-         VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, $8::jsonb)
-         ON CONFLICT (cortex_name, id) DO NOTHING`,
-        [
-          cortexName,
-          m.id,
-          m.ts,
-          m.author,
-          m.content,
-          JSON.stringify(m.source_ids),
-          m.episode_key ?? null,
-          m.decisions ? JSON.stringify(m.decisions) : null,
-        ],
-      );
-      inserted += result.rowCount ?? 0;
-    }
+    // Single round-trip bulk insert via jsonb_to_recordset. ON CONFLICT
+    // DO NOTHING preserves immutability — existing rows are never overwritten.
+    const payload = parsed.data.memories.map(m => ({
+      id: m.id,
+      ts: m.ts,
+      author: m.author,
+      content: m.content,
+      source_ids: m.source_ids,
+      episode_key: m.episode_key ?? null,
+      decisions: m.decisions ?? null,
+    }));
+
+    const result = await client.query(
+      `INSERT INTO memories
+         (cortex_name, id, ts, author, content, source_ids, episode_key, decisions)
+       SELECT $1, x.id, x.ts, x.author, x.content, x.source_ids, x.episode_key, x.decisions
+         FROM jsonb_to_recordset($2::jsonb) AS x(
+           id text, ts text, author text, content text,
+           source_ids jsonb, episode_key text, decisions jsonb
+         )
+       ON CONFLICT (cortex_name, id) DO NOTHING`,
+      [cortexName, JSON.stringify(payload)],
+    );
 
     await client.query('COMMIT');
-    return c.json({ accepted: parsed.data.memories.length, inserted });
+    return c.json({ accepted: parsed.data.memories.length, inserted: result.rowCount ?? 0 });
   } catch (err) {
     await client.query('ROLLBACK');
     throw err;
@@ -77,7 +80,7 @@ memories.post('/v1/cortex/:name/memories', async (c) => {
 memories.get('/v1/cortex/:name/memories', async (c) => {
   const cortexName = c.req.param('name');
   if (!isValidCortexName(cortexName)) {
-    return c.json({ error: 'invalid cortex name' }, 400);
+    return c.json({ error: 'invalid cortex name (use a-z, A-Z, 0-9, _, -)' }, 400);
   }
 
   const since = Number(c.req.query('since') ?? 0);
@@ -109,19 +112,13 @@ memories.get('/v1/cortex/:name/memories', async (c) => {
     [cortexName, since, limit],
   );
 
-  // server_seq is a BIGSERIAL — pg returns it as string to avoid losing
-  // precision past 2^53. Clients are expected to treat it as opaque.
+  // server_seq is a BIGSERIAL; pg returns it as a string to preserve precision
+  // past 2^53. The cursor wire format is "non-negative integer encoded as
+  // string" — clients pass it verbatim back as `since=`. If we ever need to
+  // change the cursor shape (composite key, base64, etc.) it'll need a
+  // version bump on the route.
   return c.json({
-    memories: result.rows.map(row => ({
-      id: row.id,
-      ts: row.ts,
-      author: row.author,
-      content: row.content,
-      source_ids: row.source_ids,
-      episode_key: row.episode_key,
-      decisions: row.decisions,
-      server_seq: row.server_seq,
-    })),
+    memories: result.rows,
     next_since: result.rows.length > 0
       ? result.rows[result.rows.length - 1].server_seq
       : String(since),

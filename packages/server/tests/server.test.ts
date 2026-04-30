@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { createTestDb, type TestDb } from './fixtures/db.js';
-import { request, TEST_TOKEN } from './fixtures/app-client.js';
+import { request } from './fixtures/app-client.js';
 
 let db: TestDb;
 
@@ -60,10 +60,11 @@ describe('open-think-server', () => {
       expect(r.status).toBe(400);
     });
 
-    it('cortex creation is idempotent', async () => {
-      await request({ method: 'POST', path: '/v1/cortex', body: { name: 'idem' } });
+    it('cortex creation is idempotent: 201 on create, 200 on no-op', async () => {
+      const first = await request({ method: 'POST', path: '/v1/cortex', body: { name: 'idem' } });
+      expect(first.status).toBe(201);
       const second = await request({ method: 'POST', path: '/v1/cortex', body: { name: 'idem' } });
-      expect(second.status).toBe(201);
+      expect(second.status).toBe(200);
     });
   });
 
@@ -157,5 +158,3 @@ describe('open-think-server', () => {
     });
   });
 });
-
-void TEST_TOKEN;
