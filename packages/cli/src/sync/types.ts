@@ -45,6 +45,20 @@ export interface SyncAdapter {
 
   /** Check if the backend is configured and reachable */
   isAvailable(): boolean;
+
+  /**
+   * Cheap probe of whether the remote is currently reachable. Used by
+   * `cortex sync --if-online` to skip silently when offline (VPN down,
+   * server unreachable, DNS dead) instead of letting full sync log a
+   * stack of network errors every minute.
+   *
+   * Must complete in well under one scheduler tick (~5s). Must NOT
+   * surface auth failures as "unreachable" — return true on a reachable
+   * but auth-rejecting host so the caller's subsequent sync runs and
+   * surfaces the real auth error loudly (see `formatSyncError`'s
+   * hivedb#4 note).
+   */
+  isReachable(): Promise<boolean>;
 }
 
 export interface SyncResult {

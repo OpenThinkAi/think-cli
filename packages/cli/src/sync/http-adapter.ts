@@ -339,4 +339,23 @@ export class HttpSyncAdapter implements SyncAdapter {
       throw new Error(`create cortex failed: ${res.status} ${text || res.statusText}`);
     }
   }
+
+  // Probe with a 5s-bounded GET against /v1/cortexes. Any HTTP response — even
+  // 401/403/5xx — counts as "reachable" so the caller's subsequent sync runs
+  // and surfaces auth/server errors loudly (per the SyncAdapter doc and
+  // hivedb#4). Only network/timeout errors mean offline.
+  async isReachable(): Promise<boolean> {
+    if (!this.isAvailable()) return false;
+    try {
+      const res = await this.authedFetch('/v1/cortexes', {
+        method: 'GET',
+        signal: AbortSignal.timeout(5000),
+      });
+      // Drain so the connection can be reused.
+      await res.text().catch(() => '');
+      return true;
+    } catch {
+      return false;
+    }
+  }
 }

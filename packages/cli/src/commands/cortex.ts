@@ -8,6 +8,11 @@ import { getMemoryCount, getSyncCursor } from '../db/memory-queries.js';
 import { getEngramDbPath, getEngramsDir } from '../lib/paths.js';
 import { getSyncAdapter } from '../sync/registry.js';
 import { installAgent, uninstallAgent, getAgentStatus } from '../lib/auto-curate.js';
+import {
+  installAgent as installSyncAgent,
+  uninstallAgent as uninstallSyncAgent,
+  getAgentStatus as getSyncAgentStatus,
+} from '../lib/auto-sync.js';
 import { validateRepoUrl } from '../lib/repo-url.js';
 
 function prompt(question: string, defaultValue?: string): Promise<string> {
@@ -395,22 +400,41 @@ cortexCommand.addCommand(new Command('pull')
 // think cortex sync
 cortexCommand.addCommand(new Command('sync')
   .description('Sync memories with remote (pull + push)')
-  .action(async () => {
+  .option('--if-online', 'Skip silently if remote is unreachable. Used by the auto-sync LaunchAgent to avoid log spam when offline (VPN down, server unreachable). Real errors during sync (auth, push conflicts) still surface — only the precondition probe is allowed to soft-fail.')
+  .action(async (opts: { ifOnline?: boolean }) => {
     const config = getConfig();
     const cortex = config.cortex?.active;
 
     if (!cortex) {
+      // --if-online runs from launchd with no terminal — bail quietly so the
+      // log doesn't fill with "no active cortex" once a minute on a fresh
+      // machine that hasn't finished setup.
+      if (opts.ifOnline) return;
       console.error(chalk.red('No active cortex. Run: think cortex switch <name>'));
       process.exit(1);
     }
 
     const adapter = getSyncAdapter();
     if (!adapter?.isAvailable()) {
+      if (opts.ifOnline) return;
       console.error(chalk.red('No sync backend configured. Run: think cortex setup'));
       process.exit(1);
     }
 
-    console.log(chalk.cyan(`Syncing ${cortex}...`));
+    if (opts.ifOnline) {
+      const reachable = await adapter.isReachable();
+      if (!reachable) {
+        // Single dim line so the log shows liveness but doesn't grow on every
+        // tick when offline. Mirrors `curate --if-idle`'s skip posture.
+        console.log(chalk.dim('[auto-sync] skipped: remote unreachable'));
+        closeCortexDb(cortex);
+        return;
+      }
+    }
+
+    if (!opts.ifOnline) {
+      console.log(chalk.cyan(`Syncing ${cortex}...`));
+    }
     const result = await adapter.sync(cortex);
 
     if (result.errors.length > 0) {
@@ -419,7 +443,16 @@ cortexCommand.addCommand(new Command('sync')
       }
     }
 
-    console.log(chalk.green('✓') + ` Pulled ${result.pulled}, pushed ${result.pushed}`);
+    // In --if-online mode, swallow the success line entirely on no-op runs so
+    // a 60s LaunchAgent doesn't grow `auto-sync.log` to MB-scale. Only print
+    // when there's something to report.
+    if (opts.ifOnline) {
+      if (result.pulled > 0 || result.pushed > 0) {
+        console.log(chalk.green('✓') + ` [auto-sync] pulled ${result.pulled}, pushed ${result.pushed}`);
+      }
+    } else {
+      console.log(chalk.green('✓') + ` Pulled ${result.pulled}, pushed ${result.pushed}`);
+    }
     closeCortexDb(cortex);
   }));
 
@@ -509,3 +542,56 @@ autoCurateCommand.addCommand(new Command('status')
   }));
 
 cortexCommand.addCommand(autoCurateCommand);
+
+// think cortex auto-sync — scheduled background sync (pull + push)
+const autoSyncCommand = new Command('auto-sync')
+  .description('Manage scheduled background sync (macOS LaunchAgent)');
+
+autoSyncCommand.addCommand(new Command('enable')
+  .description('Install a LaunchAgent that runs `think cortex sync --if-online` on session load and every 60 seconds')
+  .option('--interval <seconds>', 'Scheduler cadence in seconds (default 60)', (v) => parseInt(v, 10))
+  .action((opts: { interval?: number }) => {
+    try {
+      const { label, plistPath } = installSyncAgent({ intervalSeconds: opts.interval });
+      console.log(chalk.green('✓') + ` Auto-sync enabled`);
+      console.log(chalk.dim(`  Label: ${label}`));
+      console.log(chalk.dim(`  Plist: ${plistPath}`));
+      if (process.env.THINK_HOME) {
+        console.log(chalk.dim(`  THINK_HOME: ${process.env.THINK_HOME}`));
+      }
+    } catch (err) {
+      console.error(chalk.red(err instanceof Error ? err.message : String(err)));
+      process.exit(1);
+    }
+  }));
+
+autoSyncCommand.addCommand(new Command('disable')
+  .description('Remove the auto-sync LaunchAgent for this workspace')
+  .action(() => {
+    const { removed, plistPath } = uninstallSyncAgent();
+    if (removed) {
+      console.log(chalk.green('✓') + ` Auto-sync disabled (${plistPath})`);
+    } else {
+      console.log(chalk.dim(`No auto-sync agent installed (${plistPath})`));
+    }
+  }));
+
+autoSyncCommand.addCommand(new Command('status')
+  .description('Show auto-sync scheduler status')
+  .action(() => {
+    const s = getSyncAgentStatus();
+    console.log(`Label:     ${chalk.cyan(s.label)}`);
+    console.log(`Installed: ${s.installed ? chalk.green('yes') : chalk.dim('no')}`);
+    console.log(`Loaded:    ${s.loaded ? chalk.green('yes') : chalk.dim('no')}`);
+    if (s.intervalSeconds) {
+      console.log(`Interval:  ${s.intervalSeconds}s`);
+    }
+    console.log(`Plist:     ${s.plistPath}`);
+    if (s.lastRunAt) {
+      console.log(`Last log:  ${s.lastRunAt.toISOString()}`);
+    } else {
+      console.log(`Last log:  ${chalk.dim('(no log file yet)')}`);
+    }
+  }));
+
+cortexCommand.addCommand(autoSyncCommand);

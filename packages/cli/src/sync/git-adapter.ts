@@ -1,3 +1,4 @@
+import { execFileSync } from 'node:child_process';
 import {
   ensureRepoCloned,
   fetchBranch,
@@ -381,5 +382,27 @@ export class GitSyncAdapter implements SyncAdapter {
   async createCortex(cortex: string): Promise<void> {
     ensureRepoCloned();
     createOrphanBranch(cortex);
+  }
+
+  // Probe by running `git ls-remote --exit-code <repo> HEAD` against the
+  // configured remote with a 5s timeout. Network failures (DNS, TCP, VPN)
+  // exit non-zero quickly. SSH auth failures also exit non-zero — the spike
+  // accepts that trade-off: the next manual `cortex sync` will surface the
+  // real auth error loudly, matching how curate behaves when sync is broken
+  // but the engram DB is fine.
+  async isReachable(): Promise<boolean> {
+    const config = getConfig();
+    const repo = config.cortex?.repo;
+    if (!repo) return false;
+    try {
+      execFileSync(
+        'git',
+        ['-c', 'core.hooksPath=/dev/null', 'ls-remote', '--exit-code', '--', repo, 'HEAD'],
+        { stdio: 'ignore', timeout: 5000, env: { ...process.env, GIT_TERMINAL_PROMPT: '0' } },
+      );
+      return true;
+    } catch {
+      return false;
+    }
   }
 }
