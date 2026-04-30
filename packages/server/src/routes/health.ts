@@ -11,9 +11,10 @@ health.get('/v1/health', async (c) => {
     await getPool().query('SELECT 1');
     return c.json({ status: 'ok' });
   } catch (err) {
-    return c.json(
-      { status: 'error', error: err instanceof Error ? err.message : String(err) },
-      503,
-    );
+    // Don't leak Postgres error detail (which can include hostnames, role
+    // names, connection-string fragments) on an unauthenticated endpoint.
+    // Log server-side; clients only need the status code + status string.
+    console.error('[open-think-server] health check failed:', err);
+    return c.json({ status: 'error' }, 503);
   }
 });

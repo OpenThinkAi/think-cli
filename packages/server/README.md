@@ -34,10 +34,22 @@ All endpoints except `/v1/health` require `Authorization: Bearer <THINK_TOKEN>`.
 | Method | Path | Purpose |
 |---|---|---|
 | `GET` | `/v1/health` | Liveness probe (checks Postgres reachable). Unauthenticated. |
-| `GET` | `/v1/cortex` | List all cortexes. |
-| `POST` | `/v1/cortex` | Create a cortex. Idempotent. Body: `{ "name": "engineering" }`. |
-| `POST` | `/v1/cortex/:name/memories` | Bulk-upsert memories. Idempotent on `(cortex, id)`; existing rows are never overwritten (memories are immutable per the SyncAdapter contract). Body: `{ "memories": [{ id, ts, author, content, source_ids, episode_key?, decisions? }] }`. Max 500 per request. |
-| `GET` | `/v1/cortex/:name/memories?since=<server_seq>&limit=<n>` | Paginated pull. Returns memories with `server_seq > since`, ascending. Response includes `next_since` for the cursor. `limit` defaults to 500, max 1000. |
+| `GET` | `/v1/cortexes` | List all cortexes. |
+| `POST` | `/v1/cortexes` | Create a cortex. **Optional** — `POST .../memories` auto-creates on first write. 201 on actual creation, 200 on idempotent no-op. Body: `{ "name": "engineering" }`. |
+| `POST` | `/v1/cortexes/:name/memories` | Bulk-upsert memories. Idempotent on `(cortex, id)`; existing rows are never overwritten (memories are immutable per the SyncAdapter contract). Body: `{ "memories": [{ id, ts, author, content, source_ids, episode_key?, decisions? }] }`. Max 500 per request. |
+| `GET` | `/v1/cortexes/:name/memories?since=<server_seq>&limit=<n>` | Paginated pull. Returns memories with `server_seq > since`, ascending. Response includes `next_since` for the cursor. `limit` defaults to 500, max 1000. |
+
+### Field caps
+
+| Field | Max |
+|---|---|
+| `id` | 128 chars |
+| `ts` | 64 chars |
+| `author` | 128 chars |
+| `content` | 64,000 chars |
+| `episode_key` | 256 chars |
+| memories per request | 500 |
+| cortex name | 64 chars (a-z, A-Z, 0-9, `_`, `-`) |
 
 ### Cursor format
 
@@ -63,7 +75,7 @@ docker run -p 3000:3000 \
 
 ## Configuring the CLI to use it
 
-This is the BLOOM-124 work (HttpSyncAdapter), not yet shipped. When it lands the flow will be:
+The HttpSyncAdapter on the CLI side is not yet shipped. When it lands the flow will be:
 
 ```sh
 think cortex setup --server https://think.mycorp.com --token <THINK_TOKEN> engineering

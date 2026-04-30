@@ -1,31 +1,48 @@
 import { Hono } from 'hono';
 import { z } from 'zod';
 import { getPool } from '../db/pool.js';
-import { isValidCortexName } from '../lib/cortex-name.js';
+import { isValidCortexName, CORTEX_NAME_ERROR } from '../lib/cortex-name.js';
+
+export const FIELD_LIMITS = {
+  id: 128,
+  ts: 64,
+  author: 128,
+  content: 64_000,
+  episode_key: 256,
+  memories_per_request: 500,
+} as const;
 
 const memorySchema = z.object({
-  id: z.string().min(1).max(128),
-  ts: z.string().min(1).max(64),
-  author: z.string().min(1).max(128),
-  content: z.string().min(1).max(64_000),
+  id: z.string().min(1).max(FIELD_LIMITS.id),
+  ts: z.string().min(1).max(FIELD_LIMITS.ts),
+  author: z.string().min(1).max(FIELD_LIMITS.author),
+  content: z.string().min(1).max(FIELD_LIMITS.content),
   source_ids: z.array(z.string()).default([]),
-  episode_key: z.string().max(256).optional(),
+  episode_key: z.string().max(FIELD_LIMITS.episode_key).optional(),
   decisions: z.array(z.string()).optional(),
 });
 
 const upsertSchema = z.object({
-  memories: z.array(memorySchema).min(1).max(500),
+  memories: z.array(memorySchema).min(1),
 });
 
 export const memories = new Hono();
 
-memories.post('/v1/cortex/:name/memories', async (c) => {
+memories.post('/v1/cortexes/:name/memories', async (c) => {
   const cortexName = c.req.param('name');
   if (!isValidCortexName(cortexName)) {
-    return c.json({ error: 'invalid cortex name (use a-z, A-Z, 0-9, _, -)' }, 400);
+    return c.json({ error: CORTEX_NAME_ERROR }, 400);
   }
 
-  const body = await c.req.json().catch(() => null);
+  const body = await c.req.json().catch(() => null) as { memories?: unknown[] } | null;
+  // Hard cap on batch size before zod even runs — protects against
+  // multi-MB JSON bodies that pass schema validation but waste cycles.
+  if (Array.isArray(body?.memories) && body.memories.length > FIELD_LIMITS.memories_per_request) {
+    return c.json(
+      { error: `too many memories in one request (max ${FIELD_LIMITS.memories_per_request})` },
+      400,
+    );
+  }
   const parsed = upsertSchema.safeParse(body);
   if (!parsed.success) {
     return c.json({ error: 'invalid body', details: parsed.error.issues }, 400);
@@ -77,14 +94,22 @@ memories.post('/v1/cortex/:name/memories', async (c) => {
   }
 });
 
-memories.get('/v1/cortex/:name/memories', async (c) => {
+memories.get('/v1/cortexes/:name/memories', async (c) => {
   const cortexName = c.req.param('name');
   if (!isValidCortexName(cortexName)) {
-    return c.json({ error: 'invalid cortex name (use a-z, A-Z, 0-9, _, -)' }, 400);
+    return c.json({ error: CORTEX_NAME_ERROR }, 400);
   }
 
-  const since = Number(c.req.query('since') ?? 0);
-  if (!Number.isFinite(since) || since < 0) {
+  // Parse `since` as a non-negative bigint string so the BIGSERIAL precision
+  // claim made on the wire format is actually honored end-to-end.
+  const sinceRaw = c.req.query('since') ?? '0';
+  let since: bigint;
+  try {
+    since = BigInt(sinceRaw);
+  } catch {
+    return c.json({ error: 'invalid since (must be a non-negative integer)' }, 400);
+  }
+  if (since < 0n) {
     return c.json({ error: 'invalid since (must be a non-negative integer)' }, 400);
   }
 
@@ -104,23 +129,20 @@ memories.get('/v1/cortex/:name/memories', async (c) => {
     decisions: unknown;
     server_seq: string;
   }>(
+    // node-postgres binds string params as text; pg coerces to int8.
+    // Passing the string keeps the value safe past 2^53.
     `SELECT id, ts, author, content, source_ids, episode_key, decisions, server_seq
        FROM memories
-      WHERE cortex_name = $1 AND server_seq > $2
+      WHERE cortex_name = $1 AND server_seq > $2::int8
       ORDER BY server_seq ASC
       LIMIT $3`,
-    [cortexName, since, limit],
+    [cortexName, since.toString(), limit],
   );
 
-  // server_seq is a BIGSERIAL; pg returns it as a string to preserve precision
-  // past 2^53. The cursor wire format is "non-negative integer encoded as
-  // string" — clients pass it verbatim back as `since=`. If we ever need to
-  // change the cursor shape (composite key, base64, etc.) it'll need a
-  // version bump on the route.
   return c.json({
     memories: result.rows,
     next_since: result.rows.length > 0
       ? result.rows[result.rows.length - 1].server_seq
-      : String(since),
+      : since.toString(),
   });
 });

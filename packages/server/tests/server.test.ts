@@ -15,17 +15,17 @@ afterAll(async () => {
 describe('open-think-server', () => {
   describe('auth', () => {
     it('rejects requests with no Authorization header', async () => {
-      const r = await request({ path: '/v1/cortex', token: null });
+      const r = await request({ path: '/v1/cortexes', token: null });
       expect(r.status).toBe(401);
     });
 
     it('rejects requests with the wrong token', async () => {
-      const r = await request({ path: '/v1/cortex', token: 'nope' });
+      const r = await request({ path: '/v1/cortexes', token: 'nope' });
       expect(r.status).toBe(401);
     });
 
     it('accepts requests with the correct token', async () => {
-      const r = await request<{ cortexes: string[] }>({ path: '/v1/cortex' });
+      const r = await request<{ cortexes: string[] }>({ path: '/v1/cortexes' });
       expect(r.status).toBe(200);
       expect(r.body.cortexes).toBeDefined();
     });
@@ -41,29 +41,29 @@ describe('open-think-server', () => {
     it('creates and lists cortexes', async () => {
       const created = await request<{ name: string }>({
         method: 'POST',
-        path: '/v1/cortex',
+        path: '/v1/cortexes',
         body: { name: 'engineering' },
       });
       expect(created.status).toBe(201);
       expect(created.body.name).toBe('engineering');
 
-      const listed = await request<{ cortexes: string[] }>({ path: '/v1/cortex' });
+      const listed = await request<{ cortexes: string[] }>({ path: '/v1/cortexes' });
       expect(listed.body.cortexes).toContain('engineering');
     });
 
     it('rejects invalid cortex names', async () => {
       const r = await request({
         method: 'POST',
-        path: '/v1/cortex',
+        path: '/v1/cortexes',
         body: { name: '../../etc/passwd' },
       });
       expect(r.status).toBe(400);
     });
 
     it('cortex creation is idempotent: 201 on create, 200 on no-op', async () => {
-      const first = await request({ method: 'POST', path: '/v1/cortex', body: { name: 'idem' } });
+      const first = await request({ method: 'POST', path: '/v1/cortexes', body: { name: 'idem' } });
       expect(first.status).toBe(201);
-      const second = await request({ method: 'POST', path: '/v1/cortex', body: { name: 'idem' } });
+      const second = await request({ method: 'POST', path: '/v1/cortexes', body: { name: 'idem' } });
       expect(second.status).toBe(200);
     });
   });
@@ -81,7 +81,7 @@ describe('open-think-server', () => {
 
       const first = await request<{ accepted: number; inserted: number }>({
         method: 'POST',
-        path: `/v1/cortex/${cortexName}/memories`,
+        path: `/v1/cortexes/${cortexName}/memories`,
         body: { memories: [memory] },
       });
       expect(first.status).toBe(200);
@@ -90,7 +90,7 @@ describe('open-think-server', () => {
       // Re-sending the same memory should be a no-op.
       const second = await request<{ accepted: number; inserted: number }>({
         method: 'POST',
-        path: `/v1/cortex/${cortexName}/memories`,
+        path: `/v1/cortexes/${cortexName}/memories`,
         body: { memories: [memory] },
       });
       expect(second.body.inserted).toBe(0);
@@ -109,14 +109,14 @@ describe('open-think-server', () => {
 
       await request({
         method: 'POST',
-        path: `/v1/cortex/${cortexName}/memories`,
+        path: `/v1/cortexes/${cortexName}/memories`,
         body: { memories },
       });
 
       const firstPage = await request<{
         memories: { id: string; server_seq: string }[];
         next_since: string;
-      }>({ path: `/v1/cortex/${cortexName}/memories?since=0&limit=3` });
+      }>({ path: `/v1/cortexes/${cortexName}/memories?since=0&limit=3` });
 
       expect(firstPage.status).toBe(200);
       expect(firstPage.body.memories).toHaveLength(3);
@@ -125,7 +125,7 @@ describe('open-think-server', () => {
       const secondPage = await request<{
         memories: { id: string }[];
         next_since: string;
-      }>({ path: `/v1/cortex/${cortexName}/memories?since=${firstPage.body.next_since}&limit=10` });
+      }>({ path: `/v1/cortexes/${cortexName}/memories?since=${firstPage.body.next_since}&limit=10` });
 
       expect(secondPage.body.memories.map(m => m.id)).toEqual(['mem-3', 'mem-4']);
     });
@@ -141,19 +141,19 @@ describe('open-think-server', () => {
       }));
       const r = await request({
         method: 'POST',
-        path: `/v1/cortex/${cortexName}/memories`,
+        path: `/v1/cortexes/${cortexName}/memories`,
         body: { memories },
       });
       expect(r.status).toBe(400);
     });
 
     it('rejects invalid since values', async () => {
-      const r = await request({ path: '/v1/cortex/anything/memories?since=-1' });
+      const r = await request({ path: '/v1/cortexes/anything/memories?since=-1' });
       expect(r.status).toBe(400);
     });
 
     it('does not expose any engram endpoint', async () => {
-      const r = await request({ path: '/v1/cortex/anything/engrams' });
+      const r = await request({ path: '/v1/cortexes/anything/engrams' });
       expect(r.status).toBe(404);
     });
   });
