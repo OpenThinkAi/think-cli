@@ -4,6 +4,7 @@ import pg from 'pg';
 import { serve } from '@hono/node-server';
 import { createApp } from '../../../server/src/app.js';
 import { ensureSchema } from '../../../server/src/db/schema.js';
+import { closePool, getPool } from '../../../server/src/db/pool.js';
 import { runSyncAdapterContractTests, type AdapterFactory } from './contract.js';
 import { HttpSyncAdapter } from '../../src/sync/http-adapter.js';
 import { saveConfig, getConfig } from '../../src/lib/config.js';
@@ -64,7 +65,6 @@ afterAll(async () => {
     serverHandle = null;
   }
   // Close the server's pg pool so it doesn't leak connections across files.
-  const { closePool } = await import('../../../server/src/db/pool.js');
   await closePool();
 });
 
@@ -89,9 +89,7 @@ const factory: AdapterFactory<HttpRemote> = {
 
     // Server's pool is a singleton — close + recreate so it picks up the new
     // DATABASE_URL and the new search_path.
-    const { closePool } = await import('../../../server/src/db/pool.js');
     await closePool();
-    const { getPool } = await import('../../../server/src/db/pool.js');
     await ensureSchema(getPool());
 
     return { url: serverUrl, token: TEST_TOKEN, schemaName };
@@ -117,7 +115,6 @@ const factory: AdapterFactory<HttpRemote> = {
   },
 
   async teardownRemote(remote: HttpRemote): Promise<void> {
-    const { closePool } = await import('../../../server/src/db/pool.js');
     await closePool();
     const teardown = new pg.Pool({ connectionString: baseDatabaseUrl });
     try {

@@ -18,7 +18,13 @@ interface RemoteMemory {
   source_ids: string[];
   episode_key: string | null;
   decisions: string[] | null;
-  server_seq: string;
+}
+
+function authHint(status: number): string {
+  if (status === 401 || status === 403) {
+    return ' Run `think cortex setup --server <url> --token <token>` to update credentials.';
+  }
+  return '';
 }
 
 /**
@@ -66,24 +72,20 @@ export class HttpSyncAdapter implements SyncAdapter {
     const cursorStr = getSyncCursor(cortex, this.name, 'push');
     let lastVersion = cursorStr ? parseInt(cursorStr, 10) : 0;
 
-    // Loop in case there are more than PUSH_BATCH rows pending — keeps each
-    // request bounded and avoids hitting the server's batch cap.
-    // eslint-disable-next-line no-constant-condition
-    while (true) {
-      const all = getMemoriesBySyncVersion(cortex, lastVersion);
-      const live = all.filter(m => !m.deleted_at);
-      if (all.length === 0) break;
+    // Loop in case there are more than PUSH_BATCH rows pending. Each round
+    // takes a fixed-size window of newly-versioned rows, ships the live
+    // ones, and advances the cursor past the whole window — including any
+    // tombstones we silently dropped (memories are immutable via sync).
+    for (;;) {
+      const slice = getMemoriesBySyncVersion(cortex, lastVersion).slice(0, PUSH_BATCH);
+      if (slice.length === 0) break;
 
-      const batch = live.slice(0, PUSH_BATCH);
-      // Even if `live` is empty (everything in `all` is tombstoned), still
-      // advance the cursor over the tombstones so we don't re-evaluate them
-      // on the next push.
-      const cursorTo = (batch.length > 0 ? batch : all.slice(0, PUSH_BATCH))
-        .reduce((max, m) => Math.max(max, m.sync_version), lastVersion);
+      const live = slice.filter(m => !m.deleted_at);
+      const cursorTo = slice[slice.length - 1].sync_version;
 
-      if (batch.length > 0) {
+      if (live.length > 0) {
         const body = {
-          memories: batch.map(m => ({
+          memories: live.map(m => ({
             id: m.id,
             ts: m.ts,
             author: m.author,
@@ -101,7 +103,7 @@ export class HttpSyncAdapter implements SyncAdapter {
 
         if (!res.ok) {
           const text = await res.text().catch(() => '');
-          result.errors.push(`push failed (${res.status}): ${text || res.statusText}`);
+          result.errors.push(`push failed (${res.status}): ${text || res.statusText}.${authHint(res.status)}`);
           return result;
         }
 
@@ -112,8 +114,8 @@ export class HttpSyncAdapter implements SyncAdapter {
       setSyncCursor(cortex, this.name, 'push', String(cursorTo));
       lastVersion = cursorTo;
 
-      // Stop when we drained everything new.
-      if (all.length < PUSH_BATCH) break;
+      // Drained the queue when the slice was a partial batch.
+      if (slice.length < PUSH_BATCH) break;
     }
 
     return result;
@@ -123,13 +125,12 @@ export class HttpSyncAdapter implements SyncAdapter {
     const result: SyncResult = { pushed: 0, pulled: 0, errors: [] };
     let since = getSyncCursor(cortex, this.name, 'pull') ?? '0';
 
-    // eslint-disable-next-line no-constant-condition
-    while (true) {
+    for (;;) {
       const path = `/v1/cortexes/${encodeURIComponent(cortex)}/memories?since=${encodeURIComponent(since)}&limit=${PULL_BATCH}`;
       const res = await this.authedFetch(path);
       if (!res.ok) {
         const text = await res.text().catch(() => '');
-        result.errors.push(`pull failed (${res.status}): ${text || res.statusText}`);
+        result.errors.push(`pull failed (${res.status}): ${text || res.statusText}.${authHint(res.status)}`);
         return result;
       }
 
@@ -159,6 +160,9 @@ export class HttpSyncAdapter implements SyncAdapter {
   }
 
   async sync(cortex: string): Promise<SyncResult> {
+    // Run push even if pull errored — they're independent units of work and
+    // a stalled pull (e.g. server briefly returning a transient error on
+    // some range) shouldn't block local writes from going out.
     const pullResult = await this.pull(cortex);
     const pushResult = await this.push(cortex);
     return {

@@ -23,30 +23,54 @@ function prompt(question: string, defaultValue?: string): Promise<string> {
 export const cortexCommand = new Command('cortex')
   .description('Manage cortexes (team memory workspaces)');
 
+function isLoopbackHost(host: string): boolean {
+  // Trim brackets from IPv6 ([::1])
+  const h = host.replace(/^\[|\]$/g, '').toLowerCase();
+  return h === 'localhost' || h === '127.0.0.1' || h === '::1';
+}
+
 // think cortex setup
 cortexCommand.addCommand(new Command('setup')
   .description('Configure a sync backend for cortex storage (git or http)')
   .argument('[repo]', 'Git remote URL (e.g., git@github.com:org/hivedb.git). Mutually exclusive with --server.')
   .option('--server <url>', 'Use an open-think-server backend instead of git (e.g., https://think.mycorp.com)')
-  .option('--token <token>', 'Bearer token for the open-think-server backend (required with --server)')
+  .option('--token <token>', 'Bearer token for the open-think-server backend. Reads $THINK_SERVER_TOKEN if omitted to keep the secret out of shell history.')
   .action(async (repo: string | undefined, opts: { server?: string; token?: string }) => {
     const config = getConfig();
 
     if (opts.server && repo) {
-      console.error(chalk.red('Pick one of `--server <url>` or a git repo argument, not both.'));
+      console.error(chalk.red('Pick one of `--server <url>` or the `[repo]` positional argument, not both.'));
       process.exit(1);
     }
 
     // HTTP server backend
     if (opts.server) {
-      if (!opts.token) {
-        console.error(chalk.red('--server requires --token (the bearer token your server expects).'));
+      const token = opts.token ?? process.env.THINK_SERVER_TOKEN;
+      if (!token) {
+        console.error(chalk.red(
+          '--server requires a bearer token. Pass --token <token> (visible in shell history) ' +
+          'or set THINK_SERVER_TOKEN in the environment (preferred).',
+        ));
         process.exit(1);
       }
+
+      let parsed: URL;
       try {
-        new URL(opts.server);
+        parsed = new URL(opts.server);
       } catch {
-        console.error(chalk.red(`Invalid --server URL: ${opts.server}`));
+        console.error(chalk.red(
+          `Invalid --server URL: ${opts.server}. Must include a scheme, e.g. https://think.mycorp.com.`,
+        ));
+        process.exit(1);
+      }
+
+      // Reject http:// to keep the bearer token off cleartext links. Loopback
+      // hosts are exempt so local docker-compose / dev workflows still work.
+      if (parsed.protocol !== 'https:' && !(parsed.protocol === 'http:' && isLoopbackHost(parsed.hostname))) {
+        console.error(chalk.red(
+          `--server must use https:// (got "${parsed.protocol}//${parsed.hostname}"). ` +
+          'http:// is allowed only for localhost / 127.0.0.1 / ::1.',
+        ));
         process.exit(1);
       }
 
@@ -59,8 +83,7 @@ cortexCommand.addCommand(new Command('setup')
       config.cortex = {
         ...config.cortex,
         author,
-        active: config.cortex?.active,
-        server: { url: opts.server, token: opts.token },
+        server: { url: opts.server, token },
       };
       // Drop a stale repo when switching to a server backend so the registry
       // doesn't keep handing back the git adapter.
@@ -70,6 +93,21 @@ cortexCommand.addCommand(new Command('setup')
 
       console.log(chalk.green('✓') + ` Cortex server: ${opts.server}`);
       console.log(chalk.green('✓') + ` Author: ${author}`);
+
+      // Fail-fast on credential mistakes: hit the server once so a wrong
+      // token / unreachable host is surfaced now rather than at first sync.
+      const adapter = getSyncAdapter();
+      if (adapter?.isAvailable()) {
+        try {
+          await adapter.listRemoteCortexes();
+          console.log(chalk.green('✓') + ' Server reachable, token accepted');
+        } catch (err) {
+          console.log(chalk.yellow(
+            '  ⚠ Could not reach the server: ' + (err instanceof Error ? err.message : String(err)),
+          ));
+          console.log(chalk.yellow('  Config was saved; re-run setup with the corrected URL/token.'));
+        }
+      }
       return;
     }
 
@@ -91,17 +129,25 @@ cortexCommand.addCommand(new Command('setup')
       process.exit(1);
     }
 
+    const hadServer = !!config.cortex?.server;
     config.cortex = {
       ...config.cortex,
       author,
-      active: config.cortex?.active,
     };
 
     if (repo) {
       config.cortex.repo = repo;
     }
+    // Symmetric to the --server branch: switching to git drops any prior
+    // server config so the registry's "server takes precedence over repo"
+    // rule doesn't silently keep routing pushes/pulls to the old server.
+    delete config.cortex.server;
 
     saveConfig(config);
+
+    if (hadServer) {
+      console.log(chalk.dim('  (cleared previous --server backend)'));
+    }
 
     if (repo) {
       console.log(chalk.green('✓') + ` Cortex repo: ${repo}`);
@@ -379,6 +425,12 @@ cortexCommand.addCommand(new Command('status')
     console.log(`Cortex: ${chalk.cyan(cortex)}`);
     console.log(`Memories: ${memoryCount}`);
     console.log(`Backend: ${backendName}`);
+
+    if (config.cortex?.server?.url) {
+      console.log(`Server: ${config.cortex.server.url} ${chalk.dim('(token redacted)')}`);
+    } else if (config.cortex?.repo) {
+      console.log(`Repo: ${config.cortex.repo}`);
+    }
 
     if (adapter?.isAvailable()) {
       const pushCursor = getSyncCursor(cortex, adapter.name, 'push');
