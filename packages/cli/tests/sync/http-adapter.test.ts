@@ -1,6 +1,6 @@
 import { randomBytes } from 'node:crypto';
 import path from 'node:path';
-import { beforeAll, afterAll, describe } from 'vitest';
+import { beforeAll, afterAll, describe, it, expect } from 'vitest';
 import pg from 'pg';
 import { serve } from '@hono/node-server';
 import { createApp } from '../../../server/src/app.js';
@@ -135,5 +135,65 @@ if (!haveDb) {
   });
 } else {
   runSyncAdapterContractTests(factory, { enforceImmutableMemories: true });
+
+  describe('http long-term-event sync (BLOOM-139)', () => {
+    let pair: ReturnType<typeof import('../fixtures/peer-pair.js').createPeerPair> | null = null;
+    let remote: HttpRemote | null = null;
+
+    afterAll(async () => {
+      if (remote) await factory.teardownRemote(remote);
+      pair?.cleanup();
+    });
+
+    it('round-trips LT events between two peers (incl. tombstone)', async () => {
+      const { createPeerPair } = await import('../fixtures/peer-pair.js');
+      const { insertLongTermEvent, tombstoneLongTermEvent, getLongTermEvents } =
+        await import('../../src/db/long-term-queries.js');
+
+      pair = createPeerPair();
+      remote = await factory.setupRemote(pair.cortexName) as HttpRemote;
+      pair.peerA.activate();
+      await factory.configurePeer(pair.peerA, pair.cortexName, remote);
+      pair.peerB.activate();
+      await factory.configurePeer(pair.peerB, pair.cortexName, remote);
+      const adapter = factory.createAdapter();
+
+      // Peer A authors an LT event.
+      pair.peerA.activate();
+      const inserted = insertLongTermEvent(pair.cortexName, {
+        ts: '2026-04-30T12:00:00Z',
+        author: 'a',
+        kind: 'decision',
+        title: 'Adopt http',
+        content: 'we will use the http backend',
+        topics: ['arch'],
+      });
+      const eventId = inserted.row.id;
+
+      // A pushes; B pulls.
+      pair.peerA.activate();
+      await adapter.sync(pair.cortexName);
+      pair.peerB.activate();
+      await adapter.sync(pair.cortexName);
+
+      const onB = getLongTermEvents(pair.cortexName);
+      expect(onB).toHaveLength(1);
+      expect(onB[0].id).toBe(eventId);
+      expect(onB[0].title).toBe('Adopt http');
+
+      // A tombstones the event. Tombstone propagates to B.
+      pair.peerA.activate();
+      tombstoneLongTermEvent(pair.cortexName, eventId);
+
+      pair.peerA.activate();
+      await adapter.sync(pair.cortexName);
+      pair.peerB.activate();
+      await adapter.sync(pair.cortexName);
+
+      // getLongTermEvents excludes deleted_at by default.
+      const liveOnB = getLongTermEvents(pair.cortexName);
+      expect(liveOnB).toHaveLength(0);
+    });
+  });
 }
 

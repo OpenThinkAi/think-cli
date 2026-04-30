@@ -2,6 +2,7 @@ import { Hono } from 'hono';
 import { health } from './routes/health.js';
 import { cortex } from './routes/cortex.js';
 import { memories } from './routes/memories.js';
+import { longTermEvents } from './routes/long-term-events.js';
 import { bearerAuth } from './middleware/auth.js';
 
 /**
@@ -20,6 +21,7 @@ export function createApp(): Hono {
   authed.use('*', bearerAuth());
   authed.route('/', cortex);
   authed.route('/', memories);
+  authed.route('/', longTermEvents);
 
   app.route('/', authed);
 

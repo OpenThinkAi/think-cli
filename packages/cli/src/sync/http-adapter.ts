@@ -4,6 +4,11 @@ import {
   getSyncCursor,
   setSyncCursor,
 } from '../db/memory-queries.js';
+import {
+  getLongTermEventsBySyncVersion,
+  insertLongTermEventIfNotExists,
+  tombstoneLongTermEvent,
+} from '../db/long-term-queries.js';
 import { getConfig } from '../lib/config.js';
 import type { SyncAdapter, SyncResult } from './types.js';
 
@@ -28,6 +33,19 @@ interface RemoteMemory {
   source_ids: string[];
   episode_key: string | null;
   decisions: string[] | null;
+}
+
+interface RemoteLongTermEvent {
+  id: string;
+  ts: string;
+  author: string;
+  kind: string;
+  title: string;
+  content: string;
+  topics: string[];
+  supersedes: string | null;
+  source_memory_ids: string[];
+  deleted_at: string | null;
 }
 
 function authHint(status: number): string {
@@ -78,11 +96,16 @@ export class HttpSyncAdapter implements SyncAdapter {
 
   async push(cortex: string): Promise<SyncResult> {
     const result: SyncResult = { pushed: 0, pulled: 0, errors: [] };
+    await this.pushMemories(cortex, result);
+    await this.pushLongTermEvents(cortex, result);
+    return result;
+  }
 
+  private async pushMemories(cortex: string, result: SyncResult): Promise<void> {
     const cursorStr = getSyncCursor(cortex, this.name, 'push');
     let lastVersion = cursorStr ? parseInt(cursorStr, 10) : 0;
 
-    // Loop in case there are more than PUSH_BATCH rows pending. Each round
+    // Loop in case there are more than SYNC_BATCH rows pending. Each round
     // takes a fixed-size window of newly-versioned rows, ships the live
     // ones, and advances the cursor past the whole window — including any
     // tombstones we silently dropped (memories are immutable via sync).
@@ -114,7 +137,7 @@ export class HttpSyncAdapter implements SyncAdapter {
         if (!res.ok) {
           const text = await res.text().catch(() => '');
           result.errors.push(`push failed (${res.status}): ${text || res.statusText}.${authHint(res.status)}`);
-          return result;
+          return;
         }
 
         const json = await res.json() as { accepted: number };
@@ -124,15 +147,66 @@ export class HttpSyncAdapter implements SyncAdapter {
       setSyncCursor(cortex, this.name, 'push', String(cursorTo));
       lastVersion = cursorTo;
 
-      // Drained the queue when the slice was a partial batch.
       if (slice.length < SYNC_BATCH) break;
     }
+  }
 
-    return result;
+  private async pushLongTermEvents(cortex: string, result: SyncResult): Promise<void> {
+    const cursorStr = getSyncCursor(cortex, this.name, 'push_lt');
+    let lastVersion = cursorStr ? parseInt(cursorStr, 10) : 0;
+
+    for (;;) {
+      const slice = getLongTermEventsBySyncVersion(cortex, lastVersion).slice(0, SYNC_BATCH);
+      if (slice.length === 0) break;
+      const cursorTo = slice[slice.length - 1].sync_version;
+
+      const body = {
+        events: slice.map(ev => ({
+          id: ev.id,
+          ts: ev.ts,
+          author: ev.author,
+          kind: ev.kind,
+          title: ev.title,
+          content: ev.content,
+          topics: safeParseArray(ev.topics) ?? [],
+          supersedes: ev.supersedes ?? null,
+          source_memory_ids: safeParseArray(ev.source_memory_ids) ?? [],
+          // Unlike memories, LT events DO carry deleted_at across the wire —
+          // tombstoning is part of the data model. The server's upsert keeps
+          // the tombstone-sticky rule.
+          deleted_at: ev.deleted_at ?? undefined,
+        })),
+      };
+
+      const res = await this.authedFetch(
+        `/v1/cortexes/${encodeURIComponent(cortex)}/long-term-events`,
+        { method: 'POST', body: JSON.stringify(body) },
+      );
+
+      if (!res.ok) {
+        const text = await res.text().catch(() => '');
+        result.errors.push(`push (long-term events) failed (${res.status}): ${text || res.statusText}.${authHint(res.status)}`);
+        return;
+      }
+
+      const json = await res.json() as { accepted: number };
+      result.pushed += json.accepted;
+
+      setSyncCursor(cortex, this.name, 'push_lt', String(cursorTo));
+      lastVersion = cursorTo;
+
+      if (slice.length < SYNC_BATCH) break;
+    }
   }
 
   async pull(cortex: string): Promise<SyncResult> {
     const result: SyncResult = { pushed: 0, pulled: 0, errors: [] };
+    await this.pullMemories(cortex, result);
+    await this.pullLongTermEvents(cortex, result);
+    return result;
+  }
+
+  private async pullMemories(cortex: string, result: SyncResult): Promise<void> {
     let since = getSyncCursor(cortex, this.name, 'pull') ?? '0';
 
     for (;;) {
@@ -141,7 +215,7 @@ export class HttpSyncAdapter implements SyncAdapter {
       if (!res.ok) {
         const text = await res.text().catch(() => '');
         result.errors.push(`pull failed (${res.status}): ${text || res.statusText}.${authHint(res.status)}`);
-        return result;
+        return;
       }
 
       const json = await res.json() as { memories: RemoteMemory[]; next_since: string };
@@ -165,8 +239,66 @@ export class HttpSyncAdapter implements SyncAdapter {
 
       if (json.memories.length < SYNC_BATCH) break;
     }
+  }
 
-    return result;
+  private async pullLongTermEvents(cortex: string, result: SyncResult): Promise<void> {
+    let since = getSyncCursor(cortex, this.name, 'pull_lt') ?? '0';
+
+    for (;;) {
+      const path = `/v1/cortexes/${encodeURIComponent(cortex)}/long-term-events?since=${encodeURIComponent(since)}&limit=${SYNC_BATCH}`;
+      const res = await this.authedFetch(path);
+      if (!res.ok) {
+        const text = await res.text().catch(() => '');
+        result.errors.push(`pull (long-term events) failed (${res.status}): ${text || res.statusText}.${authHint(res.status)}`);
+        return;
+      }
+
+      const json = await res.json() as { events: RemoteLongTermEvent[]; next_since: string };
+      for (const ev of json.events) {
+        if (ev.deleted_at) {
+          // Tombstone arriving from the server — apply locally. If we don't
+          // have a row yet, insert it tombstoned so a later non-tombstone
+          // pull (which can't happen given the server's stickiness rule but
+          // is harmless to defend) doesn't undelete it.
+          const wasInserted = insertLongTermEventIfNotExists(cortex, {
+            id: ev.id,
+            ts: ev.ts,
+            author: ev.author,
+            kind: ev.kind,
+            title: ev.title,
+            content: ev.content,
+            topics: ev.topics ?? [],
+            supersedes: ev.supersedes ?? null,
+            source_memory_ids: ev.source_memory_ids ?? [],
+            deleted_at: ev.deleted_at,
+          });
+          if (wasInserted) {
+            result.pulled++;
+          } else {
+            tombstoneLongTermEvent(cortex, ev.id);
+          }
+          continue;
+        }
+
+        const inserted = insertLongTermEventIfNotExists(cortex, {
+          id: ev.id,
+          ts: ev.ts,
+          author: ev.author,
+          kind: ev.kind,
+          title: ev.title,
+          content: ev.content,
+          topics: ev.topics ?? [],
+          supersedes: ev.supersedes ?? null,
+          source_memory_ids: ev.source_memory_ids ?? [],
+        });
+        if (inserted) result.pulled++;
+      }
+
+      since = json.next_since;
+      setSyncCursor(cortex, this.name, 'pull_lt', since);
+
+      if (json.events.length < SYNC_BATCH) break;
+    }
   }
 
   async sync(cortex: string): Promise<SyncResult> {

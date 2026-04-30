@@ -157,4 +157,121 @@ describe('open-think-server', () => {
       expect(r.status).toBe(404);
     });
   });
+
+  describe('long-term events', () => {
+    it('upserts events and dedupes by id', async () => {
+      const cortexName = 'lt-' + Math.random().toString(36).slice(2, 8);
+      const event = {
+        id: 'evt-1',
+        ts: '2026-04-30T12:00:00Z',
+        author: 'a',
+        kind: 'decision',
+        title: 'Adopted X',
+        content: 'we will use X',
+        topics: ['arch'],
+        source_memory_ids: ['mem-1'],
+      };
+
+      const first = await request<{ accepted: number; affected: number }>({
+        method: 'POST',
+        path: `/v1/cortexes/${cortexName}/long-term-events`,
+        body: { events: [event] },
+      });
+      expect(first.status).toBe(200);
+      expect(first.body.affected).toBe(1);
+
+      const second = await request<{ accepted: number; affected: number }>({
+        method: 'POST',
+        path: `/v1/cortexes/${cortexName}/long-term-events`,
+        body: { events: [event] },
+      });
+      expect(second.body.affected).toBe(0);
+    });
+
+    it('paginates pull by server_seq', async () => {
+      const cortexName = 'ltp-' + Math.random().toString(36).slice(2, 8);
+      const events = Array.from({ length: 5 }, (_, i) => ({
+        id: `evt-${i}`,
+        ts: `2026-04-30T12:0${i}:00Z`,
+        author: 'a',
+        kind: 'decision',
+        title: `t${i}`,
+        content: `c${i}`,
+      }));
+      await request({
+        method: 'POST',
+        path: `/v1/cortexes/${cortexName}/long-term-events`,
+        body: { events },
+      });
+
+      const firstPage = await request<{
+        events: { id: string; server_seq: string }[];
+        next_since: string;
+      }>({ path: `/v1/cortexes/${cortexName}/long-term-events?since=0&limit=3` });
+      expect(firstPage.body.events.map(e => e.id)).toEqual(['evt-0', 'evt-1', 'evt-2']);
+
+      const secondPage = await request<{ events: { id: string }[] }>({
+        path: `/v1/cortexes/${cortexName}/long-term-events?since=${firstPage.body.next_since}&limit=10`,
+      });
+      expect(secondPage.body.events.map(e => e.id)).toEqual(['evt-3', 'evt-4']);
+    });
+
+    it('tombstone propagation: deleted_at sticks once set', async () => {
+      const cortexName = 'ltt-' + Math.random().toString(36).slice(2, 8);
+      const baseEvent = {
+        id: 'evt-tomb',
+        ts: '2026-04-30T12:00:00Z',
+        author: 'a',
+        kind: 'decision',
+        title: 't',
+        content: 'c',
+      };
+
+      await request({
+        method: 'POST',
+        path: `/v1/cortexes/${cortexName}/long-term-events`,
+        body: { events: [baseEvent] },
+      });
+      await request({
+        method: 'POST',
+        path: `/v1/cortexes/${cortexName}/long-term-events`,
+        body: { events: [{ ...baseEvent, deleted_at: '2026-04-30T13:00:00Z' }] },
+      });
+
+      const pulled = await request<{ events: { deleted_at: string | null }[] }>({
+        path: `/v1/cortexes/${cortexName}/long-term-events?since=0&limit=10`,
+      });
+      expect(pulled.body.events).toHaveLength(1);
+      expect(pulled.body.events[0].deleted_at).toBe('2026-04-30T13:00:00Z');
+
+      // Re-sending the original (no deleted_at) must NOT undelete.
+      await request({
+        method: 'POST',
+        path: `/v1/cortexes/${cortexName}/long-term-events`,
+        body: { events: [baseEvent] },
+      });
+      const pulled2 = await request<{ events: { deleted_at: string | null }[] }>({
+        path: `/v1/cortexes/${cortexName}/long-term-events?since=0&limit=10`,
+      });
+      expect(pulled2.body.events[0].deleted_at).toBe('2026-04-30T13:00:00Z');
+    });
+
+    it('rejects oversized batches', async () => {
+      const cortexName = 'ltc-' + Math.random().toString(36).slice(2, 8);
+      const events = Array.from({ length: 501 }, () => ({
+        id: 'x',
+        ts: '2026-04-30T12:00:00Z',
+        author: 'a',
+        kind: 'decision',
+        title: 't',
+        content: 'c',
+      }));
+      const r = await request({
+        method: 'POST',
+        path: `/v1/cortexes/${cortexName}/long-term-events`,
+        body: { events },
+      });
+      expect(r.status).toBe(400);
+    });
+  });
 });
