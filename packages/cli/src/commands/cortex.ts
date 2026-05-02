@@ -6,10 +6,7 @@ import chalk from 'chalk';
 import readline from 'node:readline';
 import { getConfig, saveConfig, getPeerId } from '../lib/config.js';
 import { getCortexDb, closeCortexDb } from '../db/engrams.js';
-import {
-  getMemoryCount,
-  getSyncCursor,
-} from '../db/memory-queries.js';
+import { getMemoryCount, getSyncCursor } from '../db/memory-queries.js';
 import { getEngramDbPath, getEngramsDir } from '../lib/paths.js';
 import { getSyncAdapter } from '../sync/registry.js';
 import { LocalFsSyncAdapter } from '../sync/local-fs-adapter.js';
@@ -624,7 +621,9 @@ cortexCommand.addCommand(new Command('migrate')
 
     const localCortexes = listLocalCortexes();
     if (localCortexes.length === 0) {
-      console.log(chalk.dim('No local cortexes to migrate.'));
+      console.error(chalk.red('No local cortexes to migrate.'));
+      console.error(chalk.dim('  Run `think cortex setup --fs <path>` to set up a fresh local-fs backend.'));
+      process.exit(1);
     }
 
     console.log(chalk.cyan(`Pulling latest from ${sourceAdapter.name} into local SQLite...`));
@@ -685,8 +684,9 @@ cortexCommand.addCommand(new Command('migrate')
     const fsAdapter = new LocalFsSyncAdapter();
     let totalPushed = 0;
     for (const cortex of localCortexes) {
+      // No explicit createCortex — fsAdapter.push mkdirs the cortex dir
+      // itself when there's something to write.
       try {
-        await fsAdapter.createCortex(cortex);
         const result = await fsAdapter.push(cortex);
         if (result.errors.length > 0) {
           for (const err of result.errors) {
