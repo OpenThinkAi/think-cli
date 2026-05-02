@@ -117,6 +117,11 @@ export class HttpSyncAdapter implements SyncAdapter {
       const cursorTo = slice[slice.length - 1].sync_version;
 
       if (live.length > 0) {
+        // Note: `origin_peer_id` is intentionally NOT included on the wire.
+        // The server schema doesn't carry it yet — that's a follow-up which
+        // owns the server-side migration + zod update. Until that lands,
+        // HTTP-synced memories lose attribution. The pull side compensates
+        // by writing null rather than fabricating the puller's id.
         const body = {
           memories: live.map(m => ({
             id: m.id,
@@ -220,6 +225,10 @@ export class HttpSyncAdapter implements SyncAdapter {
 
       const json = await res.json() as { memories: RemoteMemory[]; next_since: string };
       for (const m of json.memories) {
+        // The server schema doesn't yet carry `origin_peer_id` (deferred to
+        // a follow-up that owns the server-side migration). Land pulled
+        // rows as null rather than letting them default to the puller's
+        // id — null is honestly-unknown, the default would be a lie.
         const inserted = insertMemoryIfNotExists(cortex, {
           id: m.id,
           ts: m.ts,
@@ -228,6 +237,7 @@ export class HttpSyncAdapter implements SyncAdapter {
           source_ids: m.source_ids ?? [],
           episode_key: m.episode_key ?? undefined,
           decisions: m.decisions ?? undefined,
+          origin_peer_id: null,
         });
         if (inserted) result.pulled++;
       }

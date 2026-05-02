@@ -6,6 +6,7 @@ import type { Migration } from './migrate.js';
 
 const dbs = new Map<string, DatabaseSync>();
 
+/** @internal Exported only for migration tests; do not consume from production code. */
 export const migrations: Migration[] = [
   {
     version: 1,
