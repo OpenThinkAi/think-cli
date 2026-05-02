@@ -64,3 +64,18 @@ export function getConfig(): Config {
   saveConfig(config);
   return config;
 }
+
+/**
+ * Returns this peer's stable UUID. Self-heals legacy configs that pre-date
+ * the auto-generated `peerId` field by minting one and persisting it back —
+ * users on an older install don't need to delete their config to upgrade.
+ */
+export function getPeerId(): string {
+  const config = getConfig();
+  if (typeof config.peerId === 'string' && config.peerId.length > 0) {
+    return config.peerId;
+  }
+  config.peerId = uuidv4();
+  saveConfig(config);
+  return config.peerId;
+}

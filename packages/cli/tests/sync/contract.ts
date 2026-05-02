@@ -9,6 +9,7 @@ import {
   getSyncCursor,
 } from '../../src/db/memory-queries.js';
 import { deterministicId } from '../../src/lib/deterministic-id.js';
+import { getPeerId } from '../../src/lib/config.js';
 import type { SyncAdapter } from '../../src/sync/types.js';
 
 /**
@@ -48,6 +49,16 @@ interface SuiteOptions {
    * (which respect the invariant from day one) set it to true.
    */
   enforceImmutableMemories?: boolean;
+
+  /**
+   * If true, the suite asserts that the adapter round-trips
+   * `origin_peer_id` across the wire. The git adapter does; the HTTP
+   * adapter does not yet (server schema follow-up owns the wire format
+   * and migration). HTTP-synced rows currently land as null on the
+   * receiver — honest about the unknown, but not the round-trip the
+   * test asserts. Set true on adapters that fully preserve attribution.
+   */
+  enforceOriginPeerId?: boolean;
 }
 
 /**
@@ -61,6 +72,7 @@ export function runSyncAdapterContractTests<TRemote>(
   options: SuiteOptions = {},
 ): void {
   const enforceImmutableMemories = options.enforceImmutableMemories ?? false;
+  const enforceOriginPeerId = options.enforceOriginPeerId ?? false;
 
   describe(`SyncAdapter contract — ${factory.label}`, () => {
     let pair: PeerPair | null = null;
@@ -256,6 +268,45 @@ export function runSyncAdapterContractTests<TRemote>(
         return db.prepare('SELECT id FROM engrams').all() as { id: string }[];
       });
       expect(bEngrams).toHaveLength(0);
+    });
+
+    (enforceOriginPeerId ? it : it.skip)("preserves the writer's origin_peer_id across sync", async () => {
+      const { pair: p, adapter } = await setup();
+
+      const peerAId = asPeer(p.peerA, () => getPeerId());
+      const peerBId = asPeer(p.peerB, () => getPeerId());
+      expect(peerAId).not.toBe(peerBId);
+
+      asPeer(p.peerA, () => {
+        insertMemory(p.cortexName, {
+          id: deterministicId('2026-04-29T12:00:00Z', 'a', 'origin-from-A'),
+          ts: '2026-04-29T12:00:00Z',
+          author: 'a',
+          content: 'origin-from-A',
+        });
+      });
+
+      p.peerA.activate();
+      await adapter.push(p.cortexName);
+      p.peerB.activate();
+      await adapter.pull(p.cortexName);
+
+      const bRow = asPeer(p.peerB, () => getMemoriesBySyncVersion(p.cortexName, 0))[0];
+      expect(bRow.origin_peer_id).toBe(peerAId);
+
+      // Locally-inserted memories on B carry B's id.
+      asPeer(p.peerB, () => {
+        insertMemory(p.cortexName, {
+          id: deterministicId('2026-04-29T12:01:00Z', 'b', 'origin-from-B'),
+          ts: '2026-04-29T12:01:00Z',
+          author: 'b',
+          content: 'origin-from-B',
+        });
+      });
+      const bSelfRow = asPeer(p.peerB, () =>
+        getMemoriesBySyncVersion(p.cortexName, 0).find(m => m.content === 'origin-from-B')!,
+      );
+      expect(bSelfRow.origin_peer_id).toBe(peerBId);
     });
 
     (enforceImmutableMemories ? it : it.skip)(

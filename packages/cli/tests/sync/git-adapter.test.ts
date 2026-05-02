@@ -70,5 +70,7 @@ const factory: AdapterFactory<GitRemote> = {
 };
 
 // Memory tombstones are not propagated by sync (BLOOM-122). The contract
-// suite enforces this for every adapter.
-runSyncAdapterContractTests(factory, { enforceImmutableMemories: true });
+// suite enforces this for every adapter. Origin peer-id round-trip is
+// asserted only on adapters whose wire format carries the field — git
+// does, HTTP does not yet (server-side follow-up).
+runSyncAdapterContractTests(factory, { enforceImmutableMemories: true, enforceOriginPeerId: true });

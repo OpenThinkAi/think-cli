@@ -127,6 +127,7 @@ export class GitSyncAdapter implements SyncAdapter {
           source_ids: JSON.parse(m.source_ids),
           ...(m.episode_key ? { episode_key: m.episode_key } : {}),
           ...(decisions.length > 0 ? { decisions } : {}),
+          ...(m.origin_peer_id ? { origin_peer_id: m.origin_peer_id } : {}),
         });
       });
 
@@ -212,6 +213,12 @@ export class GitSyncAdapter implements SyncAdapter {
         result.errors.push(`Pulled memory from ${m.author} flagged: ${warnings.join(', ')}`);
       }
 
+      // Pre-v7 git lines lack `origin_peer_id` and the bucket filename
+      // (`\d{6}.jsonl`) carries no peer signal either. Land such rows as
+      // null rather than stamping them with the puller's id — attribution
+      // for legacy data is genuinely unknown, and faking it would hide
+      // that fact from any future query that scopes by origin. New lines
+      // round-trip the originator.
       const wasInserted = insertMemoryIfNotExists(cortex, {
         id,
         ts: m.ts,
@@ -220,6 +227,7 @@ export class GitSyncAdapter implements SyncAdapter {
         source_ids: m.source_ids,
         episode_key: m.episode_key,
         decisions: m.decisions,
+        origin_peer_id: m.origin_peer_id ?? null,
       });
       if (wasInserted) result.pulled++;
     }

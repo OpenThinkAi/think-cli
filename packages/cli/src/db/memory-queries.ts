@@ -1,5 +1,6 @@
 import { v7 as uuidv7 } from 'uuid';
 import { getCortexDb } from './engrams.js';
+import { getPeerId } from '../lib/config.js';
 
 export interface MemoryRow {
   id: string;
@@ -12,6 +13,13 @@ export interface MemoryRow {
   sync_version: number;
   episode_key: string | null;
   decisions: string | null;
+  /**
+   * Originating peer's id. Locally-written rows are always stamped via the
+   * insert default. Externally-ingested rows preserve whatever the wire
+   * format carried; legacy lines that lack the field land as `null` rather
+   * than being mis-attributed to the puller.
+   */
+  origin_peer_id: string | null;
 }
 
 export interface InsertMemoryParams {
@@ -23,6 +31,12 @@ export interface InsertMemoryParams {
   deleted_at?: string | null;
   episode_key?: string;
   decisions?: string[];
+  /**
+   * Peer that originally produced this memory. Defaults to the local peer
+   * when omitted; pass `null` to record honestly-unknown attribution
+   * (e.g. legacy JSONL lines that pre-date the field).
+   */
+  origin_peer_id?: string | null;
 }
 
 export function insertMemory(cortexName: string, params: InsertMemoryParams): MemoryRow {
@@ -33,12 +47,15 @@ export function insertMemory(cortexName: string, params: InsertMemoryParams): Me
 
   const episodeKey = params.episode_key ?? null;
   const decisions = params.decisions?.length ? JSON.stringify(params.decisions) : null;
+  // `=== undefined` (not `??`) so callers can opt into NULL via explicit
+  // `origin_peer_id: null` — used for legacy JSONL lines with no signal.
+  const originPeerId = params.origin_peer_id === undefined ? getPeerId() : params.origin_peer_id;
 
   // Atomic sync_version assignment via subquery — no race between read and write
   db.prepare(
-    `INSERT INTO memories (id, ts, author, content, source_ids, created_at, deleted_at, sync_version, episode_key, decisions)
-     VALUES (?, ?, ?, ?, ?, ?, ?, (SELECT COALESCE(MAX(sync_version), 0) + 1 FROM memories), ?, ?)`
-  ).run(id, params.ts, params.author, params.content, sourceIds, now, params.deleted_at ?? null, episodeKey, decisions);
+    `INSERT INTO memories (id, ts, author, content, source_ids, created_at, deleted_at, sync_version, episode_key, decisions, origin_peer_id)
+     VALUES (?, ?, ?, ?, ?, ?, ?, (SELECT COALESCE(MAX(sync_version), 0) + 1 FROM memories), ?, ?, ?)`
+  ).run(id, params.ts, params.author, params.content, sourceIds, now, params.deleted_at ?? null, episodeKey, decisions, originPeerId);
 
   const row = db.prepare('SELECT * FROM memories WHERE id = ?').get(id) as unknown as MemoryRow;
   return row;

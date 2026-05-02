@@ -1,11 +1,13 @@
 import { DatabaseSync } from 'node:sqlite';
 import { getEngramDbPath, ensureThinkDirs } from '../lib/paths.js';
+import { getPeerId } from '../lib/config.js';
 import { runMigrations } from './migrate.js';
 import type { Migration } from './migrate.js';
 
 const dbs = new Map<string, DatabaseSync>();
 
-const migrations: Migration[] = [
+/** @internal Exported only for migration tests; do not consume from production code. */
+export const migrations: Migration[] = [
   {
     version: 1,
     up: (db) => {
@@ -158,6 +160,28 @@ const migrations: Migration[] = [
           INSERT INTO long_term_events_fts(long_term_events_fts, rowid, title, content) VALUES ('delete', old.rowid, old.title, old.content);
         END;
       `);
+    },
+  },
+  {
+    version: 7,
+    up: (db) => {
+      // Identifies the peer that originally produced each memory. Locally-
+      // written rows are stamped with this peer's id; rows ingested from
+      // another peer (via the local-fs adapter, HiveDB, etc.) carry the
+      // originator's id — without this, attribution is lost the moment a
+      // memory crosses a peer boundary.
+      db.exec('ALTER TABLE memories ADD COLUMN origin_peer_id TEXT;');
+      db.exec('CREATE INDEX IF NOT EXISTS idx_memories_origin_peer_id ON memories(origin_peer_id);');
+
+      // Eager backfill of pre-v7 rows to the local peer. This is correct
+      // for genuinely-local rows and lossy for rows that were already
+      // ingested from another peer pre-v7 — but pre-v7 there was no
+      // signal to recover anywhere on disk, so backfilling to local is
+      // the only available rule. Going forward, attribution for ingested
+      // rows is preserved from the JSONL line. Eager (rather than lazy
+      // NULL) keeps existing recall/list/summary behaviour unchanged.
+      const peerId = getPeerId();
+      db.prepare('UPDATE memories SET origin_peer_id = ? WHERE origin_peer_id IS NULL').run(peerId);
     },
   },
 ];

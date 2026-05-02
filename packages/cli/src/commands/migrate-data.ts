@@ -47,6 +47,9 @@ export const migrateDataCommand = new Command('migrate-data')
 
     for (const m of memories) {
       const id = deterministicId(m.ts, m.author, m.content);
+      // origin_peer_id falls through to the local-peer default. This is a
+      // legacy file→sqlite import on the same machine — the local peer is
+      // the original author of these rows in every realistic case.
       const wasInserted = insertMemoryIfNotExists(cortex, {
         id,
         ts: m.ts,

@@ -12,6 +12,7 @@ export interface MemoryEntry {
   episode_key?: string;
   deleted_at?: string;
   decisions?: string[];
+  origin_peer_id?: string;
 }
 
 export interface StructuredPrompt {
@@ -302,6 +303,9 @@ export function parseMemoriesJsonl(content: string): MemoryEntry[] {
           ...(parsed.episode_key ? { episode_key: parsed.episode_key } : {}),
           ...(parsed.deleted_at ? { deleted_at: parsed.deleted_at } : {}),
           ...(decisions.length > 0 ? { decisions } : {}),
+          ...(typeof parsed.origin_peer_id === 'string' && parsed.origin_peer_id.length > 0
+            ? { origin_peer_id: parsed.origin_peer_id }
+            : {}),
         });
       }
     } catch {
