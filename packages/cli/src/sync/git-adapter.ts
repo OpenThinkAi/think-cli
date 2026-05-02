@@ -23,7 +23,7 @@ import {
   insertLongTermEventIfNotExists,
   tombstoneLongTermEvent,
 } from '../db/long-term-queries.js';
-import { getConfig, getPeerId } from '../lib/config.js';
+import { getConfig } from '../lib/config.js';
 import { deterministicId, deterministicEventId } from '../lib/deterministic-id.js';
 import { validateEngramContent } from '../lib/sanitize.js';
 import type { SyncAdapter, SyncResult } from './types.js';
@@ -214,9 +214,11 @@ export class GitSyncAdapter implements SyncAdapter {
       }
 
       // Pre-v7 git lines lack `origin_peer_id` and the bucket filename
-      // (`\d{6}.jsonl`) carries no peer signal either. Falling back to the
-      // local peer is correctness-preserving for legacy data — it's also
-      // the only signal available. New lines round-trip the originator.
+      // (`\d{6}.jsonl`) carries no peer signal either. Land such rows as
+      // null rather than stamping them with the puller's id — attribution
+      // for legacy data is genuinely unknown, and faking it would hide
+      // that fact from any future query that scopes by origin. New lines
+      // round-trip the originator.
       const wasInserted = insertMemoryIfNotExists(cortex, {
         id,
         ts: m.ts,
@@ -225,7 +227,7 @@ export class GitSyncAdapter implements SyncAdapter {
         source_ids: m.source_ids,
         episode_key: m.episode_key,
         decisions: m.decisions,
-        origin_peer_id: m.origin_peer_id ?? getPeerId(),
+        origin_peer_id: m.origin_peer_id ?? null,
       });
       if (wasInserted) result.pulled++;
     }

@@ -6,7 +6,7 @@ import type { Migration } from './migrate.js';
 
 const dbs = new Map<string, DatabaseSync>();
 
-const migrations: Migration[] = [
+export const migrations: Migration[] = [
   {
     version: 1,
     up: (db) => {
@@ -172,9 +172,13 @@ const migrations: Migration[] = [
       db.exec('ALTER TABLE memories ADD COLUMN origin_peer_id TEXT;');
       db.exec('CREATE INDEX IF NOT EXISTS idx_memories_origin_peer_id ON memories(origin_peer_id);');
 
-      // Eager backfill: pre-v7 rows must have originated on this peer (the
-      // schema didn't exist anywhere else yet). Stamp them now so readers
-      // never see a NULL and existing recall/list/summary keep working.
+      // Eager backfill of pre-v7 rows to the local peer. This is correct
+      // for genuinely-local rows and lossy for rows that were already
+      // ingested from another peer pre-v7 — but pre-v7 there was no
+      // signal to recover anywhere on disk, so backfilling to local is
+      // the only available rule. Going forward, attribution for ingested
+      // rows is preserved from the JSONL line. Eager (rather than lazy
+      // NULL) keeps existing recall/list/summary behaviour unchanged.
       const peerId = getPeerId();
       db.prepare('UPDATE memories SET origin_peer_id = ? WHERE origin_peer_id IS NULL').run(peerId);
     },

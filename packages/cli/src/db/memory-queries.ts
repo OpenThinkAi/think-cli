@@ -13,7 +13,13 @@ export interface MemoryRow {
   sync_version: number;
   episode_key: string | null;
   decisions: string | null;
-  origin_peer_id: string;
+  /**
+   * Originating peer's id. Locally-written rows are always stamped via the
+   * insert default. Externally-ingested rows preserve whatever the wire
+   * format carried; legacy lines that lack the field land as `null` rather
+   * than being mis-attributed to the puller.
+   */
+  origin_peer_id: string | null;
 }
 
 export interface InsertMemoryParams {
@@ -25,8 +31,12 @@ export interface InsertMemoryParams {
   deleted_at?: string | null;
   episode_key?: string;
   decisions?: string[];
-  /** Peer that originally produced this memory. Defaults to the local peer. */
-  origin_peer_id?: string;
+  /**
+   * Peer that originally produced this memory. Defaults to the local peer
+   * when omitted; pass `null` to record honestly-unknown attribution
+   * (e.g. legacy JSONL lines that pre-date the field).
+   */
+  origin_peer_id?: string | null;
 }
 
 export function insertMemory(cortexName: string, params: InsertMemoryParams): MemoryRow {
@@ -37,7 +47,9 @@ export function insertMemory(cortexName: string, params: InsertMemoryParams): Me
 
   const episodeKey = params.episode_key ?? null;
   const decisions = params.decisions?.length ? JSON.stringify(params.decisions) : null;
-  const originPeerId = params.origin_peer_id ?? getPeerId();
+  // `=== undefined` (not `??`) so callers can opt into NULL via explicit
+  // `origin_peer_id: null` — used for legacy JSONL lines with no signal.
+  const originPeerId = params.origin_peer_id === undefined ? getPeerId() : params.origin_peer_id;
 
   // Atomic sync_version assignment via subquery — no race between read and write
   db.prepare(
