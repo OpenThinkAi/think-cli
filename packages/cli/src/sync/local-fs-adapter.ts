@@ -21,6 +21,14 @@ import type { SyncAdapter, SyncResult } from './types.js';
 const BUCKET_PAD = 4;
 const LONG_TERM_SUFFIX = '-long-term.jsonl';
 const BUCKET_RE = new RegExp(`^(.+)-(\\d{${BUCKET_PAD}})\\.jsonl$`);
+// A long-term file's canonical name is `<peer>-long-term.jsonl`, but
+// iCloud / Drive / Syncthing can rename a sync-conflict copy to e.g.
+// `<peer>-long-term (conflict).jsonl` — the canonical suffix no longer
+// matches. Routing on the substring `-long-term` keeps the conflict
+// copy on the LT codepath instead of letting it fall through to memory
+// parsing, which would mis-categorise the rows. Peer ids are UUIDs
+// (no `-long-term` substring possible), so this is unambiguous.
+const LONG_TERM_TOKEN = '-long-term';
 
 interface PullCursorMap {
   [filename: string]: number;
@@ -268,12 +276,13 @@ export class LocalFsSyncAdapter implements SyncAdapter {
 
   private pullMemories(cortex: string, dir: string, result: SyncResult): void {
     const entries = listJsonlFiles(dir);
-    // Memory bucket files only — long-term files are handled separately and
-    // a tail-renamed conflict file (e.g. `peer-0001 (conflict).jsonl`) doesn't
-    // match BUCKET_RE but is still a memory file. We treat anything ending in
-    // `.jsonl` and not in `-long-term.jsonl` as a memory bucket; deterministic
-    // ids dedupe whatever lands inside.
-    const memoryFiles = entries.filter(name => !name.endsWith(LONG_TERM_SUFFIX));
+    // Memory bucket files only. A tail-renamed conflict file
+    // (`peer-0001 (conflict).jsonl`) doesn't match BUCKET_RE but is still a
+    // memory file, so we use an exclusionary filter rather than a strict
+    // positive match. Routing on the `-long-term` substring (rather than the
+    // canonical `-long-term.jsonl` suffix) keeps conflict-renamed LT files
+    // on the LT codepath where they belong.
+    const memoryFiles = entries.filter(name => !name.includes(LONG_TERM_TOKEN));
     if (memoryFiles.length === 0) return;
 
     const cursors = readPullCursors(cortex, this.name, 'pull_files');
@@ -345,7 +354,9 @@ export class LocalFsSyncAdapter implements SyncAdapter {
 
   private pullLongTermEvents(cortex: string, dir: string, result: SyncResult): void {
     const entries = listJsonlFiles(dir);
-    const ltFiles = entries.filter(name => name.endsWith(LONG_TERM_SUFFIX));
+    // Substring rather than suffix so conflict-renamed copies
+    // (`peer-long-term (conflict).jsonl`) still route here.
+    const ltFiles = entries.filter(name => name.includes(LONG_TERM_TOKEN));
     if (ltFiles.length === 0) return;
 
     const cursors = readPullCursors(cortex, this.name, 'pull_lt_files');

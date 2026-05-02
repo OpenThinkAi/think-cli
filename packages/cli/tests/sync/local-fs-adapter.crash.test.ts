@@ -201,6 +201,44 @@ describe('LocalFsSyncAdapter — crash and corner-case behaviour', () => {
     expect(getMemoryCount(pair.cortexName)).toBe(2);
   });
 
+  it('conflict-renamed long-term file is routed to the LT codepath, not parsed as memories', async () => {
+    active = setup();
+    const { pair, root } = active;
+    const adapter = new LocalFsSyncAdapter();
+
+    // Drop two files into peer A's cortex dir before any pull happens:
+    // a canonical LT file and an iCloud-conflict-renamed copy of it.
+    // The renamed file must not be parsed by the memory codepath
+    // (which would write its rows into the memories table with the
+    // wrong shape) — the substring filter routes it to LT.
+    const cortexDir = path.join(root, pair.cortexName);
+    fs.mkdirSync(cortexDir, { recursive: true });
+    const peerC = '22222222-2222-4222-8222-222222222222';
+    const ltLine = JSON.stringify({
+      ts: '2026-04-30T12:00:00Z',
+      author: 'c',
+      kind: 'decision',
+      title: 'Adopt fs',
+      content: 'we are using fs',
+      topics: ['arch'],
+      source_memory_ids: [],
+    }) + '\n';
+    fs.writeFileSync(path.join(cortexDir, `${peerC}-long-term.jsonl`), ltLine);
+    fs.writeFileSync(path.join(cortexDir, `${peerC}-long-term (conflict).jsonl`), ltLine);
+
+    pair.peerB.activate();
+    const result = await adapter.pull(pair.cortexName);
+    expect(result.errors).toEqual([]);
+
+    // No memory rows landed (the LT files were correctly excluded).
+    expect(getMemoryCount(pair.cortexName)).toBe(0);
+    // The LT event landed once — both copies dedupe via deterministic id.
+    const { getLongTermEvents } = await import('../../src/db/long-term-queries.js');
+    const events = getLongTermEvents(pair.cortexName);
+    expect(events).toHaveLength(1);
+    expect(events[0].title).toBe('Adopt fs');
+  });
+
   it('externally-injected line without origin_peer_id falls back to the writer-peer from the filename', async () => {
     active = setup();
     const { pair, root } = active;
