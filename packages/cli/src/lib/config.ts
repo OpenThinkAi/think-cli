@@ -10,11 +10,23 @@ export interface ServerBackendConfig {
   token: string;
 }
 
+export interface FsBackendConfig {
+  /**
+   * Absolute path to the cortex root directory. Each cortex lives under
+   * `<path>/<cortex>/` and stores per-peer JSONL buckets. Whatever sync
+   * tool (iCloud, Drive, Syncthing, or none) governs the folder is opaque
+   * to think — see `~/Ideas/think-cli-v2/01-local-fs-adapter.md`.
+   */
+  path: string;
+}
+
 export interface CortexConfig {
   /** Git remote URL. Optional — only used by the git sync backend. */
   repo?: string;
-  /** open-think-server backend. Mutually exclusive with `repo`. */
+  /** open-think-server backend. Mutually exclusive with `repo` and `fs`. */
   server?: ServerBackendConfig;
+  /** Local-fs backend. Mutually exclusive with `repo` and `server`. */
+  fs?: FsBackendConfig;
   active?: string;
   author: string;
   curateEveryN?: number;

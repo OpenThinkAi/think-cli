@@ -9,7 +9,7 @@ function getHome(): string {
   return home;
 }
 
-function sanitizeName(name: string): string {
+export function sanitizeName(name: string): string {
   if (!name || /[\/\\\.]{2}/.test(name) || /[^a-zA-Z0-9_-]/.test(name)) {
     throw new Error(`Invalid cortex name: "${name}". Use only alphanumeric characters, hyphens, and underscores.`);
   }
