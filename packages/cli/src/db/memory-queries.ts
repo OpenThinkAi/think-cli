@@ -1,5 +1,6 @@
 import { v7 as uuidv7 } from 'uuid';
 import { getCortexDb } from './engrams.js';
+import { getPeerId } from '../lib/config.js';
 
 export interface MemoryRow {
   id: string;
@@ -12,6 +13,7 @@ export interface MemoryRow {
   sync_version: number;
   episode_key: string | null;
   decisions: string | null;
+  origin_peer_id: string;
 }
 
 export interface InsertMemoryParams {
@@ -23,6 +25,8 @@ export interface InsertMemoryParams {
   deleted_at?: string | null;
   episode_key?: string;
   decisions?: string[];
+  /** Peer that originally produced this memory. Defaults to the local peer. */
+  origin_peer_id?: string;
 }
 
 export function insertMemory(cortexName: string, params: InsertMemoryParams): MemoryRow {
@@ -33,12 +37,13 @@ export function insertMemory(cortexName: string, params: InsertMemoryParams): Me
 
   const episodeKey = params.episode_key ?? null;
   const decisions = params.decisions?.length ? JSON.stringify(params.decisions) : null;
+  const originPeerId = params.origin_peer_id ?? getPeerId();
 
   // Atomic sync_version assignment via subquery — no race between read and write
   db.prepare(
-    `INSERT INTO memories (id, ts, author, content, source_ids, created_at, deleted_at, sync_version, episode_key, decisions)
-     VALUES (?, ?, ?, ?, ?, ?, ?, (SELECT COALESCE(MAX(sync_version), 0) + 1 FROM memories), ?, ?)`
-  ).run(id, params.ts, params.author, params.content, sourceIds, now, params.deleted_at ?? null, episodeKey, decisions);
+    `INSERT INTO memories (id, ts, author, content, source_ids, created_at, deleted_at, sync_version, episode_key, decisions, origin_peer_id)
+     VALUES (?, ?, ?, ?, ?, ?, ?, (SELECT COALESCE(MAX(sync_version), 0) + 1 FROM memories), ?, ?, ?)`
+  ).run(id, params.ts, params.author, params.content, sourceIds, now, params.deleted_at ?? null, episodeKey, decisions, originPeerId);
 
   const row = db.prepare('SELECT * FROM memories WHERE id = ?').get(id) as unknown as MemoryRow;
   return row;

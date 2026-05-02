@@ -1,5 +1,6 @@
 import { DatabaseSync } from 'node:sqlite';
 import { getEngramDbPath, ensureThinkDirs } from '../lib/paths.js';
+import { getPeerId } from '../lib/config.js';
 import { runMigrations } from './migrate.js';
 import type { Migration } from './migrate.js';
 
@@ -158,6 +159,24 @@ const migrations: Migration[] = [
           INSERT INTO long_term_events_fts(long_term_events_fts, rowid, title, content) VALUES ('delete', old.rowid, old.title, old.content);
         END;
       `);
+    },
+  },
+  {
+    version: 7,
+    up: (db) => {
+      // Identifies the peer that originally produced each memory. Locally-
+      // written rows are stamped with this peer's id; rows ingested from
+      // another peer (via the local-fs adapter, HiveDB, etc.) carry the
+      // originator's id — without this, attribution is lost the moment a
+      // memory crosses a peer boundary.
+      db.exec('ALTER TABLE memories ADD COLUMN origin_peer_id TEXT;');
+      db.exec('CREATE INDEX IF NOT EXISTS idx_memories_origin_peer_id ON memories(origin_peer_id);');
+
+      // Eager backfill: pre-v7 rows must have originated on this peer (the
+      // schema didn't exist anywhere else yet). Stamp them now so readers
+      // never see a NULL and existing recall/list/summary keep working.
+      const peerId = getPeerId();
+      db.prepare('UPDATE memories SET origin_peer_id = ? WHERE origin_peer_id IS NULL').run(peerId);
     },
   },
 ];
