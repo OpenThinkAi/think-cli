@@ -60,8 +60,11 @@ describe('think cortex migrate --to fs --path', () => {
     vi.spyOn(console, 'log').mockImplementation(() => {});
     vi.spyOn(console, 'error').mockImplementation(() => {});
 
+    // The fake repo URL will make source pull fail. By default migrate
+    // aborts in that case; --allow-stale-source opts into proceeding with
+    // whatever local SQLite already has (which is what we want here).
     await cortexCommand.parseAsync(
-      ['migrate', '--to', 'fs', '--path', target],
+      ['migrate', '--to', 'fs', '--path', target, '--allow-stale-source'],
       { from: 'user' },
     );
 
@@ -82,6 +85,40 @@ describe('think cortex migrate --to fs --path', () => {
     const parsed = JSON.parse(lines[0]) as { content: string; origin_peer_id: string };
     expect(parsed.content).toBe('pre-migration');
     expect(parsed.origin_peer_id).toBe(peerId);
+  });
+
+  it('aborts on source-pull failure unless --allow-stale-source is passed', async () => {
+    cortex = createTestCortex();
+    fsRoot = mkdtempSync(path.join(tmpdir(), 'think-fs-migrate-stale-'));
+
+    const baseConfig = getConfig();
+    saveConfig({
+      ...baseConfig,
+      cortex: {
+        author: 'test',
+        active: cortex.name,
+        repo: '/nonexistent/source.git',
+      },
+    });
+
+    const exitSpy = vi.spyOn(process, 'exit').mockImplementation(((code?: number) => {
+      throw new Error(`process.exit(${code})`);
+    }) as never);
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    await expect(
+      cortexCommand.parseAsync(
+        ['migrate', '--to', 'fs', '--path', path.join(fsRoot, 'target')],
+        { from: 'user' },
+      ),
+    ).rejects.toThrow(/process\.exit\(1\)/);
+
+    expect(exitSpy).toHaveBeenCalledWith(1);
+    // Config still points at the original backend — abort before rewrite.
+    const after = getConfig();
+    expect(after.cortex?.repo).toBe('/nonexistent/source.git');
+    expect(after.cortex?.fs).toBeUndefined();
   });
 
   it('refuses to migrate into a folder that already has subdirectories', async () => {

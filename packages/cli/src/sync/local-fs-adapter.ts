@@ -137,13 +137,12 @@ export class LocalFsSyncAdapter implements SyncAdapter {
 
     // Memories are immutable via sync — local tombstones are intentionally
     // not emitted. The contract test `enforceImmutableMemories` locks this in.
+    // source_ids and decisions are both written by us via JSON.stringify on
+    // insert, so we trust them as parseable here without try/catch.
     const newLines: string[] = [];
     for (const m of newMemories) {
       if (m.deleted_at) continue;
-      let decisions: string[] = [];
-      if (m.decisions) {
-        try { decisions = JSON.parse(m.decisions) as string[]; } catch { /* skip malformed */ }
-      }
+      const decisions = m.decisions ? JSON.parse(m.decisions) as string[] : [];
       newLines.push(JSON.stringify({
         ts: m.ts,
         author: m.author,
@@ -231,11 +230,11 @@ export class LocalFsSyncAdapter implements SyncAdapter {
     const newEvents = getLongTermEventsBySyncVersion(cortex, lastVersion);
     if (newEvents.length === 0) return;
 
+    // topics and source_memory_ids are both written by us via JSON.stringify
+    // on insert (long-term-queries.ts:60-62), so parse without try/catch.
     const newLines = newEvents.map(ev => {
-      let topics: string[] = [];
-      let sourceMemoryIds: string[] = [];
-      try { topics = JSON.parse(ev.topics) as string[]; } catch { /* skip malformed */ }
-      try { sourceMemoryIds = JSON.parse(ev.source_memory_ids) as string[]; } catch { /* skip malformed */ }
+      const topics = JSON.parse(ev.topics) as string[];
+      const sourceMemoryIds = JSON.parse(ev.source_memory_ids) as string[];
       return JSON.stringify({
         ts: ev.ts,
         author: ev.author,

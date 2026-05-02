@@ -9,7 +9,6 @@ import { getCortexDb, closeCortexDb } from '../db/engrams.js';
 import {
   getMemoryCount,
   getSyncCursor,
-  setSyncCursor,
 } from '../db/memory-queries.js';
 import { getEngramDbPath, getEngramsDir } from '../lib/paths.js';
 import { getSyncAdapter } from '../sync/registry.js';
@@ -572,7 +571,8 @@ cortexCommand.addCommand(new Command('migrate')
   .description('Migrate cortex storage from git/http to a local folder')
   .requiredOption('--to <backend>', 'Target backend (currently only `fs` is supported)')
   .option('--path <path>', 'Target folder for the local-fs backend (required when --to fs)')
-  .action(async (opts: { to: string; path?: string }) => {
+  .option('--allow-stale-source', 'Proceed with the migration even if pulling the latest from the source backend fails. By default migrate aborts on pull failure so users do not end up with a permanently-stale fs backend they cannot retry from.')
+  .action(async (opts: { to: string; path?: string; allowStaleSource?: boolean }) => {
     if (opts.to !== 'fs') {
       console.error(chalk.red(`Unsupported migration target: --to ${opts.to}. Only --to fs is supported.`));
       process.exit(1);
@@ -600,11 +600,11 @@ cortexCommand.addCommand(new Command('migrate')
     // produce confusing duplicates. An empty or non-existent folder is fine.
     if (fs.existsSync(resolved)) {
       const entries = fs.readdirSync(resolved);
-      const hasCortex = entries.some(name => {
+      const hasSubdirs = entries.some(name => {
         const full = path.join(resolved, name);
         try { return fs.statSync(full).isDirectory(); } catch { return false; }
       });
-      if (hasCortex) {
+      if (hasSubdirs) {
         console.error(chalk.red(
           `Refusing to migrate into a folder that already contains directories: ${resolved}.\n` +
           `Pick an empty folder or remove the existing entries first.`,
@@ -628,12 +628,34 @@ cortexCommand.addCommand(new Command('migrate')
     }
 
     console.log(chalk.cyan(`Pulling latest from ${sourceAdapter.name} into local SQLite...`));
+    const pullFailures: string[] = [];
     for (const cortex of localCortexes) {
       try {
-        await sourceAdapter.pull(cortex);
+        const pullResult = await sourceAdapter.pull(cortex);
+        if (pullResult.errors.length > 0) {
+          pullFailures.push(`${cortex}: ${pullResult.errors.join('; ')}`);
+        }
       } catch (err) {
-        console.log(chalk.yellow(`  ⚠ Pull failed for ${cortex}: ${err instanceof Error ? err.message : String(err)}`));
-        console.log(chalk.yellow('  Continuing with whatever SQLite already has.'));
+        pullFailures.push(`${cortex}: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
+
+    if (pullFailures.length > 0 && !opts.allowStaleSource) {
+      console.error(chalk.red('Source pull failed; aborting before rewriting config:'));
+      for (const f of pullFailures) {
+        console.error(chalk.red(`  - ${f}`));
+      }
+      console.error(chalk.dim(
+        '  Re-run when the source is reachable, or pass --allow-stale-source\n' +
+        '  to migrate with whatever SQLite already has (you will not be able\n' +
+        '  to retry the pull once the config has been rewritten to fs).',
+      ));
+      process.exit(1);
+    }
+    if (pullFailures.length > 0 && opts.allowStaleSource) {
+      console.log(chalk.yellow('  ⚠ Continuing with --allow-stale-source despite pull failures:'));
+      for (const f of pullFailures) {
+        console.log(chalk.yellow(`    - ${f}`));
       }
     }
 
@@ -657,14 +679,12 @@ cortexCommand.addCommand(new Command('migrate')
     saveConfig(config);
 
     // Step 4: export every local cortex's memories + long-term events to
-    // the new folder. Reset push cursors so the fs adapter sees the full
-    // history as new (cursors are scoped per-backend, so this is just a
-    // belt-and-braces — a fresh local-fs cursor is empty by default).
+    // the new folder. The fs adapter's push cursor for a fresh backend
+    // starts empty, so a no-op default is to push everything from
+    // sync_version=0 — no explicit cursor reset needed.
     const fsAdapter = new LocalFsSyncAdapter();
     let totalPushed = 0;
     for (const cortex of localCortexes) {
-      setSyncCursor(cortex, fsAdapter.name, 'push', '0');
-      setSyncCursor(cortex, fsAdapter.name, 'push_lt', '0');
       try {
         await fsAdapter.createCortex(cortex);
         const result = await fsAdapter.push(cortex);
@@ -687,6 +707,10 @@ cortexCommand.addCommand(new Command('migrate')
     if (hadRepo) console.log(chalk.dim('  (cleared previous git repo backend)'));
     if (hadServer) console.log(chalk.dim('  (cleared previous --server backend)'));
     console.log(chalk.dim(`  Peer id: ${getPeerId()}`));
+    console.log();
+    console.log(chalk.cyan('Next:'));
+    console.log(`  ${chalk.dim('•')} ${chalk.bold('think cortex status')}  — confirm the new backend is in place`);
+    console.log(`  ${chalk.dim('•')} ${chalk.bold('think sync "test"')}     — verify writes hit ${resolved}`);
   }));
 
 function listLocalCortexes(): string[] {
@@ -694,9 +718,7 @@ function listLocalCortexes(): string[] {
   if (!fs.existsSync(dir)) return [];
   const out: string[] = [];
   for (const file of fs.readdirSync(dir)) {
-    if (file.endsWith('.db') && !file.endsWith('-shm') && !file.endsWith('-wal')) {
-      out.push(file.replace(/\.db$/, ''));
-    }
+    if (file.endsWith('.db')) out.push(file.replace(/\.db$/, ''));
   }
   return out.sort();
 }
