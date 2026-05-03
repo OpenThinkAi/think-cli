@@ -22,7 +22,7 @@ export function createApp(deps: { db: Database }): Hono {
   // configuring a token first; gating it behind auth would turn an
   // already-broken-CLI scenario into a confusing one. The retired paths
   // are public knowledge from 0.1.x — there's no shape to leak.
-  app.all('/v1/cortexes/*', (c) =>
+  const cortexGone = (c: import('hono').Context) =>
     c.json(
       {
         error: 'cortex storage retired',
@@ -32,8 +32,12 @@ export function createApp(deps: { db: Database }): Hono {
           'cortex (see https://github.com/OpenThinkAi/think-cli/blob/main/packages/server/README.md).',
       },
       410,
-    ),
-  );
+    );
+  // Both forms: bare `/v1/cortexes` (the 0.1.x list endpoint) and any
+  // sub-path. Hono's `/*` matches one-or-more segments past the parent,
+  // so the bare path needs its own registration.
+  app.all('/v1/cortexes', cortexGone);
+  app.all('/v1/cortexes/*', cortexGone);
 
   const authed = new Hono();
   authed.use('*', bearerAuth());

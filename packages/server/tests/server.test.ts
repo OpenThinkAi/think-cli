@@ -51,6 +51,11 @@ describe('open-think-server', () => {
       });
       expect(r.status).toBe(410);
     });
+
+    it('bare /v1/cortexes (the 0.1.x list endpoint) also 410', async () => {
+      const r = await client.request({ path: '/v1/cortexes', token: null });
+      expect(r.status).toBe(410);
+    });
   });
 
   describe('catch-all 404', () => {

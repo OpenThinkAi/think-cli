@@ -4,8 +4,8 @@ import { randomUUID } from 'node:crypto';
 import type { Database } from '../db.js';
 
 const createSchema = z.object({
-  kind: z.string().min(1),
-  pattern: z.string().min(1),
+  kind: z.string().trim().min(1),
+  pattern: z.string().trim().min(1),
 });
 
 interface SubscriptionRow {
