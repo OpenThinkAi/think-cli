@@ -27,55 +27,63 @@ think summary
 think summary --last-week --raw   # raw entries, no AI
 ```
 
-## Local-first architecture
+## A nervous system for your AI brain
 
-All reads and writes go to local SQLite. Sync is optional and eventual — your agents work fully offline.
+think turns your work into sensory input for your AI brain. Engrams are the raw signals — every `think sync` is a sensory trace. The curator is consolidation: it weighs engrams, promotes what matters into memories, and drops the rest. Memories live in a folder you control.
 
 ```
-  your machine                          remote (optional)
-  ─────────────                         ────────────────
-  entries → engrams → curator → memories  ⇄  git | pg*
-                      (local AI)
+  one machine                                  another machine you own
+  ───────────                                  ───────────────────────
+  engrams → curator → memories ⇢ ~/your/folder ⇠ memories ← curator ← engrams
+            (local AI)            (synced via                          (local AI)
+                                   iCloud / Dropbox /
+                                   Syncthing / …)
 ```
 
-Engrams (raw events) never leave your machine. Only curated memories sync to the backend you choose.
+All reads and writes go to local SQLite. Engrams never leave the machine — only curated memories land in the folder. Point that folder at a sync tool you already use, and your brain's memory follows you across machines. No server. No relay. The folder is the propagation layer.
 
-*Postgres adapter coming soon.*
+## Cortex — your brain's memory folder
 
-## Cortex — shared team memory
-
-Cortexes are memory workspaces. Each has its own engrams, memories, and sync state.
+A cortex is the workspace where your brain's memories live: a local SQLite database for engrams, plus a folder of JSONL files for the consolidated memories that persist.
 
 ```bash
-# Set up (once)
-think cortex setup git@github.com:org/hivedb.git
-think cortex create engineering
+# Set up (once) — point cortex at any folder, synced or otherwise
+think cortex setup --fs ~/Dropbox/think-cortex
+think cortex create personal
 
-# Work normally — syncs log engrams locally
+# Work normally — every sync writes a sensory trace
 think sync "deployed auth service to staging"
 
 # Curate — evaluate engrams, promote memories
 think curate              # full run
 think curate --dry-run    # preview without saving
 
-# Read team memories
+# Recall what you (or another machine of yours) have stored
 think recall "auth"       # search memories + local engrams
 think memory              # show all memories
 
-# Sync with remote
-think cortex push         # push local memories to remote
-think cortex pull         # pull remote memories to local
+# Sync with the cortex folder
+think cortex push         # write local memories out to the folder
+think cortex pull         # ingest memories from the folder
 think cortex sync         # push + pull
 think cortex status       # show sync state
 
 # Monitor curation quality
 think monitor             # what got promoted vs dropped
-
-# Read another team's memories
-think pull product
 ```
 
-Cortexes work without a remote — `think cortex setup` with no repo URL creates an offline-only workspace.
+The folder works with anything that syncs files: iCloud Drive, Dropbox, Google Drive, Syncthing, a network share. Point two machines at the same folder and the same brain shows up in both.
+
+> **One brain only.** think serves a single brain. Coordinating memory across many brains (a team, a swarm of agents) is out of scope — that belongs to HiveDB, a separate project.
+
+### Offline-only and advanced/legacy backends
+
+```bash
+think cortex setup                              # offline-only — no folder, no remote
+think cortex setup git@github.com:you/cortex.git   # advanced/legacy: git remote as backend
+```
+
+The synced-folder model (`--fs`) is the recommended way. The git-remote backend predates v2 and is preserved for users who already have one wired up; new setups should prefer `--fs`.
 
 ## Episodes — narrative memory for task agents
 
@@ -132,7 +140,7 @@ think list                     List entries (--week, --since, --category)
 think summary                  AI summary (--raw for plain text)
 think delete                   Soft-delete entries
 
-think cortex setup [repo]      Configure sync backend (or offline-only)
+think cortex setup --fs <path> Configure sync backend (or [repo] for git, or no args for offline-only)
 think cortex create <name>     Create a cortex
 think cortex list              Show all cortexes (local + remote)
 think cortex switch <name>     Set active cortex
