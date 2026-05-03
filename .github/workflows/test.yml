@@ -23,12 +23,17 @@ jobs:
       # The npm bug report itself recommends deleting both node_modules and
       # package-lock.json and running a fresh `npm install` — that re-resolves
       # from package.json and correctly picks the current-platform optionals.
-      # The follow-up `git diff --exit-code` step recovers the lockfile-drift
-      # detection that `npm ci` would have given us: if the regenerated
-      # lockfile differs from the committed one, CI fails loudly, surfacing
-      # the same signal as `npm ci` would have.
+      #
+      # Trade-off accepted: we lose `npm ci`'s lockfile-drift detection,
+      # because the committed lockfile (generated on macOS-arm64) is
+      # structurally different from one regenerated on linux-x64 — npm
+      # bakes platform-specific rollup/rolldown native binding entries
+      # into the lockfile based on the generating platform, so a naive
+      # `git diff --exit-code` against the regen always fails with ~300
+      # lines of platform churn. Until we switch off npm to a package
+      # manager that handles cross-platform optional natives correctly
+      # (pnpm/bun/yarn — to be filed as a follow-up ticket), supply-chain
+      # drift detection has to live outside this workflow.
       - run: rm -rf node_modules package-lock.json
       - run: npm install --no-audit --no-fund
-      - name: Verify lockfile is up-to-date (replaces npm ci's drift check)
-        run: git diff --exit-code package-lock.json
       - run: npm test
