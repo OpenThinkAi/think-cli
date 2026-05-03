@@ -50,7 +50,7 @@ export function createApp(deps: { db: Database }): Hono {
       {
         error: 'endpoint not found',
         detail:
-          'open-think-server 0.3.0 serves /v1/health, /v1/events, and /v1/subscriptions.',
+          'open-think-server 0.4.0 serves /v1/health, /v1/events, and /v1/subscriptions.',
       },
       404,
     ),

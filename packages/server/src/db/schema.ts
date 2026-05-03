@@ -6,9 +6,14 @@ import type { DatabaseSync } from 'node:sqlite';
  * server is single-process / single-writer (matches the v2 single-tenant
  * decision). Multi-writer would need a separate sequence source.
  *
- * `id` on `events` intentionally has no `UNIQUE` constraint — this version
- * lands the read surface only, so connector dedup semantics aren't defined
- * here yet.
+ * `events_sub_id_unique` enforces `(subscription_id, id)` uniqueness so
+ * `INSERT OR IGNORE` in the scheduler can safely tolerate a connector
+ * replaying ids on transient errors. Per-subscription scoping: two
+ * different subscriptions can legitimately share an id namespace.
+ *
+ * `subscriptions.cursor` is opaque per-connector JSON the framework
+ * persists verbatim. Stored as TEXT (JSON-encoded) so each connector can
+ * pick its own shape — GitHub uses a per-endpoint map, mock uses a count.
  */
 export function ensureSchema(db: DatabaseSync): void {
   db.exec(`
@@ -17,7 +22,8 @@ export function ensureSchema(db: DatabaseSync): void {
       kind TEXT NOT NULL,
       pattern TEXT NOT NULL,
       created_at TEXT NOT NULL,
-      last_polled_at TEXT
+      last_polled_at TEXT,
+      cursor TEXT
     ) STRICT;
   `);
   db.exec(`
@@ -34,4 +40,19 @@ export function ensureSchema(db: DatabaseSync): void {
     CREATE INDEX IF NOT EXISTS events_sub_seq
       ON events(subscription_id, server_seq);
   `);
+  db.exec(`
+    CREATE UNIQUE INDEX IF NOT EXISTS events_sub_id_unique
+      ON events(subscription_id, id);
+  `);
+
+  // Additive migration: subscriptions.cursor was added in 0.4.0. SQLite
+  // has no `ADD COLUMN IF NOT EXISTS`, so probe table_info first. Fresh
+  // 0.4.0 DBs hit the CREATE TABLE above and already have the column;
+  // existing 0.3.x DBs need the ALTER.
+  const cols = db
+    .prepare("PRAGMA table_info('subscriptions')")
+    .all() as { name: string }[];
+  if (!cols.some((c) => c.name === 'cursor')) {
+    db.exec('ALTER TABLE subscriptions ADD COLUMN cursor TEXT');
+  }
 }

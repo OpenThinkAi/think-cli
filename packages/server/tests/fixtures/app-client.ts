@@ -1,5 +1,8 @@
 import { createApp } from '../../src/app.js';
+import { buildDefaultRegistry } from '../../src/connectors/registry.js';
 import { openDb, type Database } from '../../src/db.js';
+import { createScheduler, type SchedulerHandle, type TickReport } from '../../src/scheduler/index.js';
+import type { ConnectorRegistry } from '../../src/connectors/registry.js';
 
 // Module-level env mutation is intentional: every test file in this package
 // imports this fixture, and they all need the bearer middleware to accept
@@ -19,15 +22,25 @@ interface RequestOptions {
 export interface TestClient {
   db: Database;
   request: <T = unknown>(opts: RequestOptions) => Promise<{ status: number; body: T }>;
+  registry: ConnectorRegistry;
+  scheduler: SchedulerHandle;
+  tickOnce: () => Promise<TickReport>;
 }
 
 /**
  * Builds a fresh app + `:memory:` DB per call so each test owns its own
  * state. Bearer token is auto-attached unless `token: null` is passed.
+ *
+ * The scheduler is wired but not started — tests drive it via `tickOnce()`
+ * for determinism. Pass `registry` to override the default `mock`-only
+ * map (e.g. to inject a connector that throws, for failure-isolation
+ * tests).
  */
-export function createTestClient(opts: { db?: Database } = {}): TestClient {
+export function createTestClient(opts: { db?: Database; registry?: ConnectorRegistry } = {}): TestClient {
   const db = opts.db ?? openDb(':memory:');
   const app = createApp({ db });
+  const registry = opts.registry ?? buildDefaultRegistry();
+  const scheduler = createScheduler({ db, registry, intervalMs: 60_000 });
 
   async function request<T = unknown>(reqOpts: RequestOptions): Promise<{
     status: number;
@@ -56,5 +69,11 @@ export function createTestClient(opts: { db?: Database } = {}): TestClient {
     return { status: res.status, body: body as T };
   }
 
-  return { db, request };
+  return {
+    db,
+    request,
+    registry,
+    scheduler,
+    tickOnce: () => scheduler.tickOnce(),
+  };
 }

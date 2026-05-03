@@ -1,8 +1,8 @@
 # open-think-server
 
-HTTP backend for the open-think CLI. Stores **events** fanned out from external sources (GitHub, Linear, Slack, ...) plus the **subscriptions** that describe what each local think install is watching. The CLI polls `/v1/events` to feed those events into its local engram pipeline; connectors (not in scope for this version) populate the `events` table.
+HTTP backend for the open-think CLI. Stores **events** fanned out from external sources (GitHub, Linear, Slack, ...) plus the **subscriptions** that describe what each local think install is watching. The CLI polls `/v1/events` to feed those events into its local engram pipeline; in-process connectors (driven by a per-subscription scheduler) populate the `events` table.
 
-This is the proxy-role rewrite the [think-cli v2 pivot](https://openthink.dev) called for. v0.2.0 retired the cortex storage role; **v0.3.0 lands the events + subscriptions surface**. The CLI-side connector glue and the per-source connectors themselves land in follow-up tickets (AGT-028+).
+This is the proxy-role rewrite the [think-cli v2 pivot](https://openthink.dev) called for. v0.2.0 retired the cortex storage role; v0.3.0 landed the events + subscriptions surface; **v0.4.0 lands the poll-worker framework**. The CLI-side connector glue and the per-source connectors beyond `mock` land in follow-up tickets (AGT-029+).
 
 ## Endpoints
 
@@ -32,12 +32,16 @@ Comparison is constant-time (`crypto.timingSafeEqual`) — pick a long random to
 
 Single SQLite file. Path configurable via `THINK_DB_PATH` (default: `./open-think.sqlite` relative to the working directory). The file is created on first boot. Schema:
 
-- `subscriptions(id TEXT PK, kind, pattern, created_at, last_polled_at)`
-- `events(id, subscription_id, payload_json, server_seq INTEGER PK AUTOINCREMENT, created_at)` with `FOREIGN KEY (subscription_id) → subscriptions(id) ON DELETE CASCADE`
+- `subscriptions(id TEXT PK, kind, pattern, created_at, last_polled_at, cursor)` — `cursor` is opaque per-connector JSON (TEXT) the framework persists verbatim; each connector picks its own shape.
+- `events(id, subscription_id, payload_json, server_seq INTEGER PK AUTOINCREMENT, created_at)` with `FOREIGN KEY (subscription_id) → subscriptions(id) ON DELETE CASCADE` and `UNIQUE(subscription_id, id)` so `INSERT OR IGNORE` safely tolerates a connector replaying ids on transient errors.
 
 Cursor pagination uses `server_seq` as the monotonic cursor. Single-process / single-writer is by design (matches the v2 single-tenant decision); a multi-writer setup would need a separate sequence source.
 
-Event `payload` is **connector-defined** — the server stores `payload_json` opaquely and parses it back to JSON on read. No schema is enforced server-side in 0.3.x; that responsibility lands with the connectors when they ship.
+Event `payload` is **connector-defined** — the server stores `payload_json` opaquely and parses it back to JSON on read. No schema is enforced server-side; that responsibility lands with the connectors.
+
+`subscriptions.last_polled_at` has two writers: the `GET /v1/events` read endpoint (so the connector knows someone is consuming) and the scheduler on every successful poll (so operators can see the source side is healthy too). Whichever is more recent wins — both are truthful "most recent activity" signals.
+
+`subscriptions.cursor` was added in 0.4.0; existing 0.3.x DBs are migrated via an idempotent `ALTER TABLE ... ADD COLUMN` on first boot. The same boot also creates `events_sub_id_unique` via `CREATE UNIQUE INDEX IF NOT EXISTS` — this could in principle fail if a 0.3.x DB already contains duplicate `(subscription_id, id)` rows, but in practice 0.3.0 had no event-write path at all (events were only ever inserted by the tests' `:memory:` fixture), so any deployed 0.3.x DB has an empty `events` table and the index always lands cleanly.
 
 ## Running
 
@@ -45,10 +49,11 @@ Event `payload` is **connector-defined** — the server stores `payload_json` op
 THINK_TOKEN=<long-random-token> \
 PORT=3000 \
 THINK_DB_PATH=./open-think.sqlite \
+THINK_POLL_INTERVAL_SECONDS=600 \
   npx open-think-server
 ```
 
-`THINK_TOKEN` is required; `PORT` defaults to `3000`; `THINK_DB_PATH` defaults to `./open-think.sqlite` relative to the working directory. All env vars share the `THINK_` prefix.
+`THINK_TOKEN` is required; `PORT` defaults to `3000`; `THINK_DB_PATH` defaults to `./open-think.sqlite` relative to the working directory; `THINK_POLL_INTERVAL_SECONDS` defaults to `600` (10 minutes). All env vars share the `THINK_` prefix.
 
 Or via `docker-compose` at the repo root (set `THINK_TOKEN` in the environment first):
 
@@ -66,6 +71,22 @@ The `pgdata` Docker volume from the 0.1.x `docker-compose.yml` is orphaned; clea
 docker volume ls | grep pgdata
 docker volume rm <project>_pgdata
 ```
+
+## Polling
+
+The server runs a per-subscription scheduler in-process. Every `THINK_POLL_INTERVAL_SECONDS` (default `600`) it iterates active subscriptions, looks up the registered connector for each `kind`, calls `connector.poll({ subscription, credential, cursor })`, and persists the returned events plus the new cursor in a single transaction. `last_polled_at` is bumped on success only — failures leave it untouched so it stays a truthful "last successful contact" signal.
+
+Polls within a tick run **serially**: `node:sqlite` is `DatabaseSync` so JS-level parallelism doesn't help the writes, and per-source rate limits are per-credential so it doesn't help the source either. A wedged connector is bounded by a 60s per-poll timeout; failures are logged, recorded in the tick report, and don't propagate — the next tick retries the failed sub. A tick will not start while the previous tick is still running (overlap guard via `setTimeout`-recurse).
+
+`subscriptions.last_polled_at` is bumped on poll success **and** on every `GET /v1/events` read (see Storage), so it's a "most recent activity" signal rather than a "last successful poll" signal — a recent CLI read keeps the timestamp fresh even if the scheduler-side poll has been failing. Failure-only diagnosis should consult the per-tick scheduler logs (and, eventually, a tick-report endpoint when one lands).
+
+Registered connector kinds in 0.4.0:
+
+- **`mock`** — synthetic event generator used by the e2e test. Pattern `"N"` where N is an integer ≥ 1 emits N events per poll with monotonic ids; anything else (non-integer, `"0"`, negatives, empty string) emits 1. Cursor is `{ count: number }`.
+
+The GitHub connector — first real-world target after `mock` — has a forward-looking design sketch at [`docs/design/connectors-github.md`](./docs/design/connectors-github.md), covering per-endpoint cursors, conditional-GET headers, rate-limit handling, and multi-endpoint fan-out. The live implementation lands in AGT-029+ alongside credential storage; until then `mock` is the only registered kind.
+
+Read endpoints (`GET /v1/events`, `GET /v1/subscriptions/...`) are unchanged and unaware of the scheduler — connectors and consumers stay decoupled through the events table.
 
 ## Testing
 
