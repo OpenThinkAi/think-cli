@@ -1,37 +1,43 @@
 import { Hono } from 'hono';
 import { health } from './routes/health.js';
+import { bearerAuth } from './middleware/auth.js';
+import { eventsRoute } from './routes/events.js';
+import { subscriptionsRoute } from './routes/subscriptions.js';
+import type { Database } from './db.js';
 
 /**
  * Builds the Hono app. Exported as a function so tests can construct an
- * isolated app per test file without binding to a port.
+ * isolated app per test file with a `:memory:` DB handle.
  *
- * The cortex storage role retired in AGT-026; the bearer-auth middleware
- * went with it. AGT-027 will plug events/subscriptions routes in here and
- * re-mount auth at the same time — a four-line round-trip rather than the
- * silent-401-on-retired-endpoints UX a preserved-but-routeless auth seam
- * created.
+ * Health is mounted ahead of auth (load-balancer probes don't carry tokens).
+ * Everything else requires a valid bearer token.
  */
-export function createApp(): Hono {
+export function createApp(deps: { db: Database }): Hono {
   const app = new Hono();
 
   app.route('/', health);
 
-  // Operators upgrading from 0.1.x will hit this catch-all when their CLI
-  // still targets the retired cortex routes. Generic Hono 404s say nothing
-  // about why the endpoint vanished; this body names the cause and the path
-  // forward so an outage doesn't require a README read to diagnose.
-  app.notFound((c) => c.json(
-    {
-      error: 'endpoint not found',
-      detail:
-        'open-think-server 0.2.0 retired the cortex storage role (AGT-026); ' +
-        'only GET /v1/health is served until AGT-027 lands the proxy role. ' +
-        'If you are on the CLI side, pin to open-think-server@0.1.x and run ' +
-        '`think cortex migrate --to fs --path <folder>` to move to a local-fs cortex ' +
-        '(see https://github.com/OpenThinkAi/think-cli/blob/main/packages/server/README.md).',
-    },
-    404,
-  ));
+  const authed = new Hono();
+  authed.use('*', bearerAuth());
+  authed.route('/', eventsRoute(deps.db));
+  authed.route('/', subscriptionsRoute(deps.db));
+  app.route('/', authed);
+
+  // Operators upgrading from 0.1.x or 0.2.x will hit this catch-all if their
+  // CLI still targets retired cortex routes. Naming the served paths plus
+  // the version is enough to diagnose without a README read.
+  app.notFound((c) =>
+    c.json(
+      {
+        error: 'endpoint not found',
+        detail:
+          'open-think-server 0.3.0 serves /v1/health, /v1/events, and /v1/subscriptions. ' +
+          'The cortex storage routes retired in 0.2.0 (AGT-026); CLIs still calling them ' +
+          'should pin to open-think-server@0.1.x or migrate to the local-fs cortex (see README).',
+      },
+      404,
+    ),
+  );
 
   app.onError((err, c) => {
     console.error('[open-think-server]', err);
