@@ -41,7 +41,7 @@ Event `payload` is **connector-defined** — the server stores `payload_json` op
 
 `subscriptions.last_polled_at` has two writers: the `GET /v1/events` read endpoint (so the connector knows someone is consuming) and the scheduler on every successful poll (so operators can see the source side is healthy too). Whichever is more recent wins — both are truthful "most recent activity" signals.
 
-`subscriptions.cursor` was added in 0.4.0; existing 0.3.x DBs are migrated via an idempotent `ALTER TABLE ... ADD COLUMN` on first boot.
+`subscriptions.cursor` was added in 0.4.0; existing 0.3.x DBs are migrated via an idempotent `ALTER TABLE ... ADD COLUMN` on first boot. The same boot also creates `events_sub_id_unique` via `CREATE UNIQUE INDEX IF NOT EXISTS` — this could in principle fail if a 0.3.x DB already contains duplicate `(subscription_id, id)` rows, but in practice 0.3.0 had no event-write path at all (events were only ever inserted by the tests' `:memory:` fixture), so any deployed 0.3.x DB has an empty `events` table and the index always lands cleanly.
 
 ## Running
 
@@ -80,9 +80,9 @@ Polls within a tick run **serially**: `node:sqlite` is `DatabaseSync` so JS-leve
 
 Registered connector kinds in 0.4.0:
 
-- **`mock`** — synthetic event generator used by the e2e test. Pattern `"N"` (integer string) emits N events per poll with monotonic ids; anything else emits one. Cursor is `{ count: number }`.
+- **`mock`** — synthetic event generator used by the e2e test. Pattern `"N"` where N is an integer ≥ 1 emits N events per poll with monotonic ids; anything else (non-integer, `"0"`, negatives, empty string) emits 1. Cursor is `{ count: number }`.
 
-The repo also ships `src/connectors/github.draft.ts` — a header-only **design sketch** that pressure-tests the `SourceConnector` interface against GitHub's per-endpoint ETag / `If-None-Match` / rate-limit semantics. It is **not registered**, **not invoked**, and does not call out to GitHub. The real GitHub connector lands in AGT-029+ alongside credential storage.
+The repo also ships `src/connectors/github.draft.ts` — a thin **interface placeholder** for the future GitHub connector. It exists so a breaking change to `SourceConnector` surfaces at build time before the real implementation lands; `poll()` throws if invoked. The full design narrative (per-endpoint cursor shape, conditional-GET handling, rate-limit branches, multi-endpoint fan-out) lives at [`docs/design/connectors-github.md`](./docs/design/connectors-github.md). It is **not registered**, **not invoked**, and does not call out to GitHub. The real GitHub connector lands in AGT-029+ alongside credential storage.
 
 Read endpoints (`GET /v1/events`, `GET /v1/subscriptions/...`) are unchanged and unaware of the scheduler — connectors and consumers stay decoupled through the events table.
 

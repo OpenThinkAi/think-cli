@@ -134,12 +134,18 @@ export function createScheduler(opts: SchedulerOptions): SchedulerHandle {
       }
 
       try {
+        // `cursor` is intentionally `unknown` here. The framework persists
+        // each connector's cursor as opaque JSON (see types.ts) and can't
+        // statically reach the connector's TCursor at this seam. The
+        // `as never` cast is the framework-side acknowledgement that
+        // narrowing is the connector's responsibility — it's the only
+        // entity that knows what shape its own cursor takes.
         const cursor = safeParseCursor(sub.cursor);
         const result = await withTimeout(
           connector.poll({
             subscription: { id: sub.id, kind: sub.kind, pattern: sub.pattern },
             credential: null, // AGT-029 wires this from the credential store.
-            cursor,
+            cursor: cursor as never,
           }),
           pollTimeoutMs,
           sub.kind,
@@ -221,9 +227,17 @@ export function createScheduler(opts: SchedulerOptions): SchedulerHandle {
       }
     }
     const p = runTick();
-    inFlight = p.finally(() => {
+    inFlight = p;
+    // Clear `inFlight` once `p` settles. Done in a separate chain so the
+    // overlap-guard comparison stays `inFlight === p` instead of
+    // `inFlight === <p.finally-wrapper>`. The trailing `.catch` is a
+    // no-op rejection suppressor: `p` itself is returned to the caller
+    // (who is responsible for its rejection); the .finally-wrapped
+    // promise is unowned and would otherwise become an unhandled
+    // rejection if `p` ever rejected.
+    p.finally(() => {
       if (inFlight === p) inFlight = null;
-    });
+    }).catch(() => {});
     return p;
   }
 
