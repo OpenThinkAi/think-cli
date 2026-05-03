@@ -164,18 +164,23 @@ think config show              Print configuration
 think config set <key> <val>   Update a config value
 think update                   Update to latest version
 
-think serve                            Boot the proxy that fans external events into engrams
-                                       (env-driven; see packages/cli/docs/serve.md)
-think subscribe configure --proxy <url> --token <tok>
-                                       Point the CLI at a `think serve` proxy
-think subscribe add <kind> <pattern>   Create a subscription on the proxy
-think subscribe list                   List subscriptions on the proxy
-think subscribe remove <id>            Delete a subscription (cascades events + credential)
-think subscribe set-credential <id>    Store an encrypted credential (read from stdin)
-think subscribe poll [--once]          Pull new events into engrams via the active cortex
-think subscribe install-agent          Install LaunchAgent that polls every 600s
-think subscribe disable                Remove the LaunchAgent
-think subscribe status                 Show LaunchAgent state
+```
+
+### Proxy & subscriptions (optional — only if you run `think serve`)
+
+```
+think serve                          Boot the proxy (env-driven; see docs/serve.md)
+think subscribe configure --proxy    Point the CLI at a `think serve` proxy
+                                       (token from stdin or THINK_TOKEN env)
+think subscribe add <kind> <pat>     Create a subscription
+think subscribe list                 List subscriptions
+think subscribe show                 Show configured proxy URL (token redacted)
+think subscribe remove <id>          Delete a subscription (cascades)
+think subscribe set-credential <id>  Store an encrypted credential (stdin/hidden TTY)
+think subscribe poll                 Pull new events into engrams (single pass)
+think subscribe install-agent        Install LaunchAgent that polls in the background
+think subscribe disable              Remove the LaunchAgent
+think subscribe status               Show LaunchAgent state
 ```
 
 ## `think serve` — proxy for external event sources
@@ -197,9 +202,9 @@ NODE_ENV=production \
 PORT=4823 \
   npx open-think serve
 
-# On your laptop
-think subscribe configure --proxy https://my-proxy.example.com --token <token>
-think subscribe add github "OpenThinkAi/*"
+# On your laptop — token is read from stdin, never the command line
+echo "$THINK_TOKEN" | think subscribe configure --proxy https://my-proxy.example.com
+think subscribe add mock 3        # only `mock` is registered today; github/linear land in follow-ups
 think subscribe install-agent     # poll every 10 min in the background
 ```
 
@@ -208,10 +213,13 @@ Full endpoint reference, threat model, and operator runbook live at
 [`packages/cli/SECURITY-serve.md`](packages/cli/SECURITY-serve.md).
 
 > **Migrating from `open-think-server`?** The package was deprecated in
-> v0.5.0 and the proxy now ships inside `open-think`. Replace
-> `npx open-think-server` with `npx open-think serve`. All env vars carry
-> over verbatim; the default port changed from `3000` to `4823` (set
-> `PORT=3000` to keep the old binding).
+> v0.5.0 and the proxy now ships inside `open-think`.
+> - Replace `npx open-think-server` with `npx open-think serve`.
+> - All env vars carry over verbatim.
+> - Default port changed from `3000` to `4823` (set `PORT=3000` to keep the old binding).
+> - Dockerfile moved from `packages/server/Dockerfile` to the repo root.
+>   Update any `dockerfile: packages/server/Dockerfile` line in your
+>   compose file to `dockerfile: Dockerfile` (or drop it — that's the default).
 
 ## Security model
 

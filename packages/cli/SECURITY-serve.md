@@ -1,6 +1,6 @@
-# open-think-server — security model
+# `think serve` — security model
 
-This document covers concerns specific to the `think serve` proxy subsystem. The CLI's threat model lives at [`/SECURITY.md`](../../SECURITY.md) at the repo root; the two are intentionally separate as the proxy role grows.
+This document covers concerns specific to the `think serve` proxy subsystem (folded into the `open-think` CLI in v0.5.0; previously shipped as the standalone `open-think-server` package). The CLI's threat model lives at [`/SECURITY.md`](../../SECURITY.md) at the repo root; the two are intentionally separate as the proxy role grows.
 
 For vulnerability disclosure, follow the root [`SECURITY.md`](../../SECURITY.md) — reports go to the same place regardless of which component is affected.
 

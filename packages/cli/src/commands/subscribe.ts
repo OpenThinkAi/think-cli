@@ -1,7 +1,6 @@
-import readline from 'node:readline';
 import { Command } from 'commander';
 import chalk from 'chalk';
-import { getConfig, saveConfig, type SubscriptionsConfig, type Config } from '../lib/config.js';
+import { getConfig, saveConfig, type SubscriptionsConfig } from '../lib/config.js';
 import { insertEngram } from '../db/engram-queries.js';
 import { closeCortexDb } from '../db/engrams.js';
 import {
@@ -10,6 +9,7 @@ import {
   listSubscriptions,
   deleteSubscription,
   setCredential,
+  testCredential,
   getEvents,
   type ProxyConfig,
 } from '../lib/proxy-client.js';
@@ -31,7 +31,7 @@ function fail(msg: string): never {
 function getProxyConfig(): ProxyConfig {
   const sub = getConfig().subscriptions;
   if (!sub || !sub.proxyUrl || !sub.token) {
-    fail('subscribe: no proxy configured. Run `think subscribe configure --proxy <url> --token <token>` first.');
+    fail('subscribe: no proxy configured. Run `think subscribe configure --proxy <url>` first.');
   }
   return { proxyUrl: sub.proxyUrl, token: sub.token };
 }
@@ -42,17 +42,85 @@ function rewriteSubscriptions(mutate: (sub: SubscriptionsConfig | undefined) => 
   saveConfig(cfg);
 }
 
-function activeCortex(globalCortex: string | undefined): string | null {
-  const config = getConfig();
-  return globalCortex ?? config.cortex?.active ?? null;
+async function readAllStdin(): Promise<string> {
+  const chunks: Buffer[] = [];
+  for await (const chunk of process.stdin) {
+    chunks.push(chunk as Buffer);
+  }
+  return Buffer.concat(chunks).toString('utf-8');
 }
 
-// `think subscribe configure --proxy <url> --token <token>`
+/**
+ * Read a secret from a TTY without echoing it. Set raw mode, accumulate
+ * bytes until <CR>/<LF>, swallow them, restore cooked mode. Mirrors the
+ * pattern used by ssh-agent / git askpass on Unix; Windows is best-effort
+ * (the docs steer users to the stdin path on platforms where raw mode is
+ * unreliable).
+ */
+function promptHidden(prompt: string): Promise<string> {
+  return new Promise<string>((resolve, reject) => {
+    const stdin = process.stdin;
+    if (!stdin.isTTY) {
+      reject(new Error('promptHidden requires a TTY'));
+      return;
+    }
+    process.stderr.write(prompt);
+    const buf: string[] = [];
+    const wasRaw = stdin.isRaw;
+    try {
+      stdin.setRawMode(true);
+    } catch (err) {
+      reject(err);
+      return;
+    }
+    stdin.resume();
+    stdin.setEncoding('utf-8');
+    const onData = (chunk: string) => {
+      for (const ch of chunk) {
+        if (ch === '\r' || ch === '\n') {
+          stdin.removeListener('data', onData);
+          try {
+            stdin.setRawMode(wasRaw);
+          } catch {
+            /* best-effort */
+          }
+          stdin.pause();
+          process.stderr.write('\n');
+          resolve(buf.join(''));
+          return;
+        }
+        if (ch === '\x03') {
+          // Ctrl-C: restore tty + propagate
+          stdin.removeListener('data', onData);
+          try {
+            stdin.setRawMode(wasRaw);
+          } catch {
+            /* best-effort */
+          }
+          stdin.pause();
+          process.stderr.write('\n');
+          reject(new Error('cancelled'));
+          return;
+        }
+        if (ch === '\x7f' || ch === '\b') {
+          if (buf.length > 0) buf.pop();
+          continue;
+        }
+        buf.push(ch);
+      }
+    };
+    stdin.on('data', onData);
+  });
+}
+
+// `think subscribe configure --proxy <url> [--token <token>]`
+// Token defaults to stdin (or the THINK_TOKEN env var) so the secret stays
+// out of shell history.
 subscribeCommand.addCommand(new Command('configure')
-  .description('Set the proxy URL + token used by `subscribe add/list/poll/...`')
+  .description('Set the proxy URL + bearer token used by `subscribe add/list/poll/...` (token from stdin or THINK_TOKEN by default)')
   .requiredOption('--proxy <url>', 'Base URL of the open-think proxy (http or https; no trailing slash needed)')
-  .requiredOption('--token <token>', 'Bearer token matching the proxy\'s THINK_TOKEN')
-  .action((opts: { proxy: string; token: string }) => {
+  .option('--token <token>', 'Bearer token (NOT recommended — leaks to shell history; prefer stdin or THINK_TOKEN env)')
+  .action(async (opts: { proxy: string; token?: string }) => {
     let parsed: URL;
     try {
       parsed = new URL(opts.proxy);
@@ -62,12 +130,28 @@ subscribeCommand.addCommand(new Command('configure')
     if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
       fail(`subscribe configure: --proxy must use http or https (got ${parsed.protocol})`);
     }
-    if (!opts.token.trim()) {
-      fail('subscribe configure: --token must be non-empty');
+
+    let token = opts.token?.trim() ?? '';
+    if (!token) {
+      const envToken = process.env.THINK_TOKEN?.trim();
+      if (envToken) {
+        token = envToken;
+      } else if (process.stdin.isTTY) {
+        try {
+          token = (await promptHidden('Bearer token (input hidden): ')).trim();
+        } catch (err) {
+          fail(`subscribe configure: ${err instanceof Error ? err.message : String(err)}`);
+        }
+      } else {
+        token = (await readAllStdin()).trim();
+      }
+    }
+    if (!token) {
+      fail('subscribe configure: token is empty (provide via --token, THINK_TOKEN env, or stdin)');
     }
     rewriteSubscriptions((existing) => ({
       proxyUrl: opts.proxy,
-      token: opts.token,
+      token,
       cursors: existing?.cursors,
     }));
     console.log(chalk.green('✓') + ` Proxy configured: ${parsed.origin}`);
@@ -75,8 +159,8 @@ subscribeCommand.addCommand(new Command('configure')
 
 // `think subscribe add <kind> <pattern>`
 subscribeCommand.addCommand(new Command('add')
-  .description('Create a subscription on the proxy (e.g. `think subscribe add github "OpenThinkAi/*"`)')
-  .argument('<kind>', 'Source kind (github, linear, mock, ...). Validated by the proxy connector registry.')
+  .description('Create a subscription on the proxy (e.g. `think subscribe add mock 3`)')
+  .argument('<kind>', 'Source kind (today only `mock` is registered; github/linear/... land in follow-ups)')
   .argument('<pattern>', 'Pattern the connector understands (kind-specific)')
   .action(async (kind: string, pattern: string) => {
     const proxy = getProxyConfig();
@@ -125,9 +209,14 @@ subscribeCommand.addCommand(new Command('remove')
     const proxy = getProxyConfig();
     try {
       await deleteSubscription(proxy, id);
-      // Also drop the local cursor — the id is gone.
+      // Drop the local cursor too — the id is gone. We're guaranteed to
+      // have a populated `existing` here because getProxyConfig() above
+      // succeeded; treat absence as a real bug rather than silently
+      // installing a blank-string config.
       rewriteSubscriptions((existing) => {
-        if (!existing) return { proxyUrl: '', token: '' };
+        if (!existing) {
+          throw new Error('subscriptions config vanished mid-call (unreachable)');
+        }
         const cursors = { ...(existing.cursors ?? {}) };
         delete cursors[id];
         return { ...existing, cursors };
@@ -139,68 +228,74 @@ subscribeCommand.addCommand(new Command('remove')
     }
   }));
 
-// `think subscribe set-credential <id>` (stdin-driven, no shell history leak)
+// `think subscribe set-credential <id>` — read from stdin or hidden TTY prompt
 subscribeCommand.addCommand(new Command('set-credential')
-  .description('Store an encrypted credential for a subscription (read from stdin; never echoed)')
+  .description('Store an encrypted credential for a subscription. Prefer stdin: `pbpaste | think subscribe set-credential <id>`. TTY interactive uses raw-mode (no echo).')
   .argument('<id>', 'Subscription id from `subscribe list`')
   .action(async (id: string) => {
     const proxy = getProxyConfig();
     let credential: string;
     if (process.stdin.isTTY) {
-      // Interactive: prompt without echo. readline doesn't suppress echo on
-      // its own — emit a hint and rely on the user pasting + ↵. For true
-      // hidden input we'd need a tty raw-mode hack; instead we trust the
-      // user piping from a secrets manager or from `pbpaste` and document
-      // the non-echo expectation.
-      const rl = readline.createInterface({ input: process.stdin, output: process.stderr });
-      credential = await new Promise<string>((resolve) => {
-        rl.question(`Paste credential for ${id} (input is not masked; pipe from stdin to avoid echo): `, (answer) => {
-          rl.close();
-          resolve(answer.trim());
-        });
-      });
+      try {
+        credential = (await promptHidden(`Credential for ${id} (input hidden): `)).trim();
+      } catch (err) {
+        fail(`subscribe set-credential: ${err instanceof Error ? err.message : String(err)}`);
+      }
     } else {
-      credential = await readAllStdin();
-      credential = credential.trim();
+      credential = (await readAllStdin()).trim();
     }
     if (!credential) {
-      fail('subscribe set-credential: credential is empty (read 0 bytes from stdin)');
+      fail('subscribe set-credential: credential is empty (read 0 bytes)');
     }
     try {
       await setCredential(proxy, id, credential);
-      console.log(chalk.green('✓') + ` Credential stored for ${id} (encrypted at rest in the proxy vault).`);
-      console.log(chalk.dim(`  Verify with: think subscribe poll --once`));
     } catch (err) {
       if (err instanceof ProxyError) fail(`subscribe set-credential: ${err.message}`);
       throw err;
     }
+    console.log(chalk.green('✓') + ` Credential stored for ${id} (encrypted at rest in the proxy vault).`);
+
+    // Verify against the source so the success message isn't a lie. The
+    // proxy returns 501 when the connector has no `verifyCredential` —
+    // that's not a failure, just "can't verify here."
+    try {
+      const result = await testCredential(proxy, id);
+      if (result.ok) {
+        console.log(chalk.dim('  Verified against source: ok'));
+      } else {
+        console.log(chalk.yellow(`  ⚠ Verify failed: ${result.detail ?? '(no detail)'}`));
+        console.log(chalk.dim(`    Credential is stored; fix and re-run \`think subscribe set-credential ${id}\`.`));
+      }
+    } catch (err) {
+      if (err instanceof ProxyError && err.status === 501) {
+        console.log(chalk.dim('  Connector does not support credential verification; stored without test.'));
+      } else if (err instanceof ProxyError) {
+        console.log(chalk.yellow(`  ⚠ Verify call failed: ${err.message}`));
+      } else {
+        throw err;
+      }
+    }
   }));
 
-async function readAllStdin(): Promise<string> {
-  const chunks: Buffer[] = [];
-  for await (const chunk of process.stdin) {
-    chunks.push(chunk as Buffer);
-  }
-  return Buffer.concat(chunks).toString('utf-8');
-}
-
-// `think subscribe poll [--once] [--quiet]`
+// `think subscribe poll [--quiet]`
 subscribeCommand.addCommand(new Command('poll')
-  .description('Pull new events from the proxy and write them to engrams')
-  .option('--once', 'Single pass over all subscriptions (the only mode today; reserved for future loop variants)')
+  .description('Pull new events from the proxy and write them to engrams (single pass)')
   .option('--quiet', 'Suppress the per-tick line when nothing was inserted (used by the LaunchAgent)')
-  .action(async function (this: Command, opts: { once?: boolean; quiet?: boolean }) {
-    void opts.once; // currently a no-op alias kept symmetric with `cortex sync --if-online`
+  .action(async function (this: Command, opts: { quiet?: boolean }) {
     const globalOpts = this.optsWithGlobals() as { cortex?: string };
     const config = getConfig();
 
-    if (config.paused) return;
+    if (config.paused) {
+      if (!opts.quiet) {
+        console.log(chalk.dim('[subscribe poll] skipped: think is paused (`think resume` to re-enable)'));
+      }
+      return;
+    }
 
-    const cortex = activeCortex(globalOpts.cortex);
+    const cortex = globalOpts.cortex ?? config.cortex?.active ?? null;
     if (!cortex) {
-      // No active cortex: poll has nowhere to write. Stay silent in --quiet
-      // mode (LaunchAgent friendly); otherwise, complain loudly so the user
-      // fixes their setup.
+      // No active cortex: poll has nowhere to write. Silent under
+      // --quiet (LaunchAgent friendly); loud otherwise.
       if (!opts.quiet) {
         fail('subscribe poll: no active cortex. Run `think cortex create <name>` and select it first.');
       }
@@ -210,7 +305,7 @@ subscribeCommand.addCommand(new Command('poll')
     const sub = config.subscriptions;
     if (!sub || !sub.proxyUrl || !sub.token) {
       if (!opts.quiet) {
-        fail('subscribe poll: no proxy configured. Run `think subscribe configure --proxy <url> --token <token>` first.');
+        fail('subscribe poll: no proxy configured. Run `think subscribe configure --proxy <url>` first.');
       }
       return;
     }
@@ -233,8 +328,8 @@ subscribeCommand.addCommand(new Command('poll')
     for (const s of subscriptions) {
       let cursor = updatedCursors[s.id] ?? 0;
       // Page until next_since is null (proxy contract: null = empty page,
-      // non-null = `since` to use for the next call).
-      // Bound the per-tick loop so a misbehaving proxy can't pin us forever.
+      // non-null = `since` to use for the next call). Bound the per-tick
+      // loop so a misbehaving proxy can't pin us forever.
       for (let page = 0; page < 100; page += 1) {
         let resp;
         try {
@@ -285,7 +380,7 @@ subscribeCommand.addCommand(new Command('poll')
 
 // `think subscribe install-agent`
 subscribeCommand.addCommand(new Command('install-agent')
-  .description('Install a LaunchAgent that runs `think subscribe poll --quiet` on session load and every 600 seconds')
+  .description('Install a LaunchAgent that runs `think subscribe poll --quiet` on session load and at the configured cadence (default 600s)')
   .option('--interval <seconds>', 'Scheduler cadence in seconds (default 600)', (v) => {
     const n = parseInt(v, 10);
     if (!Number.isInteger(n) || n <= 0 || String(n) !== v.trim()) {
@@ -297,7 +392,8 @@ subscribeCommand.addCommand(new Command('install-agent')
   .action((opts: { interval?: number }) => {
     try {
       const { label, plistPath } = installSubscribeAgent({ intervalSeconds: opts.interval });
-      console.log(chalk.green('✓') + ` Auto-subscribe enabled`);
+      const intervalLabel = opts.interval ?? 600;
+      console.log(chalk.green('✓') + ` Auto-subscribe enabled (every ${intervalLabel}s)`);
       console.log(chalk.dim(`  Label: ${label}`));
       console.log(chalk.dim(`  Plist: ${plistPath}`));
       if (process.env.THINK_HOME) {
@@ -348,7 +444,7 @@ subscribeCommand.addCommand(new Command('show')
   .action(() => {
     const { subscriptions } = getConfig();
     if (!subscriptions || !subscriptions.proxyUrl) {
-      console.log(chalk.dim('No proxy configured. Run `think subscribe configure --proxy <url> --token <token>`.'));
+      console.log(chalk.dim('No proxy configured. Run `think subscribe configure --proxy <url>`.'));
       return;
     }
     console.log(`Proxy: ${chalk.cyan(subscriptions.proxyUrl)}`);
@@ -361,5 +457,3 @@ subscribeCommand.addCommand(new Command('show')
     }
   }));
 
-// Re-export Config so commander typing stays clean for the file consumer.
-export type { Config };
