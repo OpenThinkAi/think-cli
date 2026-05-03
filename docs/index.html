@@ -45,34 +45,38 @@
       <section class="view" data-view="home">
         <div class="hero">
           <div class="badge"><span class="dot"></span><span id="version-badge">v0.3.0</span> · open source · MIT</div>
-          <h1>memory for your<br><span class="accent">AI agents</span>.</h1>
-          <p class="lead">Persistent, shared memory for distributed agents and teams.</p>
+          <h1>memory for your<br><span class="accent">AI brain</span>.</h1>
+          <p class="lead">Local-first nervous system for AI: engrams in, curated memories out, all in a folder you control.</p>
           <div class="install-line"><span class="prompt">$</span>npm install -g open-think</div>
           <div class="install-note">requires Node 22.5+ · works with Claude Code out of the box</div>
         </div>
 
-        <h2 class="section-h" id="demo">// one team, shared memory</h2>
+        <h2 class="section-h" id="demo">// one brain, many machines</h2>
 
         <div class="demo-flow">
           <div class="demo-step">
-            <div class="demo-label">alice's agent ships a feature and logs the work</div>
+            <div class="demo-label">your laptop &mdash; ship a feature, log it</div>
             <div class="demo-terminal">
+              <div><span class="prompt">$</span> think cortex setup --fs ~/Dropbox/think-cortex</div>
+              <div class="out"><span class="check">✓</span> Cortex folder: ~/Dropbox/think-cortex</div>
               <div><span class="prompt">$</span> think sync "rewrote auth middleware &mdash; AES-256-GCM for all session tokens"</div>
-              <div class="out"><span class="check">✓</span> <span class="cyan">[engineering]</span> engram saved</div>
+              <div class="out"><span class="check">✓</span> <span class="cyan">[personal]</span> engram saved</div>
               <div><span class="prompt">$</span> think sync "fixed race condition in token refresh &mdash; concurrent 401s resolved"</div>
-              <div class="out"><span class="check">✓</span> <span class="cyan">[engineering]</span> engram saved</div>
+              <div class="out"><span class="check">✓</span> <span class="cyan">[personal]</span> engram saved</div>
+              <div><span class="prompt">$</span> think curate</div>
+              <div class="out">  2 evaluated, 2 promoted, 0 purged, 0 still pending</div>
               <div><span class="prompt">$</span> think cortex push</div>
               <div class="out"><span class="check">✓</span> Pushed 2 memories</div>
             </div>
           </div>
 
           <div class="demo-step">
-            <div class="demo-label">bob's agent, different machine, pulls the latest</div>
+            <div class="demo-label">your workstation &mdash; same folder, synced by Dropbox</div>
             <div class="demo-terminal">
               <div><span class="prompt">$</span> think cortex pull</div>
-              <div class="out"><span class="check">✓</span> Pulled 2 memories</div>
+              <div class="out"><span class="check">✓</span> Pulled 2 new memories</div>
               <div><span class="prompt">$</span> think recall "auth"</div>
-              <div class="out"><span class="cyan">Team memories:</span></div>
+              <div class="out"><span class="cyan">Memories:</span></div>
               <div class="out"><span class="dim">Auth middleware was rewritten to use AES-256-GCM encryption for session</span></div>
               <div class="out"><span class="dim">tokens. A race condition in the refresh flow was causing concurrent 401s</span></div>
               <div class="out"><span class="dim">&mdash; fixed by serializing token rotation.</span></div>
@@ -80,13 +84,13 @@
           </div>
 
           <div class="demo-step">
-            <div class="demo-label">bob's agent uses that context before touching the same code</div>
+            <div class="demo-label">your agent on the workstation picks up where you left off</div>
             <div class="demo-terminal">
               <div><span class="prompt">&gt;</span> Refactor the session middleware</div>
               <div class="out">&nbsp;</div>
-              <div class="out"><span class="check">!</span> Before I refactor, I should note: Alice just rewrote the auth</div>
-              <div class="out">  middleware with AES-256-GCM and fixed a token refresh race condition.</div>
-              <div class="out">  Let me build on her work rather than duplicate it.</div>
+              <div class="out"><span class="check">!</span> Before I refactor, I should note: I rewrote the auth middleware</div>
+              <div class="out">  on my laptop yesterday with AES-256-GCM and fixed a token refresh</div>
+              <div class="out">  race condition. Let me build on that rather than duplicate it.</div>
             </div>
           </div>
         </div>
@@ -107,11 +111,11 @@
             <div class="out"><span class="dim">prototype became a de facto spec with no scope annotations. Action</span></div>
             <div class="out"><span class="dim">item: define prototype levels and bring them to engineers earlier.</span></div>
             <div class="out">&nbsp;</div>
-            <div class="out"><span class="check">!</span> Before I start, let me pin down the scope. Your team retro called</div>
+            <div class="out"><span class="check">!</span> Before I start, let me pin down the scope. A past retro called</div>
             <div class="out">  out "quick prototypes" as exactly the shape that caused trouble.</div>
           </div>
         </div>
-        <p>Agents that share memory don't duplicate work, don't contradict decisions, and don't repeat mistakes the team already learned from.</p>
+        <p>An agent with memory doesn't duplicate work, doesn't contradict decisions, and doesn't repeat mistakes you've already learned from.</p>
 
         <h2 class="section-h" id="next">// get started</h2>
         <p>Jump to <a href="#" data-goto="install">install</a> to set it up in 2 minutes, or read the <a href="#" data-goto="concepts">concepts</a> to understand the full pipeline.</p>
@@ -136,10 +140,12 @@
           <div class="concept" id="c2">
             <div class="num">[02]</div>
             <h3>cortex</h3>
-            <p>A memory workspace. Personal or shared. Each cortex is a local SQLite database with its own engrams, memories, and sync state. Optionally backed by a git repo for team sync.</p>
+            <p>Your AI's memory folder. Each cortex is a local SQLite database for engrams, plus a folder of JSONL files for the consolidated memories that persist. Point the folder at iCloud, Dropbox, or any sync tool you already use, and your AI's memory follows you across machines.</p>
             <div class="demo">
+              <div><span class="prompt">$</span> think cortex setup --fs ~/Dropbox/think-cortex</div>
+              <div class="out"><span class="check">✓</span> Cortex folder: ~/Dropbox/think-cortex</div>
               <div><span class="prompt">$</span> think cortex create personal</div>
-              <div class="out"><span class="check">✓</span> Created cortex: personal (local only)</div>
+              <div class="out"><span class="check">✓</span> Created cortex: personal (local + remote)</div>
             </div>
           </div>
 
@@ -168,10 +174,10 @@
           <div class="concept" id="c5">
             <div class="num">[05]</div>
             <h3>recall &amp; sync</h3>
-            <p>Search across memories and local engrams. Sync pushes and pulls memories to a remote backend. All reads hit local SQLite &mdash; instant and offline.</p>
+            <p>Search across memories and local engrams. Sync pushes memories out to the cortex folder and pulls back what other machines you own have written. All reads hit local SQLite &mdash; instant and offline.</p>
             <div class="demo">
               <div><span class="prompt">$</span> think recall "auth"</div>
-              <div class="out"><span class="cyan">Team memories (last 14d):</span></div>
+              <div class="out"><span class="cyan">Memories (last 14d):</span></div>
               <div class="out"><span class="dim">&#8594; Auth refactor shipped...</span></div>
               <div><span class="prompt">$</span> think cortex sync</div>
               <div class="out"><span class="check">✓</span> Pulled 3, pushed 1</div>
@@ -180,13 +186,13 @@
         </div>
 
         <h2 class="section-h" id="arch">// architecture</h2>
-        <p>Local-first, by design. All reads and writes go to local SQLite. Sync is optional and eventual. Engrams never leave your machine &mdash; only curated memories sync to the remote.</p>
-        <pre class="arch-ascii">+- your machine -------------------+       +- remote --------+       +- another machine -----+
-|                                  |       |                  |       |                       |
-| <span class="g">engrams</span> --&gt; <span class="g">curator</span> --&gt; <span class="c">memories</span> |------&gt;| <span class="y">store</span>            |&lt;------| <span class="c">recall</span> &lt;-- <span class="g">context</span>    |
-|                                  |       |                  |       |                       |
-|                                  |       |                  |       |                       |
-+----------------------------------+       +------------------+       +-----------------------+</pre>
+        <p>Local-first, by design. All reads and writes go to local SQLite. Engrams never leave the machine &mdash; only curated memories land in the cortex folder. Point that folder at a sync tool you already use and your AI's memory follows you across machines. No server, no relay; the folder is the propagation layer.</p>
+        <pre class="arch-ascii">+- your laptop ------------------+       +- cortex folder ----------------+       +- another machine --------------+
+|                                |       |                                |       |                                |
+| <span class="g">engrams</span> -&gt; <span class="g">curator</span> -&gt; <span class="c">memories</span> |------&gt;| <span class="y">JSONL files</span>                    |&lt;------| <span class="c">memories</span> &lt;- <span class="g">curator</span> &lt;- <span class="g">engrams</span> |
+|                                |       | (synced via iCloud / Dropbox / |       |                                |
+|                                |       |  Syncthing / Drive / …)        |       |                                |
++--------------------------------+       +--------------------------------+       +--------------------------------+</pre>
       </section>
 
       <!-- INSTALL VIEW -->
@@ -202,17 +208,18 @@
             <p class="note">Requires Node 22.5+. <code>think init</code> writes auto-logging instructions into your project's CLAUDE.md &mdash; your agents start logging work immediately. The curator and summary features use the <a href="https://www.npmjs.com/package/@anthropic-ai/claude-agent-sdk">Claude Agent SDK</a> and require a Claude subscription.</p>
           </li>
           <li id="s2">
-            <h3>Create a cortex</h3>
-            <div class="terminal"><span class="prompt">$</span>think cortex setup git@github.com:you/memory.git</div>
-            <div class="terminal"><span class="prompt">$</span>think cortex create engineering</div>
-            <p class="note">A cortex is a memory workspace. Point it at a git repo for team sync, or skip the repo for offline-only. Each cortex has its own engrams, memories, and sync state.</p>
+            <h3>Point cortex at a folder</h3>
+            <div class="terminal"><span class="prompt">$</span>think cortex setup --fs ~/Dropbox/think-cortex</div>
+            <div class="terminal"><span class="prompt">$</span>think cortex create personal</div>
+            <p class="note">A cortex is your AI's memory folder. Pass <code>--fs</code> a path inside any sync tool you already use (iCloud, Dropbox, Google Drive, Syncthing) and the same memories will land on every machine you own. The folder is created if it doesn't exist. Skip <code>--fs</code> for offline-only.</p>
+            <p class="note"><strong>Already on a git-backed setup?</strong> <code>think cortex setup &lt;git-remote-url&gt;</code> is still supported and existing setups keep working unchanged &mdash; <code>--fs</code> is just the recommended path for new ones.</p>
           </li>
           <li id="s3">
             <h3>You're done</h3>
             <div class="terminal"><span class="prompt">$</span>think sync "shipped the feature"</div>
             <div class="terminal"><span class="prompt">$</span>think curate</div>
             <div class="terminal"><span class="prompt">$</span>think recall "what did I ship?"</div>
-            <p class="note">Agents log work with <code>think sync</code>. Curation promotes the important stuff to long-term memory. Recall pulls it back next session. <code>think cortex sync</code> shares with the team.</p>
+            <p class="note">Agents log work with <code>think sync</code>. Curation promotes the important stuff to long-term memory. Recall pulls it back next session. <code>think cortex sync</code> writes memories out to the folder so your other machines can pick them up.</p>
           </li>
         </ol>
       </section>
@@ -230,9 +237,9 @@ think list                     List entries (--week, --since, --category)
 think summary                  AI summary (--raw for plain text)
 think delete                   Soft-delete entries
 
-think cortex setup [repo]      Configure sync backend (or offline-only)
+think cortex setup [--fs &lt;path&gt; | &lt;repo&gt;]   Configure backend (or no args for offline)
 think cortex create &lt;name&gt;     Create a cortex
-think cortex list              Show all cortexes (local + remote)
+think cortex list              Show all cortexes
 think cortex switch &lt;name&gt;     Set active cortex
 think cortex current           Show active cortex
 think cortex push              Push local memories to remote
@@ -246,7 +253,7 @@ think curate --consolidate     Compress older memories into summary
 think monitor                  Show promoted vs dropped engrams
 think recall &lt;query&gt;           Search memories + engrams
 think memory                   Show memories (--history for timeline)
-think pull &lt;cortex&gt;            Read another cortex's memories
+think pull &lt;cortex&gt;            Read memories from another cortex
 
 think curator edit             Edit personal curator guidance
 think curator show             Show current guidance
@@ -275,7 +282,7 @@ think update                   Update to latest version</pre>
           <li><span class="link-label">~/.think/</span><span>data directory (override with <code>$THINK_HOME</code>)</span></li>
           <li><span class="link-label">engrams/*.db</span>per-cortex SQLite (engrams, memories, sync)</li>
           <li><span class="link-label">curator.md</span>personal curator guidance</li>
-          <li><span class="link-label">repo/</span>cloned git remote for sync</li>
+          <li><span class="link-label">cortex folder</span>JSONL files for synced memories (path you set with <code>--fs</code>)</li>
           <li><span class="link-label">~/.config/think/</span>config.json</li>
         </ul>
       </section>

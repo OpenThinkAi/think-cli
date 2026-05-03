@@ -8,7 +8,7 @@
     home: {
       groups: [
         { label: 'overview', items: [
-          { label: 'shared memory', href: '#demo' },
+          { label: 'one brain, many machines', href: '#demo' },
           { label: 'the moment it clicks', href: '#why' },
           { label: 'get started', href: '#next' },
         ]},
