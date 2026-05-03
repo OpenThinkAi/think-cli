@@ -140,13 +140,12 @@
           <div class="concept" id="c2">
             <div class="num">[02]</div>
             <h3>cortex</h3>
-            <p>Your brain's memory folder. Each cortex is a local SQLite database for engrams, plus a folder of JSONL files for the consolidated memories that persist. Point the folder at iCloud, Dropbox, or any sync tool you already use, and your brain's memory follows you across machines.</p>
+            <p>Your AI's memory folder. Each cortex is a local SQLite database for engrams, plus a folder of JSONL files for the consolidated memories that persist. Point the folder at iCloud, Dropbox, or any sync tool you already use, and your AI's memory follows you across machines.</p>
             <div class="demo">
               <div><span class="prompt">$</span> think cortex setup --fs ~/Dropbox/think-cortex</div>
               <div class="out"><span class="check">✓</span> Cortex folder: ~/Dropbox/think-cortex</div>
               <div><span class="prompt">$</span> think cortex create personal</div>
               <div class="out"><span class="check">✓</span> Created cortex: personal (local + remote)</div>
-              <div class="out"><span class="dim">// "remote" here is the cortex folder &mdash; CLI's umbrella term for the configured backend.</span></div>
             </div>
           </div>
 
@@ -187,7 +186,7 @@
         </div>
 
         <h2 class="section-h" id="arch">// architecture</h2>
-        <p>Local-first, by design. All reads and writes go to local SQLite. Engrams never leave the machine &mdash; only curated memories land in the cortex folder. Point that folder at a sync tool you already use and your brain's memory follows you across machines. No server, no relay; the folder is the propagation layer.</p>
+        <p>Local-first, by design. All reads and writes go to local SQLite. Engrams never leave the machine &mdash; only curated memories land in the cortex folder. Point that folder at a sync tool you already use and your AI's memory follows you across machines. No server, no relay; the folder is the propagation layer.</p>
         <pre class="arch-ascii">+- your laptop ------------------+       +- cortex folder ----------------+       +- another machine --------------+
 |                                |       |                                |       |                                |
 | <span class="g">engrams</span> -&gt; <span class="g">curator</span> -&gt; <span class="c">memories</span> |------&gt;| <span class="y">JSONL files</span>                    |&lt;------| <span class="c">memories</span> &lt;- <span class="g">curator</span> &lt;- <span class="g">engrams</span> |
@@ -212,7 +211,7 @@
             <h3>Point cortex at a folder</h3>
             <div class="terminal"><span class="prompt">$</span>think cortex setup --fs ~/Dropbox/think-cortex</div>
             <div class="terminal"><span class="prompt">$</span>think cortex create personal</div>
-            <p class="note">A cortex is your brain's memory folder. Pass <code>--fs</code> a path inside any sync tool you already use (iCloud, Dropbox, Google Drive, Syncthing) and the same memories will land on every machine you own. Skip <code>--fs</code> for offline-only.</p>
+            <p class="note">A cortex is your AI's memory folder. Pass <code>--fs</code> a path inside any sync tool you already use (iCloud, Dropbox, Google Drive, Syncthing) and the same memories will land on every machine you own. The folder is created if it doesn't exist. Skip <code>--fs</code> for offline-only.</p>
             <p class="note"><strong>Already on a git-backed setup?</strong> <code>think cortex setup &lt;git-remote-url&gt;</code> is still supported and existing setups keep working unchanged &mdash; <code>--fs</code> is just the recommended path for new ones.</p>
           </li>
           <li id="s3">
@@ -240,7 +239,7 @@ think delete                   Soft-delete entries
 
 think cortex setup [--fs &lt;path&gt; | &lt;repo&gt;]   Configure backend (or no args for offline)
 think cortex create &lt;name&gt;     Create a cortex
-think cortex list              Show all cortexes (local + remote)
+think cortex list              Show all cortexes
 think cortex switch &lt;name&gt;     Set active cortex
 think cortex current           Show active cortex
 think cortex push              Push local memories to remote
@@ -254,7 +253,7 @@ think curate --consolidate     Compress older memories into summary
 think monitor                  Show promoted vs dropped engrams
 think recall &lt;query&gt;           Search memories + engrams
 think memory                   Show memories (--history for timeline)
-think pull &lt;cortex&gt;            Read another of your cortexes' memories
+think pull &lt;cortex&gt;            Read memories from another cortex
 
 think curator edit             Edit personal curator guidance
 think curator show             Show current guidance

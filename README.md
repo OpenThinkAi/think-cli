@@ -40,14 +40,14 @@ think turns your work into sensory input for your AI brain. Engrams are the raw 
                                    Syncthing / …)
 ```
 
-All reads and writes go to local SQLite. Engrams never leave the machine — only curated memories land in the folder. Point that folder at a sync tool you already use, and your brain's memory follows you across machines. No server. No relay. The folder is the propagation layer.
+All reads and writes go to local SQLite. Engrams never leave the machine — only curated memories land in the folder. Point that folder at a sync tool you already use, and your AI's memory follows you across machines. No server. No relay. The folder is the propagation layer.
 
-## Cortex — your brain's memory folder
+## Cortex — your AI's memory folder
 
-A cortex is the workspace where your brain's memories live: a local SQLite database for engrams, plus a folder of JSONL files for the consolidated memories that persist.
+A cortex is the workspace where your AI's memories live: a local SQLite database for engrams, plus a folder of JSONL files for the consolidated memories that persist.
 
 ```bash
-# Set up (once) — point cortex at any folder, synced or otherwise
+# Set up (once) — point cortex at any folder; created if it doesn't exist
 think cortex setup --fs ~/Dropbox/think-cortex
 think cortex create personal
 
@@ -72,7 +72,7 @@ think cortex status       # show sync state
 think monitor             # what got promoted vs dropped
 ```
 
-The folder works with anything that syncs files: iCloud Drive, Dropbox, Google Drive, Syncthing, a network share. Point two machines at the same folder and the same brain shows up in both.
+The folder works with anything that syncs files: iCloud Drive, Dropbox, Google Drive, Syncthing, a network share. Point two machines at the same folder and the same memories show up on both.
 
 > **One brain only.** think serves a single brain. Coordinating memory across many brains (a team, a swarm of agents) is out of scope — that belongs to HiveDB, a separate project.
 
@@ -144,7 +144,7 @@ think delete                   Soft-delete entries
 
 think cortex setup [--fs <path> | <repo>]   Configure backend (or no args for offline)
 think cortex create <name>     Create a cortex
-think cortex list              Show all cortexes (local + remote)
+think cortex list              Show all cortexes
 think cortex switch <name>     Set active cortex
 think cortex current           Show active cortex
 think cortex push              Push local memories to remote
@@ -158,7 +158,7 @@ think curate --consolidate     Compress older memories into long-term summary
 think monitor                  Show promoted vs dropped engrams
 think recall <query>           Search memories + engrams
 think memory                   Show memories (--history for timeline)
-think pull <cortex>            Read another of your cortexes' memories
+think pull <cortex>            Read memories from another cortex
 
 think curator edit             Edit personal curator guidance
 think curator show             Show current guidance
