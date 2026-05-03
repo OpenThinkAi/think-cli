@@ -4,7 +4,6 @@ services:
       context: .
       dockerfile: packages/server/Dockerfile
     environment:
-      THINK_TOKEN: dev-token-change-me
       PORT: "3000"
     ports:
       - "3000:3000"

@@ -10,9 +10,16 @@ The server boots, listens on `PORT` (default 3000), and exposes one endpoint:
 |---|---|---|
 | `GET` | `/v1/health` | Liveness probe. Always returns `{ "status": "ok" }` with HTTP 200 if the process is up. **No backing-store probe** — load balancers wired to this endpoint should know that "200 OK" now only means "the process is reachable", not "the data path is healthy". |
 
-The bearer-auth middleware is mounted but has no routes behind it; AGT-027 plugs the events/subscriptions surface onto that seam.
+There is no bearer-auth middleware in 0.2.x — it retired alongside the routes it was protecting. AGT-027 lands the auth seam back when it adds events/subscriptions routes that need it. **`THINK_TOKEN` is no longer required at boot** in 0.2.x; if you had it set in your deployment environment from 0.1.x, you can remove it now or leave it in place (it is ignored).
 
-`THINK_TOKEN` is still required at boot (the auth seam reads it on each request, ready for AGT-027). Set it to any long random string; it is not exercised by `/v1/health`.
+Any request to a path other than `GET /v1/health` returns a JSON 404 naming the retired role and pointing at the migration path:
+
+```json
+{
+  "error": "endpoint not found",
+  "detail": "open-think-server 0.2.0 retired the cortex storage role (AGT-026); …"
+}
+```
 
 ## If you ran a previous version
 
@@ -40,7 +47,7 @@ The CLI's `think cortex setup --server <url> --token <token>` flow targets the n
 ## Running
 
 ```sh
-THINK_TOKEN=$(openssl rand -hex 32) PORT=3000 npx open-think-server
+PORT=3000 npx open-think-server
 ```
 
 Or via docker-compose at the repo root:
@@ -55,4 +62,4 @@ docker compose up server
 npm test -w open-think-server
 ```
 
-No external dependencies — the test suite stands up the Hono app in-process and exercises the auth seam against a dummy authed route.
+No external dependencies — the test suite stands up the Hono app in-process and exercises the `/v1/health` response and the catch-all 404 body.
