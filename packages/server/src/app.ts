@@ -1,9 +1,12 @@
 import { Hono } from 'hono';
 import { health } from './routes/health.js';
 import { bearerAuth } from './middleware/auth.js';
+import { credentialsRoute } from './routes/credentials.js';
 import { eventsRoute } from './routes/events.js';
 import { subscriptionsRoute } from './routes/subscriptions.js';
+import type { ConnectorRegistry } from './connectors/registry.js';
 import type { Database } from './db.js';
+import type { Vault } from './vault/index.js';
 
 /**
  * Builds the Hono app. Exported as a function so tests can construct an
@@ -12,7 +15,11 @@ import type { Database } from './db.js';
  * Health is mounted ahead of auth (load-balancer probes don't carry tokens).
  * Everything else requires a valid bearer token.
  */
-export function createApp(deps: { db: Database }): Hono {
+export function createApp(deps: {
+  db: Database;
+  vault: Vault;
+  registry: ConnectorRegistry;
+}): Hono {
   const app = new Hono();
 
   app.route('/', health);
@@ -43,6 +50,7 @@ export function createApp(deps: { db: Database }): Hono {
   authed.use('*', bearerAuth());
   authed.route('/', eventsRoute(deps.db));
   authed.route('/', subscriptionsRoute(deps.db));
+  authed.route('/', credentialsRoute(deps.db, deps.vault, deps.registry));
   app.route('/', authed);
 
   app.notFound((c) =>
@@ -50,7 +58,8 @@ export function createApp(deps: { db: Database }): Hono {
       {
         error: 'endpoint not found',
         detail:
-          'open-think-server 0.4.0 serves /v1/health, /v1/events, and /v1/subscriptions.',
+          'open-think-server 0.5.0 serves /v1/health, /v1/events, /v1/subscriptions, ' +
+          'and /v1/subscriptions/:id/credential.',
       },
       404,
     ),

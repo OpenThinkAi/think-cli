@@ -184,6 +184,35 @@ describe('scheduler — e2e (AC #7)', () => {
     ]);
   });
 
+  it('connector receives the decrypted stored credential on each poll', async () => {
+    const seen: (string | null)[] = [];
+    const tap: SourceConnector<{ count: number }> = {
+      kind: 'tap',
+      async poll(ctx) {
+        seen.push(ctx.credential);
+        return { events: [], nextCursor: { count: (ctx.cursor?.count ?? 0) + 1 } };
+      },
+    };
+    const registry = buildDefaultRegistry();
+    registerConnector(registry, tap);
+    client = createTestClient({ registry });
+    const tapSub = await createSub(client, { kind: 'tap', pattern: 'x' });
+
+    // Pre-credential tick: connector sees null.
+    await client.tickOnce();
+    expect(seen[0]).toBeNull();
+
+    // Store a credential, then tick again — connector now sees the
+    // decrypted plaintext.
+    await client.request({
+      method: 'PUT',
+      path: `/v1/subscriptions/${tapSub}/credential`,
+      body: { credential: 'tap-secret-value' },
+    });
+    await client.tickOnce();
+    expect(seen[1]).toBe('tap-secret-value');
+  });
+
   it('drops an unparseable cursor and lets the connector start fresh', async () => {
     // Stuff a junk cursor into the row. Next tick should still succeed
     // and overwrite the cursor with a valid one.

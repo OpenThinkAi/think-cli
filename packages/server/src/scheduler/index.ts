@@ -1,5 +1,6 @@
 import type { Database } from '../db.js';
 import type { ConnectorRegistry } from '../connectors/registry.js';
+import type { Vault } from '../vault/index.js';
 
 const DEFAULT_POLL_TIMEOUT_MS = 60_000;
 
@@ -46,6 +47,7 @@ export interface SchedulerHandle {
 export interface SchedulerOptions {
   db: Database;
   registry: ConnectorRegistry;
+  vault: Vault;
   intervalMs: number;
   /** Per-poll wall-clock cap; defaults to 60s. Throws via the error branch. */
   pollTimeoutMs?: number;
@@ -105,7 +107,7 @@ function safeParseCursor(raw: string | null, subscriptionId: string): unknown {
  * itself.
  */
 export function createScheduler(opts: SchedulerOptions): SchedulerHandle {
-  const { db, registry, intervalMs } = opts;
+  const { db, registry, vault, intervalMs } = opts;
   const pollTimeoutMs = opts.pollTimeoutMs ?? DEFAULT_POLL_TIMEOUT_MS;
   const now = opts.now ?? (() => new Date().toISOString());
 
@@ -145,10 +147,17 @@ export function createScheduler(opts: SchedulerOptions): SchedulerHandle {
         // narrowing is the connector's responsibility — it's the only
         // entity that knows what shape its own cursor takes.
         const cursor = safeParseCursor(sub.cursor, sub.id);
+        // Decrypted credential lookup. `null` if no row in
+        // `source_credentials`; throws if the row exists but the key
+        // can't decrypt it (rotated key, corrupted blob). The throw is
+        // re-raised here so it falls into the per-poll error branch
+        // below — the operator gets a logged failure isolated to this
+        // subscription, with no credential bytes in the message.
+        const credential = vault.load(db, sub.id);
         const result = await withTimeout(
           connector.poll({
             subscription: { id: sub.id, kind: sub.kind, pattern: sub.pattern },
-            credential: null, // AGT-029 wires this from the credential store.
+            credential,
             cursor: cursor as never,
           }),
           pollTimeoutMs,
