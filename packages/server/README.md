@@ -1,106 +1,65 @@
 # open-think-server
 
-HTTP backend for the [open-think](https://www.npmjs.com/package/open-think) CLI. Run this when you have agents on deployed services that need to sync cortex memories without git credentials or a working tree — they hold a single URL and a bearer token instead.
+> **Paused.** The cortex storage role retired in AGT-026 as part of the [think-cli v2 pivot](https://openthink.dev) to a brain/nervous-system model where memories live in a local folder (see the local-fs adapter). The HTTP server's role is being rewritten as a **proxy for external event sources** (GitHub, Linear, Slack, etc.) rather than a memory backend. That work lands in AGT-027 (events + subscriptions surface) and AGT-030 (folds this package into `packages/cli/src/serve/` with a full README rewrite).
 
-## What it stores
+## What this version (0.2.0) actually does
 
-One Postgres table of memories, scoped by cortex name. **No engrams** — those are local-only on the developer machine and never sync. The server is intentionally minimal: bulk upserts in, paginated reads out, dedup by client-computed `id`.
-
-## Quick start (local Docker)
-
-```sh
-docker compose up -d postgres
-docker compose up server
-# server listens on http://localhost:3000
-```
-
-The default `THINK_TOKEN` in `docker-compose.yml` is `dev-token-change-me`. Replace it before exposing the server to anything beyond your laptop.
-
-## Running standalone
-
-```sh
-DATABASE_URL=postgres://user:pass@host:5432/db \
-THINK_TOKEN=$(openssl rand -hex 32) \
-PORT=3000 \
-npx open-think-server
-```
-
-`DATABASE_URL` and `THINK_TOKEN` are required; the server exits on boot if either is missing. Schema is bootstrapped idempotently on each start.
-
-## Endpoints
-
-All endpoints except `/v1/health` require `Authorization: Bearer <THINK_TOKEN>`.
+The server boots, listens on `PORT` (default 3000), and exposes one endpoint:
 
 | Method | Path | Purpose |
 |---|---|---|
-| `GET` | `/v1/health` | Liveness probe (checks Postgres reachable). Unauthenticated. |
-| `GET` | `/v1/cortexes` | List all cortexes. |
-| `POST` | `/v1/cortexes` | Create a cortex. **Optional** — `POST .../memories` auto-creates on first write. 201 on actual creation, 200 on idempotent no-op. Body: `{ "name": "engineering" }`. |
-| `POST` | `/v1/cortexes/:name/memories` | Bulk-upsert memories. Idempotent on `(cortex, id)`; existing rows are never overwritten (memories are immutable per the SyncAdapter contract). Body: `{ "memories": [{ id, ts, author, content, source_ids, episode_key?, decisions? }] }`. Max 500 per request. |
-| `GET` | `/v1/cortexes/:name/memories?since=<server_seq>&limit=<n>` | Paginated pull. Returns memories with `server_seq > since`, ascending. Response includes `next_since` for the cursor. `limit` defaults to 500, max 1000. |
-| `POST` | `/v1/cortexes/:name/long-term-events` | Bulk-upsert long-term events (decisions, milestones, incidents, etc.). Content is immutable, but `deleted_at` is sticky-additive — a later push with `deleted_at` set tombstones a previously-live row, and re-pushing the original cannot undelete. Body: `{ "events": [{ id, ts, author, kind, title, content, topics?, supersedes?, source_memory_ids?, deleted_at? }] }`. Max 500 per request. |
-| `GET` | `/v1/cortexes/:name/long-term-events?since=<server_seq>&limit=<n>` | Paginated pull, same shape as the memories pull. Tombstoned rows are returned with their `deleted_at` field set so clients can apply the local tombstone. |
+| `GET` | `/v1/health` | Liveness probe. Always returns `{ "status": "ok" }` with HTTP 200 if the process is up. **No backing-store probe** — load balancers wired to this endpoint should know that "200 OK" now only means "the process is reachable", not "the data path is healthy". |
 
-### Field caps
+There is no bearer-auth middleware in 0.2.x — it retired alongside the routes it was protecting. AGT-027 lands the auth seam back when it adds events/subscriptions routes that need it. **`THINK_TOKEN` is no longer required at boot** in 0.2.x; if you had it set in your deployment environment from 0.1.x, you can remove it now or leave it in place (it is ignored).
 
-| Field | Max |
-|---|---|
-| `id` | 128 chars |
-| `ts` | 64 chars |
-| `author` | 128 chars |
-| `content` | 64,000 chars |
-| `episode_key` | 256 chars |
-| memories per request | 500 |
-| LT event `kind` | 64 chars |
-| LT event `title` | 512 chars |
-| LT event `supersedes` | 128 chars |
-| LT event `deleted_at` | 64 chars |
-| events per request | 500 |
-| cortex name | 64 chars (a-z, A-Z, 0-9, `_`, `-`) |
+Any request to a path other than `GET /v1/health` returns a JSON 404 naming the retired role and pointing at the migration path:
 
-`topics` and `source_memory_ids` are arrays of strings without an explicit per-element or array-length cap on the server side. The CLI controls what gets sent. If you need to lock those down for a public-facing deploy, add a reverse-proxy body-size limit.
-
-### Cursor format
-
-`server_seq` is a non-negative integer encoded as a string (Postgres BIGSERIAL — the JSON-string encoding preserves precision past 2^53). Pass it back verbatim as `since=`. The wire format is stable for the v1 routes; a future cursor change would require a new route version.
-
-## Deploying
-
-### Railway
-
-Railway has a Postgres add-on and reads `DATABASE_URL` automatically. After adding the Postgres plugin, set `THINK_TOKEN` in the service environment, point the build at this Dockerfile, and `npm start` is the run command. (Railway template config is on the roadmap.)
-
-### Anywhere with Docker
-
-Build:
-
-```sh
-docker build -f packages/server/Dockerfile -t open-think-server .
-docker run -p 3000:3000 \
-  -e DATABASE_URL=postgres://… \
-  -e THINK_TOKEN=… \
-  open-think-server
+```json
+{
+  "error": "endpoint not found",
+  "detail": "open-think-server 0.2.0 retired the cortex storage role (AGT-026); …"
+}
 ```
 
-## Configuring the CLI to use it
+## If you ran a previous version
 
-The HttpSyncAdapter on the CLI side is not yet shipped. When it lands the flow will be:
+`open-think-server@0.1.x` exposed `/v1/cortexes`, `/v1/cortexes/:name/memories`, and `/v1/cortexes/:name/long-term-events` against a Postgres backing store. **Every one of those endpoints returns 404 in 0.2.0.** There is no migration script — by design, since the v2 pivot moves cortex storage to a local folder on each peer rather than a shared server.
+
+If you have data in a Postgres deployment you still need:
+
+1. Keep the server pinned to `open-think-server@0.1.x` and running. **Do not upgrade it** until every peer has migrated — the migration tool pulls live from the running 0.1.x server.
+2. On each peer, with `think cortex setup --server …` still configured, run `think cortex migrate --to fs --path <folder>`. The command pulls the latest from the live HttpSyncAdapter into local SQLite, then exports to the local folder and rewrites config to the fs backend.
+3. Once every peer has migrated, retire the 0.1.x server.
+
+If your 0.1.x server is already gone and you only have a `pg_dump` left, there's no first-class import path in the CLI today — file a `gh issue` against `OpenThinkAi/think-cli` describing your situation.
+
+After upgrading, the `pgdata` Docker volume from the prior `docker-compose.yml` is orphaned. Clean it up with:
 
 ```sh
-think cortex setup --server https://think.mycorp.com --token <THINK_TOKEN> engineering
-think sync "shipped the auth fix"
-think cortex push
+docker volume ls | grep pgdata
+docker volume rm <project>_pgdata
 ```
 
-Until then, the server is reachable directly via `curl` for testing.
+## CLI compatibility
 
-## Testing locally
+The CLI's `think cortex setup --server <url> --token <token>` flow targets the now-removed cortex-storage endpoints and **will fail with 404s** against any 0.2.x server. AGT-025 retires the `--server`/`--token` flags and the `HttpSyncAdapter` on the CLI side; until that lands, use the local-fs backend (`think cortex setup --fs <path>`) or a git remote (`think cortex setup <repo>`).
+
+## Running
 
 ```sh
-docker compose up -d postgres
-TEST_DATABASE_URL=postgres://think:think@localhost:5434/think npm test -w open-think-server
+PORT=3000 npx open-think-server
 ```
 
-Port 5434 is the docker-compose default (chosen to avoid collisions with common dev Postgres setups on 5432 and 5433). Override with `THINK_PG_PORT=<port> docker compose up -d postgres` and matching `TEST_DATABASE_URL`.
+Or via docker-compose at the repo root:
 
-Each test suite gets an isolated Postgres schema (`test_<random>`) that's dropped on teardown.
+```sh
+docker compose up server
+```
+
+## Testing
+
+```sh
+npm test -w open-think-server
+```
+
+No external dependencies — the test suite stands up the Hono app in-process and exercises the `/v1/health` response and the catch-all 404 body.

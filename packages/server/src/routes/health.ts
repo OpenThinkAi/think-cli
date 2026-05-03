@@ -1,20 +1,13 @@
 import { Hono } from 'hono';
-import { getPool } from '../db/pool.js';
+import { VERSION } from '../version.js';
 
 export const health = new Hono();
 
-health.get('/v1/health', async (c) => {
-  // Liveness only: confirm we can reach Postgres. Doesn't introspect schema —
-  // schema correctness is the deploy's responsibility, and this endpoint
-  // gets called by load balancers on every health check.
-  try {
-    await getPool().query('SELECT 1');
-    return c.json({ status: 'ok' });
-  } catch (err) {
-    // Don't leak Postgres error detail (which can include hostnames, role
-    // names, connection-string fragments) on an unauthenticated endpoint.
-    // Log server-side; clients only need the status code + status string.
-    console.error('[open-think-server] health check failed:', err);
-    return c.json({ status: 'error' }, 503);
-  }
+health.get('/v1/health', (c) => {
+  // Liveness only: process is up and serving. No backing-store probe — the
+  // cortex storage role retired in AGT-026 and there's nothing for this
+  // endpoint to introspect until the proxy role lands. The `version` field
+  // lets curious operators distinguish 0.1.x (DB-reachable) from 0.2.x
+  // (process-reachable only) without consulting the registry.
+  return c.json({ status: 'ok', version: VERSION });
 });
