@@ -1,59 +1,70 @@
 # open-think-server
 
-> **Paused.** The cortex storage role retired in AGT-026 as part of the [think-cli v2 pivot](https://openthink.dev) to a brain/nervous-system model where memories live in a local folder (see the local-fs adapter). The HTTP server's role is being rewritten as a **proxy for external event sources** (GitHub, Linear, Slack, etc.) rather than a memory backend. That work lands in AGT-027 (events + subscriptions surface) and AGT-030 (folds this package into `packages/cli/src/serve/` with a full README rewrite).
+HTTP backend for the open-think CLI. Stores **events** fanned out from external sources (GitHub, Linear, Slack, ...) plus the **subscriptions** that describe what each local think install is watching. The CLI polls `/v1/events` to feed those events into its local engram pipeline; connectors (not in scope for this version) populate the `events` table.
 
-## What this version (0.2.0) actually does
+This is the proxy-role rewrite the [think-cli v2 pivot](https://openthink.dev) called for. v0.2.0 retired the cortex storage role; **v0.3.0 lands the events + subscriptions surface**. The CLI-side connector glue and the per-source connectors themselves land in follow-up tickets (AGT-028+).
 
-The server boots, listens on `PORT` (default 3000), and exposes one endpoint:
+## Endpoints
 
-| Method | Path | Purpose |
-|---|---|---|
-| `GET` | `/v1/health` | Liveness probe. Always returns `{ "status": "ok" }` with HTTP 200 if the process is up. **No backing-store probe** — load balancers wired to this endpoint should know that "200 OK" now only means "the process is reachable", not "the data path is healthy". |
+All success responses wrap the resource in an envelope (`{ subscription }`, `{ subscriptions }`, `{ events, next_since }`) so future metadata can land without breaking consumers. All error responses are `{ error: string, detail?: ... }`.
 
-There is no bearer-auth middleware in 0.2.x — it retired alongside the routes it was protecting. AGT-027 lands the auth seam back when it adds events/subscriptions routes that need it. **`THINK_TOKEN` is no longer required at boot** in 0.2.x; if you had it set in your deployment environment from 0.1.x, you can remove it now or leave it in place (it is ignored).
+| Method | Path | Auth | Purpose | Success | Errors |
+|---|---|---|---|---|---|
+| `GET` | `/v1/health` | — | Liveness probe. **Process-reachable only**, no DB probe. | `200 { status, version }` | — |
+| `GET` | `/v1/events` | Bearer | Read events for a subscription. Required `?subscription_id=<id>`; optional `?since=<server_seq>` (default `0`) and `?limit=<n>` (default `100`, max `1000`). Updates `subscriptions.last_polled_at` as a side effect. | `200 { events: [{ id, subscription_id, payload, server_seq, created_at }], next_since }`. **`next_since` is `null` when the page is empty** — retain your prior cursor and re-poll. | `400` invalid query (missing/invalid `subscription_id`, `since`, or `limit` over 1000); `404` unknown `subscription_id` (deliberate — saves you from polling a typo'd id forever) |
+| `POST` | `/v1/subscriptions` | Bearer | Create a subscription. Body `{ kind, pattern }` — both trimmed, must be non-empty after trimming; **`kind` is not validated against an allowlist** (connectors define their own kinds, e.g. `github`, `linear`, `slack`). **No dedup** — POSTing the same `(kind, pattern)` twice yields two distinct subscriptions, each with its own cursor. Intentional for the fan-out model where each consumer owns its own poll position. Sets a `Location: /v1/subscriptions/{id}` header on the 201. | `201 { subscription: { id, kind, pattern, created_at, last_polled_at } }` | `400` with `error: "invalid json body"` (malformed/missing JSON) or `error: "invalid body"` (schema validation failed; `detail` carries Zod issues) |
+| `GET` | `/v1/subscriptions` | Bearer | List all subscriptions, ordered by `created_at`. | `200 { subscriptions: [{ id, kind, pattern, created_at, last_polled_at }] }` | — |
+| `GET` | `/v1/subscriptions/:id` | Bearer | Fetch one. | `200 { subscription: {...} }` | `404` unknown id |
+| `DELETE` | `/v1/subscriptions/:id` | Bearer | Remove. Cascades to events for that subscription. | `204` | `404` unknown id |
 
-Any request to a path other than `GET /v1/health` returns a JSON 404 naming the retired role and pointing at the migration path:
+Two non-route status codes are reachable:
 
-```json
-{
-  "error": "endpoint not found",
-  "detail": "open-think-server 0.2.0 retired the cortex storage role (AGT-026); …"
-}
-```
+- **`410 Gone`** for any `/v1/cortexes/*` path — the retired 0.1.x cortex storage routes. Returned **without auth** so operators upgrading from 0.1.x can see the migration pointer without configuring a token first. Body: `{ error: "cortex storage retired", detail: "..." }`.
+- **`404 Not Found`** for any other unknown path on an authed call. Body lists the served endpoints. Unauthed callers hit the bearer middleware first and get `401` — set `THINK_TOKEN` if you're diagnosing.
 
-## If you ran a previous version
+## Auth
 
-`open-think-server@0.1.x` exposed `/v1/cortexes`, `/v1/cortexes/:name/memories`, and `/v1/cortexes/:name/long-term-events` against a Postgres backing store. **Every one of those endpoints returns 404 in 0.2.0.** There is no migration script — by design, since the v2 pivot moves cortex storage to a local folder on each peer rather than a shared server.
+`/v1/health` is unauthenticated so load-balancer probes work without credentials. Everything else requires `Authorization: Bearer <THINK_TOKEN>`. The server **fails to boot** if `THINK_TOKEN` is not set.
 
-If you have data in a Postgres deployment you still need:
+Comparison is constant-time (`crypto.timingSafeEqual`) — pick a long random token (32+ bytes recommended).
 
-1. Keep the server pinned to `open-think-server@0.1.x` and running. **Do not upgrade it** until every peer has migrated — the migration tool pulls live from the running 0.1.x server.
-2. On each peer, with `think cortex setup --server …` still configured, run `think cortex migrate --to fs --path <folder>`. The command pulls the latest from the live HttpSyncAdapter into local SQLite, then exports to the local folder and rewrites config to the fs backend.
-3. Once every peer has migrated, retire the 0.1.x server.
+## Storage
 
-If your 0.1.x server is already gone and you only have a `pg_dump` left, there's no first-class import path in the CLI today — file a `gh issue` against `OpenThinkAi/think-cli` describing your situation.
+Single SQLite file. Path configurable via `THINK_DB_PATH` (default: `./open-think.sqlite` relative to the working directory). The file is created on first boot. Schema:
 
-After upgrading, the `pgdata` Docker volume from the prior `docker-compose.yml` is orphaned. Clean it up with:
+- `subscriptions(id TEXT PK, kind, pattern, created_at, last_polled_at)`
+- `events(id, subscription_id, payload_json, server_seq INTEGER PK AUTOINCREMENT, created_at)` with `FOREIGN KEY (subscription_id) → subscriptions(id) ON DELETE CASCADE`
 
-```sh
-docker volume ls | grep pgdata
-docker volume rm <project>_pgdata
-```
+Cursor pagination uses `server_seq` as the monotonic cursor. Single-process / single-writer is by design (matches the v2 single-tenant decision); a multi-writer setup would need a separate sequence source.
 
-## CLI compatibility
-
-The CLI's `think cortex setup --server <url> --token <token>` flow targets the now-removed cortex-storage endpoints and **will fail with 404s** against any 0.2.x server. AGT-025 retires the `--server`/`--token` flags and the `HttpSyncAdapter` on the CLI side; until that lands, use the local-fs backend (`think cortex setup --fs <path>`) or a git remote (`think cortex setup <repo>`).
+Event `payload` is **connector-defined** — the server stores `payload_json` opaquely and parses it back to JSON on read. No schema is enforced server-side in 0.3.x; that responsibility lands with the connectors when they ship.
 
 ## Running
 
 ```sh
-PORT=3000 npx open-think-server
+THINK_TOKEN=<long-random-token> \
+PORT=3000 \
+THINK_DB_PATH=./open-think.sqlite \
+  npx open-think-server
 ```
 
-Or via docker-compose at the repo root:
+`THINK_TOKEN` is required; `PORT` defaults to `3000`; `THINK_DB_PATH` defaults to `./open-think.sqlite` relative to the working directory. All env vars share the `THINK_` prefix.
+
+Or via `docker-compose` at the repo root (set `THINK_TOKEN` in the environment first):
 
 ```sh
-docker compose up server
+THINK_TOKEN=<...> docker compose up server
+```
+
+## If you ran a previous version
+
+`open-think-server@0.1.x` exposed `/v1/cortexes/...` against a Postgres backing store. Those endpoints retired in 0.2.0 (AGT-026); they return 404 in 0.3.0. The migration path for any 0.1.x data is documented in the 0.2.0 README — keep 0.1.x running, run `think cortex migrate --to fs --path <folder>` on each peer, then retire the 0.1.x server. There is no first-class import from a `pg_dump` — file a `gh issue` against `OpenThinkAi/think-cli` if you need one.
+
+The `pgdata` Docker volume from the 0.1.x `docker-compose.yml` is orphaned; clean it up with:
+
+```sh
+docker volume ls | grep pgdata
+docker volume rm <project>_pgdata
 ```
 
 ## Testing
@@ -62,4 +73,4 @@ docker compose up server
 npm test -w open-think-server
 ```
 
-No external dependencies — the test suite stands up the Hono app in-process and exercises the `/v1/health` response and the catch-all 404 body.
+No external dependencies — the suite stands up the Hono app in-process against a `:memory:` SQLite DB.

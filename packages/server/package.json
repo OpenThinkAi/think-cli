@@ -1,8 +1,8 @@
 {
   "name": "open-think-server",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "type": "module",
-  "description": "HTTP backend for the open-think CLI. Cortex storage retired in v2; this package is paused pending the proxy-role rewrite.",
+  "description": "HTTP backend for the open-think CLI. Stores events fanned out from external sources and subscriptions describing what local think installs are watching.",
   "bin": {
     "open-think-server": "dist/index.js"
   },
