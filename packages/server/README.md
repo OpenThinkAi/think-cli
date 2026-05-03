@@ -6,16 +6,21 @@ This is the proxy-role rewrite the [think-cli v2 pivot](https://openthink.dev) c
 
 ## Endpoints
 
-| Method | Path | Auth | Purpose | Response |
-|---|---|---|---|---|
-| `GET` | `/v1/health` | — | Liveness probe. **Process-reachable only**, no DB probe. | `200 { status, version }` |
-| `GET` | `/v1/events` | Bearer | Read events for a subscription. Required `?subscription_id=<id>`; optional `?since=<server_seq>` (default `0`) and `?limit=<n>` (default `100`, max `1000`). Updates `subscriptions.last_polled_at` as a side effect. | `200 { events: [{ id, subscription_id, payload, server_seq, created_at }], next_since }`. **`next_since` is `null` when the page is empty** — retain your prior cursor and re-poll. |
-| `POST` | `/v1/subscriptions` | Bearer | Create a subscription. Body `{ kind, pattern }` — both are non-empty strings; **`kind` is not validated against an allowlist** (connectors define their own kinds, e.g. `github`, `linear`, `slack`). **No dedup** — POSTing the same `(kind, pattern)` twice yields two distinct subscriptions, each with its own cursor. Intentional for the fan-out model where each consumer owns its own poll position. | `201 { id, kind, pattern, created_at, last_polled_at }` |
-| `GET` | `/v1/subscriptions` | Bearer | List all subscriptions, ordered by `created_at`. | `200 { subscriptions: [{ id, kind, pattern, created_at, last_polled_at }] }` |
-| `GET` | `/v1/subscriptions/:id` | Bearer | Fetch one. | `200 { id, kind, pattern, created_at, last_polled_at }` or `404` |
-| `DELETE` | `/v1/subscriptions/:id` | Bearer | Remove. Cascades to events for that subscription. | `204` or `404` |
+All success responses wrap the resource in an envelope (`{ subscription }`, `{ subscriptions }`, `{ events, next_since }`) so future metadata can land without breaking consumers. All error responses are `{ error: string, detail?: ... }`.
 
-Any other path returns a JSON 404 naming the served endpoints — operators upgrading from 0.1.x or 0.2.x get a clear pointer.
+| Method | Path | Auth | Purpose | Success | Errors |
+|---|---|---|---|---|---|
+| `GET` | `/v1/health` | — | Liveness probe. **Process-reachable only**, no DB probe. | `200 { status, version }` | — |
+| `GET` | `/v1/events` | Bearer | Read events for a subscription. Required `?subscription_id=<id>`; optional `?since=<server_seq>` (default `0`) and `?limit=<n>` (default `100`, max `1000`). Updates `subscriptions.last_polled_at` as a side effect. | `200 { events: [{ id, subscription_id, payload, server_seq, created_at }], next_since }`. **`next_since` is `null` when the page is empty** — retain your prior cursor and re-poll. | `400` invalid query (missing/invalid `subscription_id`, `since`, or `limit` over 1000); `404` unknown `subscription_id` (deliberate — saves you from polling a typo'd id forever) |
+| `POST` | `/v1/subscriptions` | Bearer | Create a subscription. Body `{ kind, pattern }` — both are non-empty strings; **`kind` is not validated against an allowlist** (connectors define their own kinds, e.g. `github`, `linear`, `slack`). **No dedup** — POSTing the same `(kind, pattern)` twice yields two distinct subscriptions, each with its own cursor. Intentional for the fan-out model where each consumer owns its own poll position. | `201 { subscription: { id, kind, pattern, created_at, last_polled_at } }` | `400` malformed/missing JSON body or invalid `kind`/`pattern` |
+| `GET` | `/v1/subscriptions` | Bearer | List all subscriptions, ordered by `created_at`. | `200 { subscriptions: [{ id, kind, pattern, created_at, last_polled_at }] }` | — |
+| `GET` | `/v1/subscriptions/:id` | Bearer | Fetch one. | `200 { subscription: {...} }` | `404` unknown id |
+| `DELETE` | `/v1/subscriptions/:id` | Bearer | Remove. Cascades to events for that subscription. | `204` | `404` unknown id |
+
+Two non-route status codes are reachable:
+
+- **`410 Gone`** for any `/v1/cortexes/*` path — the retired 0.1.x cortex storage routes. Returned **without auth** so operators upgrading from 0.1.x can see the migration pointer without configuring a token first. Body: `{ error: "cortex storage retired", detail: "..." }`.
+- **`404 Not Found`** for any other unknown path on an authed call. Body lists the served endpoints. Unauthed callers hit the bearer middleware first and get `401` — set `THINK_TOKEN` if you're diagnosing.
 
 ## Auth
 

@@ -18,7 +18,11 @@ export function bearerAuth(): MiddlewareHandler {
 
   return async (c, next) => {
     const header = c.req.header('Authorization');
-    const presented = header?.startsWith('Bearer ') ? header.slice(7) : null;
+    // RFC 7235 §2.1: auth scheme name is case-insensitive.
+    const presented =
+      header && header.length > 7 && header.slice(0, 7).toLowerCase() === 'bearer '
+        ? header.slice(7)
+        : null;
     if (!presented) {
       return c.json({ error: 'missing bearer token' }, 401);
     }

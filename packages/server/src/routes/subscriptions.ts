@@ -37,11 +37,13 @@ export function subscriptionsRoute(db: Database): Hono {
     ).run(id, parsed.data.kind, parsed.data.pattern, created_at);
     return c.json(
       {
-        id,
-        kind: parsed.data.kind,
-        pattern: parsed.data.pattern,
-        created_at,
-        last_polled_at: null,
+        subscription: {
+          id,
+          kind: parsed.data.kind,
+          pattern: parsed.data.pattern,
+          created_at,
+          last_polled_at: null,
+        },
       },
       201,
     );
@@ -63,7 +65,7 @@ export function subscriptionsRoute(db: Database): Hono {
       )
       .get(c.req.param('id')) as SubscriptionRow | undefined;
     if (!row) return c.json({ error: 'subscription not found' }, 404);
-    return c.json(row);
+    return c.json({ subscription: row });
   });
 
   route.delete('/v1/subscriptions/:id', (c) => {

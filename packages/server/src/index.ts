@@ -16,6 +16,12 @@ async function main(): Promise<void> {
     );
     process.exit(1);
   }
+  if (!Number.isInteger(PORT) || PORT < 1 || PORT > 65535) {
+    console.error(
+      `boot failed: PORT must be an integer 1–65535, got ${JSON.stringify(process.env.PORT)}`,
+    );
+    process.exit(1);
+  }
 
   const db = openDb(DB_PATH);
   const app = createApp({ db });

@@ -8,18 +8,18 @@ let subB: string;
 
 beforeEach(async () => {
   client = createTestClient();
-  const a = await client.request<{ id: string }>({
+  const a = await client.request<{ subscription: { id: string } }>({
     method: 'POST',
     path: '/v1/subscriptions',
     body: { kind: 'github', pattern: 'org/repo-a' },
   });
-  subA = a.body.id;
-  const b = await client.request<{ id: string }>({
+  subA = a.body.subscription.id;
+  const b = await client.request<{ subscription: { id: string } }>({
     method: 'POST',
     path: '/v1/subscriptions',
     body: { kind: 'github', pattern: 'org/repo-b' },
   });
-  subB = b.body.id;
+  subB = b.body.subscription.id;
 });
 
 function seedEvent(sub: string, payload: object): void {

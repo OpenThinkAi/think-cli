@@ -9,15 +9,17 @@ beforeEach(() => {
 
 describe('subscriptions CRUD', () => {
   it('POST creates and returns the assigned id', async () => {
-    const r = await client.request<{ id: string; kind: string; pattern: string }>({
+    const r = await client.request<{
+      subscription: { id: string; kind: string; pattern: string };
+    }>({
       method: 'POST',
       path: '/v1/subscriptions',
       body: { kind: 'github', pattern: 'org/repo' },
     });
     expect(r.status).toBe(201);
-    expect(r.body.id).toMatch(/^[0-9a-f-]{36}$/);
-    expect(r.body.kind).toBe('github');
-    expect(r.body.pattern).toBe('org/repo');
+    expect(r.body.subscription.id).toMatch(/^[0-9a-f-]{36}$/);
+    expect(r.body.subscription.kind).toBe('github');
+    expect(r.body.subscription.pattern).toBe('org/repo');
   });
 
   it('POST 400 on malformed body', async () => {
@@ -57,32 +59,30 @@ describe('subscriptions CRUD', () => {
     expect(r.status).toBe(404);
   });
 
-  it('GET-by-id returns the row', async () => {
-    const created = await client.request<{ id: string }>({
+  it('GET-by-id returns the row wrapped in { subscription }', async () => {
+    const created = await client.request<{ subscription: { id: string } }>({
       method: 'POST',
       path: '/v1/subscriptions',
       body: { kind: 'github', pattern: 'org/repo' },
     });
-    const r = await client.request<{ id: string; kind: string }>({
-      path: `/v1/subscriptions/${created.body.id}`,
-    });
+    const r = await client.request<{
+      subscription: { id: string; kind: string };
+    }>({ path: `/v1/subscriptions/${created.body.subscription.id}` });
     expect(r.status).toBe(200);
-    expect(r.body.id).toBe(created.body.id);
-    expect(r.body.kind).toBe('github');
+    expect(r.body.subscription.id).toBe(created.body.subscription.id);
+    expect(r.body.subscription.kind).toBe('github');
   });
 
   it('DELETE removes the row', async () => {
-    const created = await client.request<{ id: string }>({
+    const created = await client.request<{ subscription: { id: string } }>({
       method: 'POST',
       path: '/v1/subscriptions',
       body: { kind: 'a', pattern: 'p' },
     });
-    const del = await client.request({
-      method: 'DELETE',
-      path: `/v1/subscriptions/${created.body.id}`,
-    });
+    const id = created.body.subscription.id;
+    const del = await client.request({ method: 'DELETE', path: `/v1/subscriptions/${id}` });
     expect(del.status).toBe(204);
-    const after = await client.request({ path: `/v1/subscriptions/${created.body.id}` });
+    const after = await client.request({ path: `/v1/subscriptions/${id}` });
     expect(after.status).toBe(404);
   });
 
@@ -92,25 +92,19 @@ describe('subscriptions CRUD', () => {
   });
 
   it('DELETE cascades to events for that subscription', async () => {
-    const created = await client.request<{ id: string }>({
+    const created = await client.request<{ subscription: { id: string } }>({
       method: 'POST',
       path: '/v1/subscriptions',
       body: { kind: 'a', pattern: 'p' },
     });
+    const id = created.body.subscription.id;
     client.db
       .prepare(
         'INSERT INTO events (id, subscription_id, payload_json, created_at) VALUES (?, ?, ?, ?)',
       )
-      .run('evt-1', created.body.id, '{}', new Date().toISOString());
-    expect(
-      client.db.prepare('SELECT COUNT(*) AS n FROM events').get(),
-    ).toEqual({ n: 1 });
-    await client.request({
-      method: 'DELETE',
-      path: `/v1/subscriptions/${created.body.id}`,
-    });
-    expect(
-      client.db.prepare('SELECT COUNT(*) AS n FROM events').get(),
-    ).toEqual({ n: 0 });
+      .run('evt-1', id, '{}', new Date().toISOString());
+    expect(client.db.prepare('SELECT COUNT(*) AS n FROM events').get()).toEqual({ n: 1 });
+    await client.request({ method: 'DELETE', path: `/v1/subscriptions/${id}` });
+    expect(client.db.prepare('SELECT COUNT(*) AS n FROM events').get()).toEqual({ n: 0 });
   });
 });

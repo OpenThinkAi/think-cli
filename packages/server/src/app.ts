@@ -17,23 +17,36 @@ export function createApp(deps: { db: Database }): Hono {
 
   app.route('/', health);
 
+  // Pre-auth 410 for known-retired 0.1.x routes. Upgraders running their
+  // old CLI against a 0.3.x server need to see the migration body without
+  // configuring a token first; gating it behind auth would turn an
+  // already-broken-CLI scenario into a confusing one. The retired paths
+  // are public knowledge from 0.1.x — there's no shape to leak.
+  app.all('/v1/cortexes/*', (c) =>
+    c.json(
+      {
+        error: 'cortex storage retired',
+        detail:
+          'open-think-server 0.2.0 retired the cortex storage role; CLIs still calling ' +
+          'these routes should pin to open-think-server@0.1.x or migrate to the local-fs ' +
+          'cortex (see https://github.com/OpenThinkAi/think-cli/blob/main/packages/server/README.md).',
+      },
+      410,
+    ),
+  );
+
   const authed = new Hono();
   authed.use('*', bearerAuth());
   authed.route('/', eventsRoute(deps.db));
   authed.route('/', subscriptionsRoute(deps.db));
   app.route('/', authed);
 
-  // Operators upgrading from 0.1.x or 0.2.x will hit this catch-all if their
-  // CLI still targets retired cortex routes. Naming the served paths plus
-  // the version is enough to diagnose without a README read.
   app.notFound((c) =>
     c.json(
       {
         error: 'endpoint not found',
         detail:
-          'open-think-server 0.3.0 serves /v1/health, /v1/events, and /v1/subscriptions. ' +
-          'The cortex storage routes retired in 0.2.0 (AGT-026); CLIs still calling them ' +
-          'should pin to open-think-server@0.1.x or migrate to the local-fs cortex (see README).',
+          'open-think-server 0.3.0 serves /v1/health, /v1/events, and /v1/subscriptions.',
       },
       404,
     ),

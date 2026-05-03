@@ -21,8 +21,6 @@ export interface TestClient {
   request: <T = unknown>(opts: RequestOptions) => Promise<{ status: number; body: T }>;
 }
 
-export const TEST_TOKEN = TOKEN;
-
 /**
  * Builds a fresh app + `:memory:` DB per call so each test owns its own
  * state. Bearer token is auto-attached unless `token: null` is passed.
