@@ -2,8 +2,14 @@ services:
   server:
     build:
       context: .
-      dockerfile: packages/server/Dockerfile
+      dockerfile: Dockerfile
     environment:
-      PORT: "3000"
+      PORT: "4823"
+      THINK_DB_PATH: "/data/open-think.sqlite"
     ports:
-      - "3000:3000"
+      - "4823:4823"
+    volumes:
+      - open-think-data:/data
+
+volumes:
+  open-think-data:

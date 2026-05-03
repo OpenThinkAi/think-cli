@@ -3,9 +3,9 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "description": "Monorepo for the open-think CLI and its sync backends",
+  "description": "Monorepo for the open-think CLI (single workspace; the proxy server folded into the CLI in v0.5)",
   "workspaces": [
-    "packages/*"
+    "packages/cli"
   ],
   "scripts": {
     "build": "npm run build --workspaces --if-present",
