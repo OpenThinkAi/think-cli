@@ -83,7 +83,9 @@ think cortex setup                              # offline-only — no folder, no
 think cortex setup git@github.com:you/cortex.git   # advanced/legacy: git remote as backend
 ```
 
-The synced-folder model (`--fs`) is the recommended way. The git-remote backend predates v2 and is preserved for users who already have one wired up; new setups should prefer `--fs`.
+The synced-folder model (`--fs`) is the recommended way. The git-remote backend predates v2 and is preserved for users who already have one wired up — existing `think cortex setup <git-remote>` configurations continue to work unchanged; only new setups are steered toward `--fs`.
+
+> **A note on terminology.** Some CLI output (e.g. `Created cortex: foo (local + remote)`, `think cortex list`) still uses "remote" as a generic label for whichever backend you've configured. With `--fs`, the "remote" is your cortex folder; with a git URL, it's the git remote. The user-facing framing in this README treats the folder as a propagation layer rather than a remote — the CLI's umbrella term is an implementation detail.
 
 ## Episodes — narrative memory for task agents
 
@@ -140,7 +142,7 @@ think list                     List entries (--week, --since, --category)
 think summary                  AI summary (--raw for plain text)
 think delete                   Soft-delete entries
 
-think cortex setup [opts]      Configure backend (--fs <path>, [repo], or none)
+think cortex setup [--fs <path> | <repo>]   Configure backend (or no args for offline)
 think cortex create <name>     Create a cortex
 think cortex list              Show all cortexes (local + remote)
 think cortex switch <name>     Set active cortex
@@ -157,7 +159,6 @@ think monitor                  Show promoted vs dropped engrams
 think recall <query>           Search memories + engrams
 think memory                   Show memories (--history for timeline)
 think pull <cortex>            Read memories from another cortex you have
-think pull <cortex>            Read another cortex's memories
 
 think curator edit             Edit personal curator guidance
 think curator show             Show current guidance
