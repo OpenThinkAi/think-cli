@@ -82,7 +82,7 @@ Registered connector kinds in 0.4.0:
 
 - **`mock`** — synthetic event generator used by the e2e test. Pattern `"N"` where N is an integer ≥ 1 emits N events per poll with monotonic ids; anything else (non-integer, `"0"`, negatives, empty string) emits 1. Cursor is `{ count: number }`.
 
-The repo also ships `src/connectors/github.draft.ts` — a thin **interface placeholder** for the future GitHub connector. It exists so a breaking change to `SourceConnector` surfaces at build time before the real implementation lands; `poll()` throws if invoked. The full design narrative (per-endpoint cursor shape, conditional-GET handling, rate-limit branches, multi-endpoint fan-out) lives at [`docs/design/connectors-github.md`](./docs/design/connectors-github.md). It is **not registered**, **not invoked**, and does not call out to GitHub. The real GitHub connector lands in AGT-029+ alongside credential storage.
+The GitHub connector — first real-world target after `mock` — has a forward-looking design sketch at [`docs/design/connectors-github.md`](./docs/design/connectors-github.md), covering per-endpoint cursors, conditional-GET headers, rate-limit handling, and multi-endpoint fan-out. The live implementation lands in AGT-029+ alongside credential storage; until then `mock` is the only registered kind.
 
 Read endpoints (`GET /v1/events`, `GET /v1/subscriptions/...`) are unchanged and unaware of the scheduler — connectors and consumers stay decoupled through the events table.
 

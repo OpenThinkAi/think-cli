@@ -51,6 +51,18 @@ describe('mockConnector', () => {
     expect(result.events).toHaveLength(1);
   });
 
+  it('rejects loose integer-string coercion (e.g. "5abc" → 1, not 5)', async () => {
+    // Strictness check: parseInt would coerce "5abc" → 5, but the README
+    // claims integer-string semantics so we use Number() instead. Pin
+    // the contract so a future regression to parseInt fails here.
+    const result = await mockConnector.poll({
+      subscription: { ...SUB, pattern: '5abc' },
+      credential: null,
+      cursor: null,
+    });
+    expect(result.events).toHaveLength(1);
+  });
+
   it('payload carries the subscription id and the global seq', async () => {
     const result = await mockConnector.poll({
       subscription: SUB,

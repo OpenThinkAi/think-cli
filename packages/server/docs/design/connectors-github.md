@@ -1,9 +1,11 @@
 # GitHub connector — design sketch
 
 **Status**: design only. There is no live GitHub connector in `0.4.0`. The
-real implementation lands in AGT-029+ alongside credential storage. Until
-then `src/connectors/github.draft.ts` exists solely as a typed placeholder
-so a breaking change to `SourceConnector` surfaces here at build time.
+real implementation lands in AGT-029+ alongside credential storage at
+`packages/server/src/connectors/github.ts` and will register itself in
+`connectors/registry.ts`. Today this markdown is the only artifact —
+`mock.ts` already implements `SourceConnector` so tsc enforces the
+interface contract without a placeholder file.
 
 ## Why GitHub got the pressure-test slot
 
@@ -174,9 +176,8 @@ When AGT-029 is ready to ship the live GitHub connector:
 
 1. Implement the `poll()` body per the pseudocode above (or the evolved
    version of it).
-2. Replace `github.draft.ts` with `github.ts` — the placeholder skeleton
-   has no behaviour worth preserving; its only job is to keep the
-   interface honest until the real implementation arrives.
+2. Create `src/connectors/github.ts` — there is no draft skeleton to
+   replace; this design doc is the only forward-looking artifact today.
 3. Import + register in `connectors/registry.ts`.
 4. Add a `tests/connectors/github.test.ts` with `nock` or `msw` covering
    conditional-GET, rate-limit, and the multi-endpoint fan-out.

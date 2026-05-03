@@ -71,15 +71,19 @@ function withTimeout<T>(p: Promise<T>, ms: number, kind: string, subId: string):
   });
 }
 
-function safeParseCursor(raw: string | null): unknown {
+function safeParseCursor(raw: string | null, subscriptionId: string): unknown {
   if (raw === null) return null;
   try {
     return JSON.parse(raw);
   } catch {
     // Unparseable cursor on disk — log + reset. The connector rebuilds
     // from scratch on the next tick, which is the same behaviour as a
-    // brand-new subscription.
-    console.warn('[open-think-server] dropping unparseable cursor; resetting to null');
+    // brand-new subscription. Including subscription_id so an operator
+    // can locate the offending row when multiple subscriptions corrupt
+    // their cursors at once.
+    console.warn(
+      `[open-think-server] dropping unparseable cursor for subscription_id=${subscriptionId}; resetting to null`,
+    );
     return null;
   }
 }
@@ -140,7 +144,7 @@ export function createScheduler(opts: SchedulerOptions): SchedulerHandle {
         // `as never` cast is the framework-side acknowledgement that
         // narrowing is the connector's responsibility — it's the only
         // entity that knows what shape its own cursor takes.
-        const cursor = safeParseCursor(sub.cursor);
+        const cursor = safeParseCursor(sub.cursor, sub.id);
         const result = await withTimeout(
           connector.poll({
             subscription: { id: sub.id, kind: sub.kind, pattern: sub.pattern },

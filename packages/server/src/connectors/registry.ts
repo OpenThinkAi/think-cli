@@ -6,10 +6,10 @@ import type { SourceConnector } from './types.js';
  * subscriptions, looks up the connector for each `subscription.kind`,
  * and skips (with a warning) any kind not in this map.
  *
- * `mock` is the only kind shipped in 0.4.0. The `github` connector lives
- * at `connectors/github.draft.ts` as a design pressure-test for the
- * `SourceConnector` interface and is intentionally **not** imported or
- * registered here.
+ * `mock` is the only kind shipped in 0.4.0. The forward-looking `github`
+ * connector design lives at `docs/design/connectors-github.md`; the live
+ * implementation lands in AGT-029+ at `connectors/github.ts` and will
+ * register itself here.
  */
 export type ConnectorRegistry = Map<string, SourceConnector>;
 
