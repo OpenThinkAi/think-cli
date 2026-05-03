@@ -20,9 +20,11 @@ The bearer-auth middleware is mounted but has no routes behind it; AGT-027 plugs
 
 If you have data in a Postgres deployment you still need:
 
-1. Pin the server to `open-think-server@0.1.x` until you've migrated.
-2. Use `pg_dump` against the `memories`, `long_term_events`, and `cortexes` tables.
-3. Replay into a local-fs cortex via `think cortex migrate` on a machine with `think-cli` installed.
+1. Keep the server pinned to `open-think-server@0.1.x` and running. **Do not upgrade it** until every peer has migrated — the migration tool pulls live from the running 0.1.x server.
+2. On each peer, with `think cortex setup --server …` still configured, run `think cortex migrate --to fs --path <folder>`. The command pulls the latest from the live HttpSyncAdapter into local SQLite, then exports to the local folder and rewrites config to the fs backend.
+3. Once every peer has migrated, retire the 0.1.x server.
+
+If your 0.1.x server is already gone and you only have a `pg_dump` left, there's no first-class import path in the CLI today — file a `gh issue` against `OpenThinkAi/think-cli` describing your situation.
 
 After upgrading, the `pgdata` Docker volume from the prior `docker-compose.yml` is orphaned. Clean it up with:
 
