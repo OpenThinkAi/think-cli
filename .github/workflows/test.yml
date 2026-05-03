@@ -37,3 +37,23 @@ jobs:
       - run: rm -rf node_modules package-lock.json
       - run: npm install --no-audit --no-fund
       - run: npm test
+      # Tests run against the TS source via tsx, so they don't catch bundling
+      # bugs in dist/. Boot the bundled artifact and hit /v1/health to make
+      # sure the published binary actually starts (e.g. node:sqlite prefix
+      # survived, no missing externals, env-var validation paths work).
+      - name: Smoke-test bundled server
+        run: |
+          npm run build -w open-think-server
+          THINK_TOKEN=smoke-token PORT=18327 \
+            THINK_DB_PATH="$(mktemp -t open-think-smoke.XXXXXX.sqlite)" \
+            node packages/server/dist/index.js &
+          SERVER_PID=$!
+          trap 'kill $SERVER_PID 2>/dev/null || true' EXIT
+          for i in $(seq 1 20); do
+            if curl -fs http://localhost:18327/v1/health >/dev/null 2>&1; then
+              break
+            fi
+            sleep 0.5
+          done
+          curl -fsS http://localhost:18327/v1/health
+          echo
