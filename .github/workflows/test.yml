@@ -16,16 +16,19 @@ jobs:
           cache: npm
       - run: git config --global user.email "ci@example.com"
       - run: git config --global user.name "CI"
-      - run: npm ci
-      # Backfill platform-matching optional native bindings that `npm ci`
-      # skips when the lockfile's resolve tree was generated on a different
-      # platform (npm/cli#4828). The lockfile already pins every platform
-      # variant we need; --no-save guarantees package.json stays untouched
-      # and `npm ci` above would have failed loudly on any real drift, so
-      # this step cannot mask manifest/lockfile mismatch. --force is
-      # required because without it, npm sees the lockfile-satisfied tree
-      # and skips re-resolving rolldown's optional subtree, leaving the
-      # missing native binding in place — the very bug we're working
-      # around.
-      - run: npm install --force --no-save --no-audit --no-fund
+      # Workaround for npm/cli#4828: cross-platform lockfiles cause `npm ci`
+      # (and `npm install` against the existing lockfile) to skip
+      # platform-matching optional native bindings, which makes vitest 4
+      # crash at startup because rolldown can't load its native binding.
+      # The npm bug report itself recommends deleting both node_modules and
+      # package-lock.json and running a fresh `npm install` — that re-resolves
+      # from package.json and correctly picks the current-platform optionals.
+      # The follow-up `git diff --exit-code` step recovers the lockfile-drift
+      # detection that `npm ci` would have given us: if the regenerated
+      # lockfile differs from the committed one, CI fails loudly, surfacing
+      # the same signal as `npm ci` would have.
+      - run: rm -rf node_modules package-lock.json
+      - run: npm install --no-audit --no-fund
+      - name: Verify lockfile is up-to-date (replaces npm ci's drift check)
+        run: git diff --exit-code package-lock.json
       - run: npm test
