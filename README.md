@@ -76,14 +76,14 @@ The folder works with anything that syncs files: iCloud Drive, Dropbox, Google D
 
 > **One brain only.** think serves a single brain. Coordinating memory across many brains (a team, a swarm of agents) is out of scope — that belongs to HiveDB, a separate project.
 
-### Offline-only and advanced/legacy backends
+### Offline-only and legacy backends
 
 ```bash
 think cortex setup                              # offline-only — no folder, no remote
-think cortex setup git@github.com:you/cortex.git   # advanced/legacy: git remote as backend
+think cortex setup git@github.com:you/cortex.git   # legacy: git remote as backend (not recommended for new setups)
 ```
 
-The synced-folder model (`--fs`) is the recommended way. The git-remote backend predates v2 and is preserved for users who already have one wired up — existing `think cortex setup <git-remote>` configurations continue to work unchanged; only new setups are steered toward `--fs`.
+The synced-folder model (`--fs`) is the recommended way for any new setup. The git-remote backend predates v2 and is preserved for users who already have one wired up — existing `think cortex setup <git-remote>` configurations continue to work unchanged.
 
 > **A note on terminology.** Some CLI output (e.g. `Created cortex: foo (local + remote)`, `think cortex list`) still uses "remote" as a generic label for whichever backend you've configured. With `--fs`, the "remote" is your cortex folder; with a git URL, it's the git remote. The user-facing framing in this README treats the folder as a propagation layer rather than a remote — the CLI's umbrella term is an implementation detail.
 
