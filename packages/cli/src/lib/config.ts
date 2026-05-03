@@ -69,17 +69,41 @@ export function getConfig(): Config {
       // they can paste into a v1 invocation. Token is intentionally never
       // surfaced — it lands in stderr/cron logs/scrollback otherwise.
       const droppedUrl = typeof parsed.cortex.server?.url === 'string' ? parsed.cortex.server.url : null;
+      // Side-channel backup before the destructive prune. Most users don't
+      // back up ~/.think/config.json; if they miss the one-shot stderr
+      // banner (cron, piped output, scrollback), the URL/token are gone.
+      // Same dir, same perms (0o600 enforced via fs.writeFileSync mode).
+      const backupPath = `${fp}.pre-v2-prune`;
+      let backupOk = false;
+      try {
+        fs.writeFileSync(backupPath, raw, { mode: 0o600 });
+        backupOk = true;
+      } catch {
+        // Backup failure is non-fatal but load-bearing for recovery — the
+        // banner copy below branches on backupOk so the user is never
+        // told a backup exists when it doesn't.
+      }
       delete parsed.cortex.server;
       if (!legacyServerWarned) {
         legacyServerWarned = true;
         const urlLine = droppedUrl
           ? `       URL was: ${droppedUrl}  (token redacted)\n`
           : '';
+        // Backup status is load-bearing: a user who reads "backup written"
+        // and then deletes their notes assuming they have a fallback has
+        // lost data. Fail loud when the backup didn't take.
+        const backupLine = backupOk
+          ? `       A backup of the pre-prune config was written to ${backupPath} (mode 0600).\n`
+          : `       WARNING: failed to write a backup to ${backupPath}.\n` +
+            `       The URL echoed above is your only record of the dropped server config.\n`;
         process.stderr.write(
           `think: dropped legacy \`cortex.server\` from ${fp} — the http backend retired in v2.\n` +
           urlLine +
-          '       Run `think cortex setup --fs <path>` to configure the local-fs backend.\n' +
-          '       (The URL/token have been removed from your config file. If you need them, recover from a backup.)\n',
+          backupLine +
+          '       If you have data on the v1 http backend, downgrade to think-cli v1 and run\n' +
+          '         `think cortex migrate --to fs --path <path>`\n' +
+          '       FIRST to preserve it. Then upgrade and run `think cortex setup --fs <path>`.\n' +
+          '       If you have no data to preserve, run `think cortex setup --fs <path>` directly.\n',
         );
       }
       saveConfig(parsed);

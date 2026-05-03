@@ -493,7 +493,7 @@ cortexCommand.addCommand(new Command('migrate')
     if (!config.cortex?.repo) {
       console.error(chalk.red('No git backend configured. Nothing to migrate from.'));
       console.error(chalk.dim('Run `think cortex setup --fs <path>` to set up a fresh local-fs backend instead.'));
-      console.error(chalk.dim('Coming from the v1 http backend? Migrate first on think-cli v1, then upgrade — v2 cannot read remote http stores.'));
+      console.error(chalk.dim('Coming from the v1 http backend? It was retired in v2 — downgrade to think-cli v1, run `think cortex migrate --to fs --path <path>` there, then upgrade.'));
       process.exit(1);
     }
 
