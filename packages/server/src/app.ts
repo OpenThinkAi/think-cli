@@ -1,8 +1,5 @@
 import { Hono } from 'hono';
 import { health } from './routes/health.js';
-import { cortex } from './routes/cortex.js';
-import { memories } from './routes/memories.js';
-import { longTermEvents } from './routes/long-term-events.js';
 import { bearerAuth } from './middleware/auth.js';
 
 /**
@@ -10,7 +7,9 @@ import { bearerAuth } from './middleware/auth.js';
  * isolated app per test file without binding to a port.
  *
  * Health is mounted ahead of auth (load balancers must reach it without
- * credentials). Everything else requires a valid bearer token.
+ * credentials). The bearer-auth seam is mounted with no authed routes — the
+ * cortex storage role retired in AGT-026 and the proxy role (AGT-027) plugs
+ * its routes in here.
  */
 export function createApp(): Hono {
   const app = new Hono();
@@ -19,9 +18,6 @@ export function createApp(): Hono {
 
   const authed = new Hono();
   authed.use('*', bearerAuth());
-  authed.route('/', cortex);
-  authed.route('/', memories);
-  authed.route('/', longTermEvents);
 
   app.route('/', authed);
 

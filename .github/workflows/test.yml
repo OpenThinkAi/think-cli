@@ -8,22 +8,6 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
-    services:
-      postgres:
-        image: postgres:16-alpine
-        env:
-          POSTGRES_USER: think
-          POSTGRES_PASSWORD: think
-          POSTGRES_DB: think
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd "pg_isready -U think"
-          --health-interval 5s
-          --health-timeout 5s
-          --health-retries 10
-    env:
-      TEST_DATABASE_URL: postgres://think:think@localhost:5432/think
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
