@@ -198,8 +198,10 @@ export function createScheduler(opts: SchedulerOptions): SchedulerHandle {
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         // Failure isolation: log, record, continue. last_polled_at is
-        // intentionally NOT bumped on failure — it should reflect the
-        // last successful contact with the source.
+        // intentionally NOT bumped on failure here — but note that it has
+        // a second writer in `GET /v1/events`, so a recent CLI read can
+        // mask a wedged source. Operators looking for source-side health
+        // should also consult tick-level signals.
         console.error(
           `[open-think-server] poll failed for subscription_id=${sub.id} kind=${sub.kind}: ${message}`,
         );

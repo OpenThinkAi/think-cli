@@ -78,6 +78,8 @@ The server runs a per-subscription scheduler in-process. Every `THINK_POLL_INTER
 
 Polls within a tick run **serially**: `node:sqlite` is `DatabaseSync` so JS-level parallelism doesn't help the writes, and per-source rate limits are per-credential so it doesn't help the source either. A wedged connector is bounded by a 60s per-poll timeout; failures are logged, recorded in the tick report, and don't propagate — the next tick retries the failed sub. A tick will not start while the previous tick is still running (overlap guard via `setTimeout`-recurse).
 
+`subscriptions.last_polled_at` is bumped on poll success **and** on every `GET /v1/events` read (see Storage), so it's a "most recent activity" signal rather than a "last successful poll" signal — a recent CLI read keeps the timestamp fresh even if the scheduler-side poll has been failing. Failure-only diagnosis should consult the per-tick scheduler logs (and, eventually, a tick-report endpoint when one lands).
+
 Registered connector kinds in 0.4.0:
 
 - **`mock`** — synthetic event generator used by the e2e test. Pattern `"N"` where N is an integer ≥ 1 emits N events per poll with monotonic ids; anything else (non-integer, `"0"`, negatives, empty string) emits 1. Cursor is `{ count: number }`.
