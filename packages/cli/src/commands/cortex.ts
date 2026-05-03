@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { Command } from 'commander';
+import { Command, Option } from 'commander';
 import chalk from 'chalk';
 import readline from 'node:readline';
 import { getConfig, saveConfig, getPeerId } from '../lib/config.js';
@@ -32,12 +32,6 @@ function prompt(question: string, defaultValue?: string): Promise<string> {
 export const cortexCommand = new Command('cortex')
   .description('Manage cortexes (team memory workspaces)');
 
-function isLoopbackHost(host: string): boolean {
-  // Trim brackets from IPv6 ([::1])
-  const h = host.replace(/^\[|\]$/g, '').toLowerCase();
-  return h === 'localhost' || h === '127.0.0.1' || h === '::1';
-}
-
 // Resolve `--fs <path>` to an absolute path, expanding a leading `~` to
 // $HOME. Returns null for empty input. Storing absolute paths matters
 // because `cwd` shifts under cron / LaunchAgent / nested shells, and a
@@ -54,25 +48,33 @@ function resolveFsPath(input: string): string | null {
 
 // think cortex setup
 cortexCommand.addCommand(new Command('setup')
-  .description('Configure a sync backend for cortex storage (git, http, or local-fs)')
-  .argument('[repo]', 'Git remote URL (e.g., git@github.com:org/hivedb.git). Mutually exclusive with --server and --fs.')
-  .option('--server <url>', 'Use an open-think-server backend instead of git (e.g., https://think.mycorp.com). Mutually exclusive with the [repo] positional argument and --fs.')
-  .option('--token <token>', 'Bearer token for the open-think-server backend. Falls back to $THINK_SERVER_TOKEN, which is preferred to avoid leaking the token into shell history.')
-  .option('--fs <path>', 'Use a local folder (cloud-synced or otherwise) as the cortex backend. Mutually exclusive with [repo] and --server.')
+  .description('Configure a sync backend for cortex storage (git or local-fs)')
+  .argument('[repo]', 'Git remote URL (e.g., git@github.com:org/hivedb.git). Mutually exclusive with --fs.')
+  .option('--fs <path>', 'Use a local folder (cloud-synced or otherwise) as the cortex backend. Mutually exclusive with [repo].')
+  // --server / --token are kept registered as hidden options so the v2
+  // deprecation message points at --fs cleanly, instead of commander's
+  // generic "unknown option" rejection. The action handler exits before
+  // touching any state when either is set.
+  .addOption(new Option('--server <url>', 'deprecated — retired in v2').hideHelp())
+  .addOption(new Option('--token <token>', 'deprecated — retired in v2').hideHelp())
   .action(async (repo: string | undefined, opts: { server?: string; token?: string; fs?: string }) => {
-    const config = getConfig();
-
-    const backends = [repo, opts.server, opts.fs].filter(Boolean).length;
-    if (backends > 1) {
-      console.error(chalk.red('Pick exactly one of `[repo]`, `--server <url>`, or `--fs <path>`.'));
+    if (opts.server !== undefined || opts.token !== undefined) {
+      console.error(chalk.red(
+        '--server and --token were retired in think-cli v2 (the http backend is gone).\n' +
+        'Use `think cortex setup --fs <path>` instead.',
+      ));
+      console.error(chalk.dim(
+        'If you have data on the v1 http server, migrate it on think-cli v1 first\n' +
+        '(`think cortex migrate --to fs --path <path>`), then upgrade — v2 cannot\n' +
+        'read remote http stores.',
+      ));
       process.exit(1);
     }
 
-    // --token only makes sense with --server. Silently dropping it would let a
-    // user think they configured an http backend when they actually configured
-    // a git one.
-    if (opts.token && !opts.server) {
-      console.error(chalk.red('--token requires --server. The git and fs backends do not use bearer tokens.'));
+    const config = getConfig();
+
+    if (repo && opts.fs) {
+      console.error(chalk.red('Pass either `[repo]` or `--fs <path>`, not both.'));
       process.exit(1);
     }
 
@@ -97,105 +99,20 @@ cortexCommand.addCommand(new Command('setup')
       }
 
       const hadRepo = !!config.cortex?.repo;
-      const hadServer = !!config.cortex?.server;
       config.cortex = {
         ...config.cortex,
         author,
         fs: { path: resolved },
       };
-      // Symmetric clear: switching to fs drops repo and server so the
-      // registry's priority rule doesn't keep handing back a stale adapter.
+      // Symmetric clear: switching to fs drops repo so the registry's
+      // priority rule doesn't keep handing back a stale adapter.
       delete config.cortex.repo;
-      delete config.cortex.server;
 
       saveConfig(config);
 
       console.log(chalk.green('✓') + ` Cortex folder: ${resolved}`);
       console.log(chalk.green('✓') + ` Author: ${author}`);
       if (hadRepo) console.log(chalk.dim('  (cleared previous git repo backend)'));
-      if (hadServer) console.log(chalk.dim('  (cleared previous --server backend)'));
-      return;
-    }
-
-    // HTTP server backend
-    if (opts.server) {
-      const token = opts.token ?? process.env.THINK_SERVER_TOKEN;
-      if (!token) {
-        console.error(chalk.red(
-          '--server requires a bearer token. Pass --token <token> (visible in shell history) ' +
-          'or set THINK_SERVER_TOKEN in the environment (preferred).',
-        ));
-        process.exit(1);
-      }
-
-      let parsed: URL;
-      try {
-        parsed = new URL(opts.server);
-      } catch {
-        console.error(chalk.red(
-          `Invalid --server URL: ${opts.server}. Must include a scheme, e.g. https://think.mycorp.com.`,
-        ));
-        process.exit(1);
-      }
-
-      // Reject http:// to keep the bearer token off cleartext links. Loopback
-      // hosts are exempt so local docker-compose / dev workflows still work.
-      if (parsed.protocol !== 'https:' && !(parsed.protocol === 'http:' && isLoopbackHost(parsed.hostname))) {
-        console.error(chalk.red(
-          `--server must use https:// (got "${parsed.protocol}//${parsed.hostname}"). ` +
-          'http:// is allowed only for localhost / 127.0.0.1 / ::1.',
-        ));
-        process.exit(1);
-      }
-
-      const author = await prompt(`Your name (for memory attribution): `, config.cortex?.author);
-      if (!author) {
-        console.error(chalk.red('Author name is required.'));
-        process.exit(1);
-      }
-
-      // Normalize the URL at write time so what's stored matches what the
-      // adapter actually uses (no trailing slash). `cortex status` then
-      // displays the same canonical form.
-      const canonicalUrl = opts.server.replace(/\/+$/, '');
-
-      const hadRepo = !!config.cortex?.repo;
-      const hadFs = !!config.cortex?.fs;
-      config.cortex = {
-        ...config.cortex,
-        author,
-        server: { url: canonicalUrl, token },
-      };
-      // Drop a stale repo or fs when switching to server so the registry
-      // doesn't keep handing back the wrong adapter.
-      delete config.cortex.repo;
-      delete config.cortex.fs;
-
-      saveConfig(config);
-
-      console.log(chalk.green('✓') + ` Cortex server: ${canonicalUrl}`);
-      console.log(chalk.green('✓') + ` Author: ${author}`);
-      if (hadRepo) {
-        console.log(chalk.dim('  (cleared previous git repo backend)'));
-      }
-      if (hadFs) {
-        console.log(chalk.dim('  (cleared previous local-fs backend)'));
-      }
-
-      // Fail-fast on credential mistakes: hit the server once so a wrong
-      // token / unreachable host is surfaced now rather than at first sync.
-      const adapter = getSyncAdapter();
-      if (adapter?.isAvailable()) {
-        try {
-          await adapter.listRemoteCortexes();
-          console.log(chalk.green('✓') + ' Server reachable');
-        } catch (err) {
-          console.log(chalk.yellow(
-            '  ⚠ Could not reach the server: ' + (err instanceof Error ? err.message : String(err)),
-          ));
-          console.log(chalk.yellow('  Config was saved; re-run setup with the corrected URL/token.'));
-        }
-      }
       return;
     }
 
@@ -217,7 +134,6 @@ cortexCommand.addCommand(new Command('setup')
       process.exit(1);
     }
 
-    const hadServer = !!config.cortex?.server;
     const hadFs = !!config.cortex?.fs;
     config.cortex = {
       ...config.cortex,
@@ -227,17 +143,13 @@ cortexCommand.addCommand(new Command('setup')
     if (repo) {
       config.cortex.repo = repo;
     }
-    // Symmetric to the --server / --fs branches: switching to git drops
-    // any prior server or fs config so the registry's priority rule
-    // doesn't silently keep routing pushes/pulls to the wrong backend.
-    delete config.cortex.server;
+    // Symmetric to the --fs branch: switching to git drops any prior fs
+    // config so the registry's priority rule doesn't silently keep
+    // routing pushes/pulls to the wrong backend.
     delete config.cortex.fs;
 
     saveConfig(config);
 
-    if (hadServer) {
-      console.log(chalk.dim('  (cleared previous --server backend)'));
-    }
     if (hadFs) {
       console.log(chalk.dim('  (cleared previous local-fs backend)'));
     }
@@ -549,8 +461,6 @@ cortexCommand.addCommand(new Command('status')
 
     if (config.cortex?.fs?.path) {
       console.log(`Folder: ${config.cortex.fs.path}`);
-    } else if (config.cortex?.server?.url) {
-      console.log(`Server: ${config.cortex.server.url} ${chalk.dim('(token configured)')}`);
     } else if (config.cortex?.repo) {
       console.log(`Repo: ${config.cortex.repo}`);
     }
@@ -565,7 +475,7 @@ cortexCommand.addCommand(new Command('status')
 
 // think cortex migrate
 cortexCommand.addCommand(new Command('migrate')
-  .description('Migrate cortex storage from git/http to a local folder')
+  .description('Migrate cortex storage from git to a local folder')
   .requiredOption('--to <backend>', 'Target backend (currently only `fs` is supported)')
   .option('--path <path>', 'Target folder for the local-fs backend (required when --to fs)')
   .option('--allow-stale-source', 'Proceed with the migration even if pulling the latest from the source backend fails. By default migrate aborts on pull failure so users do not end up with a permanently-stale fs backend they cannot retry from.')
@@ -580,9 +490,10 @@ cortexCommand.addCommand(new Command('migrate')
     }
 
     const config = getConfig();
-    if (!config.cortex?.repo && !config.cortex?.server) {
-      console.error(chalk.red('No git or http backend configured. Nothing to migrate from.'));
+    if (!config.cortex?.repo) {
+      console.error(chalk.red('No git backend configured. Nothing to migrate from.'));
       console.error(chalk.dim('Run `think cortex setup --fs <path>` to set up a fresh local-fs backend instead.'));
+      console.error(chalk.dim('Coming from the v1 http backend? Migrate first on think-cli v1, then upgrade — v2 cannot read remote http stores.'));
       process.exit(1);
     }
 
@@ -668,13 +579,11 @@ cortexCommand.addCommand(new Command('migrate')
 
     // Step 3: switch config — registry will now hand back the fs adapter.
     const hadRepo = !!config.cortex.repo;
-    const hadServer = !!config.cortex.server;
     config.cortex = {
       ...config.cortex,
       fs: { path: resolved },
     };
     delete config.cortex.repo;
-    delete config.cortex.server;
     saveConfig(config);
 
     // Step 4: export every local cortex's memories + long-term events to
@@ -705,7 +614,6 @@ cortexCommand.addCommand(new Command('migrate')
     console.log();
     console.log(chalk.green('✓') + ` Migrated ${localCortexes.length} cortex(es), ${totalPushed} entries → ${resolved}`);
     if (hadRepo) console.log(chalk.dim('  (cleared previous git repo backend)'));
-    if (hadServer) console.log(chalk.dim('  (cleared previous --server backend)'));
     console.log(chalk.dim(`  Peer id: ${getPeerId()}`));
     console.log();
     console.log(chalk.cyan('Next:'));

@@ -3,13 +3,6 @@ import fs from 'node:fs';
 import { v4 as uuidv4 } from 'uuid';
 import { getThinkConfigDir } from './paths.js';
 
-export interface ServerBackendConfig {
-  /** Base URL of an open-think-server instance, e.g. `https://think.mycorp.com`. */
-  url: string;
-  /** Bearer token presented as `Authorization: Bearer <token>`. */
-  token: string;
-}
-
 export interface FsBackendConfig {
   /**
    * Absolute path to the cortex root directory. Each cortex lives under
@@ -23,9 +16,7 @@ export interface FsBackendConfig {
 export interface CortexConfig {
   /** Git remote URL. Optional — only used by the git sync backend. */
   repo?: string;
-  /** open-think-server backend. Mutually exclusive with `repo` and `fs`. */
-  server?: ServerBackendConfig;
-  /** Local-fs backend. Mutually exclusive with `repo` and `server`. */
+  /** Local-fs backend. Mutually exclusive with `repo`. */
   fs?: FsBackendConfig;
   active?: string;
   author: string;
@@ -62,11 +53,38 @@ export function saveConfig(config: Config): void {
   fs.writeFileSync(configPath(), JSON.stringify(config, null, 2) + '\n', { encoding: 'utf-8', mode: 0o600 });
 }
 
+// Module-local guard so a long-lived process that calls getConfig() many
+// times only emits the v2 deprecation banner once. The persisted file is
+// rewritten on the first call so subsequent processes never re-warn.
+let legacyServerWarned = false;
+
 export function getConfig(): Config {
   const fp = configPath();
   if (fs.existsSync(fp)) {
     const raw = fs.readFileSync(fp, 'utf-8');
-    return JSON.parse(raw) as Config;
+    const parsed = JSON.parse(raw) as Config & { cortex?: { server?: { url?: unknown } } };
+    if (parsed.cortex && 'server' in parsed.cortex) {
+      // Echo the dropped URL (token stays redacted) so a user who upgrades,
+      // runs anything, then realizes they wanted to migrate has a trace
+      // they can paste into a v1 invocation. Token is intentionally never
+      // surfaced — it lands in stderr/cron logs/scrollback otherwise.
+      const droppedUrl = typeof parsed.cortex.server?.url === 'string' ? parsed.cortex.server.url : null;
+      delete parsed.cortex.server;
+      if (!legacyServerWarned) {
+        legacyServerWarned = true;
+        const urlLine = droppedUrl
+          ? `       URL was: ${droppedUrl}  (token redacted)\n`
+          : '';
+        process.stderr.write(
+          `think: dropped legacy \`cortex.server\` from ${fp} — the http backend retired in v2.\n` +
+          urlLine +
+          '       Run `think cortex setup --fs <path>` to configure the local-fs backend.\n' +
+          '       (The URL/token have been removed from your config file. If you need them, recover from a backup.)\n',
+        );
+      }
+      saveConfig(parsed);
+    }
+    return parsed;
   }
 
   const config: Config = {
