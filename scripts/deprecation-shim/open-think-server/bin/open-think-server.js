@@ -6,5 +6,6 @@
 console.error('open-think-server is deprecated.');
 console.error('The proxy folded into the open-think CLI in v0.5.0.');
 console.error('Run `npx open-think serve` (or `npm install -g open-think && think serve`) instead.');
+console.error('All env vars carry over verbatim; default port changed from 3000 → 4823 (set PORT=3000 to keep the old binding).');
 console.error('See https://github.com/OpenThinkAi/think-cli/blob/main/packages/cli/docs/serve.md for details.');
 process.exit(1);

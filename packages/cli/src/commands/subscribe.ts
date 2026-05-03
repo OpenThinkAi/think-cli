@@ -278,9 +278,17 @@ subscribeCommand.addCommand(new Command('set-credential')
   }));
 
 // `think subscribe poll [--quiet]`
+//
+// Bound the per-subscription pagination loop so a misbehaving proxy
+// (e.g. one that always returns a non-null `next_since` even when no
+// progress is being made) can't pin the tick forever. 100 pages × 1000
+// events/page = 100k events per tick — plenty of headroom for healthy
+// catch-up, fast-fails on a buggy proxy.
+const MAX_PAGES_PER_TICK = 100;
+
 subscribeCommand.addCommand(new Command('poll')
   .description('Pull new events from the proxy and write them to engrams (single pass)')
-  .option('--quiet', 'Suppress the per-tick line when nothing was inserted (used by the LaunchAgent)')
+  .option('--quiet', 'Suppress non-actionable output: per-tick line on no-op, paused-state hint, no-cortex error, and offline network errors. Used by the LaunchAgent so a backgrounded poll on an offline machine stays silent.')
   .action(async function (this: Command, opts: { quiet?: boolean }) {
     const globalOpts = this.optsWithGlobals() as { cortex?: string };
     const config = getConfig();
@@ -330,7 +338,7 @@ subscribeCommand.addCommand(new Command('poll')
       // Page until next_since is null (proxy contract: null = empty page,
       // non-null = `since` to use for the next call). Bound the per-tick
       // loop so a misbehaving proxy can't pin us forever.
-      for (let page = 0; page < 100; page += 1) {
+      for (let page = 0; page < MAX_PAGES_PER_TICK; page += 1) {
         let resp;
         try {
           resp = await getEvents(proxy, s.id, cursor);
@@ -363,11 +371,16 @@ subscribeCommand.addCommand(new Command('poll')
       }
     }
 
-    rewriteSubscriptions((existing) => ({
-      proxyUrl: existing?.proxyUrl ?? proxy.proxyUrl,
-      token: existing?.token ?? proxy.token,
-      cursors: updatedCursors,
-    }));
+    rewriteSubscriptions((existing) => {
+      // We just successfully completed `getProxyConfig()` (which reads
+      // `existing` to assemble `proxy`), so this branch is unreachable.
+      // Match `remove`'s discipline rather than silently substituting
+      // back what we passed in (which papers over real bugs).
+      if (!existing) {
+        throw new Error('subscriptions config vanished mid-call (unreachable)');
+      }
+      return { ...existing, cursors: updatedCursors };
+    });
 
     if (totalInserted > 0) {
       console.log(chalk.green('✓') + ` [subscribe poll] inserted ${totalInserted} engram${totalInserted === 1 ? '' : 's'}`);
@@ -443,7 +456,9 @@ subscribeCommand.addCommand(new Command('show')
   .description('Show the configured proxy URL (token is redacted)')
   .action(() => {
     const { subscriptions } = getConfig();
-    if (!subscriptions || !subscriptions.proxyUrl) {
+    if (!subscriptions || !subscriptions.proxyUrl || !subscriptions.token) {
+      // Both URL and token are required for any subscribe operation;
+      // showing one without the other would imply a working configuration.
       console.log(chalk.dim('No proxy configured. Run `think subscribe configure --proxy <url>`.'));
       return;
     }

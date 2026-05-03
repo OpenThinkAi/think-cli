@@ -1,6 +1,5 @@
-import fs from 'node:fs';
-import path from 'node:path';
 import { Command } from 'commander';
+import { readPackageVersion } from './lib/version.js';
 import { logCommand, syncCommand } from './commands/log.js';
 import { listCommand } from './commands/list.js';
 import { summaryCommand } from './commands/summary.js';
@@ -23,15 +22,6 @@ import { migrateDataCommand } from './commands/migrate-data.js';
 import { longTermCommand } from './commands/long-term.js';
 import { serveCommand } from './commands/serve.js';
 import { subscribeCommand } from './commands/subscribe.js';
-
-function readPackageVersion(): string {
-  try {
-    const pkgPath = path.join(import.meta.dirname, '..', 'package.json');
-    return JSON.parse(fs.readFileSync(pkgPath, 'utf-8')).version ?? '0.0.0';
-  } catch {
-    return '0.0.0';
-  }
-}
 
 const program = new Command();
 

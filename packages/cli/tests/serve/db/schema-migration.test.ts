@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { DatabaseSync } from 'node:sqlite';
-import { ensureSchema } from '../../../src/serve/migrations/schema.js';
+import { ensureSchema } from '../../../src/serve/db/schema.js';
 
 /**
  * 0.3.0 → 0.4.0 migration: ensureSchema must add `subscriptions.cursor`

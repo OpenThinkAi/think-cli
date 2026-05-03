@@ -4,6 +4,7 @@ import { bearerAuth } from './middleware/auth.js';
 import { credentialsRoute } from './routes/credentials.js';
 import { eventsRoute } from './routes/events.js';
 import { subscriptionsRoute } from './routes/subscriptions.js';
+import { VERSION } from './version.js';
 import type { ConnectorRegistry } from './connectors/registry.js';
 import type { Database } from './db.js';
 import type { Vault } from './vault/index.js';
@@ -58,7 +59,7 @@ export function createApp(deps: {
       {
         error: 'endpoint not found',
         detail:
-          'open-think serve v0.5.0 serves /v1/health, /v1/events, /v1/subscriptions, ' +
+          `open-think serve v${VERSION} serves /v1/health, /v1/events, /v1/subscriptions, ` +
           'and /v1/subscriptions/:id/credential.',
       },
       404,

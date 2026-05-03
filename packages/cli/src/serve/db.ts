@@ -1,5 +1,5 @@
 import { DatabaseSync } from 'node:sqlite';
-import { ensureSchema } from './migrations/schema.js';
+import { ensureSchema } from './db/schema.js';
 
 export type Database = DatabaseSync;
 

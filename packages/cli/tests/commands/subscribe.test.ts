@@ -139,7 +139,7 @@ describe('think subscribe surface', () => {
     // Captured `id:` line is the second print after the ✓ banner; pull it out.
     const idLine = logs.find((l) => l.includes('id:'));
     expect(idLine).toBeDefined();
-    const subId = idLine!.split('id:')[1]!.trim().replace(/\[\d+m/g, '');
+    const subId = idLine!.split('id:')[1]!.trim().replace(/\x1b\[\d+m/g, '');
     expect(subId.length).toBeGreaterThan(0);
 
     logs.length = 0;
@@ -166,7 +166,7 @@ describe('think subscribe surface', () => {
 
     await run(['add', 'mock', '2']);
     const idLine = logs.find((l) => l.includes('id:'))!;
-    const subId = idLine.split('id:')[1]!.trim().replace(/\[\d+m/g, '');
+    const subId = idLine.split('id:')[1]!.trim().replace(/\x1b\[\d+m/g, '');
 
     // Drive one scheduler tick so the proxy has events to serve. The
     // scheduler is intentionally not auto-started — its timer would race
