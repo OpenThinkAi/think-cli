@@ -79,7 +79,10 @@ export function credentialsRoute(
       );
     }
     if (plaintext === null) {
-      return c.json({ error: 'no credential stored' }, 400);
+      // Subscription exists but no credential row — the credential
+      // resource is the missing thing, so 404 (not 400). The request
+      // itself is well-formed; it's the underlying state that's absent.
+      return c.json({ error: 'no credential stored' }, 404);
     }
 
     const connector = registry.get(sub.kind);

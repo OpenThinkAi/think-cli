@@ -34,17 +34,10 @@ function decodeEnvKey(raw: string): Buffer {
   // Be lenient about accidental whitespace in env values (Railway and a
   // few other hosts tolerate trailing newlines on copy-paste).
   const trimmed = raw.trim();
-  let decoded: Buffer;
-  try {
-    decoded = Buffer.from(trimmed, 'base64');
-  } catch {
-    throw new Error(
-      `${VAULT_KEY_ENV} must be a base64-encoded 32-byte key; failed to decode`,
-    );
-  }
-  // `Buffer.from('!!!', 'base64')` doesn't throw — it returns an empty
-  // buffer on garbage. Round-trip to detect that case rather than
-  // accepting a 0-byte "key".
+  // `Buffer.from(str, 'base64')` doesn't throw on invalid input — it
+  // silently returns a buffer of whatever bytes it could decode. Round-
+  // trip to detect garbage rather than accepting a truncated "key".
+  const decoded = Buffer.from(trimmed, 'base64');
   if (decoded.toString('base64').replace(/=+$/, '') !== trimmed.replace(/=+$/, '')) {
     throw new Error(
       `${VAULT_KEY_ENV} must be valid base64 (44 chars including padding for a 32-byte key)`,

@@ -151,12 +151,12 @@ describe('POST /v1/subscriptions/:id/credential/test', () => {
     expect(r.body.detail).toMatch(/non-empty/);
   });
 
-  it('400 when no credential stored for the subscription', async () => {
+  it('404 when no credential stored for the subscription (the credential resource is the missing thing)', async () => {
     const r = await client.request<{ error: string }>({
       method: 'POST',
       path: `/v1/subscriptions/${subId}/credential/test`,
     });
-    expect(r.status).toBe(400);
+    expect(r.status).toBe(404);
     expect(r.body.error).toMatch(/no credential/);
   });
 

@@ -17,7 +17,7 @@ All success responses wrap the resource in an envelope (`{ subscription }`, `{ s
 | `GET` | `/v1/subscriptions/:id` | Bearer | Fetch one. | `200 { subscription: {...} }` | `404` unknown id |
 | `DELETE` | `/v1/subscriptions/:id` | Bearer | Remove. Cascades to events **and stored credentials** for that subscription. | `204` | `404` unknown id |
 | `PUT` | `/v1/subscriptions/:id/credential` | Bearer | Store (or rotate) the encrypted credential for a subscription. Body `{ credential: string }` (must be non-empty). Encrypted with AES-256-GCM and persisted to `source_credentials`. **Returns `204` with no body** so the response leaks nothing about whether this was a create vs update. | `204` | `400` invalid/empty body; `404` unknown subscription |
-| `POST` | `/v1/subscriptions/:id/credential/test` | Bearer | Verify the stored credential by calling the connector's `verifyCredential`. Connector throws are caught and surfaced as `{ ok: false, detail: 'verify failed: ...' }` — the credential never escapes into a response or log. | `200 { ok: boolean, detail?: string }` | `400 { error: 'no credential stored' }`; `404` unknown subscription; `501` connector has no `verifyCredential` |
+| `POST` | `/v1/subscriptions/:id/credential/test` | Bearer | Verify the stored credential by calling the connector's `verifyCredential`. Connector throws are caught and surfaced as `{ ok: false, detail: 'verify failed: ...' }` — the credential never escapes into a response or log. | `200 { ok: boolean, detail?: string }` | `404` unknown subscription **or** no credential stored (`{ error: 'no credential stored' }`); `501` connector has no `verifyCredential` |
 
 Two non-route status codes are reachable:
 
