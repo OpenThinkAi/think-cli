@@ -30,7 +30,7 @@ Comparison is constant-time (`crypto.timingSafeEqual`) — pick a long random to
 
 ## Storage
 
-Single SQLite file. Path configurable via `OPEN_THINK_DB_PATH` (default: `./open-think.sqlite` relative to the working directory). The file is created on first boot. Schema:
+Single SQLite file. Path configurable via `THINK_DB_PATH` (default: `./open-think.sqlite` relative to the working directory). The file is created on first boot. Schema:
 
 - `subscriptions(id TEXT PK, kind, pattern, created_at, last_polled_at)`
 - `events(id, subscription_id, payload_json, server_seq INTEGER PK AUTOINCREMENT, created_at)` with `FOREIGN KEY (subscription_id) → subscriptions(id) ON DELETE CASCADE`
@@ -44,11 +44,11 @@ Event `payload` is **connector-defined** — the server stores `payload_json` op
 ```sh
 THINK_TOKEN=<long-random-token> \
 PORT=3000 \
-OPEN_THINK_DB_PATH=./open-think.sqlite \
+THINK_DB_PATH=./open-think.sqlite \
   npx open-think-server
 ```
 
-`THINK_TOKEN` is required; `PORT` defaults to `3000`; `OPEN_THINK_DB_PATH` defaults to `./open-think.sqlite` relative to the working directory.
+`THINK_TOKEN` is required; `PORT` defaults to `3000`; `THINK_DB_PATH` defaults to `./open-think.sqlite` relative to the working directory. All env vars share the `THINK_` prefix.
 
 Or via `docker-compose` at the repo root (set `THINK_TOKEN` in the environment first):
 

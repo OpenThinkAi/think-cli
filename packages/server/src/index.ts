@@ -5,9 +5,9 @@ import { openDb } from './db.js';
 import { VERSION } from './version.js';
 
 const PORT = Number(process.env.PORT ?? 3000);
-const DB_PATH = path.resolve(
-  process.env.OPEN_THINK_DB_PATH ?? './open-think.sqlite',
-);
+const RAW_DB_PATH = process.env.THINK_DB_PATH ?? './open-think.sqlite';
+// `:memory:` is a SQLite sentinel, not a filesystem path — leave it alone.
+const DB_PATH = RAW_DB_PATH === ':memory:' ? RAW_DB_PATH : path.resolve(RAW_DB_PATH);
 
 async function main(): Promise<void> {
   if (!process.env.THINK_TOKEN) {

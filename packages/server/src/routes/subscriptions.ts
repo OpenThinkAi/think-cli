@@ -35,6 +35,7 @@ export function subscriptionsRoute(db: Database): Hono {
     db.prepare(
       'INSERT INTO subscriptions (id, kind, pattern, created_at) VALUES (?, ?, ?, ?)',
     ).run(id, parsed.data.kind, parsed.data.pattern, created_at);
+    c.header('Location', `/v1/subscriptions/${id}`);
     return c.json(
       {
         subscription: {
