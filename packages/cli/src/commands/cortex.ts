@@ -299,10 +299,15 @@ cortexCommand.addCommand(new Command('switch')
         try {
           const remoteCortexes = await adapter.listRemoteCortexes();
           if (remoteCortexes.includes(name)) {
+            // Mirror `cortex list`'s "Folder only (in <path>, …)" framing —
+            // surfacing the path here gives the user the same "what + where"
+            // affordance instead of a bare "in folder" that reads as broken
+            // English. `getSyncAdapter()` prefers fs over repo, so probing
+            // `fs.path` here matches the adapter that actually ran above.
             const fsPath = config.cortex?.fs?.path;
             if (fsPath) {
-              console.log(chalk.yellow(`Cortex '${name}' exists in folder but not locally.`));
-              console.log(chalk.dim('Run: think cortex pull  (to sync from folder)'));
+              console.log(chalk.yellow(`Cortex '${name}' exists in ${fsPath} but not locally.`));
+              console.log(chalk.dim('Run: think cortex pull  (to sync from the folder)'));
             } else {
               console.log(chalk.yellow(`Cortex '${name}' exists remotely but not locally.`));
               console.log(chalk.dim('Run: think cortex pull  (to sync from remote)'));

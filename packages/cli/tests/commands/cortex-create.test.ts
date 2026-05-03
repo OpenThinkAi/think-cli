@@ -1,7 +1,6 @@
 import { describe, it, expect, afterEach, vi } from 'vitest';
 import path from 'node:path';
-import fs from 'node:fs';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { cortexCommand } from '../../src/commands/cortex.js';
 import { createTestCortex, type TestCortex } from '../fixtures/cortex.js';
@@ -52,7 +51,7 @@ describe('think cortex create — first-run wording', () => {
     expect(created).toContain('(local + folder)');
     expect(created).not.toContain('(local + remote)');
     // Side effect: the fs backend's createCortex mkdirs the cortex folder.
-    expect(fs.existsSync(path.join(fsRoot, 'second-cortex'))).toBe(true);
+    expect(existsSync(path.join(fsRoot, 'second-cortex'))).toBe(true);
   });
 
   it('still says "(local + remote)" when a git backend is configured (no regression)', async () => {
