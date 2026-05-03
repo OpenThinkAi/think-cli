@@ -17,11 +17,15 @@ jobs:
       - run: git config --global user.email "ci@example.com"
       - run: git config --global user.name "CI"
       - run: npm ci
-      # Fill in platform-matching optional native bindings that `npm ci`
+      # Backfill platform-matching optional native bindings that `npm ci`
       # skips when the lockfile's resolve tree was generated on a different
       # platform (npm/cli#4828). The lockfile already pins every platform
       # variant we need; --no-save guarantees package.json stays untouched
       # and `npm ci` above would have failed loudly on any real drift, so
-      # this step cannot mask manifest/lockfile mismatch.
-      - run: npm install --no-save --no-audit --no-fund
+      # this step cannot mask manifest/lockfile mismatch. --force is
+      # required because without it, npm sees the lockfile-satisfied tree
+      # and skips re-resolving rolldown's optional subtree, leaving the
+      # missing native binding in place — the very bug we're working
+      # around.
+      - run: npm install --force --no-save --no-audit --no-fund
       - run: npm test
