@@ -32,11 +32,27 @@ export interface CortexConfig {
   staleWindowMinutes?: number;
 }
 
+export interface SubscriptionsConfig {
+  /** Base URL of the `think serve` proxy (no trailing slash). */
+  proxyUrl: string;
+  /** Bearer token matching the proxy's `THINK_TOKEN`. */
+  token: string;
+  /**
+   * Per-subscription cursor: highest `server_seq` already pulled into the
+   * local engram DB. `think subscribe poll` resumes from `cursors[id] + 0`
+   * via `?since=<cursor>`. Stored in the same `config.json` (mode 0600);
+   * fine for tens of subscriptions, flag a follow-up if a real user racks
+   * up hundreds and the file gets noisy.
+   */
+  cursors?: Record<string, number>;
+}
+
 export interface Config {
   peerId: string;
   syncPort: number;
   cortex?: CortexConfig;
   paused?: boolean;
+  subscriptions?: SubscriptionsConfig;
 }
 
 export function getConfigDir(): string {

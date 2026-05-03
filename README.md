@@ -163,7 +163,55 @@ think audit                    Show sync audit log
 think config show              Print configuration
 think config set <key> <val>   Update a config value
 think update                   Update to latest version
+
+think serve                            Boot the proxy that fans external events into engrams
+                                       (env-driven; see packages/cli/docs/serve.md)
+think subscribe configure --proxy <url> --token <tok>
+                                       Point the CLI at a `think serve` proxy
+think subscribe add <kind> <pattern>   Create a subscription on the proxy
+think subscribe list                   List subscriptions on the proxy
+think subscribe remove <id>            Delete a subscription (cascades events + credential)
+think subscribe set-credential <id>    Store an encrypted credential (read from stdin)
+think subscribe poll [--once]          Pull new events into engrams via the active cortex
+think subscribe install-agent          Install LaunchAgent that polls every 600s
+think subscribe disable                Remove the LaunchAgent
+think subscribe status                 Show LaunchAgent state
 ```
+
+## `think serve` — proxy for external event sources
+
+`think serve` boots an HTTP backend that connects to GitHub, Linear, etc. and
+fans their events into per-subscription queues. A local `think` install pulls
+those events with `think subscribe poll`, writing one engram per event so the
+existing curator pipeline can consolidate them.
+
+The proxy is optional — you only need it if you want events from external
+sources flowing into your memory. Local logging (`think sync`, `think recall`,
+`think curate`) works without it.
+
+```sh
+# On the host (Railway, your homelab, wherever)
+THINK_TOKEN=$(openssl rand -hex 32) \
+THINK_VAULT_KEY=$(openssl rand -base64 32) \
+NODE_ENV=production \
+PORT=4823 \
+  npx open-think serve
+
+# On your laptop
+think subscribe configure --proxy https://my-proxy.example.com --token <token>
+think subscribe add github "OpenThinkAi/*"
+think subscribe install-agent     # poll every 10 min in the background
+```
+
+Full endpoint reference, threat model, and operator runbook live at
+[`packages/cli/docs/serve.md`](packages/cli/docs/serve.md) and
+[`packages/cli/SECURITY-serve.md`](packages/cli/SECURITY-serve.md).
+
+> **Migrating from `open-think-server`?** The package was deprecated in
+> v0.5.0 and the proxy now ships inside `open-think`. Replace
+> `npx open-think-server` with `npx open-think serve`. All env vars carry
+> over verbatim; the default port changed from `3000` to `4823` (set
+> `PORT=3000` to keep the old binding).
 
 ## Security model
 

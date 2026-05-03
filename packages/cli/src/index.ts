@@ -21,6 +21,8 @@ import { configCommand } from './commands/config-cmd.js';
 import { updateCommand } from './commands/update.js';
 import { migrateDataCommand } from './commands/migrate-data.js';
 import { longTermCommand } from './commands/long-term.js';
+import { serveCommand } from './commands/serve.js';
+import { subscribeCommand } from './commands/subscribe.js';
 
 function readPackageVersion(): string {
   try {
@@ -61,5 +63,7 @@ program.addCommand(configCommand);
 program.addCommand(updateCommand);
 program.addCommand(migrateDataCommand);
 program.addCommand(longTermCommand);
+program.addCommand(serveCommand);
+program.addCommand(subscribeCommand);
 
 program.parse();

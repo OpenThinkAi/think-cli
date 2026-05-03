@@ -1,8 +1,8 @@
 {
   "name": "open-think",
-  "version": "0.4.1",
+  "version": "0.5.0",
   "type": "module",
-  "description": "Local-first CLI that gives AI agents persistent, curated memory",
+  "description": "Local-first CLI that gives AI agents persistent, curated memory; ships the optional `think serve` proxy for fanning external events into engrams",
   "bin": {
     "think": "dist/index.js"
   },
@@ -37,10 +37,13 @@
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.2.98",
+    "@hono/node-server": "^1.13.7",
     "chalk": "^5.4.1",
     "commander": "^13.1.0",
     "date-fns": "^4.1.0",
-    "uuid": "^11.1.0"
+    "hono": "^4.12.15",
+    "uuid": "^11.1.0",
+    "zod": "^4.4.1"
   },
   "devDependencies": {
     "@types/node": "^22.14.1",

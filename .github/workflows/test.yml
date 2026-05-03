@@ -38,15 +38,16 @@ jobs:
       - run: npm install --no-audit --no-fund
       - run: npm test
       # Tests run against the TS source via tsx, so they don't catch bundling
-      # bugs in dist/. Boot the bundled artifact and hit /v1/health to make
-      # sure the published binary actually starts (e.g. node:sqlite prefix
-      # survived, no missing externals, env-var validation paths work).
-      - name: Smoke-test bundled server
+      # bugs in dist/. Boot the bundled artifact via `think serve` and hit
+      # /v1/health to make sure the published binary actually starts (e.g.
+      # node:sqlite prefix survived, no missing externals, env-var validation
+      # paths work). Post-AGT-030 the proxy ships inside the CLI package.
+      - name: Smoke-test bundled `think serve`
         run: |
-          npm run build -w open-think-server
+          npm run build -w open-think
           THINK_TOKEN=smoke-token PORT=18327 \
             THINK_DB_PATH="$(mktemp -t open-think-smoke.XXXXXX.sqlite)" \
-            node packages/server/dist/index.js &
+            node packages/cli/dist/index.js serve &
           SERVER_PID=$!
           trap 'kill $SERVER_PID 2>/dev/null || true' EXIT
           for i in $(seq 1 20); do
