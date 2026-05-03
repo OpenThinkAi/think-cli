@@ -13,7 +13,7 @@ import { HttpSyncAdapter } from '../../src/sync/http-adapter.js';
 import { getSyncAdapter } from '../../src/sync/registry.js';
 
 // The two RemoteMemory / RemoteLongTermEvent shapes the http adapter consumes
-// (mirrored from packages/cli/src/sync/http-adapter.ts:28-49). Kept inline here
+// (mirrored from packages/cli/src/sync/http-adapter.ts). Kept inline here
 // rather than exported from the adapter — the adapter's wire types are an
 // internal detail of HTTP transport, not a public surface, so the test
 // fixture restates them locally.
@@ -334,10 +334,11 @@ describe('think cortex migrate --to fs --path', () => {
     // for both memories and long-term events. Restore the http config briefly
     // so HttpSyncAdapter can authenticate, then revert to fs-only for the
     // remaining post-migration assertions.
+    const withServer = getConfig();
     saveConfig({
-      ...getConfig(),
+      ...withServer,
       cortex: {
-        ...getConfig().cortex!,
+        ...withServer.cortex!,
         server: { url: fixture.url, token: TOKEN },
       },
     });
