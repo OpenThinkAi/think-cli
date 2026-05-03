@@ -6,7 +6,7 @@ const EVENTS_DEFAULT_LIMIT = 100;
 const EVENTS_MAX_LIMIT = 1000;
 
 const querySchema = z.object({
-  subscription: z.string().min(1),
+  subscription_id: z.string().min(1),
   since: z.coerce.number().int().min(0).default(0),
   limit: z.coerce.number().int().min(1).max(EVENTS_MAX_LIMIT).default(EVENTS_DEFAULT_LIMIT),
 });
@@ -23,18 +23,17 @@ export function eventsRoute(db: Database): Hono {
   const route = new Hono();
 
   route.get('/v1/events', (c) => {
-    const url = new URL(c.req.url);
-    const parsed = querySchema.safeParse(Object.fromEntries(url.searchParams));
+    const parsed = querySchema.safeParse(c.req.query());
     if (!parsed.success) {
       return c.json({ error: 'invalid query', detail: parsed.error.issues }, 400);
     }
-    const { subscription, since, limit } = parsed.data;
+    const { subscription_id, since, limit } = parsed.data;
 
     // 404 instead of empty array when the subscription is unknown — saves
     // callers from polling a typo'd id forever and getting `events: []` back.
     const sub = db
       .prepare('SELECT id FROM subscriptions WHERE id = ?')
-      .get(subscription);
+      .get(subscription_id);
     if (!sub) {
       return c.json({ error: 'subscription not found' }, 404);
     }
@@ -47,13 +46,13 @@ export function eventsRoute(db: Database): Hono {
           ORDER BY server_seq ASC
           LIMIT ?`,
       )
-      .all(subscription, since, limit) as EventRow[];
+      .all(subscription_id, since, limit) as EventRow[];
 
     // Side-effect on a read endpoint: cheap, idempotent, and the only signal
     // a connector has that anyone is listening to its subscription.
     db.prepare('UPDATE subscriptions SET last_polled_at = ? WHERE id = ?').run(
       new Date().toISOString(),
-      subscription,
+      subscription_id,
     );
 
     const events = rows.map((r) => ({

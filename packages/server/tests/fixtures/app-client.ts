@@ -3,11 +3,11 @@ import { openDb, type Database } from '../../src/db.js';
 
 // Module-level env mutation is intentional: every test file in this package
 // imports this fixture, and they all need the bearer middleware to accept
-// the same token. Setting it at import time means a single THINK_TOKEN value
-// is in scope by the time any test calls `app.fetch`. Per-test or per-file
-// scoping would race with createTestClient() callers in `beforeEach`.
-const DEFAULT_TOKEN = 'test-token-' + Math.random().toString(36).slice(2);
-process.env.THINK_TOKEN = DEFAULT_TOKEN;
+// the same token. The middleware reads THINK_TOKEN once at construction, so
+// setting it at import time guarantees a single value is in scope before any
+// `createTestClient()` call instantiates a middleware-bound app.
+const TOKEN = 'test-token-' + Math.random().toString(36).slice(2);
+process.env.THINK_TOKEN = TOKEN;
 
 interface RequestOptions {
   method?: string;
@@ -21,14 +21,11 @@ export interface TestClient {
   request: <T = unknown>(opts: RequestOptions) => Promise<{ status: number; body: T }>;
 }
 
+export const TEST_TOKEN = TOKEN;
+
 /**
- * Builds a fresh app + `:memory:` DB per call so each test file owns its
- * own state. Bearer token is auto-attached unless `token: null` is passed.
- *
- * Two layers exist intentionally: `createTestClient()` for per-test isolation
- * (events/subscriptions tests need a clean DB each `beforeEach`), and a
- * module-level singleton `request`/`TEST_TOKEN` for the existing
- * health/404/auth tests in `server.test.ts` that don't care about DB state.
+ * Builds a fresh app + `:memory:` DB per call so each test owns its own
+ * state. Bearer token is auto-attached unless `token: null` is passed.
  */
 export function createTestClient(opts: { db?: Database } = {}): TestClient {
   const db = opts.db ?? openDb(':memory:');
@@ -39,7 +36,7 @@ export function createTestClient(opts: { db?: Database } = {}): TestClient {
     body: T;
   }> {
     const headers: Record<string, string> = {};
-    const token = reqOpts.token === undefined ? DEFAULT_TOKEN : reqOpts.token;
+    const token = reqOpts.token === undefined ? TOKEN : reqOpts.token;
     if (token !== null) headers['Authorization'] = `Bearer ${token}`;
     if (reqOpts.body !== undefined) headers['Content-Type'] = 'application/json';
 
@@ -63,7 +60,3 @@ export function createTestClient(opts: { db?: Database } = {}): TestClient {
 
   return { db, request };
 }
-
-const defaultClient = createTestClient();
-export const request = defaultClient.request;
-export const TEST_TOKEN = DEFAULT_TOKEN;

@@ -11,19 +11,18 @@ import type { MiddlewareHandler } from 'hono';
  * unauthenticated so load-balancer probes work without credentials.
  */
 export function bearerAuth(): MiddlewareHandler {
-  return async (c, next) => {
-    const expected = process.env.THINK_TOKEN;
-    if (!expected) {
-      return c.json({ error: 'server is missing THINK_TOKEN' }, 500);
-    }
+  // Boot in src/index.ts already exits if THINK_TOKEN is unset, so reading
+  // it as required here is safe — the env var is a process-lifetime invariant.
+  const expected = process.env.THINK_TOKEN!;
+  const expectedBuf = Buffer.from(expected);
 
+  return async (c, next) => {
     const header = c.req.header('Authorization');
     const presented = header?.startsWith('Bearer ') ? header.slice(7) : null;
     if (!presented) {
       return c.json({ error: 'missing bearer token' }, 401);
     }
 
-    const expectedBuf = Buffer.from(expected);
     const presentedBuf = Buffer.from(presented);
     if (
       expectedBuf.length !== presentedBuf.length ||
