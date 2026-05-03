@@ -65,7 +65,7 @@ describe('open-think-server', () => {
       });
       expect(r.status).toBe(404);
       expect(r.body.error).toBe('endpoint not found');
-      expect(r.body.detail).toMatch(/0\.3\.0/);
+      expect(r.body.detail).toMatch(/0\.4\.0/);
       expect(r.body.detail).toMatch(/\/v1\/health/);
       expect(r.body.detail).toMatch(/\/v1\/events/);
       expect(r.body.detail).toMatch(/\/v1\/subscriptions/);
