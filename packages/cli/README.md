@@ -80,7 +80,7 @@ The folder works with anything that syncs files: iCloud Drive, Dropbox, Google D
 
 ```bash
 think cortex setup                              # offline-only — no folder, no remote
-think cortex setup git@github.com:you/cortex.git   # legacy: git remote as backend (not recommended for new setups)
+think cortex setup git@github.com:you/cortex.git   # git-remote backend (existing setups; --fs preferred for new ones)
 ```
 
 The synced-folder model (`--fs`) is the recommended way for any new setup. The git-remote backend predates v2 and is preserved for users who already have one wired up — existing `think cortex setup <git-remote>` configurations continue to work unchanged.
@@ -158,7 +158,7 @@ think curate --consolidate     Compress older memories into long-term summary
 think monitor                  Show promoted vs dropped engrams
 think recall <query>           Search memories + engrams
 think memory                   Show memories (--history for timeline)
-think pull <cortex>            Read memories from another cortex you have
+think pull <cortex>            Read another of your cortexes' memories
 
 think curator edit             Edit personal curator guidance
 think curator show             Show current guidance

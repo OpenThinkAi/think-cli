@@ -146,6 +146,7 @@
               <div class="out"><span class="check">✓</span> Cortex folder: ~/Dropbox/think-cortex</div>
               <div><span class="prompt">$</span> think cortex create personal</div>
               <div class="out"><span class="check">✓</span> Created cortex: personal (local + remote)</div>
+              <div class="out"><span class="dim">// "remote" here is the cortex folder &mdash; CLI's umbrella term for the configured backend.</span></div>
             </div>
           </div>
 
@@ -189,7 +190,7 @@
         <p>Local-first, by design. All reads and writes go to local SQLite. Engrams never leave the machine &mdash; only curated memories land in the cortex folder. Point that folder at a sync tool you already use and your brain's memory follows you across machines. No server, no relay; the folder is the propagation layer.</p>
         <pre class="arch-ascii">+- your laptop ------------------+       +- cortex folder ----------------+       +- another machine --------------+
 |                                |       |                                |       |                                |
-| <span class="g">engrams</span> -&gt; <span class="g">curator</span> -&gt; <span class="c">memories</span> |------&gt;| <span class="y">JSONL files</span>                    |&lt;------| <span class="c">recall</span> &lt;-- <span class="g">context</span>             |
+| <span class="g">engrams</span> -&gt; <span class="g">curator</span> -&gt; <span class="c">memories</span> |------&gt;| <span class="y">JSONL files</span>                    |&lt;------| <span class="c">memories</span> &lt;- <span class="g">curator</span> &lt;- <span class="g">engrams</span> |
 |                                |       | (synced via iCloud / Dropbox / |       |                                |
 |                                |       |  Syncthing / Drive / …)        |       |                                |
 +--------------------------------+       +--------------------------------+       +--------------------------------+</pre>
@@ -253,7 +254,7 @@ think curate --consolidate     Compress older memories into summary
 think monitor                  Show promoted vs dropped engrams
 think recall &lt;query&gt;           Search memories + engrams
 think memory                   Show memories (--history for timeline)
-think pull &lt;cortex&gt;            Read memories from another cortex you have
+think pull &lt;cortex&gt;            Read another of your cortexes' memories
 
 think curator edit             Edit personal curator guidance
 think curator show             Show current guidance
