@@ -40,4 +40,13 @@ export const mockConnector: SourceConnector<MockCursor> = {
     }
     return { events, nextCursor: { count: startCount + n } };
   },
+  // Trivial verifier so the credential-test endpoint has a kind to
+  // exercise without needing a live source. Non-empty → ok; empty → not
+  // ok with a generic detail. Never echoes the credential.
+  async verifyCredential(credential) {
+    if (credential.length === 0) {
+      return { ok: false, detail: 'mock requires a non-empty credential' };
+    }
+    return { ok: true };
+  },
 };

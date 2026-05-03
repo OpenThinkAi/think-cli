@@ -84,6 +84,46 @@ describe('schema migration from v0.3.0 shape', () => {
     expect(count.n).toBe(1);
   });
 
+  it('creates source_credentials table on fresh and migrated DBs (AGT-029)', () => {
+    // Fresh DB.
+    const fresh = new DatabaseSync(':memory:');
+    fresh.exec('PRAGMA foreign_keys = ON');
+    ensureSchema(fresh);
+    const freshCols = fresh
+      .prepare("PRAGMA table_info('source_credentials')")
+      .all() as { name: string }[];
+    expect(freshCols.map((c) => c.name).sort()).toEqual(
+      ['ciphertext', 'created_at', 'nonce', 'subscription_id'].sort(),
+    );
+
+    // Migrated v0.3.0 DB picks up the table too.
+    const migrated = build03Schema();
+    ensureSchema(migrated);
+    const migratedCols = migrated
+      .prepare("PRAGMA table_info('source_credentials')")
+      .all() as { name: string }[];
+    expect(migratedCols.map((c) => c.name)).toContain('subscription_id');
+  });
+
+  it('source_credentials row cascades when subscription is deleted', () => {
+    const db = new DatabaseSync(':memory:');
+    db.exec('PRAGMA foreign_keys = ON');
+    ensureSchema(db);
+    db.prepare(
+      'INSERT INTO subscriptions (id, kind, pattern, created_at) VALUES (?, ?, ?, ?)',
+    ).run('s1', 'mock', '1', new Date().toISOString());
+    db.prepare(
+      'INSERT INTO source_credentials (subscription_id, ciphertext, nonce, created_at) VALUES (?, ?, ?, ?)',
+    ).run('s1', Buffer.from('xx'), Buffer.from('yy'), new Date().toISOString());
+    expect(
+      db.prepare('SELECT COUNT(*) AS n FROM source_credentials').get(),
+    ).toEqual({ n: 1 });
+    db.prepare('DELETE FROM subscriptions WHERE id = ?').run('s1');
+    expect(
+      db.prepare('SELECT COUNT(*) AS n FROM source_credentials').get(),
+    ).toEqual({ n: 0 });
+  });
+
   it('different subscriptions can share an event id', () => {
     const db = new DatabaseSync(':memory:');
     db.exec('PRAGMA foreign_keys = ON');

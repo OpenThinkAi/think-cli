@@ -65,10 +65,11 @@ describe('open-think-server', () => {
       });
       expect(r.status).toBe(404);
       expect(r.body.error).toBe('endpoint not found');
-      expect(r.body.detail).toMatch(/0\.4\.0/);
+      expect(r.body.detail).toMatch(/0\.5\.0/);
       expect(r.body.detail).toMatch(/\/v1\/health/);
       expect(r.body.detail).toMatch(/\/v1\/events/);
       expect(r.body.detail).toMatch(/\/v1\/subscriptions/);
+      expect(r.body.detail).toMatch(/credential/);
     });
 
     it('unauthed unknown paths 401 before the catch-all (auth gates first)', async () => {
@@ -106,7 +107,14 @@ describe('open-think-server', () => {
       // vary the scheme casing.
       const { createApp } = await import('../src/app.js');
       const { openDb } = await import('../src/db.js');
-      const app = createApp({ db: openDb(':memory:') });
+      const { createVault } = await import('../src/vault/index.js');
+      const { buildDefaultRegistry } = await import('../src/connectors/registry.js');
+      const { randomBytes } = await import('node:crypto');
+      const app = createApp({
+        db: openDb(':memory:'),
+        vault: createVault(randomBytes(32)),
+        registry: buildDefaultRegistry(),
+      });
       for (const scheme of ['bearer', 'BEARER', 'bEaReR']) {
         const res = await app.fetch(
           new Request('http://test.local/v1/subscriptions', {

@@ -1,8 +1,10 @@
+import { randomBytes } from 'node:crypto';
 import { createApp } from '../../src/app.js';
 import { buildDefaultRegistry } from '../../src/connectors/registry.js';
 import { openDb, type Database } from '../../src/db.js';
 import { createScheduler, type SchedulerHandle, type TickReport } from '../../src/scheduler/index.js';
 import type { ConnectorRegistry } from '../../src/connectors/registry.js';
+import { createVault, type Vault } from '../../src/vault/index.js';
 
 // Module-level env mutation is intentional: every test file in this package
 // imports this fixture, and they all need the bearer middleware to accept
@@ -21,6 +23,7 @@ interface RequestOptions {
 
 export interface TestClient {
   db: Database;
+  vault: Vault;
   request: <T = unknown>(opts: RequestOptions) => Promise<{ status: number; body: T }>;
   registry: ConnectorRegistry;
   scheduler: SchedulerHandle;
@@ -34,13 +37,23 @@ export interface TestClient {
  * The scheduler is wired but not started — tests drive it via `tickOnce()`
  * for determinism. Pass `registry` to override the default `mock`-only
  * map (e.g. to inject a connector that throws, for failure-isolation
- * tests).
+ * tests). Pass `vault` to share a vault across multiple clients (rare —
+ * the default builds a fresh one keyed by 32 random bytes).
+ *
+ * `THINK_VAULT_KEY` is intentionally NOT set here. The vault is
+ * constructed directly with a generated key, so the production guard in
+ * `runBootGuards` never fires for tests.
  */
-export function createTestClient(opts: { db?: Database; registry?: ConnectorRegistry } = {}): TestClient {
+export function createTestClient(opts: {
+  db?: Database;
+  registry?: ConnectorRegistry;
+  vault?: Vault;
+} = {}): TestClient {
   const db = opts.db ?? openDb(':memory:');
-  const app = createApp({ db });
+  const vault = opts.vault ?? createVault(randomBytes(32));
   const registry = opts.registry ?? buildDefaultRegistry();
-  const scheduler = createScheduler({ db, registry, intervalMs: 60_000 });
+  const app = createApp({ db, vault, registry });
+  const scheduler = createScheduler({ db, registry, vault, intervalMs: 60_000 });
 
   async function request<T = unknown>(reqOpts: RequestOptions): Promise<{
     status: number;
@@ -71,6 +84,7 @@ export function createTestClient(opts: { db?: Database; registry?: ConnectorRegi
 
   return {
     db,
+    vault,
     request,
     registry,
     scheduler,
