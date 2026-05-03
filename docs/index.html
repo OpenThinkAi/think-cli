@@ -58,15 +58,15 @@
             <div class="demo-label">your laptop &mdash; ship a feature, log it</div>
             <div class="demo-terminal">
               <div><span class="prompt">$</span> think cortex setup --fs ~/Dropbox/think-cortex</div>
-              <div class="out"><span class="check">✓</span> Cortex backend: ~/Dropbox/think-cortex</div>
+              <div class="out"><span class="check">✓</span> Cortex folder: ~/Dropbox/think-cortex</div>
               <div><span class="prompt">$</span> think sync "rewrote auth middleware &mdash; AES-256-GCM for all session tokens"</div>
               <div class="out"><span class="check">✓</span> <span class="cyan">[personal]</span> engram saved</div>
               <div><span class="prompt">$</span> think sync "fixed race condition in token refresh &mdash; concurrent 401s resolved"</div>
               <div class="out"><span class="check">✓</span> <span class="cyan">[personal]</span> engram saved</div>
               <div><span class="prompt">$</span> think curate</div>
-              <div class="out"><span class="check">✓</span> 2 evaluated, 2 promoted</div>
+              <div class="out">  2 evaluated, 2 promoted, 0 purged, 0 still pending</div>
               <div><span class="prompt">$</span> think cortex push</div>
-              <div class="out"><span class="check">✓</span> Wrote 2 memories to cortex folder</div>
+              <div class="out"><span class="check">✓</span> Pushed 2 memories</div>
             </div>
           </div>
 
@@ -74,7 +74,7 @@
             <div class="demo-label">your workstation &mdash; same folder, synced by Dropbox</div>
             <div class="demo-terminal">
               <div><span class="prompt">$</span> think cortex pull</div>
-              <div class="out"><span class="check">✓</span> Ingested 2 memories from cortex folder</div>
+              <div class="out"><span class="check">✓</span> Pulled 2 new memories</div>
               <div><span class="prompt">$</span> think recall "auth"</div>
               <div class="out"><span class="cyan">Memories:</span></div>
               <div class="out"><span class="dim">Auth middleware was rewritten to use AES-256-GCM encryption for session</span></div>
@@ -143,9 +143,9 @@
             <p>Your brain's memory folder. Each cortex is a local SQLite database for engrams, plus a folder of JSONL files for the consolidated memories that persist. Point the folder at iCloud, Dropbox, or any sync tool you already use, and your brain's memory follows you across machines.</p>
             <div class="demo">
               <div><span class="prompt">$</span> think cortex setup --fs ~/Dropbox/think-cortex</div>
-              <div class="out"><span class="check">✓</span> Cortex backend: ~/Dropbox/think-cortex</div>
+              <div class="out"><span class="check">✓</span> Cortex folder: ~/Dropbox/think-cortex</div>
               <div><span class="prompt">$</span> think cortex create personal</div>
-              <div class="out"><span class="check">✓</span> Created cortex: personal</div>
+              <div class="out"><span class="check">✓</span> Created cortex: personal (local + remote)</div>
             </div>
           </div>
 
@@ -187,13 +187,12 @@
 
         <h2 class="section-h" id="arch">// architecture</h2>
         <p>Local-first, by design. All reads and writes go to local SQLite. Engrams never leave the machine &mdash; only curated memories land in the cortex folder. Point that folder at a sync tool you already use and your brain's memory follows you across machines. No server, no relay; the folder is the propagation layer.</p>
-        <pre class="arch-ascii">+- your laptop --------------------+       +- cortex folder -+       +- another machine -----+
-|                                  |       |                  |       |                       |
-| <span class="g">engrams</span> --&gt; <span class="g">curator</span> --&gt; <span class="c">memories</span> |------&gt;| <span class="y">JSONL files</span>      |&lt;------| <span class="c">recall</span> &lt;-- <span class="g">context</span>    |
-|                                  |       | (synced via      |       |                       |
-|                                  |       |  iCloud/Dropbox/ |       |                       |
-|                                  |       |  Syncthing)      |       |                       |
-+----------------------------------+       +------------------+       +-----------------------+</pre>
+        <pre class="arch-ascii">+- your laptop ------------------+       +- cortex folder ----------------+       +- another machine --------------+
+|                                |       |                                |       |                                |
+| <span class="g">engrams</span> -&gt; <span class="g">curator</span> -&gt; <span class="c">memories</span> |------&gt;| <span class="y">JSONL files</span>                    |&lt;------| <span class="c">recall</span> &lt;-- <span class="g">context</span>             |
+|                                |       | (synced via iCloud / Dropbox / |       |                                |
+|                                |       |  Syncthing / Drive / …)        |       |                                |
++--------------------------------+       +--------------------------------+       +--------------------------------+</pre>
       </section>
 
       <!-- INSTALL VIEW -->
@@ -237,7 +236,7 @@ think list                     List entries (--week, --since, --category)
 think summary                  AI summary (--raw for plain text)
 think delete                   Soft-delete entries
 
-think cortex setup --fs &lt;path&gt; Configure sync backend (or [repo] for git, or no args for offline-only)
+think cortex setup [opts]      Configure backend (--fs &lt;path&gt;, [repo], or none)
 think cortex create &lt;name&gt;     Create a cortex
 think cortex list              Show all cortexes (local + remote)
 think cortex switch &lt;name&gt;     Set active cortex
@@ -253,7 +252,7 @@ think curate --consolidate     Compress older memories into summary
 think monitor                  Show promoted vs dropped engrams
 think recall &lt;query&gt;           Search memories + engrams
 think memory                   Show memories (--history for timeline)
-think pull &lt;cortex&gt;            Read another cortex's memories
+think pull &lt;cortex&gt;            Read memories from another cortex you have
 
 think curator edit             Edit personal curator guidance
 think curator show             Show current guidance

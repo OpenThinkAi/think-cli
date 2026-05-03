@@ -140,7 +140,7 @@ think list                     List entries (--week, --since, --category)
 think summary                  AI summary (--raw for plain text)
 think delete                   Soft-delete entries
 
-think cortex setup --fs <path> Configure sync backend (or [repo] for git, or no args for offline-only)
+think cortex setup [opts]      Configure backend (--fs <path>, [repo], or none)
 think cortex create <name>     Create a cortex
 think cortex list              Show all cortexes (local + remote)
 think cortex switch <name>     Set active cortex
@@ -156,7 +156,7 @@ think curate --consolidate     Compress older memories into long-term summary
 think monitor                  Show promoted vs dropped engrams
 think recall <query>           Search memories + engrams
 think memory                   Show memories (--history for timeline)
-think pull <cortex>            Read another cortex's memories
+think pull <cortex>            Read memories from another cortex you have
 
 think curator edit             Edit personal curator guidance
 think curator show             Show current guidance
