@@ -6,14 +6,14 @@ This is the proxy-role rewrite the [think-cli v2 pivot](https://openthink.dev) c
 
 ## Endpoints
 
-| Method | Path | Auth | Purpose |
-|---|---|---|---|
-| `GET` | `/v1/health` | — | Liveness probe. Returns `{ "status": "ok", "version": "0.3.0" }`. **Process-reachable only**, no DB probe. |
-| `GET` | `/v1/events` | Bearer | Read events for a subscription. Required `?subscription=<id>`; optional `?since=<server_seq>` (default `0`) and `?limit=<n>` (default `100`, max `1000`). Returns `{ events: [...], next_since }`. Updates `subscriptions.last_polled_at` as a side effect. |
-| `POST` | `/v1/subscriptions` | Bearer | Create a subscription. Body `{ kind, pattern }`. Returns `201` with the assigned id. |
-| `GET` | `/v1/subscriptions` | Bearer | List all subscriptions, ordered by `created_at`. |
-| `GET` | `/v1/subscriptions/:id` | Bearer | Fetch one. `404` if unknown. |
-| `DELETE` | `/v1/subscriptions/:id` | Bearer | Remove. Cascades to events for that subscription. `404` if unknown. |
+| Method | Path | Auth | Purpose | Response |
+|---|---|---|---|---|
+| `GET` | `/v1/health` | — | Liveness probe. **Process-reachable only**, no DB probe. | `200 { status, version }` |
+| `GET` | `/v1/events` | Bearer | Read events for a subscription. Required `?subscription=<id>`; optional `?since=<server_seq>` (default `0`) and `?limit=<n>` (default `100`, max `1000`). Updates `subscriptions.last_polled_at` as a side effect. | `200 { events: [{ id, subscription_id, payload, server_seq, created_at }], next_since }` |
+| `POST` | `/v1/subscriptions` | Bearer | Create a subscription. Body `{ kind, pattern }`. **No dedup** — POSTing the same `(kind, pattern)` twice yields two distinct subscriptions, each with its own cursor. Intentional for the fan-out model where each consumer owns its own poll position. | `201 { id, kind, pattern, created_at, last_polled_at }` |
+| `GET` | `/v1/subscriptions` | Bearer | List all subscriptions, ordered by `created_at`. | `200 { subscriptions: [{ id, kind, pattern, created_at, last_polled_at }] }` |
+| `GET` | `/v1/subscriptions/:id` | Bearer | Fetch one. | `200 { id, kind, pattern, created_at, last_polled_at }` or `404` |
+| `DELETE` | `/v1/subscriptions/:id` | Bearer | Remove. Cascades to events for that subscription. | `204` or `404` |
 
 Any other path returns a JSON 404 naming the served endpoints — operators upgrading from 0.1.x or 0.2.x get a clear pointer.
 
@@ -35,8 +35,13 @@ Cursor pagination uses `server_seq` as the monotonic cursor. Single-process / si
 ## Running
 
 ```sh
-THINK_TOKEN=<long-random-token> PORT=3000 npx open-think-server
+THINK_TOKEN=<long-random-token> \
+PORT=3000 \
+OPEN_THINK_DB_PATH=./open-think.sqlite \
+  npx open-think-server
 ```
+
+`THINK_TOKEN` is required; `PORT` defaults to `3000`; `OPEN_THINK_DB_PATH` defaults to `./open-think.sqlite` relative to the working directory.
 
 Or via `docker-compose` at the repo root (set `THINK_TOKEN` in the environment first):
 

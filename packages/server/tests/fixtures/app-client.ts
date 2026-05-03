@@ -1,6 +1,11 @@
 import { createApp } from '../../src/app.js';
 import { openDb, type Database } from '../../src/db.js';
 
+// Module-level env mutation is intentional: every test file in this package
+// imports this fixture, and they all need the bearer middleware to accept
+// the same token. Setting it at import time means a single THINK_TOKEN value
+// is in scope by the time any test calls `app.fetch`. Per-test or per-file
+// scoping would race with createTestClient() callers in `beforeEach`.
 const DEFAULT_TOKEN = 'test-token-' + Math.random().toString(36).slice(2);
 process.env.THINK_TOKEN = DEFAULT_TOKEN;
 

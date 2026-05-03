@@ -28,7 +28,7 @@ export function ensureSchema(db: DatabaseSync): void {
       server_seq INTEGER PRIMARY KEY AUTOINCREMENT,
       created_at TEXT NOT NULL,
       FOREIGN KEY (subscription_id) REFERENCES subscriptions(id) ON DELETE CASCADE
-    );
+    ) STRICT;
   `);
   db.exec(`
     CREATE INDEX IF NOT EXISTS events_sub_seq

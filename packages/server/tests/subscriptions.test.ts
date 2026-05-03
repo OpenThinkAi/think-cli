@@ -29,9 +29,7 @@ describe('subscriptions CRUD', () => {
     expect(r.status).toBe(400);
   });
 
-  it('POST 400 on non-JSON body', async () => {
-    // Hand-roll the request so we can send invalid JSON without the fixture
-    // serializing it for us.
+  it('POST 400 on missing body', async () => {
     const r = await client.request({ method: 'POST', path: '/v1/subscriptions' });
     expect(r.status).toBe(400);
   });
