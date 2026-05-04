@@ -28,7 +28,7 @@ export function readPackageVersion(): string {
         // Pin to the right manifest in the monorepo by name — `..` from
         // some dist layouts lands at the workspace root, which has its
         // own package.json with a different version.
-        if (parsed.name === 'open-think' && typeof parsed.version === 'string') {
+        if (parsed.name === '@openthink/think' && typeof parsed.version === 'string') {
           return parsed.version;
         }
       }

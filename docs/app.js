@@ -19,7 +19,7 @@
         ]},
         { label: 'links', items: [
           { label: 'github', href: GITHUB_URL, external: true },
-          { label: 'npm', href: 'https://www.npmjs.com/package/open-think', external: true },
+          { label: 'npm', href: 'https://www.npmjs.com/package/@openthink/think', external: true },
         ]},
       ],
     },
@@ -54,7 +54,7 @@
         ]},
         { label: 'links', items: [
           { label: 'github', href: GITHUB_URL, external: true },
-          { label: 'npm', href: 'https://www.npmjs.com/package/open-think', external: true },
+          { label: 'npm', href: 'https://www.npmjs.com/package/@openthink/think', external: true },
           { label: 'issues', href: GITHUB_URL + '/issues', external: true },
         ]},
       ],
@@ -201,7 +201,7 @@
   });
 
   // Fetch latest published version from npm registry
-  fetch('https://registry.npmjs.org/open-think/latest')
+  fetch('https://registry.npmjs.org/@openthink/think/latest')
     .then(r => r.ok ? r.json() : null)
     .then(data => {
       if (!data?.version) return;

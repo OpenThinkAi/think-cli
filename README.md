@@ -7,7 +7,7 @@ Local-first CLI that gives AI agents persistent, curated memory.
 Requires **Node 22.5+** (uses `node:sqlite`).
 
 ```bash
-npm install -g open-think
+npm install -g @openthink/think
 ```
 
 > **Note:** The curator and summary features use the [Claude Agent SDK](https://www.npmjs.com/package/@anthropic-ai/claude-agent-sdk), which is distributed under Anthropic's commercial terms. You'll need a Claude subscription for these features to work. All other functionality (logging, recall, sync, export) works without it.
@@ -210,7 +210,7 @@ THINK_TOKEN=$(openssl rand -hex 32) \
 THINK_VAULT_KEY=$(openssl rand -base64 32) \
 NODE_ENV=production \
 PORT=4823 \
-  npx open-think serve
+  npx @openthink/think serve
 
 # On your laptop — token is read from stdin, never the command line
 echo "$THINK_TOKEN" | think subscribe configure --proxy https://my-proxy.example.com
@@ -224,7 +224,7 @@ Full endpoint reference, threat model, and operator runbook live at
 
 > **Migrating from `open-think-server`?** The package was deprecated in
 > v0.5.0 and the proxy now ships inside `open-think`.
-> - Replace `npx open-think-server` with `npx open-think serve`.
+> - Replace `npx open-think-server` with `npx @openthink/think serve`.
 > - All env vars carry over verbatim.
 > - Default port changed from `3000` to `4823` (set `PORT=3000` to keep the old binding).
 > - Dockerfile moved from `packages/server/Dockerfile` to the repo root.
@@ -238,4 +238,4 @@ See [SECURITY.md](./SECURITY.md) for the full threat model and vulnerability dis
 - **Pulled engrams from peers are untrusted content.** When you pull a cortex from another peer, the memories that land in your local DB were written by them. We escape `<data>` delimiters when feeding those memories to your Claude agent, and pattern-match a short list of common injection phrasings, but this is opportunistic warning, not a security boundary. A malicious peer can trivially bypass with paraphrase, translation, or novel phrasing. **Treat a cortex peer with the same trust level you'd give any other source of data your AI agent will read — do not add a cortex peer you don't trust.**
 - **`cortex.repo` is security-sensitive configuration.** `think cortex setup` validates the URL shape on input, but if you edit `~/.config/think/config.json` by hand (or follow a tutorial that tells you to), a malformed URL can give an attacker code execution the next time you run a cortex-syncing command. Accepted prefixes: `https://` (preferred), `ssh://`, `git://`, `<user>@<host>:<path>` (ssh shortcut — any username and hostname, e.g. `git@github.com:org/repo.git` or `gitlab@self-hosted.example:group/repo.git`), and `http://` (permitted but not recommended — traffic is unencrypted).
 - **Upgrade compatibility note.** Prior versions did not validate `cortex.repo` on read. If you configured a `file://` URL or a bare filesystem path for local testing, you'll see a clear error on the next cortex operation after upgrading — those forms are no longer accepted. Re-run `think cortex setup` with one of the supported transports, or edit `config.json` to remove the `repo` field for offline-only mode.
-- **`THINK_NO_UPDATE_CHECK`** disables the once-per-24-hours `npm view open-think` call that powers the update banner. Set to any of `1`, `true`, or `yes` (case-insensitive). Useful for air-gapped machines, privacy-sensitive environments, or CI where outbound network calls aren't desirable.
+- **`THINK_NO_UPDATE_CHECK`** disables the once-per-24-hours `npm view @openthink/think` call that powers the update banner. Set to any of `1`, `true`, or `yes` (case-insensitive). Useful for air-gapped machines, privacy-sensitive environments, or CI where outbound network calls aren't desirable.

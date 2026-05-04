@@ -4,7 +4,7 @@ import { execFile } from 'node:child_process';
 import { getConfigDir } from './config.js';
 
 const CHECK_INTERVAL_MS = 24 * 60 * 60 * 1000; // 24 hours
-const PACKAGE_NAME = 'open-think';
+const PACKAGE_NAME = '@openthink/think';
 
 interface VersionCache {
   latest: string;
@@ -67,7 +67,7 @@ export function checkForUpdate(): string | null {
   // Return cached result if fresh
   if (cache && (now - cache.checkedAt) < CHECK_INTERVAL_MS) {
     if (isNewer(cache.latest, installed)) {
-      return `open-think ${cache.latest} available (you have ${installed}). Run: npm update -g open-think`;
+      return `@openthink/think ${cache.latest} available (you have ${installed}). Run: npm update -g @openthink/think`;
     }
     return null;
   }
@@ -83,7 +83,7 @@ export function checkForUpdate(): string | null {
 
   // On first check, use cached value if available (stale but better than nothing)
   if (cache && isNewer(cache.latest, installed)) {
-    return `open-think ${cache.latest} available (you have ${installed}). Run: npm update -g open-think`;
+    return `@openthink/think ${cache.latest} available (you have ${installed}). Run: npm update -g @openthink/think`;
   }
 
   return null;
