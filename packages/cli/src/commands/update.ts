@@ -7,7 +7,7 @@ import chalk from 'chalk';
 function getInstalledVersion(): string | null {
   try {
     const npmRoot = execFileSync('npm', ['root', '-g'], { encoding: 'utf-8' }).trim();
-    const pkgPath = path.join(npmRoot, 'open-think', 'package.json');
+    const pkgPath = path.join(npmRoot, '@openthink/think', 'package.json');
     if (!fs.existsSync(pkgPath)) return null;
     const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf-8'));
     return typeof pkg.version === 'string' ? pkg.version : null;
@@ -16,9 +16,18 @@ function getInstalledVersion(): string | null {
   }
 }
 
+function legacyOpenThinkInstalled(): boolean {
+  try {
+    const npmRoot = execFileSync('npm', ['root', '-g'], { encoding: 'utf-8' }).trim();
+    return fs.existsSync(path.join(npmRoot, 'open-think', 'package.json'));
+  } catch {
+    return false;
+  }
+}
+
 function getLatestPublishedVersion(): string | null {
   try {
-    const v = execFileSync('npm', ['view', 'open-think', 'version'], {
+    const v = execFileSync('npm', ['view', '@openthink/think', 'version'], {
       encoding: 'utf-8',
       stdio: ['ignore', 'pipe', 'ignore'],
     }).trim();
@@ -37,7 +46,7 @@ export const updateCommand = new Command('update')
     const latest = getLatestPublishedVersion();
 
     if (before && latest && before === latest) {
-      console.log(chalk.dim(`Already up to date (open-think@${before}).`));
+      console.log(chalk.dim(`Already up to date (@openthink/think@${before}).`));
       return;
     }
 
@@ -45,13 +54,13 @@ export const updateCommand = new Command('update')
     // instead of trusting a potentially stale local cache. Without it, npm can
     // silently no-op on `@latest` when its cached latest tag is behind.
     try {
-      execFileSync('npm', ['install', '-g', '--prefer-online', 'open-think@latest'], {
+      execFileSync('npm', ['install', '-g', '--prefer-online', '@openthink/think@latest'], {
         encoding: 'utf-8',
         stdio: ['pipe', 'pipe', 'pipe'],
       });
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      console.error(chalk.red('Update failed. Try manually: npm install -g open-think@latest'));
+      console.error(chalk.red('Update failed. Try manually: npm install -g @openthink/think@latest'));
       if (message.includes('EACCES')) {
         console.error(chalk.dim('  You may need to run with sudo or fix npm permissions.'));
       }
@@ -62,15 +71,23 @@ export const updateCommand = new Command('update')
     // if its cache thinks the current install satisfies `@latest`.
     const after = getInstalledVersion();
     if (after && latest && after === latest) {
-      console.log(chalk.green('✓') + ` Updated to open-think@${after}`);
+      console.log(chalk.green('✓') + ` Updated to @openthink/think@${after}`);
     } else if (after && before && after !== before) {
-      console.log(chalk.green('✓') + ` Updated to open-think@${after}${latest ? chalk.dim(` (registry says latest is ${latest})`) : ''}`);
+      console.log(chalk.green('✓') + ` Updated to @openthink/think@${after}${latest ? chalk.dim(` (registry says latest is ${latest})`) : ''}`);
     } else if (after && latest && after !== latest) {
       console.error(chalk.yellow('⚠') + ` npm reported success but installed version is ${after}, expected ${latest}.`);
-      console.error(chalk.dim('  Try: npm cache clean --force && npm install -g open-think@latest'));
+      console.error(chalk.dim('  Try: npm cache clean --force && npm install -g @openthink/think@latest'));
     } else if (after) {
-      console.log(chalk.dim(`Installed version: open-think@${after} (could not verify against registry).`));
+      console.log(chalk.dim(`Installed version: @openthink/think@${after} (could not verify against registry).`));
     } else {
       console.error(chalk.yellow('⚠') + ' Could not locate the installed package to verify the update.');
+    }
+
+    if (legacyOpenThinkInstalled()) {
+      console.error(
+        chalk.yellow('⚠') +
+          ' Detected legacy `open-think` global install alongside `@openthink/think`.',
+      );
+      console.error(chalk.dim('  Run `npm uninstall -g open-think` to avoid two `think` binaries on PATH.'));
     }
   });

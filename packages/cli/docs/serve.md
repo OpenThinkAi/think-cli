@@ -1,6 +1,6 @@
 # `think serve` — proxy for external event sources
 
-HTTP backend for the open-think CLI, booted with `think serve` (or `npx open-think serve`). Stores **events** fanned out from external sources (GitHub, Linear, Slack, ...) plus the **subscriptions** that describe what each local think install is watching. The CLI polls `/v1/events` via `think subscribe poll` to feed those events into its local engram pipeline; in-process connectors (driven by a per-subscription scheduler) populate the `events` table.
+HTTP backend for the open-think CLI, booted with `think serve` (or `npx @openthink/think serve`). Stores **events** fanned out from external sources (GitHub, Linear, Slack, ...) plus the **subscriptions** that describe what each local think install is watching. The CLI polls `/v1/events` via `think subscribe poll` to feed those events into its local engram pipeline; in-process connectors (driven by a per-subscription scheduler) populate the `events` table.
 
 > Pre-v0.5.0 this code shipped as a separate `open-think-server` npm package. It folded into the CLI in AGT-030; the package is deprecated. `npx open-think-server` now prints a migration message and exits non-zero.
 
@@ -59,7 +59,7 @@ NODE_ENV=production \
 PORT=4823 \
 THINK_DB_PATH=./open-think.sqlite \
 THINK_POLL_INTERVAL_SECONDS=600 \
-  npx open-think serve
+  npx @openthink/think serve
 ```
 
 `THINK_TOKEN` is required; `THINK_VAULT_KEY` is required when `NODE_ENV=production` (see Credentials); `PORT` defaults to `4823` (was `3000` pre-AGT-030; pass `PORT=3000` to keep the old binding); `THINK_DB_PATH` defaults to `./open-think.sqlite` relative to the working directory; `THINK_POLL_INTERVAL_SECONDS` defaults to `600` (10 minutes). All `THINK_*` knobs share the `THINK_` prefix; `NODE_ENV` follows the standard Node convention.
@@ -137,7 +137,7 @@ For the threat model, key rotation story, and recovery story, see [`SECURITY-ser
 ## Testing
 
 ```sh
-npm test -w open-think
+npm test -w @openthink/think
 ```
 
 No external dependencies — the suite stands up the Hono app in-process against a `:memory:` SQLite DB.

@@ -44,7 +44,7 @@ jobs:
       # paths work). Post-AGT-030 the proxy ships inside the CLI package.
       - name: Smoke-test bundled `think serve`
         run: |
-          npm run build -w open-think
+          npm run build -w @openthink/think
           THINK_TOKEN=smoke-token PORT=18327 \
             THINK_DB_PATH="$(mktemp -t open-think-smoke.XXXXXX.sqlite)" \
             node packages/cli/dist/index.js serve &

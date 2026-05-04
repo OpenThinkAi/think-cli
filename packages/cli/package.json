@@ -1,6 +1,6 @@
 {
-  "name": "open-think",
-  "version": "0.5.0",
+  "name": "@openthink/think",
+  "version": "0.6.0",
   "type": "module",
   "description": "Local-first memory for your AI brain — a nervous system that turns engrams into curated, persistent memories in a folder you control. Bundles `think serve` for piping external events (GitHub, Linear, …) into memory.",
   "bin": {
