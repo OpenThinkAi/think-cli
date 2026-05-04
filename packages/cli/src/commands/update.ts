@@ -16,6 +16,15 @@ function getInstalledVersion(): string | null {
   }
 }
 
+function legacyOpenThinkInstalled(): boolean {
+  try {
+    const npmRoot = execFileSync('npm', ['root', '-g'], { encoding: 'utf-8' }).trim();
+    return fs.existsSync(path.join(npmRoot, 'open-think', 'package.json'));
+  } catch {
+    return false;
+  }
+}
+
 function getLatestPublishedVersion(): string | null {
   try {
     const v = execFileSync('npm', ['view', '@openthink/think', 'version'], {
@@ -72,5 +81,13 @@ export const updateCommand = new Command('update')
       console.log(chalk.dim(`Installed version: @openthink/think@${after} (could not verify against registry).`));
     } else {
       console.error(chalk.yellow('⚠') + ' Could not locate the installed package to verify the update.');
+    }
+
+    if (legacyOpenThinkInstalled()) {
+      console.error(
+        chalk.yellow('⚠') +
+          ' Detected legacy `open-think` global install alongside `@openthink/think`.',
+      );
+      console.error(chalk.dim('  Run `npm uninstall -g open-think` to avoid two `think` binaries on PATH.'));
     }
   });
