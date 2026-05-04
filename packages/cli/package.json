@@ -10,7 +10,7 @@
     "dist"
   ],
   "scripts": {
-    "build": "tsup && find dist -name '*.js' -exec sed -i '' 's/from \"sqlite\"/from \"node:sqlite\"/g' {} +",
+    "build": "tsup && find dist -name '*.js' -exec perl -i -pe 's/from \"sqlite\"/from \"node:sqlite\"/g' {} +",
     "prepublishOnly": "npm run build",
     "dev": "tsx src/index.ts",
     "test": "vitest run",
