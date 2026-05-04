@@ -41,6 +41,14 @@ jobs:
           cache: "npm"
           registry-url: "https://registry.npmjs.org"
 
+      # The git-adapter test suite shells out to `git commit`, which
+      # aborts with "empty ident name" if user.email/user.name aren't
+      # set. The `test` workflow already configures these; mirror that
+      # here so the publish job's pre-publish test gate behaves the
+      # same way.
+      - run: git config --global user.email "ci@example.com"
+      - run: git config --global user.name "CI"
+
       - name: read target version
         id: version
         run: |
