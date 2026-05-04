@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { createTestClient, type TestClient } from './fixtures/app-client.js';
+import { VERSION } from '../../src/serve/version.js';
 
 /**
  * Health, catch-all 404 body, and the bearer-auth contract.
@@ -65,7 +66,7 @@ describe('open-think-server', () => {
       });
       expect(r.status).toBe(404);
       expect(r.body.error).toBe('endpoint not found');
-      expect(r.body.detail).toMatch(/0\.6\.0/);
+      expect(r.body.detail).toContain(`v${VERSION}`);
       expect(r.body.detail).toMatch(/\/v1\/health/);
       expect(r.body.detail).toMatch(/\/v1\/events/);
       expect(r.body.detail).toMatch(/\/v1\/subscriptions/);
