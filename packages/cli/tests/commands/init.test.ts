@@ -119,13 +119,11 @@ describe('think init — scoped marker block', () => {
     expect(content).toContain('**After every commit');
   });
 
-  it('migrates a legacy unscoped block in place and leaves a notice', async () => {
+  it('migrates a legacy unscoped block in place, writes a backup, and prints a notice', async () => {
     const logs: string[] = [];
-    (console.log as unknown as { mockImplementation: (fn: (...a: unknown[]) => void) => void }).mockImplementation(
-      (...args: unknown[]) => {
-        logs.push(args.map(String).join(' '));
-      },
-    );
+    vi.mocked(console.log).mockImplementation((...args: unknown[]) => {
+      logs.push(args.map(String).join(' '));
+    });
 
     const claudePath = path.join(projectDir, 'CLAUDE.md');
     const userContent = '# My personal preferences\n\nbe terse.\n\n';
@@ -135,7 +133,8 @@ describe('think init — scoped marker block', () => {
 
 think sync "summary"
 `;
-    writeFileSync(claudePath, userContent + legacyBody, 'utf-8');
+    const original = userContent + legacyBody;
+    writeFileSync(claudePath, original, 'utf-8');
 
     await run();
     const content = readClaude();
@@ -147,7 +146,28 @@ think sync "summary"
     // Exactly one Work Logging heading after migration (the canonical one).
     expect(content.match(/# Work Logging/g)?.length).toBe(1);
 
+    // Backup file present, byte-equal to pre-migration contents.
+    const backupPath = claudePath + '.think-backup';
+    expect(existsSync(backupPath)).toBe(true);
+    expect(readFileSync(backupPath, 'utf-8')).toEqual(original);
+
     expect(logs.some((l) => l.toLowerCase().includes('migrated'))).toBe(true);
+    expect(logs.some((l) => l.includes('.think-backup'))).toBe(true);
+  });
+
+  it('preserves trailing sections after a migrated legacy block', async () => {
+    const claudePath = path.join(projectDir, 'CLAUDE.md');
+    const trailing = '# Other section\n\nkeep me.\n';
+    writeFileSync(
+      claudePath,
+      `# Work Logging\n\n**After every commit, do X.**\n\nthink sync "x"\n\n${trailing}`,
+      'utf-8',
+    );
+
+    await run();
+    const content = readClaude();
+    expect(content).toContain(trailing);
+    expect(content).toContain(BEGIN_MARKER);
   });
 
   it('writes AGENTS.md only when it already exists', async () => {

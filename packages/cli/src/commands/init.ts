@@ -29,7 +29,7 @@ think sync "explored X, decided against it" --decision "Decided against X becaus
 - Keep entries concise but specific enough to be useful in a weekly summary
 `;
 
-const OTEAM_EXTRA_LINE = `\nWhen working under an \`oteam\` workspace, run \`think recall\` before \`oteam assign\` and \`think sync\` after each role-pipeline hand-off.\n`;
+const OTEAM_EXTRA_LINE = `\n**Under an \`oteam\` workspace:** run \`think recall\` before \`oteam assign\` and \`think sync\` after each role-pipeline hand-off.\n`;
 
 // Fingerprint that identifies a pre-marker (legacy) think block written by an
 // older version of this command. Both substrings come from BASE_BLOCK and are
@@ -57,12 +57,17 @@ function buildBlock(oteamPresent: boolean): string {
   return `${BEGIN_MARKER}\n${body}${END_MARKER}\n`;
 }
 
-type UpsertResult = 'created' | 'replaced' | 'appended' | 'migrated' | 'unchanged';
+type UpsertResult =
+  | { kind: 'created' }
+  | { kind: 'replaced' }
+  | { kind: 'appended' }
+  | { kind: 'migrated'; backupPath: string }
+  | { kind: 'unchanged' };
 
 function upsertBlock(filePath: string, block: string): UpsertResult {
   if (!fs.existsSync(filePath)) {
     fs.writeFileSync(filePath, block, 'utf-8');
-    return 'created';
+    return { kind: 'created' };
   }
 
   const existing = fs.readFileSync(filePath, 'utf-8');
@@ -76,9 +81,9 @@ function upsertBlock(filePath: string, block: string): UpsertResult {
     // (which itself ends in "\n") doesn't compound blank lines on every run.
     const after = existing.slice(existing[afterStart] === '\n' ? afterStart + 1 : afterStart);
     const next = before + block + after;
-    if (next === existing) return 'unchanged';
+    if (next === existing) return { kind: 'unchanged' };
     fs.writeFileSync(filePath, next, 'utf-8');
-    return 'replaced';
+    return { kind: 'replaced' };
   }
 
   // No markers — check for a legacy unscoped block to migrate in place.
@@ -89,21 +94,25 @@ function upsertBlock(filePath: string, block: string): UpsertResult {
       // always emitted as the trailing section of the file, so this matches
       // either case correctly.
       const tail = existing.slice(headingIdx);
-      const nextHeadingRel = tail.slice(1).search(/\n# /);
-      const blockEnd = nextHeadingRel === -1 ? existing.length : headingIdx + 1 + nextHeadingRel + 1;
+      const nextHeadingRel = tail.search(/\n# /);
+      const blockEnd = nextHeadingRel === -1 ? existing.length : headingIdx + nextHeadingRel + 1;
       const before = existing.slice(0, headingIdx).replace(/\n+$/, '\n');
       const after = existing.slice(blockEnd).replace(/^\n+/, '');
-      const separator = before === '' || before.endsWith('\n\n') ? '' : '\n';
-      const next = before + separator + block + (after ? '\n' + after : '');
+      const next = before + block + (after ? '\n' + after : '');
+      // Cheap insurance: stash the pre-migration file alongside so any
+      // hand-edits that get caught by the fingerprint heuristic are
+      // recoverable without leaning on git.
+      const backupPath = filePath + '.think-backup';
+      fs.writeFileSync(backupPath, existing, 'utf-8');
       fs.writeFileSync(filePath, next, 'utf-8');
-      return 'migrated';
+      return { kind: 'migrated', backupPath };
     }
   }
 
   // Plain append (no markers, no legacy block).
   const separator = existing.endsWith('\n\n') ? '' : existing.endsWith('\n') ? '\n' : '\n\n';
   fs.writeFileSync(filePath, existing + separator + block, 'utf-8');
-  return 'appended';
+  return { kind: 'appended' };
 }
 
 function prompt(question: string, defaultValue: string): Promise<string> {
@@ -117,7 +126,7 @@ function prompt(question: string, defaultValue: string): Promise<string> {
 }
 
 function reportResult(filePath: string, result: UpsertResult): void {
-  switch (result) {
+  switch (result.kind) {
     case 'created':
       console.log(chalk.green('✓') + ` Created ${filePath} with work logging instructions`);
       break;
@@ -130,7 +139,7 @@ function reportResult(filePath: string, result: UpsertResult): void {
     case 'migrated':
       console.log(
         chalk.green('✓') +
-          ` Migrated legacy work logging block in ${filePath} to scoped markers (one-time, no rollback)`,
+          ` Migrated legacy work logging block in ${filePath} → scoped markers. Pre-migration copy saved to ${result.backupPath}; review the diff if you had local edits.`,
       );
       break;
     case 'unchanged':
@@ -140,7 +149,9 @@ function reportResult(filePath: string, result: UpsertResult): void {
 }
 
 export const initCommand = new Command('init')
-  .description('Set up Claude Code integration (writes CLAUDE.md with work logging instructions)')
+  .description(
+    'Set up Claude Code integration: upserts a marker-bracketed work-logging block in CLAUDE.md (and AGENTS.md if present); block adapts when an oteam workspace is detected',
+  )
   .option('-d, --dir <path>', 'Target directory for CLAUDE.md')
   .option('-y, --yes', 'Skip confirmation, use defaults')
   .action(async (opts: { dir?: string; yes?: boolean }) => {
@@ -170,6 +181,10 @@ export const initCommand = new Command('init')
     const oteamPresent = detectOteamWorkspace(home);
     const block = buildBlock(oteamPresent);
 
+    if (oteamPresent) {
+      console.log(chalk.dim('Detected oteam workspace — block tuned for role-pipeline cadence.'));
+    }
+
     const claudePath = path.join(targetDir, 'CLAUDE.md');
     reportResult(claudePath, upsertBlock(claudePath, block));
 
@@ -178,8 +193,5 @@ export const initCommand = new Command('init')
       reportResult(agentsPath, upsertBlock(agentsPath, block));
     }
 
-    if (oteamPresent) {
-      console.log(chalk.dim('  Detected oteam workspace — block tuned for role-pipeline cadence.'));
-    }
     console.log(chalk.dim('  Claude Code sessions under this directory will now auto-log with think sync.'));
   });
