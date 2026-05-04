@@ -1,0 +1,118 @@
+name: publish
+
+# Fires when commits land on main (including via the stamp server's
+# post-receive mirror). Publishes @openthink/think to npm only when
+# packages/cli/package.json declares a version that isn't already on
+# the registry — every non-bump merge no-ops safely.
+#
+# Auth: Trusted Publishing via OIDC. No NPM_TOKEN secret; the npm
+# package must have a Trusted Publisher configured on the npm side
+# pointing at this repo + workflow filename
+# (https://www.npmjs.com/package/@openthink/think/access). --provenance
+# attaches an SLSA build attestation, verifiable via
+# 'npm audit signatures'.
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    permissions:
+      contents: write
+      id-token: write
+
+    steps:
+      # Actions are pinned by full commit SHA (not mutable tag) because
+      # this workflow holds id-token: write for npm Trusted Publishing
+      # — a moved @v4 tag would let an upstream compromise ship
+      # malicious @openthink/think to every downstream installer.
+      # Dependabot's github-actions ecosystem keeps these SHAs current.
+      - name: checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      - name: setup node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "22"
+          cache: "npm"
+          registry-url: "https://registry.npmjs.org"
+
+      - name: read target version
+        id: version
+        run: |
+          NAME=$(node -p "require('./packages/cli/package.json').name")
+          VERSION=$(node -p "require('./packages/cli/package.json').version")
+          # Derive the npm dist-tag from the version string.
+          # - bare X.Y.Z → latest
+          # - X.Y.Z-alpha.N → alpha (and likewise beta, rc, or any
+          #   other suffix label) so prerelease versions do NOT
+          #   clobber the 'latest' tag
+          if [[ "$VERSION" == *-* ]]; then
+            DIST_TAG="${VERSION#*-}"
+            DIST_TAG="${DIST_TAG%%.*}"
+          else
+            DIST_TAG="latest"
+          fi
+          echo "name=$NAME" >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "dist_tag=$DIST_TAG" >> "$GITHUB_OUTPUT"
+          echo "target: $NAME@$VERSION (dist-tag: $DIST_TAG)"
+
+      - name: check npm registry
+        id: check
+        run: |
+          if npm view "${{ steps.version.outputs.name }}@${{ steps.version.outputs.version }}" version >/dev/null 2>&1; then
+            echo "published=true" >> "$GITHUB_OUTPUT"
+            echo "${{ steps.version.outputs.name }}@${{ steps.version.outputs.version }} already on npm — skipping."
+          else
+            echo "published=false" >> "$GITHUB_OUTPUT"
+            echo "${{ steps.version.outputs.name }}@${{ steps.version.outputs.version }} not on npm — will publish."
+          fi
+
+      - name: install
+        if: steps.check.outputs.published == 'false'
+        run: npm ci
+
+      # The CLI workspace's `test` script runs vitest, which uses the
+      # tsx loader against TypeScript sources — surfacing compilation
+      # errors alongside test failures. No separate typecheck step
+      # because the workspace doesn't define one (and tsup, run via
+      # prepublishOnly, would catch type errors at build time anyway).
+      - name: test
+        if: steps.check.outputs.published == 'false'
+        run: npm test -w @openthink/think
+
+      # Build is invoked automatically via packages/cli/package.json's
+      # prepublishOnly script before the tarball is assembled, so no
+      # explicit build step. --provenance requires id-token: write and
+      # a Trusted Publisher on the npm side; attaches an SLSA build
+      # attestation to the tarball.
+      #
+      # npx npm@<pinned> (not bare 'npm publish'): Node 22 bundles npm
+      # 10.x, which supports OIDC only for provenance signing but NOT
+      # for authenticating the registry PUT — that requires npm
+      # 11.5.1+. Self-upgrading via 'npm install -g npm@latest' breaks
+      # on hosted runners (MODULE_NOT_FOUND on promise-retry as the
+      # running npm replaces its own modules mid-flight). npx fetches
+      # a clean npm per-run without touching the globally-installed
+      # npm.
+      #
+      # Pinned to a specific version (not @latest) because this step
+      # holds id-token: write — npm@latest would auto-adopt any new
+      # npm release the moment it ships, including a compromised one.
+      # Bump explicitly when a newer npm is needed; lower bound is
+      # 11.5.1 for OIDC publish.
+      - name: publish
+        if: steps.check.outputs.published == 'false'
+        run: npx -y npm@11.13.0 publish -w @openthink/think --access public --provenance --tag "${{ steps.version.outputs.dist_tag }}"
+
+      - name: tag release
+        if: steps.check.outputs.published == 'false'
+        run: |
+          TAG="v${{ steps.version.outputs.version }}"
+          git tag "$TAG"
+          git push origin "$TAG"
