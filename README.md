@@ -223,13 +223,23 @@ Full endpoint reference, threat model, and operator runbook live at
 [`packages/cli/SECURITY-serve.md`](packages/cli/SECURITY-serve.md).
 
 > **Migrating from `open-think-server`?** The package was deprecated in
-> v0.5.0 and the proxy now ships inside `open-think`.
+> v0.5.0 and the proxy now ships inside `@openthink/think`.
 > - Replace `npx open-think-server` with `npx @openthink/think serve`.
 > - All env vars carry over verbatim.
 > - Default port changed from `3000` to `4823` (set `PORT=3000` to keep the old binding).
 > - Dockerfile moved from `packages/server/Dockerfile` to the repo root.
 >   Update any `dockerfile: packages/server/Dockerfile` line in your
 >   compose file to `dockerfile: Dockerfile` (or drop it — that's the default).
+
+> **Migrating from `open-think`?** The package was renamed to `@openthink/think`
+> in v0.6.0. Same `think` binary, same data path, same flags — only the npm
+> coordinate changed.
+> - `npm uninstall -g open-think && npm install -g @openthink/think`.
+> - The `THINK_DB_PATH` default is still `./open-think.sqlite`; existing serve
+>   installs keep working without re-pointing.
+> - The legacy `open-think` package on npm will be deprecated with a redirect
+>   message in a follow-up release; until then, run the uninstall step above to
+>   avoid two `think` binaries fighting on PATH.
 
 ## Security model
 
