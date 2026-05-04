@@ -195,14 +195,19 @@ cortexCommand.addCommand(new Command('create')
 
     // Create on remote if sync adapter is available
     const adapter = getSyncAdapter();
+    // v2: when fs is the configured backend, the second tier is "the folder"
+    // — the README and openthink.dev surface that framing too. Keep "remote"
+    // for the legacy git backend so its wording stays accurate.
+    const isFsBackend = adapter?.name === 'local-fs';
+    const secondTier = isFsBackend ? { lower: 'folder', cap: 'Folder' } : { lower: 'remote', cap: 'Remote' };
     if (adapter?.isAvailable()) {
       try {
         await adapter.createCortex(name);
-        console.log(chalk.green('✓') + ` Created cortex: ${name} (local + remote)`);
+        console.log(chalk.green('✓') + ` Created cortex: ${name} (local + ${secondTier.lower})`);
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         console.log(chalk.green('✓') + ` Created cortex: ${name} (local only)`);
-        console.log(chalk.yellow(`  ⚠ Remote creation failed: ${message}`));
+        console.log(chalk.yellow(`  ⚠ ${secondTier.cap} creation failed: ${message}`));
       }
     } else {
       console.log(chalk.green('✓') + ` Created cortex: ${name} (local only)`);
@@ -254,7 +259,14 @@ cortexCommand.addCommand(new Command('list')
         const remoteOnly = remoteCortexes.filter(r => !localCortexes.includes(r));
         if (remoteOnly.length > 0) {
           console.log();
-          console.log(chalk.dim('Remote only (run think cortex pull to sync):'));
+          // v2 fs backend: the "remote" is just a folder on disk, so name it.
+          // Including the path makes the next step (`think cortex pull`)
+          // self-explanatory — the user can see exactly which folder feeds it.
+          const fsPath = adapter.name === 'local-fs' ? config.cortex?.fs?.path : undefined;
+          const header = fsPath
+            ? `Folder only (in ${fsPath}, run think cortex pull to sync):`
+            : 'Remote only (run think cortex pull to sync):';
+          console.log(chalk.dim(header));
           for (const name of remoteOnly) {
             console.log(`  ${chalk.dim(name)}`);
           }
@@ -288,8 +300,18 @@ cortexCommand.addCommand(new Command('switch')
         try {
           const remoteCortexes = await adapter.listRemoteCortexes();
           if (remoteCortexes.includes(name)) {
-            console.log(chalk.yellow(`Cortex '${name}' exists remotely but not locally.`));
-            console.log(chalk.dim('Run: think cortex pull  (to sync from remote)'));
+            // Mirror `cortex list`'s "Folder only (in <path>, …)" framing —
+            // surfacing the path here gives the user the same "what + where"
+            // affordance instead of a bare "in folder" that reads as broken
+            // English.
+            const fsPath = adapter.name === 'local-fs' ? config.cortex?.fs?.path : undefined;
+            if (fsPath) {
+              console.log(chalk.yellow(`Cortex '${name}' exists in ${fsPath} but not locally.`));
+              console.log(chalk.dim('Run: think cortex pull  (to sync from the folder)'));
+            } else {
+              console.log(chalk.yellow(`Cortex '${name}' exists remotely but not locally.`));
+              console.log(chalk.dim('Run: think cortex pull  (to sync from remote)'));
+            }
             return;
           }
         } catch {
