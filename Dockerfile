@@ -7,10 +7,10 @@ WORKDIR /app
 COPY package.json package-lock.json ./
 COPY packages/cli/package.json ./packages/cli/
 
-RUN npm ci --workspace=open-think --include-workspace-root
+RUN npm ci --workspace=@openthink/think --include-workspace-root
 
 COPY packages/cli ./packages/cli
-RUN npm run build -w open-think
+RUN npm run build -w @openthink/think
 
 FROM node:22-alpine
 WORKDIR /app

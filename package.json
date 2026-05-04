@@ -10,7 +10,7 @@
   "scripts": {
     "build": "npm run build --workspaces --if-present",
     "test": "npm run test --workspaces --if-present",
-    "dev": "npm run dev -w open-think"
+    "dev": "npm run dev -w @openthink/think"
   },
   "homepage": "https://openthink.dev",
   "repository": {
