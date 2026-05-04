@@ -198,15 +198,16 @@ cortexCommand.addCommand(new Command('create')
     // v2: when fs is the configured backend, the second tier is "the folder"
     // — the README and openthink.dev surface that framing too. Keep "remote"
     // for the legacy git backend so its wording stays accurate.
-    const secondTierLabel = config.cortex?.fs?.path ? 'folder' : 'remote';
+    const isFsBackend = adapter?.name === 'local-fs';
+    const secondTier = isFsBackend ? { lower: 'folder', cap: 'Folder' } : { lower: 'remote', cap: 'Remote' };
     if (adapter?.isAvailable()) {
       try {
         await adapter.createCortex(name);
-        console.log(chalk.green('✓') + ` Created cortex: ${name} (local + ${secondTierLabel})`);
+        console.log(chalk.green('✓') + ` Created cortex: ${name} (local + ${secondTier.lower})`);
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         console.log(chalk.green('✓') + ` Created cortex: ${name} (local only)`);
-        console.log(chalk.yellow(`  ⚠ ${secondTierLabel === 'folder' ? 'Folder' : 'Remote'} creation failed: ${message}`));
+        console.log(chalk.yellow(`  ⚠ ${secondTier.cap} creation failed: ${message}`));
       }
     } else {
       console.log(chalk.green('✓') + ` Created cortex: ${name} (local only)`);
@@ -261,7 +262,7 @@ cortexCommand.addCommand(new Command('list')
           // v2 fs backend: the "remote" is just a folder on disk, so name it.
           // Including the path makes the next step (`think cortex pull`)
           // self-explanatory — the user can see exactly which folder feeds it.
-          const fsPath = config.cortex?.fs?.path;
+          const fsPath = adapter.name === 'local-fs' ? config.cortex?.fs?.path : undefined;
           const header = fsPath
             ? `Folder only (in ${fsPath}, run think cortex pull to sync):`
             : 'Remote only (run think cortex pull to sync):';
@@ -302,9 +303,8 @@ cortexCommand.addCommand(new Command('switch')
             // Mirror `cortex list`'s "Folder only (in <path>, …)" framing —
             // surfacing the path here gives the user the same "what + where"
             // affordance instead of a bare "in folder" that reads as broken
-            // English. `getSyncAdapter()` prefers fs over repo, so probing
-            // `fs.path` here matches the adapter that actually ran above.
-            const fsPath = config.cortex?.fs?.path;
+            // English.
+            const fsPath = adapter.name === 'local-fs' ? config.cortex?.fs?.path : undefined;
             if (fsPath) {
               console.log(chalk.yellow(`Cortex '${name}' exists in ${fsPath} but not locally.`));
               console.log(chalk.dim('Run: think cortex pull  (to sync from the folder)'));
