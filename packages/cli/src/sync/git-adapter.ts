@@ -29,6 +29,10 @@ import { validateEngramContent } from '../lib/sanitize.js';
 import type { SyncAdapter, SyncResult } from './types.js';
 
 const LONG_TERM_FILE = 'long-term.jsonl';
+// `<peer>-retros.jsonl` is the retro bucket filename (written by a future sync
+// impl). The git adapter's positive-pattern pull filter (`/^\d{6}\.jsonl$/`)
+// already excludes it; this comment documents the known retro file so it is
+// not mistaken for an unhandled case if it appears in the branch listing.
 
 export class GitSyncAdapter implements SyncAdapter {
   readonly name = 'git';
