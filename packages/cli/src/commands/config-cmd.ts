@@ -14,6 +14,7 @@ const ALLOWED_KEYS = new Set([
   'cortex.engramTTLDays',
   'cortex.idleWindowMinutes',
   'cortex.staleWindowMinutes',
+  'cortex.retroRelegateAfterRuns',
   'paused',
 ]);
 

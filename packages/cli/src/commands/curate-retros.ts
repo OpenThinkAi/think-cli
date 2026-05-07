@@ -41,8 +41,8 @@ Storage contract:
 
            Note: relegation requires last_recalled_at to be set, which
            happens when retros are recalled. Reader commands that set
-           last_recalled_at ship in a follow-up release (AGT-171); until
-           then the relegated count will always be 0.
+           last_recalled_at ship in a future release; until then the
+           relegated count will always be 0.
 
   --cortex is required. Retros are scoped to a specific codebase or tool,
   not the user's current working context.
@@ -108,6 +108,10 @@ async function runRetroCuration(cortex: string, dryRun: boolean, relegateAfterRu
       return;
     }
 
+    // Track in-memory occurrence deltas so a canonical absorbing multiple duplicates
+    // in one pass logs the correct count even before the DB is re-read.
+    const occurrenceDelta = new Map<string, number>();
+
     for (const judgment of judgments) {
       if (!judgment.equivalent) continue;
 
@@ -124,6 +128,8 @@ async function runRetroCuration(cortex: string, dryRun: boolean, relegateAfterRu
           ? [pair.a, pair.b]
           : [pair.b, pair.a];
 
+      const delta = occurrenceDelta.get(canonical.id) ?? 0;
+
       if (dryRun) {
         console.log(
           chalk.dim(
@@ -132,9 +138,10 @@ async function runRetroCuration(cortex: string, dryRun: boolean, relegateAfterRu
         );
       } else {
         mergeRetro(cortex, canonical.id, merged.id);
+        occurrenceDelta.set(canonical.id, delta + 1);
         console.log(
           chalk.cyan('  merged:') +
-            ` "${merged.content.slice(0, 60)}${merged.content.length > 60 ? '...' : ''}" → canonical (occurrences now ${canonical.occurrences + 1})`,
+            ` "${merged.content.slice(0, 60)}${merged.content.length > 60 ? '...' : ''}" → canonical (occurrences now ${canonical.occurrences + 1 + delta})`,
         );
       }
       mergeCount++;
@@ -173,7 +180,7 @@ async function runRetroCuration(cortex: string, dryRun: boolean, relegateAfterRu
   // 3. Relegation pass: promoted retros not recalled in N runs → demote (row stays)
   const relegationCandidates = getPromotedRetrosForRelegation(cortex);
   if (relegationCandidates.length === 0 && afterDedupe.some(r => r.promoted === 1)) {
-    console.log(chalk.dim('  (relegation inactive: no retros have been recalled yet — last_recalled_at wires up in AGT-171)'));
+    console.log(chalk.dim('  (relegation inactive: no retros have been recalled yet — last_recalled_at wires up in a future release)'));
   }
   const toRelegate = relegationCandidates.filter(r => {
     return runsSince(cortex, r.last_recalled_at!) >= relegateAfterRuns;
