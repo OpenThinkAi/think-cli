@@ -1,8 +1,10 @@
+import { existsSync } from 'node:fs';
 import { Command } from 'commander';
 import chalk from 'chalk';
 import { getCortexDb, closeCortexDb } from '../db/engrams.js';
 import { insertRetro, VALID_KINDS, type RetroKind } from '../db/retro-queries.js';
 import { validateEngramContent } from '../lib/sanitize.js';
+import { getEngramDbPath } from '../lib/paths.js';
 
 export const retroCommand = new Command('retro')
   .description('Emit a retro — a structured codebase or tool observation stored permanently in a named cortex')
@@ -15,6 +17,17 @@ Storage contract:
   Every emission is preserved permanently. The curator may relegate
   a retro (hide it from default recall) but never deletes the row.
   Tombstoning is explicit user action only.
+
+  In this release retros are local-only — cross-machine sync is not yet
+  wired (it is out of scope for this version). They are preserved on the
+  machine they were written on. Sync wiring is a future release.
+
+  A new cortex is auto-created on the first retro emission — no
+  'think cortex create' step is needed.
+
+Reads:
+  Retros are a write-only producer surface in this release. Reader
+  commands (think retro recall, think brief) are added in a follow-up.
 
 Examples:
   think retro "fx-tracker strategy engine type contracts are not documented" --cortex fx-tracker
@@ -39,9 +52,16 @@ Examples:
       }
     }
 
-    // Auto-create the cortex DB on first retro emission — getCortexDb mkdirs
-    // and runs migrations idempotently, so no explicit "cortex create" needed.
+    // Surface new-cortex creation so the user can catch typos immediately.
+    const isNewCortex = !existsSync(getEngramDbPath(opts.cortex));
+
+    // getCortexDb mkdirs and runs migrations idempotently — auto-creates the
+    // cortex DB on first retro emission, no explicit 'cortex create' needed.
     getCortexDb(opts.cortex);
+
+    if (isNewCortex) {
+      console.log(`${chalk.green('✓')} created cortex ${chalk.cyan(`[${opts.cortex}]`)}`);
+    }
 
     const row = insertRetro(opts.cortex, { content: validated.content, kind });
 

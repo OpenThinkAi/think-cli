@@ -142,7 +142,9 @@ think retro "always run migrations in a transaction" --cortex my-repo --kind con
 think retro "AGT-169: mirrored the memories table pattern for the retros table" --cortex think-cli --kind prior_decision
 ```
 
-`--cortex` is required (no fallback to active cortex — retros are always about a specific codebase or tool). The cortex is auto-created on first emission; no `think cortex create` step is needed. Optional `--kind` accepts `convention | invariant | prior_decision | gotcha`.
+`--cortex` is required (no fallback to active cortex — retros are always about a specific codebase or tool). The cortex is auto-created on first emission (a `✓ created cortex` line appears so you can catch typos immediately); no `think cortex create` step is needed. Optional `--kind` accepts `convention | invariant | prior_decision | gotcha`.
+
+**This release: write-only producer surface.** Reader commands (`think retro recall`, `think brief`) are added in a follow-up release. Retros are currently local-only — cross-machine sync is not yet wired up. "Permanent" means preserved on the machine they were written on; sync wiring is a separate future release.
 
 ## All commands
 
@@ -171,7 +173,7 @@ think monitor                  Show promoted vs dropped engrams
 think recall <query>           Search memories + engrams
 think memory                   Show memories (--history for timeline)
 think pull <cortex>            Read memories from another cortex
-think retro <message> --cortex <name>   Emit a permanent codebase/tool observation (no TTL, no purge)
+think retro <message>          Emit a permanent codebase observation (--cortex required, no TTL)
 
 think curator edit             Edit personal curator guidance
 think curator show             Show current guidance
