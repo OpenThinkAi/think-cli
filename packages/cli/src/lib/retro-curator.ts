@@ -34,7 +34,7 @@ const FTS_TOP_K = 3;
 
 function extractFtsQuery(content: string): string {
   const tokens = content
-    .replace(/[^a-zA-Z\s]/g, ' ')
+    .replace(/[^a-zA-Z0-9\s]/g, ' ')
     .split(/\s+/)
     .filter(t => t.length > 3)
     .slice(0, 3);

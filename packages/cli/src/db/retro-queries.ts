@@ -59,25 +59,35 @@ export function getPromotedRetrosForRelegation(cortexName: string): RetroRow[] {
   ).all(cortexName) as unknown as RetroRow[];
 }
 
-/** Merges mergedId into canonicalId: increments occurrences on canonical, tombstones merged. */
+/** Merges mergedId into canonicalId: increments occurrences on canonical, tombstones merged.
+ *  Both updates are wrapped in a transaction so partial-write on process kill cannot
+ *  increment occurrences without also tombstoning the duplicate. */
 export function mergeRetro(cortexName: string, canonicalId: string, mergedId: string): void {
   const db = getCortexDb(cortexName);
   const now = new Date().toISOString();
 
-  db.prepare(
-    `UPDATE retros
-     SET occurrences = occurrences + 1,
-         sync_version = (SELECT COALESCE(MAX(sync_version), 0) + 1 FROM retros)
-     WHERE id = ? AND cortex_name = ?`
-  ).run(canonicalId, cortexName);
+  db.exec('BEGIN');
+  try {
+    db.prepare(
+      `UPDATE retros
+       SET occurrences = occurrences + 1,
+           sync_version = (SELECT COALESCE(MAX(sync_version), 0) + 1 FROM retros)
+       WHERE id = ? AND cortex_name = ?`
+    ).run(canonicalId, cortexName);
 
-  db.prepare(
-    `UPDATE retros
-     SET tombstoned_at = ?,
-         tombstone_reason = ?,
-         sync_version = (SELECT COALESCE(MAX(sync_version), 0) + 1 FROM retros)
-     WHERE id = ? AND cortex_name = ?`
-  ).run(now, `merged_into:${canonicalId}`, mergedId, cortexName);
+    db.prepare(
+      `UPDATE retros
+       SET tombstoned_at = ?,
+           tombstone_reason = ?,
+           sync_version = (SELECT COALESCE(MAX(sync_version), 0) + 1 FROM retros)
+       WHERE id = ? AND cortex_name = ?`
+    ).run(now, `merged_into:${canonicalId}`, mergedId, cortexName);
+
+    db.exec('COMMIT');
+  } catch (err) {
+    db.exec('ROLLBACK');
+    throw err;
+  }
 }
 
 /** Sets the promoted flag on a list of retro ids. */

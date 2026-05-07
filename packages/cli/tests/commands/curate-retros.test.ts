@@ -116,7 +116,7 @@ describe('think curate-retros command', () => {
 
   it('dedupe-merge: two semantically equivalent retros → canonical occurrences=2, newer tombstoned', async () => {
     const cortex = 'dedupe-test';
-    const db = getCortexDb(cortex);
+    getCortexDb(cortex);
 
     const canonical = insertRetro(cortex, { content: 'run all database migrations inside a transaction' });
     const dupe = insertRetro(cortex, { content: 'always wrap schema migrations in a transaction' });
@@ -132,12 +132,12 @@ describe('think curate-retros command', () => {
     await prog.parseAsync(['node', 'think', '-C', cortex, 'curate-retros']);
 
     // Re-open DB after command closes it
-    const freshDb = getCortexDb(cortex);
-    const canonicalRow = freshDb.prepare('SELECT * FROM retros WHERE id = ?').get(canonical.id) as {
+    const db = getCortexDb(cortex);
+    const canonicalRow = db.prepare('SELECT * FROM retros WHERE id = ?').get(canonical.id) as {
       occurrences: number;
       tombstoned_at: string | null;
     };
-    const dupeRow = freshDb.prepare('SELECT * FROM retros WHERE id = ?').get(dupe.id) as {
+    const dupeRow = db.prepare('SELECT * FROM retros WHERE id = ?').get(dupe.id) as {
       tombstoned_at: string | null;
       tombstone_reason: string;
     };
@@ -146,8 +146,6 @@ describe('think curate-retros command', () => {
     expect(canonicalRow.tombstoned_at).toBeNull();
     expect(dupeRow.tombstoned_at).toBeTruthy();
     expect(dupeRow.tombstone_reason).toBe(`merged_into:${canonical.id}`);
-
-    void db; // suppress unused-var warning
   });
 
   it('dedupe-merge: merged row is preserved in storage (no deletion — AC #6)', async () => {
