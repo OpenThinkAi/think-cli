@@ -2,7 +2,7 @@ import { Command } from 'commander';
 import chalk from 'chalk';
 import { getConfig } from '../lib/config.js';
 import { searchEngrams } from '../db/engram-queries.js';
-import { searchMemories, getLongtermSummary } from '../db/memory-queries.js';
+import { searchMemories, getLongtermSummary, getMemories } from '../db/memory-queries.js';
 import {
   searchLongTermEvents,
   getLongTermEventById,
@@ -108,6 +108,60 @@ function dedupeBy<T>(rows: T[], key: (r: T) => string): T[] {
   return out;
 }
 
+/**
+ * Renders the "all recent memories + long-term summary" view for a cortex.
+ * Extracted so `think brief` can reuse it for its personal-context section.
+ * Does NOT close the cortex DB — the caller is responsible for that.
+ */
+export function renderPersonalAll(cortex: string, { days, query }: { days: number; query?: string }): void {
+  const cutoff = new Date(Date.now() - days * 86400000).toISOString();
+  const recentMemories = dedupeBy(
+    getMemories(cortex, { since: cutoff }),
+    m => JSON.stringify([m.ts, m.author, m.content]),
+  );
+  const longterm = getLongtermSummary(cortex);
+  const allEvents = getLongTermEvents(cortex, { since: cutoff, limit: 200 });
+  const matchingEngrams = dedupeBy(
+    searchEngrams(cortex, query ?? ''),
+    e => JSON.stringify([e.created_at, e.content]),
+  );
+
+  if (allEvents.length > 0) {
+    console.log(chalk.cyan('Long-term history:'));
+    renderLongTermEvents(cortex, allEvents);
+    console.log();
+  }
+
+  if (recentMemories.length > 0) {
+    console.log(chalk.cyan(`Team memories (last ${days} days):`));
+    for (const m of recentMemories) {
+      const ts = m.ts.slice(0, 16).replace('T', ' ');
+      console.log(`  ${chalk.gray(ts)} ${chalk.dim(m.author + ':')} ${m.content}`);
+      printDecisions(m);
+    }
+    console.log();
+  }
+
+  if (longterm && allEvents.length === 0) {
+    console.log(chalk.cyan('Long-term context (legacy summary):'));
+    console.log(`  ${longterm}`);
+    console.log();
+  }
+
+  if (matchingEngrams.length > 0) {
+    console.log(chalk.cyan(`Matching engrams (local):`));
+    for (const e of matchingEngrams) {
+      const ts = e.created_at.slice(0, 16).replace('T', ' ');
+      console.log(`  ${chalk.gray(ts)} ${e.content}`);
+    }
+    console.log();
+  }
+
+  if (recentMemories.length === 0 && matchingEngrams.length === 0 && !longterm && allEvents.length === 0) {
+    console.log(chalk.dim('No results found.'));
+  }
+}
+
 export const recallCommand = new Command('recall')
   .argument('<query>', 'What to recall')
   .description('Search memories and local engrams')
@@ -115,7 +169,7 @@ export const recallCommand = new Command('recall')
   .option('--all', 'Dump all recent memories + long-term summary (ignores query for memories)')
   .option('--days <n>', 'Days of memories to include (only with --all)', '14')
   .option('--limit <n>', 'Max results to return', '20')
-  .action(async (query: string, opts: { engrams?: boolean; all?: boolean; days: string; limit: string }) => {
+  .action((query: string, opts: { engrams?: boolean; all?: boolean; days: string; limit: string }) => {
     const config = getConfig();
     const cortex = config.cortex?.active;
 
@@ -127,59 +181,8 @@ export const recallCommand = new Command('recall')
     const limit = parseInt(opts.limit, 10);
 
     if (opts.all) {
-      // Legacy behavior: dump everything
-      const { getMemories } = await import('../db/memory-queries.js');
       const days = parseInt(opts.days, 10);
-      const cutoff = new Date(Date.now() - days * 86400000).toISOString();
-      const recentMemories = dedupeBy(
-        getMemories(cortex, { since: cutoff }),
-        m => JSON.stringify([m.ts, m.author, m.content]),
-      );
-      const longterm = getLongtermSummary(cortex);
-      // Cap long-term events by the same day-window the user asked for,
-      // with a hard limit so this can't explode as the log grows.
-      const allEvents = getLongTermEvents(cortex, { since: cutoff, limit: 200 });
-      const matchingEngrams = dedupeBy(
-        searchEngrams(cortex, query),
-        e => JSON.stringify([e.created_at, e.content]),
-      );
-
-      if (allEvents.length > 0) {
-        console.log(chalk.cyan('Long-term history:'));
-        renderLongTermEvents(cortex, allEvents);
-        console.log();
-      }
-
-      if (recentMemories.length > 0) {
-        console.log(chalk.cyan(`Team memories (last ${days} days):`));
-        for (const m of recentMemories) {
-          const ts = m.ts.slice(0, 16).replace('T', ' ');
-          console.log(`  ${chalk.gray(ts)} ${chalk.dim(m.author + ':')} ${m.content}`);
-          printDecisions(m);
-        }
-        console.log();
-      }
-
-      if (longterm && allEvents.length === 0) {
-        // Only fall back to the legacy summary if no structured events exist yet.
-        console.log(chalk.cyan('Long-term context (legacy summary):'));
-        console.log(`  ${longterm}`);
-        console.log();
-      }
-
-      if (matchingEngrams.length > 0) {
-        console.log(chalk.cyan(`Matching engrams (local):`));
-        for (const e of matchingEngrams) {
-          const ts = e.created_at.slice(0, 16).replace('T', ' ');
-          console.log(`  ${chalk.gray(ts)} ${e.content}`);
-        }
-        console.log();
-      }
-
-      if (recentMemories.length === 0 && matchingEngrams.length === 0 && !longterm && allEvents.length === 0) {
-        console.log(chalk.dim('No results found.'));
-      }
-
+      renderPersonalAll(cortex, { days, query });
       closeCortexDb(cortex);
       return;
     }

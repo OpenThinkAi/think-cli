@@ -144,7 +144,7 @@ think retro "AGT-169: mirrored the memories table pattern for the retros table" 
 
 `--cortex` is required (no fallback to active cortex — retros are always about a specific codebase or tool). The cortex is auto-created on first emission (a `✓ created cortex` line appears so you can catch typos immediately); no `think cortex create` step is needed. Optional `--kind` accepts `convention | invariant | prior_decision | gotcha`.
 
-**This release: write-only producer surface.** Reader commands (`think retro recall`, `think brief`) are added in a follow-up release. Retros are currently local-only — cross-machine sync is not yet wired up. "Permanent" means preserved on the machine they were written on; sync wiring is a separate future release.
+Read stored retros with `think retro recall --cortex <name>` (retros-only, scoped) or get a full task-start brief with `think brief --cortex <name>` (personal memories + repo retros). Retros are currently local-only — cross-machine sync is not yet wired up.
 
 ## All commands
 
@@ -174,6 +174,9 @@ think recall <query>           Search memories + engrams
 think memory                   Show memories (--history for timeline)
 think pull <cortex>            Read memories from another cortex
 think retro <message>          Emit a permanent codebase observation (--cortex required, no TTL)
+think retro add <message>      Explicit emit form (same as above)
+think retro recall [<query>]   Read stored retros (--cortex required; default: promoted only)
+think brief [<query>]          Task-start brief: personal memories + repo retros (--cortex required)
 
 think curator edit             Edit personal curator guidance
 think curator show             Show current guidance
