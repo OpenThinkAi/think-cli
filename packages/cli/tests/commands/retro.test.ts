@@ -2,8 +2,17 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { Command } from 'commander';
 import { retroCommand } from '../../src/commands/retro.js';
 import { getCortexDb, closeAllCortexDbs } from '../../src/db/engrams.js';
+
+/** Wrap retroCommand in a program so the global -C, --cortex option is available */
+function makeProgram(): Command {
+  const prog = new Command();
+  prog.option('-C, --cortex <name>', 'Use a specific cortex for this command');
+  prog.addCommand(retroCommand);
+  return prog;
+}
 
 describe('think retro command', () => {
   let originalHome: string | undefined;
@@ -24,19 +33,30 @@ describe('think retro command', () => {
     else process.env.THINK_HOME = originalHome;
     rmSync(tmpHome, { recursive: true, force: true });
     vi.restoreAllMocks();
+    // Reset exitCode so it doesn't bleed across tests
+    process.exitCode = 0;
   });
 
   it('exits non-zero when --cortex is missing', async () => {
-    const exitSpy = vi.spyOn(process, 'exit').mockImplementation(() => { throw new Error('process.exit'); });
-    await expect(
-      retroCommand.parseAsync(['the observation'], { from: 'user' })
-    ).rejects.toThrow();
-    expect(exitSpy).toHaveBeenCalledWith(1);
+    const prog = makeProgram();
+    await prog.parseAsync(['node', 'think', 'retro', 'the observation']);
+    expect(process.exitCode).toBe(1);
+  });
+
+  it('accepts --cortex via the global -C flag', async () => {
+    const cortex = 'global-flag-test';
+    const prog = makeProgram();
+    await prog.parseAsync(['node', 'think', '-C', cortex, 'retro', 'test via global flag']);
+
+    const db = getCortexDb(cortex);
+    const row = db.prepare('SELECT COUNT(*) as count FROM retros').get() as { count: number };
+    expect(row.count).toBe(1);
   });
 
   it('auto-creates the named cortex on first retro emission', async () => {
     const cortex = 'auto-create-test';
-    await retroCommand.parseAsync(['first retro for this cortex', '--cortex', cortex], { from: 'user' });
+    const prog = makeProgram();
+    await prog.parseAsync(['node', 'think', 'retro', 'first retro for this cortex', '--cortex', cortex]);
 
     const db = getCortexDb(cortex);
     const row = db.prepare('SELECT COUNT(*) as count FROM retros').get() as { count: number };
@@ -45,10 +65,8 @@ describe('think retro command', () => {
 
   it('writes the retro content into the retros table', async () => {
     const cortex = 'write-test';
-    await retroCommand.parseAsync(
-      ['strategy engine contracts should be documented', '--cortex', cortex],
-      { from: 'user' },
-    );
+    const prog = makeProgram();
+    await prog.parseAsync(['node', 'think', 'retro', 'strategy engine contracts should be documented', '--cortex', cortex]);
 
     const db = getCortexDb(cortex);
     const row = db.prepare('SELECT * FROM retros LIMIT 1').get() as { content: string; kind: string | null };
@@ -57,24 +75,17 @@ describe('think retro command', () => {
   });
 
   it('exits non-zero for an invalid --kind value', async () => {
-    const exitSpy = vi.spyOn(process, 'exit').mockImplementation(() => { throw new Error('process.exit'); });
-    await expect(
-      retroCommand.parseAsync(
-        ['some observation', '--cortex', 'test', '--kind', 'not-a-valid-kind'],
-        { from: 'user' },
-      )
-    ).rejects.toThrow();
-    expect(exitSpy).toHaveBeenCalledWith(1);
+    const prog = makeProgram();
+    await prog.parseAsync(['node', 'think', 'retro', 'some observation', '--cortex', 'test', '--kind', 'not-a-valid-kind']);
+    expect(process.exitCode).toBe(1);
   });
 
   it.each(['convention', 'invariant', 'prior_decision', 'gotcha'] as const)(
     'accepts valid --kind %s and stores it in the row',
     async (kind) => {
       const cortex = `kind-test-${kind}`;
-      await retroCommand.parseAsync(
-        [`observation with kind ${kind}`, '--cortex', cortex, '--kind', kind],
-        { from: 'user' },
-      );
+      const prog = makeProgram();
+      await prog.parseAsync(['node', 'think', 'retro', `observation with kind ${kind}`, '--cortex', cortex, '--kind', kind]);
 
       const db = getCortexDb(cortex);
       const row = db.prepare('SELECT kind FROM retros LIMIT 1').get() as { kind: string };
@@ -85,7 +96,8 @@ describe('think retro command', () => {
   it('does not appear in engrams table (cross-table isolation)', async () => {
     const cortex = 'isolation-test';
     const uniqueToken = 'isolationtokeneng9xyz';
-    await retroCommand.parseAsync([uniqueToken, '--cortex', cortex], { from: 'user' });
+    const prog = makeProgram();
+    await prog.parseAsync(['node', 'think', 'retro', uniqueToken, '--cortex', cortex]);
 
     const db = getCortexDb(cortex);
     const rows = db.prepare(
@@ -97,7 +109,8 @@ describe('think retro command', () => {
   it('does not appear in memories table (cross-table isolation)', async () => {
     const cortex = 'isolation-test-2';
     const uniqueToken = 'isolationtokenmem9xyz';
-    await retroCommand.parseAsync([uniqueToken, '--cortex', cortex], { from: 'user' });
+    const prog = makeProgram();
+    await prog.parseAsync(['node', 'think', 'retro', uniqueToken, '--cortex', cortex]);
 
     const db = getCortexDb(cortex);
     const rows = db.prepare(
