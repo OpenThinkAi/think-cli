@@ -1,12 +1,9 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { mkdtempSync, rmSync, existsSync } from 'node:fs';
+import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { retroCommand } from '../../src/commands/retro.js';
 import { getCortexDb, closeAllCortexDbs } from '../../src/db/engrams.js';
-import { searchRetros } from '../../src/db/retro-queries.js';
-import { searchEngrams } from '../../src/db/engram-queries.js';
-import { searchMemories } from '../../src/db/memory-queries.js';
 
 describe('think retro command', () => {
   let originalHome: string | undefined;
@@ -41,22 +38,22 @@ describe('think retro command', () => {
     const cortex = 'auto-create-test';
     await retroCommand.parseAsync(['first retro for this cortex', '--cortex', cortex], { from: 'user' });
 
-    // The cortex DB must now exist on disk
     const db = getCortexDb(cortex);
     const row = db.prepare('SELECT COUNT(*) as count FROM retros').get() as { count: number };
     expect(row.count).toBe(1);
   });
 
-  it('writes the retro content and surfaces it via searchRetros', async () => {
-    const cortex = 'search-test';
+  it('writes the retro content into the retros table', async () => {
+    const cortex = 'write-test';
     await retroCommand.parseAsync(
       ['strategy engine contracts should be documented', '--cortex', cortex],
       { from: 'user' },
     );
 
-    const results = searchRetros(cortex, 'strategy');
-    expect(results.length).toBe(1);
-    expect(results[0].content).toBe('strategy engine contracts should be documented');
+    const db = getCortexDb(cortex);
+    const row = db.prepare('SELECT * FROM retros LIMIT 1').get() as { content: string; kind: string | null };
+    expect(row.content).toBe('strategy engine contracts should be documented');
+    expect(row.kind).toBeNull();
   });
 
   it('exits non-zero for an invalid --kind value', async () => {
@@ -71,7 +68,7 @@ describe('think retro command', () => {
   });
 
   it.each(['convention', 'invariant', 'prior_decision', 'gotcha'] as const)(
-    'accepts valid --kind %s and round-trips into the row',
+    'accepts valid --kind %s and stores it in the row',
     async (kind) => {
       const cortex = `kind-test-${kind}`;
       await retroCommand.parseAsync(
@@ -79,31 +76,33 @@ describe('think retro command', () => {
         { from: 'user' },
       );
 
-      const results = searchRetros(cortex, kind);
-      expect(results.length).toBe(1);
-      expect(results[0].kind).toBe(kind);
+      const db = getCortexDb(cortex);
+      const row = db.prepare('SELECT kind FROM retros LIMIT 1').get() as { kind: string };
+      expect(row.kind).toBe(kind);
     },
   );
 
-  it('does not appear in searchEngrams (cross-table isolation)', async () => {
+  it('does not appear in engrams table (cross-table isolation)', async () => {
     const cortex = 'isolation-test';
-    const uniqueToken = 'zxqretro-isolation-token-abc123';
-    await retroCommand.parseAsync(
-      [uniqueToken, '--cortex', cortex],
-      { from: 'user' },
-    );
+    const uniqueToken = 'isolationtokeneng9xyz';
+    await retroCommand.parseAsync([uniqueToken, '--cortex', cortex], { from: 'user' });
 
-    expect(searchEngrams(cortex, uniqueToken).length).toBe(0);
+    const db = getCortexDb(cortex);
+    const rows = db.prepare(
+      `SELECT * FROM engrams WHERE content LIKE ? LIMIT 10`
+    ).all(`%${uniqueToken}%`);
+    expect(rows.length).toBe(0);
   });
 
-  it('does not appear in searchMemories (cross-table isolation)', async () => {
+  it('does not appear in memories table (cross-table isolation)', async () => {
     const cortex = 'isolation-test-2';
-    const uniqueToken = 'zxqretro-memory-isolation-token-def456';
-    await retroCommand.parseAsync(
-      [uniqueToken, '--cortex', cortex],
-      { from: 'user' },
-    );
+    const uniqueToken = 'isolationtokenmem9xyz';
+    await retroCommand.parseAsync([uniqueToken, '--cortex', cortex], { from: 'user' });
 
-    expect(searchMemories(cortex, uniqueToken).length).toBe(0);
+    const db = getCortexDb(cortex);
+    const rows = db.prepare(
+      `SELECT * FROM memories WHERE content LIKE ? LIMIT 10`
+    ).all(`%${uniqueToken}%`);
+    expect(rows.length).toBe(0);
   });
 });

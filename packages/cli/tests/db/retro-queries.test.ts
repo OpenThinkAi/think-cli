@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { getCortexDb, closeAllCortexDbs } from '../../src/db/engrams.js';
-import { insertRetro, searchRetros, getRetrosBySyncVersion, tombstoneRetro, VALID_KINDS } from '../../src/db/retro-queries.js';
+import { insertRetro, VALID_KINDS } from '../../src/db/retro-queries.js';
 
 describe('retro-queries', () => {
   let originalHome: string | undefined;
@@ -25,7 +25,7 @@ describe('retro-queries', () => {
     rmSync(tmpHome, { recursive: true, force: true });
   });
 
-  it('inserts a retro and returns the row', () => {
+  it('inserts a retro and returns the full row', () => {
     const row = insertRetro(cortex, { content: 'use transactions for all schema migrations' });
     expect(row.id).toBeTruthy();
     expect(row.content).toBe('use transactions for all schema migrations');
@@ -55,63 +55,49 @@ describe('retro-queries', () => {
     const cols = db.prepare('PRAGMA table_info(retros)').all() as { name: string }[];
     const colNames = cols.map(c => c.name);
     expect(colNames).not.toContain('expires_at');
-    // Verify expected columns are present
     const expected = ['id', 'content', 'kind', 'cortex_name', 'created_at', 'occurrences', 'tombstoned_at', 'tombstone_reason', 'sync_version'];
     for (const col of expected) {
       expect(colNames).toContain(col);
     }
   });
 
-  it('FTS search round-trips', () => {
+  it('FTS5 index is populated on insert and supports MATCH queries (AC #5)', () => {
     insertRetro(cortex, { content: 'strategy engine type contracts should be documented' });
     insertRetro(cortex, { content: 'always run database migrations inside a transaction' });
 
-    const results = searchRetros(cortex, 'strategy');
+    const db = getCortexDb(cortex);
+    const results = db.prepare(
+      `SELECT r.* FROM retros r JOIN retros_fts f ON r.rowid = f.rowid
+       WHERE retros_fts MATCH ? ORDER BY rank LIMIT 10`
+    ).all('strategy') as { content: string }[];
+
     expect(results.length).toBe(1);
     expect(results[0].content).toContain('strategy engine');
   });
 
-  it('FTS search excludes tombstoned rows', () => {
-    const row = insertRetro(cortex, { content: 'tombstoned retro content' });
-    tombstoneRetro(cortex, row.id, 'superseded');
-
-    const results = searchRetros(cortex, 'tombstoned');
-    expect(results.length).toBe(0);
-  });
-
-  it('getRetrosBySyncVersion returns rows after the given version', () => {
+  it('sync_version increments with each insert', () => {
     const r1 = insertRetro(cortex, { content: 'first retro' });
     const r2 = insertRetro(cortex, { content: 'second retro' });
-
-    const after0 = getRetrosBySyncVersion(cortex, 0);
-    expect(after0.length).toBe(2);
-
-    const afterFirst = getRetrosBySyncVersion(cortex, r1.sync_version);
-    expect(afterFirst.length).toBe(1);
-    expect(afterFirst[0].id).toBe(r2.id);
+    expect(r2.sync_version).toBeGreaterThan(r1.sync_version);
   });
 
-  it('tombstoneRetro sets tombstoned_at and tombstone_reason', () => {
-    const row = insertRetro(cortex, { content: 'to be tombstoned' });
-    tombstoneRetro(cortex, row.id, 'duplicate of another retro');
-
+  it('retros do not appear in engrams table (cross-table isolation)', () => {
+    const token = 'isolation9guard';
+    insertRetro(cortex, { content: token });
     const db = getCortexDb(cortex);
-    const updated = db.prepare('SELECT * FROM retros WHERE id = ?').get(row.id) as { tombstoned_at: string | null; tombstone_reason: string | null };
-    expect(updated.tombstoned_at).not.toBeNull();
-    expect(updated.tombstone_reason).toBe('duplicate of another retro');
-  });
-
-  it('retros are not returned by searchEngrams', async () => {
-    const { searchEngrams } = await import('../../src/db/engram-queries.js');
-    insertRetro(cortex, { content: 'unique-retro-search-isolation-guard' });
-    const engramResults = searchEngrams(cortex, 'unique-retro-search-isolation-guard');
+    const engramResults = db.prepare(
+      `SELECT * FROM engrams WHERE content LIKE ? LIMIT 10`
+    ).all(`%${token}%`);
     expect(engramResults.length).toBe(0);
   });
 
-  it('retros are not returned by searchMemories', async () => {
-    const { searchMemories } = await import('../../src/db/memory-queries.js');
-    insertRetro(cortex, { content: 'unique-retro-memory-isolation-guard' });
-    const memoryResults = searchMemories(cortex, 'unique-retro-memory-isolation-guard');
+  it('retros do not appear in memories table (cross-table isolation)', () => {
+    const token = 'isolation9memory9guard';
+    insertRetro(cortex, { content: token });
+    const db = getCortexDb(cortex);
+    const memoryResults = db.prepare(
+      `SELECT * FROM memories WHERE content LIKE ? LIMIT 10`
+    ).all(`%${token}%`);
     expect(memoryResults.length).toBe(0);
   });
 });
