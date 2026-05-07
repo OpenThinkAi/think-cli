@@ -29,6 +29,10 @@ const BUCKET_RE = new RegExp(`^(.+)-(\\d{${BUCKET_PAD}})\\.jsonl$`);
 // parsing, which would mis-categorise the rows. Peer ids are UUIDs
 // (no `-long-term` substring possible), so this is unambiguous.
 const LONG_TERM_TOKEN = '-long-term';
+// `<peer>-retros.jsonl` is the retro bucket filename (written by a future sync
+// impl). Allowlisted here so a stray retro file isn't routed to memory pull.
+// No push/pull wiring for retros in this release — just the exclusion guard.
+const RETROS_TOKEN = '-retros';
 
 interface PullCursorMap {
   [filename: string]: number;
@@ -282,7 +286,7 @@ export class LocalFsSyncAdapter implements SyncAdapter {
     // positive match. Routing on the `-long-term` substring (rather than the
     // canonical `-long-term.jsonl` suffix) keeps conflict-renamed LT files
     // on the LT codepath where they belong.
-    const memoryFiles = entries.filter(name => !name.includes(LONG_TERM_TOKEN));
+    const memoryFiles = entries.filter(name => !name.includes(LONG_TERM_TOKEN) && !name.includes(RETROS_TOKEN));
     if (memoryFiles.length === 0) return;
 
     const cursors = readPullCursors(cortex, this.name, 'pull_files');

@@ -22,6 +22,7 @@ import { migrateDataCommand } from './commands/migrate-data.js';
 import { longTermCommand } from './commands/long-term.js';
 import { serveCommand } from './commands/serve.js';
 import { subscribeCommand } from './commands/subscribe.js';
+import { retroCommand } from './commands/retro.js';
 
 const program = new Command();
 
@@ -55,5 +56,6 @@ program.addCommand(migrateDataCommand);
 program.addCommand(longTermCommand);
 program.addCommand(serveCommand);
 program.addCommand(subscribeCommand);
+program.addCommand(retroCommand);
 
 program.parse();

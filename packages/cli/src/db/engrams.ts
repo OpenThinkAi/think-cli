@@ -184,6 +184,43 @@ export const migrations: Migration[] = [
       db.prepare('UPDATE memories SET origin_peer_id = ? WHERE origin_peer_id IS NULL').run(peerId);
     },
   },
+  {
+    version: 8,
+    up: (db) => {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS retros (
+          id TEXT PRIMARY KEY NOT NULL,
+          content TEXT NOT NULL,
+          kind TEXT,
+          cortex_name TEXT NOT NULL,
+          created_at TEXT NOT NULL,
+          occurrences INTEGER NOT NULL DEFAULT 1,
+          tombstoned_at TEXT,
+          tombstone_reason TEXT,
+          sync_version INTEGER NOT NULL DEFAULT 0
+        ) STRICT;
+      `);
+
+      db.exec('CREATE INDEX IF NOT EXISTS idx_retros_sync_version ON retros(sync_version);');
+
+      db.exec(`
+        CREATE VIRTUAL TABLE IF NOT EXISTS retros_fts
+          USING fts5(content, content='retros', content_rowid='rowid');
+      `);
+
+      db.exec(`
+        CREATE TRIGGER IF NOT EXISTS retros_ai AFTER INSERT ON retros BEGIN
+          INSERT INTO retros_fts(rowid, content) VALUES (new.rowid, new.content);
+        END;
+      `);
+
+      db.exec(`
+        CREATE TRIGGER IF NOT EXISTS retros_ad AFTER DELETE ON retros BEGIN
+          INSERT INTO retros_fts(retros_fts, rowid, content) VALUES ('delete', old.rowid, old.content);
+        END;
+      `);
+    },
+  },
 ];
 
 /** Returns the per-cortex SQLite connection (holds engrams, memories, longterm_summary, and sync_cursors tables) */
