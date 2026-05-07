@@ -30,6 +30,7 @@ export interface CortexConfig {
   engramTTLDays?: number;
   idleWindowMinutes?: number;
   staleWindowMinutes?: number;
+  retroRelegateAfterRuns?: number;
 }
 
 export interface SubscriptionsConfig {

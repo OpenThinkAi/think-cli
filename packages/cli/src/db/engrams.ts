@@ -221,6 +221,20 @@ export const migrations: Migration[] = [
       `);
     },
   },
+  {
+    version: 9,
+    up: (db) => {
+      db.exec('ALTER TABLE retros ADD COLUMN promoted INTEGER NOT NULL DEFAULT 0;');
+      db.exec('ALTER TABLE retros ADD COLUMN last_recalled_at TEXT;');
+      db.exec('ALTER TABLE retros ADD COLUMN recalled_count INTEGER NOT NULL DEFAULT 0;');
+
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS retro_curator_runs (
+          run_at TEXT PRIMARY KEY NOT NULL
+        ) STRICT;
+      `);
+    },
+  },
 ];
 
 /** Returns the per-cortex SQLite connection (holds engrams, memories, longterm_summary, and sync_cursors tables) */
