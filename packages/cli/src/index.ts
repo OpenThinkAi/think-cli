@@ -24,6 +24,7 @@ import { serveCommand } from './commands/serve.js';
 import { subscribeCommand } from './commands/subscribe.js';
 import { retroCommand } from './commands/retro.js';
 import { curateRetrosCommand } from './commands/curate-retros.js';
+import { briefCommand } from './commands/brief.js';
 
 const program = new Command();
 
@@ -59,5 +60,6 @@ program.addCommand(serveCommand);
 program.addCommand(subscribeCommand);
 program.addCommand(retroCommand);
 program.addCommand(curateRetrosCommand);
+program.addCommand(briefCommand);
 
 program.parse();

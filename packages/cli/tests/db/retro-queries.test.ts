@@ -11,6 +11,8 @@ import {
   setRetroPromoted,
   recordCuratorRun,
   runsSince,
+  searchRetros,
+  bumpRecallStats,
 } from '../../src/db/retro-queries.js';
 
 describe('retro-queries', () => {
@@ -225,5 +227,134 @@ describe('retro-queries', () => {
     const after = new Date(Date.now() + 5000).toISOString();
     const count = runsSince(cortex, after);
     expect(count).toBe(0);
+  });
+
+  describe('searchRetros', () => {
+    it('returns only promoted=1 retros by default', () => {
+      const r1 = insertRetro(cortex, { content: 'promoted retro one' });
+      const r2 = insertRetro(cortex, { content: 'relegated retro two' });
+      setRetroPromoted(cortex, [r1.id], 1);
+      // r2 stays promoted=0
+
+      const results = searchRetros(cortex);
+      const ids = results.map(r => r.id);
+      expect(ids).toContain(r1.id);
+      expect(ids).not.toContain(r2.id);
+    });
+
+    it('--all returns relegated (promoted=0) retros too', () => {
+      const r1 = insertRetro(cortex, { content: 'promoted retro' });
+      const r2 = insertRetro(cortex, { content: 'relegated retro' });
+      setRetroPromoted(cortex, [r1.id], 1);
+
+      const results = searchRetros(cortex, { all: true });
+      const ids = results.map(r => r.id);
+      expect(ids).toContain(r1.id);
+      expect(ids).toContain(r2.id);
+    });
+
+    it('never returns tombstoned rows even with --all', () => {
+      const r1 = insertRetro(cortex, { content: 'canonical retro' });
+      const r2 = insertRetro(cortex, { content: 'tombstoned duplicate' });
+      mergeRetro(cortex, r1.id, r2.id);
+      setRetroPromoted(cortex, [r1.id], 1);
+
+      const results = searchRetros(cortex, { all: true });
+      const ids = results.map(r => r.id);
+      expect(ids).not.toContain(r2.id);
+    });
+
+    it('orders results: promoted=1 first, then occurrences DESC, then created_at DESC', () => {
+      const db = getCortexDb(cortex);
+
+      // Insert in a known order so created_at ordering is deterministic
+      const rLow = insertRetro(cortex, { content: 'low occurrence retro' });
+      const rHigh = insertRetro(cortex, { content: 'high occurrence retro' });
+      const rRelegated = insertRetro(cortex, { content: 'relegated retro' });
+
+      // Promote rLow and rHigh; leave rRelegated promoted=0
+      setRetroPromoted(cortex, [rLow.id, rHigh.id], 1);
+      // Give rHigh more occurrences
+      db.prepare('UPDATE retros SET occurrences = 5 WHERE id = ?').run(rHigh.id);
+
+      const results = searchRetros(cortex, { all: true });
+      const ids = results.map(r => r.id);
+
+      // rHigh (promoted=1, occurrences=5) before rLow (promoted=1, occurrences=1)
+      expect(ids.indexOf(rHigh.id)).toBeLessThan(ids.indexOf(rLow.id));
+      // Both promoted before relegated
+      expect(ids.indexOf(rHigh.id)).toBeLessThan(ids.indexOf(rRelegated.id));
+      expect(ids.indexOf(rLow.id)).toBeLessThan(ids.indexOf(rRelegated.id));
+    });
+
+    it('FTS query filters results', () => {
+      const r1 = insertRetro(cortex, { content: 'always use transactions for schema migrations' });
+      const r2 = insertRetro(cortex, { content: 'index foreign keys in SQLite tables' });
+      setRetroPromoted(cortex, [r1.id, r2.id], 1);
+
+      const results = searchRetros(cortex, { query: 'transactions', all: true });
+      const ids = results.map(r => r.id);
+      expect(ids).toContain(r1.id);
+      expect(ids).not.toContain(r2.id);
+    });
+
+    it('returns empty array when no promoted retros exist', () => {
+      insertRetro(cortex, { content: 'not promoted retro' });
+      const results = searchRetros(cortex);
+      expect(results).toHaveLength(0);
+    });
+  });
+
+  describe('bumpRecallStats', () => {
+    it('increments recalled_count and sets last_recalled_at for each id', () => {
+      const r = insertRetro(cortex, { content: 'retro to bump' });
+      expect(r.recalled_count).toBe(0);
+      expect(r.last_recalled_at).toBeNull();
+
+      const before = new Date().toISOString();
+      bumpRecallStats(cortex, [r.id]);
+
+      const db = getCortexDb(cortex);
+      const updated = db.prepare('SELECT recalled_count, last_recalled_at FROM retros WHERE id = ?').get(r.id) as {
+        recalled_count: number;
+        last_recalled_at: string;
+      };
+      expect(updated.recalled_count).toBe(1);
+      expect(updated.last_recalled_at).not.toBeNull();
+      expect(updated.last_recalled_at >= before).toBe(true);
+    });
+
+    it('increments recalled_count on each call', () => {
+      const r = insertRetro(cortex, { content: 'bump twice retro' });
+      bumpRecallStats(cortex, [r.id]);
+      bumpRecallStats(cortex, [r.id]);
+
+      const db = getCortexDb(cortex);
+      const row = db.prepare('SELECT recalled_count FROM retros WHERE id = ?').get(r.id) as { recalled_count: number };
+      expect(row.recalled_count).toBe(2);
+    });
+
+    it('batches multiple ids in a single transaction', () => {
+      const r1 = insertRetro(cortex, { content: 'batch bump one' });
+      const r2 = insertRetro(cortex, { content: 'batch bump two' });
+      const r3 = insertRetro(cortex, { content: 'batch bump three' });
+
+      bumpRecallStats(cortex, [r1.id, r2.id, r3.id]);
+
+      const db = getCortexDb(cortex);
+      for (const id of [r1.id, r2.id, r3.id]) {
+        const row = db.prepare('SELECT recalled_count FROM retros WHERE id = ?').get(id) as { recalled_count: number };
+        expect(row.recalled_count).toBe(1);
+      }
+    });
+
+    it('no-ops when ids array is empty', () => {
+      const r = insertRetro(cortex, { content: 'should not be touched' });
+      bumpRecallStats(cortex, []);
+
+      const db = getCortexDb(cortex);
+      const row = db.prepare('SELECT recalled_count FROM retros WHERE id = ?').get(r.id) as { recalled_count: number };
+      expect(row.recalled_count).toBe(0);
+    });
   });
 });

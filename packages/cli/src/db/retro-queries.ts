@@ -116,3 +116,81 @@ export function runsSince(cortexName: string, since: string): number {
   ).get(since) as { count: number };
   return result.count;
 }
+
+export interface SearchRetrosParams {
+  query?: string;
+  /** Return all non-tombstoned retros, not just promoted=1. */
+  all?: boolean;
+  limit?: number;
+}
+
+/**
+ * Searches retros for a cortex.
+ * When `query` is set, uses FTS5 MATCH (falls back to LIKE on parse failure).
+ * Otherwise dumps rows directly.
+ * Tombstoned rows are always excluded.
+ * By default returns only promoted=1; pass `all: true` to include relegated rows.
+ * Ordering: promoted DESC, occurrences DESC, created_at DESC.
+ */
+export function searchRetros(cortexName: string, params: SearchRetrosParams = {}): RetroRow[] {
+  const db = getCortexDb(cortexName);
+  const limit = params.limit ?? 20;
+  const q = params.query?.trim();
+  const promotedClause = params.all ? '' : 'AND promoted = 1';
+
+  if (q && q.length > 0) {
+    const rPromotedClause = params.all ? '' : 'AND r.promoted = 1';
+    try {
+      return db.prepare(
+        `SELECT r.* FROM retros r JOIN retros_fts f ON r.rowid = f.rowid
+         WHERE retros_fts MATCH ?
+           AND r.tombstoned_at IS NULL
+           ${rPromotedClause}
+         ORDER BY r.promoted DESC, r.occurrences DESC, r.created_at DESC
+         LIMIT ?`
+      ).all(q, limit) as unknown as RetroRow[];
+    } catch {
+      return db.prepare(
+        `SELECT * FROM retros
+         WHERE cortex_name = ? AND tombstoned_at IS NULL ${promotedClause}
+           AND content LIKE ?
+         ORDER BY promoted DESC, occurrences DESC, created_at DESC
+         LIMIT ?`
+      ).all(cortexName, `%${q}%`, limit) as unknown as RetroRow[];
+    }
+  }
+
+  return db.prepare(
+    `SELECT * FROM retros
+     WHERE cortex_name = ? AND tombstoned_at IS NULL ${promotedClause}
+     ORDER BY promoted DESC, occurrences DESC, created_at DESC
+     LIMIT ?`
+  ).all(cortexName, limit) as unknown as RetroRow[];
+}
+
+/**
+ * Bumps last_recalled_at and recalled_count for a batch of retro ids.
+ * All updates are wrapped in a single transaction.
+ * No sync_version bump — recall stats are local relegation signal only.
+ */
+export function bumpRecallStats(cortexName: string, ids: string[]): void {
+  if (ids.length === 0) return;
+  const db = getCortexDb(cortexName);
+  const now = new Date().toISOString();
+
+  db.exec('BEGIN');
+  try {
+    const stmt = db.prepare(
+      `UPDATE retros
+       SET last_recalled_at = ?, recalled_count = recalled_count + 1
+       WHERE id = ? AND cortex_name = ?`
+    );
+    for (const id of ids) {
+      stmt.run(now, id, cortexName);
+    }
+    db.exec('COMMIT');
+  } catch (err) {
+    db.exec('ROLLBACK');
+    throw err;
+  }
+}
