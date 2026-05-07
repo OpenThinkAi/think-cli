@@ -32,13 +32,17 @@ Storage contract:
            tombstone_reason="merged_into:<id>". Both rows remain in storage.
 
   promote — a retro with occurrences >= 2 is marked promoted=1, making it
-           eligible for surfacing in "think brief". Promotion is purely
+           eligible for surfacing in retro recall paths. Promotion is purely
            frequency-driven; no LLM judgment is applied.
 
   relegate — a promoted retro whose last_recalled_at is older than N
            curator runs has promoted=0 set. The row is NOT deleted. A
-           subsequent recall (via a follow-up release) or new occurrence
-           can re-promote it.
+           subsequent recall or new occurrence can re-promote it.
+
+           Note: relegation requires last_recalled_at to be set, which
+           happens when retros are recalled. Reader commands that set
+           last_recalled_at ship in a follow-up release (AGT-171); until
+           then the relegated count will always be 0.
 
   --cortex is required. Retros are scoped to a specific codebase or tool,
   not the user's current working context.
@@ -99,6 +103,7 @@ async function runRetroCuration(cortex: string, dryRun: boolean, relegateAfterRu
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       console.error(chalk.red(`Retro dedupe failed: ${message}`));
+      console.error(chalk.dim('  (no changes made; promotion and relegation passes skipped)'));
       process.exitCode = 1;
       return;
     }
@@ -167,6 +172,9 @@ async function runRetroCuration(cortex: string, dryRun: boolean, relegateAfterRu
 
   // 3. Relegation pass: promoted retros not recalled in N runs → demote (row stays)
   const relegationCandidates = getPromotedRetrosForRelegation(cortex);
+  if (relegationCandidates.length === 0 && afterDedupe.some(r => r.promoted === 1)) {
+    console.log(chalk.dim('  (relegation inactive: no retros have been recalled yet — last_recalled_at wires up in AGT-171)'));
+  }
   const toRelegate = relegationCandidates.filter(r => {
     return runsSince(cortex, r.last_recalled_at!) >= relegateAfterRuns;
   });
