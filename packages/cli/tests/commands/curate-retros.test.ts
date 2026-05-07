@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { mkdtempSync, rmSync, mkdirSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Command } from 'commander';
@@ -19,17 +19,6 @@ function makeProgram(): Command {
   prog.option('-C, --cortex <name>', 'Use a specific cortex for this command');
   prog.addCommand(curateRetrosCommand);
   return prog;
-}
-
-/** Write a minimal config with an active cortex into the temp THINK_HOME. */
-function writeActiveConfig(tmpHome: string, activeCortex: string): void {
-  const configDir = join(tmpHome, 'config');
-  mkdirSync(configDir, { recursive: true });
-  writeFileSync(join(configDir, 'config.json'), JSON.stringify({
-    peerId: 'test-peer',
-    syncPort: 47821,
-    cortex: { active: activeCortex, author: 'tester' },
-  }));
 }
 
 /** Insert two retro_curator_runs rows with distinct timestamps after `since`. */
@@ -65,25 +54,11 @@ describe('think curate-retros command', () => {
     process.exitCode = 0;
   });
 
-  it('exits non-zero when no cortex is specified and no active cortex configured', async () => {
-    // No -C flag, no config in tmpHome → getConfig returns no active cortex
+  it('exits non-zero when --cortex is not specified (no active-cortex fallback)', async () => {
+    // curate-retros matches the producer's contract: --cortex is required.
     const prog = makeProgram();
     await prog.parseAsync(['node', 'think', 'curate-retros']);
     expect(process.exitCode).toBe(1);
-  });
-
-  it('uses active cortex from config when -C is not provided', async () => {
-    const cortex = 'active-cortex-cfg-test';
-    writeActiveConfig(tmpHome, cortex);
-    getCortexDb(cortex);
-
-    vi.spyOn(retroCurator, 'getCandidatePairs').mockReturnValue([]);
-
-    const prog = makeProgram();
-    await prog.parseAsync(['node', 'think', 'curate-retros']);
-
-    // Command ran without exitCode 1 → used active cortex
-    expect(process.exitCode).toBeFalsy();
   });
 
   it('runs without error on empty cortex (no retros)', async () => {

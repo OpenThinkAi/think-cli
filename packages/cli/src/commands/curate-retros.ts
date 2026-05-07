@@ -22,17 +22,48 @@ const DEFAULT_RELEGATE_AFTER_RUNS = 50;
 export const curateRetrosCommand = new Command('curate-retros')
   .description('Run retro curator: dedupe, promote, and relegate retros (no deletion)')
   .option('--dry-run', 'Preview changes without saving')
+  .addHelpText('after', `
+Storage contract:
+  All retros are preserved permanently — this command never deletes rows.
+  Three operations are performed, all reversible or audit-preserving:
+
+  merge  — semantically equivalent pairs are deduplicated: the older entry
+           becomes canonical (occurrences++), the newer is tombstoned with
+           tombstone_reason="merged_into:<id>". Both rows remain in storage.
+
+  promote — a retro with occurrences >= 2 is marked promoted=1, making it
+           eligible for surfacing in "think brief". Promotion is purely
+           frequency-driven; no LLM judgment is applied.
+
+  relegate — a promoted retro whose last_recalled_at is older than N
+           curator runs has promoted=0 set. The row is NOT deleted. A
+           subsequent recall (via a follow-up release) or new occurrence
+           can re-promote it.
+
+  --cortex is required. Retros are scoped to a specific codebase or tool,
+  not the user's current working context.
+
+Configuration:
+  cortex.retroRelegateAfterRuns  Number of curator runs without recall
+                                 before relegation fires (default: 50).
+  Set via: think config set cortex.retroRelegateAfterRuns <n>
+
+Examples:
+  think -C fx-tracker curate-retros
+  think curate-retros --cortex my-repo --dry-run
+`)
   .action(async function (this: Command, opts: { dryRun?: boolean }) {
     const globalOpts = this.optsWithGlobals() as { cortex?: string };
-    const config = getConfig();
-    const cortex = globalOpts.cortex ?? config.cortex?.active;
+    const cortex = globalOpts.cortex;
 
     if (!cortex) {
-      console.error(chalk.red('No cortex specified. Use -C <name> or run: think cortex switch <name>'));
+      console.error(chalk.red('think curate-retros: --cortex is required (retros are scoped to a specific codebase or tool, not the active cortex).'));
+      console.error(chalk.red('Pass it as: think curate-retros --cortex <name>  or  think -C <name> curate-retros'));
       process.exitCode = 1;
       return;
     }
 
+    const config = getConfig();
     const relegateAfterRuns = config.cortex?.retroRelegateAfterRuns ?? DEFAULT_RELEGATE_AFTER_RUNS;
 
     let releaseLock: () => void = () => {};
@@ -105,9 +136,17 @@ async function runRetroCuration(cortex: string, dryRun: boolean, relegateAfterRu
     }
   }
 
-  // 2. Promotion pass: re-fetch (dedupe may have updated occurrences), then promote deterministically
+  // 2. Promotion pass: re-fetch after dedupe (occurrences may have changed), then promote
+  //    deterministically. A retro is eligible only if it hasn't already earned relegation —
+  //    i.e., its last_recalled_at is either absent or recent enough. This prevents the
+  //    promote-then-relegate cycle where a previously-relegated retro oscillates between
+  //    states every run without any new recall or occurrence evidence.
   const afterDedupe = getPendingRetros(cortex);
-  const toPromote = afterDedupe.filter(r => r.occurrences >= 2 && r.promoted === 0);
+  const toPromote = afterDedupe.filter(r => {
+    if (r.occurrences < 2 || r.promoted !== 0) return false;
+    if (r.last_recalled_at === null) return true;
+    return runsSince(cortex, r.last_recalled_at) < relegateAfterRuns;
+  });
   const promoteCount = toPromote.length;
 
   for (const r of toPromote) {
@@ -129,8 +168,7 @@ async function runRetroCuration(cortex: string, dryRun: boolean, relegateAfterRu
   // 3. Relegation pass: promoted retros not recalled in N runs → demote (row stays)
   const relegationCandidates = getPromotedRetrosForRelegation(cortex);
   const toRelegate = relegationCandidates.filter(r => {
-    const runs = runsSince(cortex, r.last_recalled_at!);
-    return runs >= relegateAfterRuns;
+    return runsSince(cortex, r.last_recalled_at!) >= relegateAfterRuns;
   });
   const relegateCount = toRelegate.length;
 
