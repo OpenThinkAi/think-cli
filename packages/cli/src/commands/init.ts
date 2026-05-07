@@ -7,6 +7,9 @@ import chalk from 'chalk';
 const BEGIN_MARKER = '<!-- think:begin (managed by `think init` — do not edit between markers) -->';
 const END_MARKER = '<!-- think:end -->';
 
+const RETRO_BEGIN_MARKER = '<!-- think:retro:begin (managed by `think init --retro` — do not edit between markers) -->';
+const RETRO_END_MARKER = '<!-- think:retro:end -->';
+
 const BASE_BLOCK = `# Work Logging
 
 **After every commit, push, PR, deploy, Linear update, non-trivial tool-assisted action, or decision made in conversation, immediately run \`think sync\` before responding to the user's next request. This is not optional.**
@@ -57,6 +60,36 @@ function buildBlock(oteamPresent: boolean): string {
   return `${BEGIN_MARKER}\n${body}${END_MARKER}\n`;
 }
 
+function buildRetroBlock(cortex: string): string {
+  const body = `# Iterative Learning
+
+This repo participates in agentic iterative learning via \`think retro\`. Treat retros as a peer-to-future-agents channel: read what others have left for you, and leave behind what would have helped you.
+
+**Read at task start.** Before any non-trivial task in this repo, run:
+
+\`\`\`
+think brief --cortex ${cortex}
+\`\`\`
+
+Use the output to inform the work — prior conventions, invariants, decisions, and gotchas other agents have already learned.
+
+**Write when you notice something worth remembering.** When you discover a convention, invariant, prior decision, or gotcha another agent would benefit from knowing, run:
+
+\`\`\`
+think retro "<observation>" --cortex ${cortex}
+\`\`\`
+
+Loose guidance — you decide when to emit. Examples:
+
+- an undocumented convention you had to figure out
+- a missing or stale type contract that blocked work
+- a surprising invariant in the code
+- a gotcha that looks like a bug but is intentional
+- a prior decision worth not re-litigating
+`;
+  return `${RETRO_BEGIN_MARKER}\n${body}${RETRO_END_MARKER}\n`;
+}
+
 type UpsertResult =
   | { kind: 'created' }
   | { kind: 'replaced' }
@@ -64,19 +97,31 @@ type UpsertResult =
   | { kind: 'migrated'; backupPath: string }
   | { kind: 'unchanged' };
 
-function upsertBlock(filePath: string, block: string): UpsertResult {
+interface UpsertOptions {
+  beginMarker: string;
+  endMarker: string;
+  legacyMigration?: {
+    fingerprintA: string;
+    fingerprintB: string;
+    heading: string;
+  };
+}
+
+function upsertBlock(filePath: string, block: string, opts: UpsertOptions): UpsertResult {
+  const { beginMarker, endMarker, legacyMigration } = opts;
+
   if (!fs.existsSync(filePath)) {
     fs.writeFileSync(filePath, block, 'utf-8');
     return { kind: 'created' };
   }
 
   const existing = fs.readFileSync(filePath, 'utf-8');
-  const beginIdx = existing.indexOf(BEGIN_MARKER);
-  const endIdx = existing.indexOf(END_MARKER);
+  const beginIdx = existing.indexOf(beginMarker);
+  const endIdx = existing.indexOf(endMarker);
 
   if (beginIdx !== -1 && endIdx !== -1 && endIdx > beginIdx) {
     const before = existing.slice(0, beginIdx);
-    const afterStart = endIdx + END_MARKER.length;
+    const afterStart = endIdx + endMarker.length;
     // Drop a single trailing newline after the END marker so the replacement
     // (which itself ends in "\n") doesn't compound blank lines on every run.
     const after = existing.slice(existing[afterStart] === '\n' ? afterStart + 1 : afterStart);
@@ -86,9 +131,14 @@ function upsertBlock(filePath: string, block: string): UpsertResult {
     return { kind: 'replaced' };
   }
 
-  // No markers — check for a legacy unscoped block to migrate in place.
-  if (existing.includes(LEGACY_FINGERPRINT_A) && existing.includes(LEGACY_FINGERPRINT_B)) {
-    const headingIdx = existing.indexOf('# Work Logging');
+  // No markers — check for a legacy unscoped block to migrate in place
+  // (only enabled for the work-log path; retro path is greenfield).
+  if (
+    legacyMigration &&
+    existing.includes(legacyMigration.fingerprintA) &&
+    existing.includes(legacyMigration.fingerprintB)
+  ) {
+    const headingIdx = existing.indexOf(legacyMigration.heading);
     if (headingIdx !== -1) {
       // Slice from the heading to the next H1 (or EOF). The legacy block was
       // always emitted as the trailing section of the file, so this matches
@@ -115,6 +165,21 @@ function upsertBlock(filePath: string, block: string): UpsertResult {
   return { kind: 'appended' };
 }
 
+const WORKLOG_UPSERT: UpsertOptions = {
+  beginMarker: BEGIN_MARKER,
+  endMarker: END_MARKER,
+  legacyMigration: {
+    fingerprintA: LEGACY_FINGERPRINT_A,
+    fingerprintB: LEGACY_FINGERPRINT_B,
+    heading: '# Work Logging',
+  },
+};
+
+const RETRO_UPSERT: UpsertOptions = {
+  beginMarker: RETRO_BEGIN_MARKER,
+  endMarker: RETRO_END_MARKER,
+};
+
 function prompt(question: string, defaultValue: string): Promise<string> {
   const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
   return new Promise((resolve) => {
@@ -125,21 +190,21 @@ function prompt(question: string, defaultValue: string): Promise<string> {
   });
 }
 
-function reportResult(filePath: string, result: UpsertResult): void {
+function reportResult(filePath: string, result: UpsertResult, label: string): void {
   switch (result.kind) {
     case 'created':
-      console.log(chalk.green('✓') + ` Created ${filePath} with work logging instructions`);
+      console.log(chalk.green('✓') + ` Created ${filePath} with ${label} instructions`);
       break;
     case 'replaced':
-      console.log(chalk.green('✓') + ` Updated work logging block in ${filePath}`);
+      console.log(chalk.green('✓') + ` Updated ${label} block in ${filePath}`);
       break;
     case 'appended':
-      console.log(chalk.green('✓') + ` Appended work logging instructions to ${filePath}`);
+      console.log(chalk.green('✓') + ` Appended ${label} instructions to ${filePath}`);
       break;
     case 'migrated':
       console.log(
         chalk.green('✓') +
-          ` Migrated legacy work logging block in ${filePath} → scoped markers. Pre-migration copy saved to ${result.backupPath}; review the diff if you had local edits.`,
+          ` Migrated legacy ${label} block in ${filePath} → scoped markers. Pre-migration copy saved to ${result.backupPath}; review the diff if you had local edits.`,
       );
       break;
     case 'unchanged':
@@ -150,11 +215,54 @@ function reportResult(filePath: string, result: UpsertResult): void {
 
 export const initCommand = new Command('init')
   .description(
-    'Set up Claude Code integration: upserts a marker-bracketed work-logging block in CLAUDE.md (and AGENTS.md if present); block adapts when an oteam workspace is detected',
+    'Set up Claude Code integration: upserts a marker-bracketed work-logging block in CLAUDE.md (and AGENTS.md if present); block adapts when an oteam workspace is detected. Pass --retro --cortex <name> to upsert a separate iterative-learning block instead.',
   )
   .option('-d, --dir <path>', 'Target directory for CLAUDE.md')
   .option('-y, --yes', 'Skip confirmation, use defaults')
-  .action(async (opts: { dir?: string; yes?: boolean }) => {
+  .option('--retro', 'Upsert the iterative-learning (retro) block instead of the work-logging block. Requires --cortex.')
+  .option('--cortex <name>', 'Cortex name baked into the retro block commands (required with --retro).')
+  .addHelpText('after', `
+Modes:
+  Default (no --retro):
+    Manages the work-logging block in CLAUDE.md (and AGENTS.md if present).
+    Block adapts when an oteam workspace is detected.
+
+  --retro --cortex <name>:
+    Manages a separate retro block that tells agents to run
+    \`think brief --cortex <name>\` at task start and
+    \`think retro "<observation>" --cortex <name>\` when they notice
+    something worth remembering. The cortex name is baked into the block
+    literally. The two managed blocks coexist independently — both can be
+    present in the same file.
+
+Examples:
+  think init                              # work-log block in ~/CLAUDE.md
+  think init --dir . --yes                # work-log block in ./CLAUDE.md
+  think init --retro --cortex fx-tracker  # retro block in ~/CLAUDE.md
+  think init --dir . --retro --cortex my-repo --yes
+`)
+  .action(async function (this: Command, opts: { dir?: string; yes?: boolean; retro?: boolean; cortex?: string }) {
+    // The program declares a global `-C, --cortex <name>` option which shadows
+    // the subcommand-local `--cortex` when invoked through the full CLI. Fall
+    // back to the global so both `think -C foo init --retro` and
+    // `think init --retro --cortex foo` resolve to the same value.
+    const globalOpts = this.optsWithGlobals() as { cortex?: string };
+    const cortex = opts.cortex ?? globalOpts.cortex;
+
+    if (opts.retro && !cortex) {
+      console.error(chalk.red('think init --retro: --cortex <name> is required.'));
+      console.error(
+        chalk.red('The retro block bakes the cortex name into the read/write commands literally; without it the block has no scope.'),
+      );
+      console.error(chalk.red('Pass it as: think init --retro --cortex <name>'));
+      process.exit(1);
+    }
+
+    if (cortex && !opts.retro) {
+      console.error(chalk.red('think init: --cortex is only meaningful with --retro.'));
+      process.exit(1);
+    }
+
     const home = process.env.HOME!;
     const defaultDir = home;
 
@@ -178,19 +286,40 @@ export const initCommand = new Command('init')
       process.exit(1);
     }
 
+    if (opts.retro) {
+      const block = buildRetroBlock(cortex!);
+      const label = 'iterative learning';
+
+      const claudePath = path.join(targetDir, 'CLAUDE.md');
+      reportResult(claudePath, upsertBlock(claudePath, block, RETRO_UPSERT), label);
+
+      const agentsPath = path.join(targetDir, 'AGENTS.md');
+      if (fs.existsSync(agentsPath)) {
+        reportResult(agentsPath, upsertBlock(agentsPath, block, RETRO_UPSERT), label);
+      }
+
+      console.log(
+        chalk.dim(
+          `  Agents in this directory will now read \`think brief --cortex ${cortex}\` at task start and emit retros to the same cortex.`,
+        ),
+      );
+      return;
+    }
+
     const oteamPresent = detectOteamWorkspace(home);
     const block = buildBlock(oteamPresent);
+    const label = 'work logging';
 
     if (oteamPresent) {
       console.log(chalk.dim('Detected oteam workspace — block tuned for role-pipeline cadence.'));
     }
 
     const claudePath = path.join(targetDir, 'CLAUDE.md');
-    reportResult(claudePath, upsertBlock(claudePath, block));
+    reportResult(claudePath, upsertBlock(claudePath, block, WORKLOG_UPSERT), label);
 
     const agentsPath = path.join(targetDir, 'AGENTS.md');
     if (fs.existsSync(agentsPath)) {
-      reportResult(agentsPath, upsertBlock(agentsPath, block));
+      reportResult(agentsPath, upsertBlock(agentsPath, block, WORKLOG_UPSERT), label);
     }
 
     console.log(chalk.dim('  Claude Code sessions under this directory will now auto-log with think sync.'));

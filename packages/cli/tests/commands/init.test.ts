@@ -14,6 +14,9 @@ import { initCommand } from '../../src/commands/init.js';
 const BEGIN_MARKER = '<!-- think:begin (managed by `think init` — do not edit between markers) -->';
 const END_MARKER = '<!-- think:end -->';
 
+const RETRO_BEGIN_MARKER = '<!-- think:retro:begin (managed by `think init --retro` — do not edit between markers) -->';
+const RETRO_END_MARKER = '<!-- think:retro:end -->';
+
 describe('think init — scoped marker block', () => {
   let homeRoot: string;
   let projectDir: string;
@@ -181,5 +184,180 @@ think sync "summary"
     expect(agents).toContain('# Existing agents file');
     expect(agents).toContain(BEGIN_MARKER);
     expect(agents).toContain(END_MARKER);
+  });
+});
+
+describe('think init --retro — iterative-learning block', () => {
+  let homeRoot: string;
+  let projectDir: string;
+  let prevHome: string | undefined;
+  let prevExit: typeof process.exit;
+
+  beforeEach(() => {
+    homeRoot = mkdtempSync(path.join(tmpdir(), 'think-init-home-'));
+    projectDir = mkdtempSync(path.join(tmpdir(), 'think-init-project-'));
+    prevHome = process.env.HOME;
+    process.env.HOME = homeRoot;
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    prevExit = process.exit;
+    process.exit = ((code?: number) => {
+      throw new Error(`process.exit:${code ?? 0}`);
+    }) as typeof process.exit;
+  });
+
+  afterEach(() => {
+    rmSync(homeRoot, { recursive: true, force: true });
+    rmSync(projectDir, { recursive: true, force: true });
+    if (prevHome === undefined) delete process.env.HOME;
+    else process.env.HOME = prevHome;
+    process.exit = prevExit;
+    vi.restoreAllMocks();
+  });
+
+  function runRetro(cortex: string): Promise<void> {
+    return initCommand.parseAsync(
+      ['--dir', projectDir, '--yes', '--retro', '--cortex', cortex],
+      { from: 'user' },
+    );
+  }
+
+  function runWorklog(): Promise<void> {
+    return initCommand.parseAsync(['--dir', projectDir, '--yes'], { from: 'user' });
+  }
+
+  function readClaude(): string {
+    return readFileSync(path.join(projectDir, 'CLAUDE.md'), 'utf-8');
+  }
+
+  it('creates CLAUDE.md with retro markers and bakes the cortex name into both commands', async () => {
+    await runRetro('fx-tracker');
+    const content = readClaude();
+    expect(content).toContain(RETRO_BEGIN_MARKER);
+    expect(content).toContain(RETRO_END_MARKER);
+    expect(content).toContain('# Iterative Learning');
+    expect(content).toContain('think brief --cortex fx-tracker');
+    expect(content).toContain('think retro "<observation>" --cortex fx-tracker');
+    expect(content.indexOf(RETRO_BEGIN_MARKER)).toBeLessThan(content.indexOf(RETRO_END_MARKER));
+  });
+
+  it('is idempotent across re-runs', async () => {
+    await runRetro('my-repo');
+    const first = readClaude();
+    await runRetro('my-repo');
+    const second = readClaude();
+    expect(second).toEqual(first);
+    expect((second.match(/think:retro:begin/g) ?? []).length).toBe(1);
+    expect((second.match(/think:retro:end/g) ?? []).length).toBe(1);
+  });
+
+  it('updates the cortex name in place when re-run with a different value', async () => {
+    await runRetro('old-cortex');
+    expect(readClaude()).toContain('think brief --cortex old-cortex');
+
+    await runRetro('new-cortex');
+    const content = readClaude();
+    expect(content).toContain('think brief --cortex new-cortex');
+    expect(content).toContain('think retro "<observation>" --cortex new-cortex');
+    expect(content).not.toContain('old-cortex');
+    // Still exactly one retro block.
+    expect((content.match(/think:retro:begin/g) ?? []).length).toBe(1);
+  });
+
+  it('coexists with the work-logging block (both managed independently)', async () => {
+    await runWorklog();
+    await runRetro('fx-tracker');
+
+    const content = readClaude();
+    // Both blocks present.
+    expect(content).toContain(BEGIN_MARKER);
+    expect(content).toContain(END_MARKER);
+    expect(content).toContain(RETRO_BEGIN_MARKER);
+    expect(content).toContain(RETRO_END_MARKER);
+    expect(content).toContain('# Work Logging');
+    expect(content).toContain('# Iterative Learning');
+    expect(content).toContain('think brief --cortex fx-tracker');
+
+    // Re-running the work-log path leaves the retro block untouched.
+    const before = content;
+    await runWorklog();
+    const after = readClaude();
+    expect(after).toEqual(before);
+
+    // Re-running the retro path leaves the work-log block untouched.
+    await runRetro('fx-tracker');
+    expect(readClaude()).toEqual(before);
+  });
+
+  it('creates CLAUDE.md when missing (file did not exist before retro init)', async () => {
+    expect(existsSync(path.join(projectDir, 'CLAUDE.md'))).toBe(false);
+    await runRetro('greenfield');
+    expect(existsSync(path.join(projectDir, 'CLAUDE.md'))).toBe(true);
+    const content = readClaude();
+    expect(content).toContain(RETRO_BEGIN_MARKER);
+    expect(content).toContain('think brief --cortex greenfield');
+  });
+
+  it('errors clearly and exits non-zero when --retro is passed without --cortex', async () => {
+    const errors: string[] = [];
+    vi.mocked(console.error).mockImplementation((...args: unknown[]) => {
+      errors.push(args.map(String).join(' '));
+    });
+
+    await expect(
+      initCommand.parseAsync(['--dir', projectDir, '--yes', '--retro'], { from: 'user' }),
+    ).rejects.toThrow('process.exit:1');
+
+    const joined = errors.join('\n');
+    expect(joined).toContain('--cortex');
+    expect(joined).toMatch(/required/i);
+    // CLAUDE.md should not have been written.
+    expect(existsSync(path.join(projectDir, 'CLAUDE.md'))).toBe(false);
+  });
+
+  it('errors when --cortex is passed without --retro', async () => {
+    const errors: string[] = [];
+    vi.mocked(console.error).mockImplementation((...args: unknown[]) => {
+      errors.push(args.map(String).join(' '));
+    });
+
+    await expect(
+      initCommand.parseAsync(
+        ['--dir', projectDir, '--yes', '--cortex', 'foo'],
+        { from: 'user' },
+      ),
+    ).rejects.toThrow('process.exit:1');
+
+    expect(errors.join('\n')).toContain('--cortex is only meaningful with --retro');
+  });
+
+  it('writes the retro block to AGENTS.md when it already exists', async () => {
+    writeFileSync(path.join(projectDir, 'AGENTS.md'), '# Existing agents file\n', 'utf-8');
+    await runRetro('fx-tracker');
+    const agents = readFileSync(path.join(projectDir, 'AGENTS.md'), 'utf-8');
+    expect(agents).toContain('# Existing agents file');
+    expect(agents).toContain(RETRO_BEGIN_MARKER);
+    expect(agents).toContain('think brief --cortex fx-tracker');
+  });
+
+  it('does not run legacy work-log migration on the retro path', async () => {
+    // Seed CLAUDE.md with content that would trigger the legacy work-log
+    // migration heuristic. The retro path must ignore it: no `.think-backup`
+    // file, no work-log markers added.
+    const claudePath = path.join(projectDir, 'CLAUDE.md');
+    const seeded = `# My personal preferences\n\nbe terse.\n\n# Work Logging\n\n**After every commit, do X.**\n\nthink sync "x"\n`;
+    writeFileSync(claudePath, seeded, 'utf-8');
+
+    await runRetro('fx-tracker');
+
+    const content = readClaude();
+    // Legacy block left exactly as-is.
+    expect(content).toContain('**After every commit, do X.**');
+    // Retro block appended.
+    expect(content).toContain(RETRO_BEGIN_MARKER);
+    // No work-log markers were inserted.
+    expect(content).not.toContain(BEGIN_MARKER);
+    // No backup file was written by the retro path.
+    expect(existsSync(claudePath + '.think-backup')).toBe(false);
   });
 });
