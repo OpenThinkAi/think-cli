@@ -98,7 +98,7 @@ export function applyRetroTombstone(
   cortexName: string,
   id: string,
   tombstonedAt: string,
-  reason: string,
+  reason: string | null,
 ): void {
   const db = getCortexDb(cortexName);
   db.prepare(

@@ -2,7 +2,7 @@ import { execFileSync } from 'node:child_process';
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { beforeAll, afterAll, describe, it, expect } from 'vitest';
+import { beforeAll, afterAll, afterEach, describe, it, expect } from 'vitest';
 import { runSyncAdapterContractTests, type AdapterFactory } from './contract.js';
 import { GitSyncAdapter } from '../../src/sync/git-adapter.js';
 import { saveConfig, getConfig } from '../../src/lib/config.js';
@@ -81,9 +81,11 @@ describe('git retro sync', () => {
   let pair: ReturnType<typeof import('../fixtures/peer-pair.js').createPeerPair> | null = null;
   let remote: GitRemote | null = null;
 
-  afterAll(() => {
+  afterEach(() => {
     if (remote) factory.teardownRemote!(remote);
     pair?.cleanup();
+    pair = null;
+    remote = null;
   });
 
   it('pushes retros to the orphan branch and pulls on the other peer', async () => {

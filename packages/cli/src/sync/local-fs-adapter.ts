@@ -355,7 +355,7 @@ export class LocalFsSyncAdapter implements SyncAdapter {
             tombstone_reason: entry.tombstone_reason ?? null,
           });
           if (!inserted) {
-            applyRetroTombstone(cortex, entry.id, entry.tombstoned_at, entry.tombstone_reason ?? '');
+            applyRetroTombstone(cortex, entry.id, entry.tombstoned_at, entry.tombstone_reason ?? null);
           } else {
             result.pulled++;
           }
