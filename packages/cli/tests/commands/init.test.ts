@@ -67,6 +67,31 @@ describe('think init — scoped marker block', () => {
     expect(readClaude()).not.toContain('oteam assign');
   });
 
+  it('includes the iterative-learning and retro-read sections with generic <repo-basename> placeholder', async () => {
+    await run();
+    const content = readClaude();
+    expect(content).toContain('# Iterative Learning');
+    expect(content).toContain('# Reading retros at task start');
+    expect(content).toContain('think retro "<observation>" --cortex <repo-basename>');
+    expect(content).toContain('think brief --cortex <repo-basename>');
+    // No specific cortex baked into the base block — that's the per-repo block's job.
+    expect(content).not.toContain('--cortex fx-tracker');
+  });
+
+  it('orders sections worklog → (oteam line if present) → retro inside the markers', async () => {
+    writeOteamConfig({ workspaces: { foo: '/tmp/foo' } });
+    await run();
+    const content = readClaude();
+    const worklogIdx = content.indexOf('# Work Logging');
+    const oteamIdx = content.indexOf('Under an `oteam` workspace');
+    const iterativeIdx = content.indexOf('# Iterative Learning');
+    const readIdx = content.indexOf('# Reading retros at task start');
+    expect(worklogIdx).toBeGreaterThan(-1);
+    expect(oteamIdx).toBeGreaterThan(worklogIdx);
+    expect(iterativeIdx).toBeGreaterThan(oteamIdx);
+    expect(readIdx).toBeGreaterThan(iterativeIdx);
+  });
+
   it('includes the oteam line when ~/.open-team/config.json has at least one workspace', async () => {
     writeOteamConfig({ workspaces: { foo: '/tmp/foo' }, default: 'foo' });
     await run();
