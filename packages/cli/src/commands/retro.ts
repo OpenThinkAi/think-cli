@@ -11,6 +11,7 @@ import {
 } from '../db/retro-queries.js';
 import { validateEngramContent } from '../lib/sanitize.js';
 import { getEngramDbPath } from '../lib/paths.js';
+import { pullForRead, pushForWriteBackground } from '../lib/auto-propagate.js';
 
 // Returns RetroKind|null on success, false on validation error (caller must check).
 function parseKindOpt(kindStr: string | undefined): RetroKind | null | false {
@@ -24,7 +25,7 @@ function parseKindOpt(kindStr: string | undefined): RetroKind | null | false {
   return kindStr as RetroKind;
 }
 
-function emitRetro(cortex: string, message: string, kind: RetroKind | null): void {
+function emitRetro(cortex: string, message: string, kind: RetroKind | null, skipSync = false): void {
   const validated = validateEngramContent(message);
   if (validated.warnings.length > 0) {
     for (const w of validated.warnings) {
@@ -48,6 +49,11 @@ function emitRetro(cortex: string, message: string, kind: RetroKind | null): voi
   console.log(`  ${row.content}`);
 
   closeCortexDb(cortex);
+  try {
+    pushForWriteBackground(cortex, { skip: skipSync });
+  } catch {
+    // Best-effort; background push failures never surface to the caller
+  }
 }
 
 // Explicit emit subcommand: think retro add "<message>"
@@ -56,7 +62,7 @@ const addSubcommand = new Command('add')
   .argument('<message>', 'The observation to record')
   .option('--kind <kind>', `Observation kind: ${VALID_KINDS.join(' | ')}`)
   .action(function (this: Command, message: string, opts: { kind?: string }) {
-    const globalOpts = this.optsWithGlobals() as { cortex?: string };
+    const globalOpts = this.optsWithGlobals() as { cortex?: string; sync?: boolean };
     const cortex = globalOpts.cortex;
 
     if (!cortex) {
@@ -68,7 +74,7 @@ const addSubcommand = new Command('add')
 
     const kind = parseKindOpt(opts.kind);
     if (kind === false) return;
-    emitRetro(cortex, message, kind);
+    emitRetro(cortex, message, kind, !(globalOpts.sync ?? true));
   });
 
 // Read subcommand: think retro recall [<query>] --cortex <name>
@@ -95,13 +101,13 @@ Examples:
   think retro recall "migrations" --cortex my-repo
   think -C fx-tracker retro recall "type contracts" --all
 `)
-  .action(function (this: Command, query: string | undefined, opts: {
+  .action(async function (this: Command, query: string | undefined, opts: {
     cortex?: string;
     all?: boolean;
     includeRelegated?: boolean;
     limit: string;
   }) {
-    const globalOpts = this.optsWithGlobals() as { cortex?: string };
+    const globalOpts = this.optsWithGlobals() as { cortex?: string; sync?: boolean };
     const cortex = opts.cortex ?? globalOpts.cortex;
 
     if (!cortex) {
@@ -115,6 +121,12 @@ Examples:
       console.error(chalk.red(`think retro recall: no cortex named "${cortex}" exists. Cortexes are created on first retro emission.`));
       process.exitCode = 1;
       return;
+    }
+
+    try {
+      await pullForRead(cortex, { skip: !(globalOpts.sync ?? true) });
+    } catch {
+      // Degrade silently; recall renders whatever's locally available
     }
 
     const limit = parseInt(opts.limit, 10);
@@ -145,6 +157,7 @@ export const retroCommand = new Command('retro')
   .description('Emit or recall permanent codebase observations')
   .argument('[message]', 'Observation to record (legacy form — use "think retro add" for explicit emit)')
   .option('--kind <kind>', `Observation kind: ${VALID_KINDS.join(' | ')}`)
+  .option('--no-sync', 'Skip auto push-on-write (debugging / offline use)')
   .addHelpText('after', `
 Storage contract:
   Retros have no TTL and are never purged by the curator. Every emission
@@ -177,7 +190,7 @@ Examples:
 `)
   .addCommand(addSubcommand)
   .addCommand(recallSubcommand)
-  .action(function (this: Command, message: string | undefined, opts: { kind?: string }) {
+  .action(function (this: Command, message: string | undefined, opts: { kind?: string; sync: boolean }) {
     // Legacy emit form: fires when first positional doesn't match "add" or "recall".
     if (!message) {
       this.outputHelp();
@@ -196,5 +209,5 @@ Examples:
 
     const kind = parseKindOpt(opts.kind);
     if (kind === false) return;
-    emitRetro(cortex, message, kind);
+    emitRetro(cortex, message, kind, !opts.sync);
   });

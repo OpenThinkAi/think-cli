@@ -6,6 +6,7 @@ import { Command } from 'commander';
 import { briefCommand } from '../../src/commands/brief.js';
 import { getCortexDb, closeAllCortexDbs } from '../../src/db/engrams.js';
 import { insertRetro, setRetroPromoted } from '../../src/db/retro-queries.js';
+import * as autoPropagate from '../../src/lib/auto-propagate.js';
 
 function makeProgram(): Command {
   const prog = new Command();
@@ -141,6 +142,35 @@ describe('think brief command', () => {
   it('exits 0 on success regardless of result count (AC #8)', async () => {
     const prog = makeProgram();
     await prog.parseAsync(['node', 'think', 'brief', '--cortex', targetCortex]);
+    expect(process.exitCode).toBeFalsy();
+  });
+
+  it('calls pullForRead before rendering retros (AC #1)', async () => {
+    const pullSpy = vi.spyOn(autoPropagate, 'pullForRead').mockResolvedValue(undefined);
+
+    const prog = makeProgram();
+    await prog.parseAsync(['node', 'think', 'brief', '--cortex', targetCortex]);
+
+    expect(pullSpy).toHaveBeenCalledWith(targetCortex, expect.objectContaining({ skip: false }));
+    expect(process.exitCode).toBeFalsy();
+  });
+
+  it('--no-sync skips pullForRead (AC #4)', async () => {
+    const pullSpy = vi.spyOn(autoPropagate, 'pullForRead').mockResolvedValue(undefined);
+
+    const prog = makeProgram();
+    await prog.parseAsync(['node', 'think', 'brief', '--cortex', targetCortex, '--no-sync']);
+
+    expect(pullSpy).toHaveBeenCalledWith(targetCortex, expect.objectContaining({ skip: true }));
+  });
+
+  it('exits 0 when pullForRead rejects (pull failure does not break brief) (AC #1)', async () => {
+    vi.spyOn(autoPropagate, 'pullForRead').mockRejectedValue(new Error('simulated pull failure'));
+
+    const prog = makeProgram();
+    await prog.parseAsync(['node', 'think', 'brief', '--cortex', targetCortex]);
+
+    // brief still renders and exits clean despite the pull throwing
     expect(process.exitCode).toBeFalsy();
   });
 });

@@ -343,22 +343,33 @@ cortexCommand.addCommand(new Command('current')
 // think cortex push
 cortexCommand.addCommand(new Command('push')
   .description('Push local memories to remote')
-  .action(async () => {
+  .option('--cortex <name>', 'Push a specific cortex instead of the active one')
+  .option('--if-online', 'Skip silently if remote is unreachable (used by auto-propagation)')
+  .action(async (opts: { cortex?: string; ifOnline?: boolean }) => {
     const config = getConfig();
-    const cortex = config.cortex?.active;
+    const cortex = opts.cortex ?? config.cortex?.active;
 
     if (!cortex) {
+      if (opts.ifOnline) return;
       console.error(chalk.red('No active cortex. Run: think cortex switch <name>'));
       process.exit(1);
     }
 
     const adapter = getSyncAdapter();
     if (!adapter?.isAvailable()) {
+      if (opts.ifOnline) return;
       console.error(chalk.red('No sync backend configured. Run: think cortex setup'));
       process.exit(1);
     }
 
-    console.log(chalk.cyan(`Pushing ${cortex} memories...`));
+    if (opts.ifOnline) {
+      const reachable = await adapter.isReachable();
+      if (!reachable) return;
+    }
+
+    if (!opts.ifOnline) {
+      console.log(chalk.cyan(`Pushing ${cortex} memories...`));
+    }
     const result = await adapter.push(cortex);
 
     if (result.errors.length > 0) {
@@ -367,29 +378,42 @@ cortexCommand.addCommand(new Command('push')
       }
     }
 
-    console.log(chalk.green('✓') + ` Pushed ${result.pushed} memories`);
+    if (!opts.ifOnline) {
+      console.log(chalk.green('✓') + ` Pushed ${result.pushed} memories`);
+    }
     closeCortexDb(cortex);
   }));
 
 // think cortex pull
 cortexCommand.addCommand(new Command('pull')
   .description('Pull remote memories to local')
-  .action(async () => {
+  .option('--cortex <name>', 'Pull a specific cortex instead of the active one')
+  .option('--if-online', 'Skip silently if remote is unreachable')
+  .action(async (opts: { cortex?: string; ifOnline?: boolean }) => {
     const config = getConfig();
-    const cortex = config.cortex?.active;
+    const cortex = opts.cortex ?? config.cortex?.active;
 
     if (!cortex) {
+      if (opts.ifOnline) return;
       console.error(chalk.red('No active cortex. Run: think cortex switch <name>'));
       process.exit(1);
     }
 
     const adapter = getSyncAdapter();
     if (!adapter?.isAvailable()) {
+      if (opts.ifOnline) return;
       console.error(chalk.red('No sync backend configured. Run: think cortex setup'));
       process.exit(1);
     }
 
-    console.log(chalk.cyan(`Pulling ${cortex} memories...`));
+    if (opts.ifOnline) {
+      const reachable = await adapter.isReachable();
+      if (!reachable) return;
+    }
+
+    if (!opts.ifOnline) {
+      console.log(chalk.cyan(`Pulling ${cortex} memories...`));
+    }
     const result = await adapter.pull(cortex);
 
     if (result.errors.length > 0) {
@@ -398,17 +422,20 @@ cortexCommand.addCommand(new Command('pull')
       }
     }
 
-    console.log(chalk.green('✓') + ` Pulled ${result.pulled} new memories`);
+    if (!opts.ifOnline) {
+      console.log(chalk.green('✓') + ` Pulled ${result.pulled} new memories`);
+    }
     closeCortexDb(cortex);
   }));
 
 // think cortex sync
 cortexCommand.addCommand(new Command('sync')
   .description('Sync memories with remote (pull + push)')
+  .option('--cortex <name>', 'Sync a specific cortex instead of the active one')
   .option('--if-online', 'Skip silently if remote is unreachable (used by the auto-sync LaunchAgent).')
-  .action(async (opts: { ifOnline?: boolean }) => {
+  .action(async (opts: { cortex?: string; ifOnline?: boolean }) => {
     const config = getConfig();
-    const cortex = config.cortex?.active;
+    const cortex = opts.cortex ?? config.cortex?.active;
 
     if (!cortex) {
       // --if-online runs from launchd with no terminal — bail quietly so the
