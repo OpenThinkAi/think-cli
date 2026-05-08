@@ -18,6 +18,8 @@ import {
   runsSince,
   searchRetros,
   bumpRecallStats,
+  getRetrosBySyncVersion,
+  applyRetroTombstone,
 } from '../../src/db/retro-queries.js';
 
 describe('retro-queries', () => {
@@ -465,6 +467,194 @@ describe('retro-queries', () => {
       expect(mergedRow.tombstoned_at).toBeTruthy();
       expect(mergedRow.tombstone_reason).toBe(`merged_into:${canonical.id}`);
     });
+  });
+});
+
+describe('getRetrosBySyncVersion', () => {
+  let originalHome: string | undefined;
+  let tmpHome: string;
+  const cortex = 'sync-version-test';
+
+  beforeEach(() => {
+    originalHome = process.env.THINK_HOME;
+    tmpHome = mkdtempSync(join(tmpdir(), 'think-syncver-test-'));
+    process.env.THINK_HOME = tmpHome;
+    closeAllCortexDbs();
+    getCortexDb(cortex);
+  });
+
+  afterEach(() => {
+    closeAllCortexDbs();
+    if (originalHome === undefined) delete process.env.THINK_HOME;
+    else process.env.THINK_HOME = originalHome;
+    rmSync(tmpHome, { recursive: true, force: true });
+  });
+
+  it('returns rows with sync_version strictly greater than sinceVersion', () => {
+    const r1 = insertRetro(cortex, { content: 'first' });
+    const r2 = insertRetro(cortex, { content: 'second' });
+    const r3 = insertRetro(cortex, { content: 'third' });
+
+    const results = getRetrosBySyncVersion(cortex, r1.sync_version);
+    const ids = results.map(r => r.id);
+    expect(ids).not.toContain(r1.id);
+    expect(ids).toContain(r2.id);
+    expect(ids).toContain(r3.id);
+  });
+
+  it('returns an empty array when no rows exceed sinceVersion', () => {
+    const r = insertRetro(cortex, { content: 'only row' });
+    const results = getRetrosBySyncVersion(cortex, r.sync_version);
+    expect(results).toHaveLength(0);
+  });
+
+  it('includes tombstoned rows (tombstones must propagate to peers)', () => {
+    const r1 = insertRetro(cortex, { content: 'canonical' });
+    const r2 = insertRetro(cortex, { content: 'duplicate' });
+    mergeRetro(cortex, r1.id, r2.id); // tombstones r2 with bumped sync_version
+
+    // r2 is tombstoned, but must appear on the wire so peers can converge.
+    const allAfterZero = getRetrosBySyncVersion(cortex, 0);
+    const ids = allAfterZero.map(r => r.id);
+    expect(ids).toContain(r2.id);
+    const tombstoned = allAfterZero.find(r => r.id === r2.id)!;
+    expect(tombstoned.tombstoned_at).toBeTruthy();
+    expect(tombstoned.tombstone_reason).toBe(`merged_into:${r1.id}`);
+  });
+
+  it('returns rows ordered by sync_version ascending', () => {
+    const r1 = insertRetro(cortex, { content: 'first' });
+    const r2 = insertRetro(cortex, { content: 'second' });
+    const r3 = insertRetro(cortex, { content: 'third' });
+
+    const results = getRetrosBySyncVersion(cortex, 0);
+    const versions = results.map(r => r.sync_version);
+    for (let i = 1; i < versions.length; i++) {
+      expect(versions[i]).toBeGreaterThan(versions[i - 1]);
+    }
+    const ids = results.map(r => r.id);
+    expect(ids).toContain(r1.id);
+    expect(ids).toContain(r2.id);
+    expect(ids).toContain(r3.id);
+  });
+});
+
+describe('applyRetroTombstone', () => {
+  let originalHome: string | undefined;
+  let tmpHome: string;
+  const cortex = 'tombstone-apply-test';
+
+  beforeEach(() => {
+    originalHome = process.env.THINK_HOME;
+    tmpHome = mkdtempSync(join(tmpdir(), 'think-tombstone-test-'));
+    process.env.THINK_HOME = tmpHome;
+    closeAllCortexDbs();
+    getCortexDb(cortex);
+  });
+
+  afterEach(() => {
+    closeAllCortexDbs();
+    if (originalHome === undefined) delete process.env.THINK_HOME;
+    else process.env.THINK_HOME = originalHome;
+    rmSync(tmpHome, { recursive: true, force: true });
+  });
+
+  it('applies tombstone fields to a live local row', () => {
+    const r = insertRetro(cortex, { content: 'will be tombstoned from peer' });
+    const tombstonedAt = '2026-05-01T10:00:00Z';
+    const reason = 'merged_into:other-id';
+
+    applyRetroTombstone(cortex, r.id, tombstonedAt, reason);
+
+    const db = getCortexDb(cortex);
+    const row = db.prepare('SELECT tombstoned_at, tombstone_reason FROM retros WHERE id = ?').get(r.id) as {
+      tombstoned_at: string;
+      tombstone_reason: string;
+    };
+    expect(row.tombstoned_at).toBe(tombstonedAt);
+    expect(row.tombstone_reason).toBe(reason);
+  });
+
+  it('is idempotent — a second call on an already-tombstoned row is a no-op', () => {
+    const r = insertRetro(cortex, { content: 'already tombstoned' });
+    const firstAt = '2026-05-01T10:00:00Z';
+    const firstReason = 'merged_into:original';
+
+    applyRetroTombstone(cortex, r.id, firstAt, firstReason);
+    applyRetroTombstone(cortex, r.id, '2026-05-02T12:00:00Z', 'merged_into:other');
+
+    const db = getCortexDb(cortex);
+    const row = db.prepare('SELECT tombstoned_at, tombstone_reason FROM retros WHERE id = ?').get(r.id) as {
+      tombstoned_at: string;
+      tombstone_reason: string;
+    };
+    expect(row.tombstoned_at).toBe(firstAt);
+    expect(row.tombstone_reason).toBe(firstReason);
+  });
+
+  it('no-ops when the id does not exist', () => {
+    expect(() => applyRetroTombstone(cortex, 'nonexistent-id', '2026-05-01T00:00:00Z', 'reason')).not.toThrow();
+  });
+});
+
+describe('insertRetroIfNotExists with tombstone fields', () => {
+  let originalHome: string | undefined;
+  let tmpHome: string;
+  const cortex = 'insert-tombstone-test';
+
+  beforeEach(() => {
+    originalHome = process.env.THINK_HOME;
+    tmpHome = mkdtempSync(join(tmpdir(), 'think-insert-ts-'));
+    process.env.THINK_HOME = tmpHome;
+    closeAllCortexDbs();
+    getCortexDb(cortex);
+  });
+
+  afterEach(() => {
+    closeAllCortexDbs();
+    if (originalHome === undefined) delete process.env.THINK_HOME;
+    else process.env.THINK_HOME = originalHome;
+    rmSync(tmpHome, { recursive: true, force: true });
+  });
+
+  it('inserts a tombstoned row when the row is new', () => {
+    const id = '01923456-789a-7bcd-8def-012345678999';
+    const tombstonedAt = '2026-04-30T08:00:00Z';
+    const inserted = insertRetroIfNotExists(cortex, {
+      id,
+      content: 'tombstone arrives first',
+      tombstoned_at: tombstonedAt,
+      tombstone_reason: 'merged_into:canonical',
+    });
+    expect(inserted).toBe(true);
+
+    const db = getCortexDb(cortex);
+    const row = db.prepare('SELECT tombstoned_at, tombstone_reason FROM retros WHERE id = ?').get(id) as {
+      tombstoned_at: string;
+      tombstone_reason: string;
+    };
+    expect(row.tombstoned_at).toBe(tombstonedAt);
+    expect(row.tombstone_reason).toBe('merged_into:canonical');
+  });
+
+  it('preserves existing row if id already exists (first-write wins)', () => {
+    const id = '01923456-789a-7bcd-8def-012345678aba';
+    insertRetroIfNotExists(cortex, { id, content: 'original' });
+    const again = insertRetroIfNotExists(cortex, {
+      id,
+      content: 'should not overwrite',
+      tombstoned_at: '2026-05-01T00:00:00Z',
+      tombstone_reason: 'merged_into:x',
+    });
+    expect(again).toBe(false);
+
+    const db = getCortexDb(cortex);
+    const row = db.prepare('SELECT content, tombstoned_at FROM retros WHERE id = ?').get(id) as {
+      content: string;
+      tombstoned_at: string | null;
+    };
+    expect(row.content).toBe('original');
+    expect(row.tombstoned_at).toBeNull();
   });
 });
 

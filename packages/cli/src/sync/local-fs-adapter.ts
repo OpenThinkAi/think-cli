@@ -12,6 +12,12 @@ import {
   insertLongTermEventIfNotExists,
   tombstoneLongTermEvent,
 } from '../db/long-term-queries.js';
+import {
+  getRetrosBySyncVersion,
+  insertRetroIfNotExists,
+  applyRetroTombstone,
+} from '../db/retro-queries.js';
+import { serializeRetroForSync, parseRetrosJsonl } from '../lib/retro-jsonl.js';
 import { getConfig, getPeerId } from '../lib/config.js';
 import { deterministicId, deterministicEventId } from '../lib/deterministic-id.js';
 import { validateEngramContent } from '../lib/sanitize.js';
@@ -20,6 +26,7 @@ import type { SyncAdapter, SyncResult } from './types.js';
 
 const BUCKET_PAD = 4;
 const LONG_TERM_SUFFIX = '-long-term.jsonl';
+const RETROS_SUFFIX = '-retros.jsonl';
 const BUCKET_RE = new RegExp(`^(.+)-(\\d{${BUCKET_PAD}})\\.jsonl$`);
 // A long-term file's canonical name is `<peer>-long-term.jsonl`, but
 // iCloud / Drive / Syncthing can rename a sync-conflict copy to e.g.
@@ -29,9 +36,10 @@ const BUCKET_RE = new RegExp(`^(.+)-(\\d{${BUCKET_PAD}})\\.jsonl$`);
 // parsing, which would mis-categorise the rows. Peer ids are UUIDs
 // (no `-long-term` substring possible), so this is unambiguous.
 const LONG_TERM_TOKEN = '-long-term';
-// `<peer>-retros.jsonl` is the retro bucket filename (written by a future sync
-// impl). Allowlisted here so a stray retro file isn't routed to memory pull.
-// No push/pull wiring for retros in this release — just the exclusion guard.
+// Retro files use a fixed suffix (no bucketing, no conflict-copy routing).
+// The exclusion guard in memory pull uses the same token substring so a
+// conflict-renamed copy (`peer-retros (conflict).jsonl`) also stays off
+// the memory codepath.
 const RETROS_TOKEN = '-retros';
 
 interface PullCursorMap {
@@ -100,10 +108,10 @@ export class LocalFsSyncAdapter implements SyncAdapter {
       return result;
     }
 
-    // Memory and long-term event push are independent — one having nothing
-    // to send must not starve the other (mirrors GitSyncAdapter).
+    // Each path is independent — a failure in one must not starve the others.
     this.pushMemories(cortex, result);
     this.pushLongTermEvents(cortex, result);
+    this.pushRetros(cortex, result);
     return result;
   }
 
@@ -121,6 +129,7 @@ export class LocalFsSyncAdapter implements SyncAdapter {
 
     this.pullMemories(cortex, dir, result);
     this.pullLongTermEvents(cortex, dir, result);
+    this.pullRetros(cortex, dir, result);
     return result;
   }
 
@@ -271,6 +280,103 @@ export class LocalFsSyncAdapter implements SyncAdapter {
       result.pushed += newEvents.length;
     } catch (err) {
       result.errors.push(err instanceof Error ? err.message : String(err));
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Retro push
+  // ---------------------------------------------------------------------------
+
+  private pushRetros(cortex: string, result: SyncResult): void {
+    const cursorStr = getSyncCursor(cortex, this.name, 'push_retros');
+    const lastVersion = cursorStr ? parseInt(cursorStr, 10) : 0;
+
+    const newRetros = getRetrosBySyncVersion(cortex, lastVersion);
+    if (newRetros.length === 0) return;
+
+    const newLines = newRetros.map(r => serializeRetroForSync(r));
+    const maxVersion = Math.max(...newRetros.map(r => r.sync_version));
+
+    const dir = this.cortexDir(cortex);
+    fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+    const file = path.join(dir, getPeerId() + RETROS_SUFFIX);
+
+    try {
+      fs.appendFileSync(file, newLines.join('\n') + '\n');
+      setSyncCursor(cortex, this.name, 'push_retros', String(maxVersion));
+      result.pushed += newLines.length;
+    } catch (err) {
+      result.errors.push(err instanceof Error ? err.message : String(err));
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Retro pull
+  // ---------------------------------------------------------------------------
+
+  private pullRetros(cortex: string, dir: string, result: SyncResult): void {
+    const entries = listJsonlFiles(dir);
+    const retroFiles = entries.filter(name => name.endsWith(RETROS_SUFFIX));
+    if (retroFiles.length === 0) return;
+
+    const ownFile = getPeerId() + RETROS_SUFFIX;
+    const cursors = readPullCursors(cortex, this.name, 'pull_retro_files');
+    const updated: PullCursorMap = { ...cursors };
+    let touched = false;
+
+    for (const file of retroFiles) {
+      if (file === ownFile) continue; // never re-ingest own writes
+
+      const filePath = path.join(dir, file);
+      let raw: string;
+      try {
+        raw = fs.readFileSync(filePath, 'utf-8');
+      } catch (err) {
+        result.errors.push(`Could not read ${file}: ${err instanceof Error ? err.message : String(err)}`);
+        continue;
+      }
+
+      const lines = raw.split('\n').filter(l => l.length > 0);
+      const consumed = cursors[file] ?? 0;
+      if (lines.length <= consumed) continue;
+
+      const entries = parseRetrosJsonl(lines.slice(consumed).join('\n'));
+      for (const entry of entries) {
+        if (entry.tombstoned_at) {
+          // Tombstoned wire row: insert-as-tombstoned if new, or apply
+          // tombstone fields to an existing live row.
+          const inserted = insertRetroIfNotExists(cortex, {
+            id: entry.id,
+            content: entry.content,
+            kind: entry.kind,
+            created_at: entry.created_at,
+            origin_peer_id: entry.origin_peer_id ?? null,
+            tombstoned_at: entry.tombstoned_at,
+            tombstone_reason: entry.tombstone_reason ?? null,
+          });
+          if (!inserted) {
+            applyRetroTombstone(cortex, entry.id, entry.tombstoned_at, entry.tombstone_reason ?? null);
+          } else {
+            result.pulled++;
+          }
+        } else {
+          const wasInserted = insertRetroIfNotExists(cortex, {
+            id: entry.id,
+            content: entry.content,
+            kind: entry.kind,
+            created_at: entry.created_at,
+            origin_peer_id: entry.origin_peer_id ?? null,
+          });
+          if (wasInserted) result.pulled++;
+        }
+      }
+
+      updated[file] = lines.length;
+      touched = true;
+    }
+
+    if (touched) {
+      writePullCursors(cortex, this.name, 'pull_retro_files', updated);
     }
   }
 
