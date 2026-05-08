@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { Command } from 'commander';
 import { retroCommand } from '../../src/commands/retro.js';
 import { getCortexDb, closeAllCortexDbs } from '../../src/db/engrams.js';
+import * as autoPropagate from '../../src/lib/auto-propagate.js';
 
 /** Wrap retroCommand in a program so the global -C, --cortex option is available */
 function makeProgram(): Command {
@@ -117,5 +118,48 @@ describe('think retro command', () => {
       `SELECT * FROM memories WHERE content LIKE ? LIMIT 10`
     ).all(`%${uniqueToken}%`);
     expect(rows.length).toBe(0);
+  });
+
+  it('calls pushForWriteBackground after emit (AC #3)', async () => {
+    const pushSpy = vi.spyOn(autoPropagate, 'pushForWriteBackground').mockImplementation(() => {});
+    const cortex = 'push-on-write-test';
+
+    const prog = makeProgram();
+    await prog.parseAsync(['node', 'think', 'retro', 'observation for push test', '--cortex', cortex]);
+
+    expect(pushSpy).toHaveBeenCalledWith(cortex, expect.objectContaining({ skip: false }));
+    expect(process.exitCode).toBeFalsy();
+  });
+
+  it('--no-sync skips pushForWriteBackground (AC #4)', async () => {
+    const pushSpy = vi.spyOn(autoPropagate, 'pushForWriteBackground').mockImplementation(() => {});
+    const cortex = 'no-sync-push-test';
+
+    const prog = makeProgram();
+    await prog.parseAsync(['node', 'think', 'retro', 'no-sync observation', '--cortex', cortex, '--no-sync']);
+
+    expect(pushSpy).toHaveBeenCalledWith(cortex, expect.objectContaining({ skip: true }));
+  });
+
+  it('exit code 0 unaffected by pushForWriteBackground (AC #5)', async () => {
+    vi.spyOn(autoPropagate, 'pushForWriteBackground').mockImplementation(() => {
+      throw new Error('simulated push failure');
+    });
+    const cortex = 'push-exit-code-test';
+
+    const prog = makeProgram();
+    await prog.parseAsync(['node', 'think', 'retro', 'observation', '--cortex', cortex]);
+
+    expect(process.exitCode).toBeFalsy();
+  });
+
+  it('retro add subcommand calls pushForWriteBackground (AC #3)', async () => {
+    const pushSpy = vi.spyOn(autoPropagate, 'pushForWriteBackground').mockImplementation(() => {});
+    const cortex = 'add-sub-push-test';
+
+    const prog = makeProgram();
+    await prog.parseAsync(['node', 'think', '-C', cortex, 'retro', 'add', 'observation via add subcommand']);
+
+    expect(pushSpy).toHaveBeenCalledWith(cortex, expect.objectContaining({ skip: false }));
   });
 });

@@ -6,6 +6,7 @@ import { closeCortexDb } from '../db/engrams.js';
 import { searchRetros, bumpRecallStats } from '../db/retro-queries.js';
 import { getEngramDbPath } from '../lib/paths.js';
 import { renderPersonalAll } from './recall.js';
+import { pullForRead } from '../lib/auto-propagate.js';
 
 export const briefCommand = new Command('brief')
   .description('Task-start brief: personal-cortex memories + repo-cortex retros')
@@ -13,6 +14,7 @@ export const briefCommand = new Command('brief')
   .option('--cortex <name>', 'Repo cortex to read retros from (required)')
   .option('--days <n>', 'Days of personal memories to include', '14')
   .option('--limit <n>', 'Max retros to return', '20')
+  .option('--no-sync', 'Skip auto pull-on-read (debugging / offline use)')
   .addHelpText('after', `
 Scope:
   Combines two sources into one task-start context dump:
@@ -33,10 +35,11 @@ Examples:
   think brief "migrations" --cortex my-repo
   think brief --cortex think-cli --days 7
 `)
-  .action(function (this: Command, query: string | undefined, opts: {
+  .action(async function (this: Command, query: string | undefined, opts: {
     cortex?: string;
     days: string;
     limit: string;
+    sync: boolean;
   }) {
     const globalOpts = this.optsWithGlobals() as { cortex?: string };
     const targetCortex = opts.cortex ?? globalOpts.cortex;
@@ -61,6 +64,12 @@ Examples:
       console.error(chalk.red(`think brief: no cortex named "${targetCortex}" exists. Cortexes are created on first retro emission.`));
       process.exitCode = 1;
       return;
+    }
+
+    try {
+      await pullForRead(targetCortex, { skip: !opts.sync });
+    } catch {
+      // Degrade silently; brief renders whatever's locally available
     }
 
     const days = parseInt(opts.days, 10);

@@ -6,6 +6,7 @@ import { Command } from 'commander';
 import { retroCommand } from '../../src/commands/retro.js';
 import { getCortexDb, closeAllCortexDbs } from '../../src/db/engrams.js';
 import { insertRetro, setRetroPromoted } from '../../src/db/retro-queries.js';
+import * as autoPropagate from '../../src/lib/auto-propagate.js';
 
 function makeProgram(): Command {
   const prog = new Command();
@@ -144,6 +145,37 @@ describe('think retro recall subcommand', () => {
 
     const prog = makeProgram();
     await prog.parseAsync(['node', 'think', 'retro', 'recall', '--cortex', cortex]);
+    expect(process.exitCode).toBeFalsy();
+  });
+
+  it('calls pullForRead before rendering retros (AC #2)', async () => {
+    const pullSpy = vi.spyOn(autoPropagate, 'pullForRead').mockResolvedValue(undefined);
+
+    const prog = makeProgram();
+    await prog.parseAsync(['node', 'think', 'retro', 'recall', '--cortex', cortex]);
+
+    expect(pullSpy).toHaveBeenCalledWith(cortex, expect.objectContaining({ skip: false }));
+    expect(process.exitCode).toBeFalsy();
+  });
+
+  it('--no-sync skips pullForRead (AC #4)', async () => {
+    const pullSpy = vi.spyOn(autoPropagate, 'pullForRead').mockResolvedValue(undefined);
+
+    const prog = makeProgram();
+    await prog.parseAsync(['node', 'think', 'retro', 'recall', '--cortex', cortex, '--no-sync']);
+
+    expect(pullSpy).toHaveBeenCalledWith(cortex, expect.objectContaining({ skip: true }));
+  });
+
+  it('exit code 0 unaffected by pull failure (AC #1 offline-degrade)', async () => {
+    vi.spyOn(autoPropagate, 'pullForRead').mockRejectedValue(new Error('simulated pull failure'));
+    const r = insertRetro(cortex, { content: 'pull-fail test retro' });
+    setRetroPromoted(cortex, [r.id], 1);
+    closeAllCortexDbs();
+
+    const prog = makeProgram();
+    await prog.parseAsync(['node', 'think', 'retro', 'recall', '--cortex', cortex]);
+
     expect(process.exitCode).toBeFalsy();
   });
 
