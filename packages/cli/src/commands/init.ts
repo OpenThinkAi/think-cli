@@ -10,7 +10,7 @@ const END_MARKER = '<!-- think:end -->';
 const RETRO_BEGIN_MARKER = '<!-- think:retro:begin (managed by `think init --retro` — do not edit between markers) -->';
 const RETRO_END_MARKER = '<!-- think:retro:end -->';
 
-const BASE_BLOCK = `# Work Logging
+const WORKLOG_BLOCK = `# Work Logging
 
 **After every commit, push, PR, deploy, Linear update, non-trivial tool-assisted action, or decision made in conversation, immediately run \`think sync\` before responding to the user's next request. This is not optional.**
 
@@ -34,6 +34,35 @@ think sync "explored X, decided against it" --decision "Decided against X becaus
 
 const OTEAM_EXTRA_LINE = `\n**Under an \`oteam\` workspace:** run \`think recall\` before \`oteam assign\` and \`think sync\` after each role-pipeline hand-off.\n`;
 
+const RETRO_BLOCK = `# Iterative Learning
+
+When you observe a convention, invariant, prior decision, or gotcha worth remembering about a repo, leave a retro for the next agent who works on it:
+
+\`\`\`
+think retro "<observation>" --cortex <repo-basename>
+\`\`\`
+
+\`<repo-basename>\` is the basename of the repo's root path (e.g., \`fx-tracker\`, \`ui-host\`).
+
+Loose triggers — you decide when to emit. Examples:
+
+- an undocumented convention you had to figure out
+- a missing or stale type contract that blocked work
+- a surprising invariant in the code
+- a gotcha that looks like a bug but is intentional
+- a prior decision worth not re-litigating
+
+# Reading retros at task start
+
+Before non-trivial work in a repo (especially the first time touching it in a session), load prior retros + personal context:
+
+\`\`\`
+think brief --cortex <repo-basename>
+\`\`\`
+
+Optional, not required — orchestrator skills (\`/assign-ticket\`, \`/implement-project\`) handle this deterministically when applicable.
+`;
+
 // Fingerprint that identifies a pre-marker (legacy) think block written by an
 // older version of this command. Both substrings come from BASE_BLOCK and are
 // distinctive enough that co-occurrence outside markers is the legacy signal.
@@ -56,7 +85,8 @@ function detectOteamWorkspace(home: string): boolean {
 }
 
 function buildBlock(oteamPresent: boolean): string {
-  const body = oteamPresent ? BASE_BLOCK + OTEAM_EXTRA_LINE : BASE_BLOCK;
+  const oteamSegment = oteamPresent ? OTEAM_EXTRA_LINE : '';
+  const body = `${WORKLOG_BLOCK}${oteamSegment}\n${RETRO_BLOCK}`;
   return `${BEGIN_MARKER}\n${body}${END_MARKER}\n`;
 }
 
