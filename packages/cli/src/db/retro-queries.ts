@@ -37,21 +37,28 @@ export interface InsertRetroParams {
    * (e.g. legacy JSONL lines that pre-date the field).
    */
   origin_peer_id?: string | null;
+  /** Wire-format created_at; defaults to now when omitted (local insert). */
+  created_at?: string;
+  /** Set when ingesting a wire-format row that arrived already-tombstoned. */
+  tombstoned_at?: string | null;
+  tombstone_reason?: string | null;
 }
 
 export function insertRetro(cortexName: string, params: InsertRetroParams): RetroRow {
   const db = getCortexDb(cortexName);
   const id = params.id ?? uuidv7();
-  const now = new Date().toISOString();
+  const now = params.created_at ?? new Date().toISOString();
   const kind = params.kind ?? null;
   // `=== undefined` (not `??`) so callers can opt into NULL via explicit
   // `origin_peer_id: null` — used for legacy JSONL lines with no signal.
   const originPeerId = params.origin_peer_id === undefined ? getPeerId() : params.origin_peer_id;
+  const tombstonedAt = params.tombstoned_at ?? null;
+  const tombstoneReason = params.tombstone_reason ?? null;
 
   db.prepare(
-    `INSERT INTO retros (id, content, kind, cortex_name, created_at, occurrences, sync_version, origin_peer_id)
-     VALUES (?, ?, ?, ?, ?, 1, (SELECT COALESCE(MAX(sync_version), 0) + 1 FROM retros), ?)`
-  ).run(id, params.content, kind, cortexName, now, originPeerId);
+    `INSERT INTO retros (id, content, kind, cortex_name, created_at, occurrences, sync_version, origin_peer_id, tombstoned_at, tombstone_reason)
+     VALUES (?, ?, ?, ?, ?, 1, (SELECT COALESCE(MAX(sync_version), 0) + 1 FROM retros), ?, ?, ?)`
+  ).run(id, params.content, kind, cortexName, now, originPeerId, tombstonedAt, tombstoneReason);
 
   return db.prepare('SELECT * FROM retros WHERE id = ?').get(id) as unknown as RetroRow;
 }
@@ -66,6 +73,40 @@ export function insertRetroIfNotExists(
 
   insertRetro(cortexName, params);
   return true;
+}
+
+/**
+ * Returns all retros (including tombstoned) whose sync_version is strictly
+ * greater than `sinceVersion`, ordered ascending. Drives the push side of
+ * both sync adapters — tombstones must propagate so dedupe-merge state
+ * converges across peers.
+ */
+export function getRetrosBySyncVersion(cortexName: string, sinceVersion: number): RetroRow[] {
+  const db = getCortexDb(cortexName);
+  return db.prepare(
+    'SELECT * FROM retros WHERE cortex_name = ? AND sync_version > ? ORDER BY sync_version ASC'
+  ).all(cortexName, sinceVersion) as unknown as RetroRow[];
+}
+
+/**
+ * Idempotent tombstone application for the cross-peer case. Called when a
+ * pull sees a tombstoned wire row and a local row already exists: applies
+ * the tombstone fields without re-inserting. No-ops if the row is already
+ * tombstoned (guarantees idempotency on repeated pulls).
+ */
+export function applyRetroTombstone(
+  cortexName: string,
+  id: string,
+  tombstonedAt: string,
+  reason: string,
+): void {
+  const db = getCortexDb(cortexName);
+  db.prepare(
+    `UPDATE retros
+     SET tombstoned_at = ?, tombstone_reason = ?,
+         sync_version = (SELECT COALESCE(MAX(sync_version), 0) + 1 FROM retros)
+     WHERE id = ? AND cortex_name = ? AND tombstoned_at IS NULL`
+  ).run(tombstonedAt, reason, id, cortexName);
 }
 
 /** Returns all non-tombstoned retros for a cortex, ordered by created_at ascending. */

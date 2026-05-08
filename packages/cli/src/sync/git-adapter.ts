@@ -23,16 +23,21 @@ import {
   insertLongTermEventIfNotExists,
   tombstoneLongTermEvent,
 } from '../db/long-term-queries.js';
-import { getConfig } from '../lib/config.js';
+import {
+  getRetrosBySyncVersion,
+  insertRetroIfNotExists,
+  applyRetroTombstone,
+} from '../db/retro-queries.js';
+import { serializeRetroForSync, parseRetrosJsonl } from '../lib/retro-jsonl.js';
+import { getConfig, getPeerId } from '../lib/config.js';
 import { deterministicId, deterministicEventId } from '../lib/deterministic-id.js';
 import { validateEngramContent } from '../lib/sanitize.js';
 import type { SyncAdapter, SyncResult } from './types.js';
 
 const LONG_TERM_FILE = 'long-term.jsonl';
-// `<peer>-retros.jsonl` is the retro bucket filename (written by a future sync
-// impl). The git adapter's positive-pattern pull filter (`/^\d{6}\.jsonl$/`)
-// already excludes it; this comment documents the known retro file so it is
-// not mistaken for an unhandled case if it appears in the branch listing.
+const RETROS_SUFFIX = '-retros.jsonl';
+// The git adapter's memory pull filter (`/^\d{6}\.jsonl$/`) already excludes
+// `<peer>-retros.jsonl`; retros ride their own push/pull path below.
 
 export class GitSyncAdapter implements SyncAdapter {
   readonly name = 'git';
@@ -80,10 +85,10 @@ export class GitSyncAdapter implements SyncAdapter {
       return result;
     }
 
-    // Memory push and long-term event push are independent. Keep them as
-    // separate steps so one having nothing to send doesn't starve the other.
+    // Each path is independent — one having nothing to send must not starve the others.
     this.pushMemories(cortex, result);
     this.pushLongTermEvents(cortex, result);
+    this.pushRetros(cortex, result);
 
     return result;
   }
@@ -201,6 +206,89 @@ export class GitSyncAdapter implements SyncAdapter {
     }
   }
 
+  private pushRetros(cortex: string, result: SyncResult): void {
+    const cursorStr = getSyncCursor(cortex, 'git', 'push_retros');
+    const lastVersion = cursorStr ? parseInt(cursorStr, 10) : 0;
+
+    const newRetros = getRetrosBySyncVersion(cortex, lastVersion);
+    if (newRetros.length === 0) return;
+
+    const newLines = newRetros.map(r => serializeRetroForSync(r));
+    const maxVersion = Math.max(...newRetros.map(r => r.sync_version));
+
+    const config = getConfig();
+    const commitMsg = `retros: ${config.cortex?.author ?? 'unknown'}, ${newLines.length} retro${newLines.length === 1 ? '' : 's'}`;
+    const retroFile = getPeerId() + RETROS_SUFFIX;
+
+    try {
+      appendAndCommit(cortex, newLines, commitMsg, 3, retroFile);
+      setSyncCursor(cortex, 'git', 'push_retros', String(maxVersion));
+      result.pushed += newLines.length;
+    } catch (err) {
+      result.errors.push(err instanceof Error ? err.message : String(err));
+    }
+  }
+
+  private pullRetros(cortex: string, result: SyncResult): void {
+    const ownFile = getPeerId() + RETROS_SUFFIX;
+    const retroFiles = listBranchFiles(cortex, RETROS_SUFFIX)
+      .filter(f => f !== ownFile);
+
+    if (retroFiles.length === 0) return;
+
+    const cursors = readGitPullCursors(cortex, 'pull_retro_files');
+    const updated = { ...cursors };
+    let touched = false;
+
+    for (const file of retroFiles) {
+      const raw = readFileFromBranch(cortex, file);
+      if (raw === null) {
+        result.errors.push(`Could not read ${file} from branch`);
+        continue;
+      }
+
+      const lines = raw.split('\n').filter(l => l.length > 0);
+      const consumed = cursors[file] ?? 0;
+      if (lines.length <= consumed) continue;
+
+      const entries = parseRetrosJsonl(lines.slice(consumed).join('\n'));
+      for (const entry of entries) {
+        if (entry.tombstoned_at) {
+          const inserted = insertRetroIfNotExists(cortex, {
+            id: entry.id,
+            content: entry.content,
+            kind: entry.kind,
+            created_at: entry.created_at,
+            origin_peer_id: entry.origin_peer_id ?? null,
+            tombstoned_at: entry.tombstoned_at,
+            tombstone_reason: entry.tombstone_reason ?? null,
+          });
+          if (!inserted) {
+            applyRetroTombstone(cortex, entry.id, entry.tombstoned_at, entry.tombstone_reason ?? '');
+          } else {
+            result.pulled++;
+          }
+        } else {
+          const wasInserted = insertRetroIfNotExists(cortex, {
+            id: entry.id,
+            content: entry.content,
+            kind: entry.kind,
+            created_at: entry.created_at,
+            origin_peer_id: entry.origin_peer_id ?? null,
+          });
+          if (wasInserted) result.pulled++;
+        }
+      }
+
+      updated[file] = lines.length;
+      touched = true;
+    }
+
+    if (touched) {
+      writeGitPullCursors(cortex, 'pull_retro_files', updated);
+    }
+  }
+
   private processMemories(cortex: string, memoriesRaw: string, result: SyncResult): void {
     const memories = parseMemoriesJsonl(memoriesRaw);
 
@@ -248,10 +336,10 @@ export class GitSyncAdapter implements SyncAdapter {
       return result;
     }
 
-    // Memory pull and long-term event pull are independent. Running both
-    // unconditionally ensures an empty memory side doesn't strand events.
+    // Each path is independent — running all unconditionally ensures no path strands another.
     this.pullMemories(cortex, result);
     this.pullLongTermEvents(cortex, result);
+    this.pullRetros(cortex, result);
 
     return result;
   }
@@ -427,6 +515,34 @@ export class GitSyncAdapter implements SyncAdapter {
       return false;
     }
   }
+}
+
+// ---------------------------------------------------------------------------
+// Per-file pull cursor helpers (mirrors local-fs-adapter pattern)
+// ---------------------------------------------------------------------------
+
+interface PullCursorMap {
+  [filename: string]: number;
+}
+
+function readGitPullCursors(cortex: string, direction: string): PullCursorMap {
+  const raw = getSyncCursor(cortex, 'git', direction);
+  if (!raw) return {};
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      const out: PullCursorMap = {};
+      for (const [k, v] of Object.entries(parsed as Record<string, unknown>)) {
+        if (typeof v === 'number' && Number.isFinite(v)) out[k] = v;
+      }
+      return out;
+    }
+  } catch { /* corrupt cursor — treat as fresh */ }
+  return {};
+}
+
+function writeGitPullCursors(cortex: string, direction: string, map: PullCursorMap): void {
+  setSyncCursor(cortex, 'git', direction, JSON.stringify(map));
 }
 
 // English-only matchers covering every auth-flavored failure git surfaces:
