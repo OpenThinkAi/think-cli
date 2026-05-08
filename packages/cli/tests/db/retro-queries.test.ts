@@ -2,9 +2,14 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { getCortexDb, closeAllCortexDbs } from '../../src/db/engrams.js';
+import { DatabaseSync } from 'node:sqlite';
+import { getCortexDb, closeAllCortexDbs, migrations } from '../../src/db/engrams.js';
+import { runMigrations } from '../../src/db/migrate.js';
+import { getPeerId } from '../../src/lib/config.js';
+import { getEngramDbPath, ensureThinkDirs } from '../../src/lib/paths.js';
 import {
   insertRetro,
+  insertRetroIfNotExists,
   VALID_KINDS,
   getPendingRetros,
   mergeRetro,
@@ -356,5 +361,163 @@ describe('retro-queries', () => {
       const row = db.prepare('SELECT recalled_count FROM retros WHERE id = ?').get(r.id) as { recalled_count: number };
       expect(row.recalled_count).toBe(0);
     });
+  });
+
+  describe('origin_peer_id (AGT-191)', () => {
+    it('migration v10 adds origin_peer_id column with index', () => {
+      const db = getCortexDb(cortex);
+      const cols = db.prepare('PRAGMA table_info(retros)').all() as { name: string; type: string }[];
+      const col = cols.find(c => c.name === 'origin_peer_id');
+      expect(col).toBeDefined();
+      expect(col!.type).toBe('TEXT');
+
+      const indexes = db.prepare(
+        `SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='retros' AND name='idx_retros_origin_peer_id'`,
+      ).all() as { name: string }[];
+      expect(indexes.length).toBe(1);
+    });
+
+    it('insertRetro stamps origin_peer_id from getPeerId by default', () => {
+      const row = insertRetro(cortex, { content: 'default-peer-stamp' });
+      expect(row.origin_peer_id).toBe(getPeerId());
+    });
+
+    it('insertRetro preserves an explicit origin_peer_id', () => {
+      const externalPeer = '11111111-2222-3333-4444-555555555555';
+      const row = insertRetro(cortex, { content: 'external-peer', origin_peer_id: externalPeer });
+      expect(row.origin_peer_id).toBe(externalPeer);
+    });
+
+    it('insertRetro records null origin_peer_id when explicitly passed', () => {
+      const row = insertRetro(cortex, { content: 'unknown-origin', origin_peer_id: null });
+      expect(row.origin_peer_id).toBeNull();
+    });
+
+    it('insertRetroIfNotExists inserts a new row preserving wire-format origin_peer_id', () => {
+      const externalPeer = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee';
+      const id = '01923456-789a-7bcd-8def-0123456789ab';
+      const inserted = insertRetroIfNotExists(cortex, {
+        id,
+        content: 'wire-format-row',
+        origin_peer_id: externalPeer,
+      });
+      expect(inserted).toBe(true);
+
+      const db = getCortexDb(cortex);
+      const row = db.prepare('SELECT origin_peer_id FROM retros WHERE id = ?').get(id) as { origin_peer_id: string };
+      expect(row.origin_peer_id).toBe(externalPeer);
+    });
+
+    it('insertRetroIfNotExists is a no-op when the id already exists', () => {
+      const id = '01923456-789a-7bcd-8def-0123456789cd';
+      insertRetroIfNotExists(cortex, { id, content: 'first', origin_peer_id: 'peer-a' });
+      const dupAttempt = insertRetroIfNotExists(cortex, {
+        id,
+        content: 'second',
+        origin_peer_id: 'peer-b',
+      });
+      expect(dupAttempt).toBe(false);
+
+      const db = getCortexDb(cortex);
+      const row = db.prepare('SELECT content, origin_peer_id FROM retros WHERE id = ?').get(id) as {
+        content: string;
+        origin_peer_id: string;
+      };
+      // First-write wins; the duplicate attempt does NOT overwrite
+      // origin_peer_id with the local peer or the second wire-format value.
+      expect(row.content).toBe('first');
+      expect(row.origin_peer_id).toBe('peer-a');
+    });
+
+    it('mergeRetro preserves canonical origin_peer_id; merged row keeps its own', () => {
+      const peerA = 'aaaaaaaa-1111-1111-1111-aaaaaaaaaaaa';
+      const peerB = 'bbbbbbbb-2222-2222-2222-bbbbbbbbbbbb';
+      const canonical = insertRetro(cortex, {
+        content: 'older retro from peer A',
+        origin_peer_id: peerA,
+      });
+      const merged = insertRetro(cortex, {
+        content: 'newer near-duplicate from peer B',
+        origin_peer_id: peerB,
+      });
+
+      mergeRetro(cortex, canonical.id, merged.id);
+
+      const db = getCortexDb(cortex);
+      const canonicalRow = db.prepare('SELECT origin_peer_id, occurrences, tombstoned_at FROM retros WHERE id = ?').get(canonical.id) as {
+        origin_peer_id: string;
+        occurrences: number;
+        tombstoned_at: string | null;
+      };
+      const mergedRow = db.prepare('SELECT origin_peer_id, tombstoned_at, tombstone_reason FROM retros WHERE id = ?').get(merged.id) as {
+        origin_peer_id: string;
+        tombstoned_at: string | null;
+        tombstone_reason: string;
+      };
+
+      // Canonical's origin is unchanged — never overwritten by the merged-into row's peer.
+      expect(canonicalRow.origin_peer_id).toBe(peerA);
+      expect(canonicalRow.occurrences).toBe(2);
+      expect(canonicalRow.tombstoned_at).toBeNull();
+
+      // Merged row is tombstoned but its origin_peer_id is preserved on the row, not transferred.
+      expect(mergedRow.origin_peer_id).toBe(peerB);
+      expect(mergedRow.tombstoned_at).toBeTruthy();
+      expect(mergedRow.tombstone_reason).toBe(`merged_into:${canonical.id}`);
+    });
+  });
+});
+
+describe('migration v10 backfill', () => {
+  // Exercises the migration runner: open a fresh DB pinned at v9, write a
+  // retro row (no origin_peer_id column exists yet), then run the full
+  // migrations array and assert the v10 backfill stamped the row.
+  let originalHome: string | undefined;
+  let tmpHome: string;
+  const cortex = 'v10-backfill-test';
+
+  beforeEach(() => {
+    originalHome = process.env.THINK_HOME;
+    tmpHome = mkdtempSync(join(tmpdir(), 'think-v10-backfill-'));
+    process.env.THINK_HOME = tmpHome;
+    closeAllCortexDbs();
+  });
+
+  afterEach(() => {
+    closeAllCortexDbs();
+    if (originalHome === undefined) delete process.env.THINK_HOME;
+    else process.env.THINK_HOME = originalHome;
+    rmSync(tmpHome, { recursive: true, force: true });
+  });
+
+  it('backfills pre-v10 retro rows to the local peer', () => {
+    ensureThinkDirs();
+    const dbPath = getEngramDbPath(cortex);
+    const db = new DatabaseSync(dbPath);
+    db.exec('PRAGMA journal_mode = WAL');
+    db.exec('PRAGMA synchronous = NORMAL');
+
+    // Apply migrations up to (but not including) v10.
+    const preV10 = migrations.filter(m => m.version < 10);
+    runMigrations(db, preV10);
+
+    // Pre-v10 schema has no origin_peer_id column on retros.
+    const colsBefore = db.prepare('PRAGMA table_info(retros)').all() as { name: string }[];
+    expect(colsBefore.some(c => c.name === 'origin_peer_id')).toBe(false);
+
+    db.prepare(
+      `INSERT INTO retros (id, content, kind, cortex_name, created_at, occurrences, sync_version)
+       VALUES (?, ?, ?, ?, ?, 1, 1)`,
+    ).run('legacy-retro-id', 'legacy-content', null, cortex, new Date().toISOString());
+
+    // Now run the full set, including v10.
+    runMigrations(db, migrations);
+
+    const row = db.prepare('SELECT origin_peer_id FROM retros WHERE id = ?').get('legacy-retro-id') as {
+      origin_peer_id: string;
+    };
+    expect(row.origin_peer_id).toBe(getPeerId());
+
+    db.close();
   });
 });

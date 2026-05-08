@@ -1,5 +1,6 @@
 import { v7 as uuidv7 } from 'uuid';
 import { getCortexDb } from './engrams.js';
+import { getPeerId } from '../lib/config.js';
 
 export const VALID_KINDS = ['convention', 'invariant', 'prior_decision', 'gotcha'] as const;
 export type RetroKind = typeof VALID_KINDS[number];
@@ -17,25 +18,54 @@ export interface RetroRow {
   promoted: number;
   last_recalled_at: string | null;
   recalled_count: number;
+  /**
+   * Originating peer's id. Locally-written rows are stamped via the insert
+   * default. Externally-ingested rows preserve whatever the wire format
+   * carried; legacy lines that lack the field land as `null` rather than
+   * being mis-attributed to the puller.
+   */
+  origin_peer_id: string | null;
 }
 
 export interface InsertRetroParams {
+  id?: string;
   content: string;
   kind?: RetroKind | null;
+  /**
+   * Peer that originally produced this retro. Defaults to the local peer
+   * when omitted; pass `null` to record honestly-unknown attribution
+   * (e.g. legacy JSONL lines that pre-date the field).
+   */
+  origin_peer_id?: string | null;
 }
 
 export function insertRetro(cortexName: string, params: InsertRetroParams): RetroRow {
   const db = getCortexDb(cortexName);
-  const id = uuidv7();
+  const id = params.id ?? uuidv7();
   const now = new Date().toISOString();
   const kind = params.kind ?? null;
+  // `=== undefined` (not `??`) so callers can opt into NULL via explicit
+  // `origin_peer_id: null` — used for legacy JSONL lines with no signal.
+  const originPeerId = params.origin_peer_id === undefined ? getPeerId() : params.origin_peer_id;
 
   db.prepare(
-    `INSERT INTO retros (id, content, kind, cortex_name, created_at, occurrences, sync_version)
-     VALUES (?, ?, ?, ?, ?, 1, (SELECT COALESCE(MAX(sync_version), 0) + 1 FROM retros))`
-  ).run(id, params.content, kind, cortexName, now);
+    `INSERT INTO retros (id, content, kind, cortex_name, created_at, occurrences, sync_version, origin_peer_id)
+     VALUES (?, ?, ?, ?, ?, 1, (SELECT COALESCE(MAX(sync_version), 0) + 1 FROM retros), ?)`
+  ).run(id, params.content, kind, cortexName, now, originPeerId);
 
   return db.prepare('SELECT * FROM retros WHERE id = ?').get(id) as unknown as RetroRow;
+}
+
+export function insertRetroIfNotExists(
+  cortexName: string,
+  params: InsertRetroParams & { id: string },
+): boolean {
+  const db = getCortexDb(cortexName);
+  const existing = db.prepare('SELECT id FROM retros WHERE id = ?').get(params.id);
+  if (existing) return false;
+
+  insertRetro(cortexName, params);
+  return true;
 }
 
 /** Returns all non-tombstoned retros for a cortex, ordered by created_at ascending. */

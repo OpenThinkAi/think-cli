@@ -235,6 +235,25 @@ export const migrations: Migration[] = [
       `);
     },
   },
+  {
+    version: 10,
+    up: (db) => {
+      // Mirrors the v7 origin_peer_id rollout for memories. AGT-192 will
+      // wire <peer>-retros.jsonl push/pull, at which point retros start
+      // crossing peer boundaries; without this column the curator's
+      // dedupe-merge would lose attribution on the canonical row.
+      db.exec('ALTER TABLE retros ADD COLUMN origin_peer_id TEXT;');
+      db.exec('CREATE INDEX IF NOT EXISTS idx_retros_origin_peer_id ON retros(origin_peer_id);');
+
+      // Eager backfill of pre-v10 rows to the local peer. Pre-v10 there
+      // was no cross-peer ingestion path for retros, so every existing
+      // row is genuinely-local and this assignment is correct. Future
+      // ingested rows preserve the wire-format's origin_peer_id via
+      // insertRetroIfNotExists.
+      const peerId = getPeerId();
+      db.prepare('UPDATE retros SET origin_peer_id = ? WHERE origin_peer_id IS NULL').run(peerId);
+    },
+  },
 ];
 
 /** Returns the per-cortex SQLite connection (holds engrams, memories, longterm_summary, and sync_cursors tables) */
