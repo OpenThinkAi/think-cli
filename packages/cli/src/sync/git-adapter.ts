@@ -243,7 +243,7 @@ export class GitSyncAdapter implements SyncAdapter {
     for (const file of retroFiles) {
       const raw = readFileFromBranch(cortex, file);
       if (raw === null) {
-        result.errors.push(`Could not read ${file} from branch`);
+        result.errors.push(`Could not read ${file} from branch: git read returned null`);
         continue;
       }
 

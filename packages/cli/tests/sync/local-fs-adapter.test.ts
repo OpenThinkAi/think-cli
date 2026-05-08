@@ -125,7 +125,7 @@ describe('local-fs retro sync', () => {
   it('pushes retros to a per-peer JSONL file and pulls on the other peer', async () => {
     const { createPeerPair } = await import('../fixtures/peer-pair.js');
     const { insertRetro } = await import('../../src/db/retro-queries.js');
-    const { existsSync, readdirSync } = await import('node:fs');
+    const { readdirSync } = await import('node:fs');
 
     pair = createPeerPair();
     remote = factory.setupRemote(pair.cortexName) as FsRemote;
@@ -332,7 +332,7 @@ describe('local-fs retro sync', () => {
   it('cursor advances correctly — second push sends only new retros', async () => {
     const { createPeerPair } = await import('../fixtures/peer-pair.js');
     const { insertRetro } = await import('../../src/db/retro-queries.js');
-    const { existsSync, readFileSync } = await import('node:fs');
+    const { readFileSync } = await import('node:fs');
     const { join } = await import('node:path');
 
     pair = createPeerPair();
