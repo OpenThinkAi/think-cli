@@ -42,7 +42,7 @@ When you observe a convention, invariant, prior decision, or gotcha worth rememb
 think retro "<observation>" --cortex <repo-basename>
 \`\`\`
 
-\`<repo-basename>\` is the basename of the repo's root path (e.g., \`fx-tracker\`, \`ui-host\`).
+\`<repo-basename>\` is the basename of the repo's root directory — \`basename "$(git rev-parse --show-toplevel)"\` (e.g., \`fx-tracker\`, \`ui-host\`). For repos that have a stable cortex name, prefer the per-repo \`think init --retro --cortex <name>\` block — it bakes the cortex literally so agents don't have to infer it.
 
 Loose triggers — you decide when to emit. Examples:
 
@@ -64,8 +64,8 @@ Optional, not required — orchestrator skills (\`/assign-ticket\`, \`/implement
 `;
 
 // Fingerprint that identifies a pre-marker (legacy) think block written by an
-// older version of this command. Both substrings come from BASE_BLOCK and are
-// distinctive enough that co-occurrence outside markers is the legacy signal.
+// older version of this command. Both substrings come from WORKLOG_BLOCK and
+// are distinctive enough that co-occurrence outside markers is the legacy signal.
 const LEGACY_FINGERPRINT_A = '**After every commit';
 const LEGACY_FINGERPRINT_B = 'think sync';
 
@@ -245,7 +245,7 @@ function reportResult(filePath: string, result: UpsertResult, label: string): vo
 
 export const initCommand = new Command('init')
   .description(
-    'Set up Claude Code integration: upserts a marker-bracketed work-logging block in CLAUDE.md (and AGENTS.md if present); block adapts when an oteam workspace is detected. Pass --retro --cortex <name> to upsert a separate iterative-learning block instead.',
+    'Set up Claude Code integration: upserts a marker-bracketed block in CLAUDE.md (and AGENTS.md if present) with work-logging guidance and generic iterative-learning instructions (read via `think brief`, write via `think retro`, cortex inferred from the repo basename); block adapts when an oteam workspace is detected. Pass --retro --cortex <name> to upsert a *separate* repo-scoped block that bakes the cortex name into the read/write commands literally — both blocks can coexist in the same file.',
   )
   .option('-d, --dir <path>', 'Target directory for CLAUDE.md')
   .option('-y, --yes', 'Skip confirmation, use defaults')
@@ -254,16 +254,19 @@ export const initCommand = new Command('init')
   .addHelpText('after', `
 Modes:
   Default (no --retro):
-    Manages the work-logging block in CLAUDE.md (and AGENTS.md if present).
-    Block adapts when an oteam workspace is detected.
+    Manages a single block in CLAUDE.md (and AGENTS.md if present)
+    containing work-logging guidance plus generic retro pattern
+    instructions (read with \`think brief\`, write with \`think retro\`,
+    cortex inferred from the repo's root basename). Block adapts when an
+    oteam workspace is detected. Best installed once at workspace level.
 
   --retro --cortex <name>:
-    Manages a separate retro block that tells agents to run
-    \`think brief --cortex <name>\` at task start and
-    \`think retro "<observation>" --cortex <name>\` when they notice
-    something worth remembering. The cortex name is baked into the block
-    literally. The two managed blocks coexist independently — both can be
-    present in the same file.
+    Manages a *separate* second block scoped to one cortex. The default
+    block teaches the pattern; this one bakes the specific cortex name
+    into the read/write commands literally so agents don't have to infer
+    it. Both managed blocks coexist independently in the same file —
+    install the default block at workspace level, then run --retro at
+    each repo root for the cortex-specific commands.
 
 Examples:
   think init                              # work-log block in ~/CLAUDE.md
