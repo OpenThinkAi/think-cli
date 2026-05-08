@@ -1,5 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { execSync } from 'node:child_process';
 import path from 'node:path';
+import { tmpdir } from 'node:os';
 import {
   mkdtempSync,
   mkdirSync,
@@ -8,7 +10,6 @@ import {
   writeFileSync,
   existsSync,
 } from 'node:fs';
-import { tmpdir } from 'node:os';
 import { initCommand } from '../../src/commands/init.js';
 
 const BEGIN_MARKER = '<!-- think:begin (managed by `think init` — do not edit between markers) -->';
@@ -384,5 +385,90 @@ describe('think init --retro — iterative-learning block', () => {
     expect(content).not.toContain(BEGIN_MARKER);
     // No backup file was written by the retro path.
     expect(existsSync(claudePath + '.think-backup')).toBe(false);
+  });
+});
+
+describe('think init --retro — directory resolution (AC #6)', () => {
+  let homeRoot: string;
+  let prevHome: string | undefined;
+  let prevCwd: string;
+  let prevExit: typeof process.exit;
+  let tempDir1: string;
+  let tempDir2: string;
+
+  beforeEach(() => {
+    homeRoot = mkdtempSync(path.join(tmpdir(), 'think-retro-dir-home-'));
+    prevHome = process.env.HOME;
+    process.env.HOME = homeRoot;
+    prevCwd = process.cwd();
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    prevExit = process.exit;
+    process.exit = ((code?: number) => {
+      throw new Error(`process.exit:${code ?? 0}`);
+    }) as typeof process.exit;
+    tempDir1 = '';
+    tempDir2 = '';
+  });
+
+  afterEach(() => {
+    // Restore cwd BEFORE rmSync so we're never trying to remove the current dir.
+    process.chdir(prevCwd);
+    if (tempDir1) rmSync(tempDir1, { recursive: true, force: true });
+    if (tempDir2) rmSync(tempDir2, { recursive: true, force: true });
+    rmSync(homeRoot, { recursive: true, force: true });
+    if (prevHome === undefined) delete process.env.HOME;
+    else process.env.HOME = prevHome;
+    process.exit = prevExit;
+    vi.restoreAllMocks();
+  });
+
+  it('--retro no -d inside a git repo writes to git toplevel without prompting', async () => {
+    tempDir1 = mkdtempSync(path.join(tmpdir(), 'think-retro-git-'));
+    execSync('git init', { cwd: tempDir1, stdio: 'ignore' });
+    process.chdir(tempDir1);
+
+    await initCommand.parseAsync(['--retro', '--cortex', 'my-repo'], { from: 'user' });
+
+    const claudePath = path.join(tempDir1, 'CLAUDE.md');
+    expect(existsSync(claudePath)).toBe(true);
+    expect(readFileSync(claudePath, 'utf-8')).toContain('think brief --cortex my-repo');
+  });
+
+  it('--retro no -d outside a git repo with --yes resolves to cwd', async () => {
+    tempDir1 = mkdtempSync(path.join(tmpdir(), 'think-retro-nogit-'));
+    process.chdir(tempDir1);
+
+    await initCommand.parseAsync(['--retro', '--cortex', 'my-repo', '--yes'], { from: 'user' });
+
+    // File should land in the actual cwd (tempDir1), not in $HOME.
+    const resolvedCwd = process.cwd();
+    const claudePath = path.join(resolvedCwd, 'CLAUDE.md');
+    expect(existsSync(claudePath)).toBe(true);
+    expect(readFileSync(claudePath, 'utf-8')).toContain('think brief --cortex my-repo');
+    expect(existsSync(path.join(homeRoot, 'CLAUDE.md'))).toBe(false);
+  });
+
+  it('--retro with explicit -d honors the override regardless of git state', async () => {
+    tempDir1 = mkdtempSync(path.join(tmpdir(), 'think-retro-explicit-'));
+
+    await initCommand.parseAsync(
+      ['--retro', '--cortex', 'my-repo', '--dir', tempDir1],
+      { from: 'user' },
+    );
+
+    const claudePath = path.join(tempDir1, 'CLAUDE.md');
+    expect(existsSync(claudePath)).toBe(true);
+    expect(readFileSync(claudePath, 'utf-8')).toContain('think brief --cortex my-repo');
+  });
+
+  it('base think init (no --retro) with --yes still uses $HOME, not cwd', async () => {
+    tempDir1 = mkdtempSync(path.join(tmpdir(), 'think-base-init-'));
+    process.chdir(tempDir1);
+
+    await initCommand.parseAsync(['--yes'], { from: 'user' });
+
+    expect(existsSync(path.join(homeRoot, 'CLAUDE.md'))).toBe(true);
+    expect(existsSync(path.join(tempDir1, 'CLAUDE.md'))).toBe(false);
   });
 });

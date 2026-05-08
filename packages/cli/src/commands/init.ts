@@ -1,3 +1,4 @@
+import { execSync } from 'node:child_process';
 import { Command } from 'commander';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -210,6 +211,17 @@ const RETRO_UPSERT: UpsertOptions = {
   endMarker: RETRO_END_MARKER,
 };
 
+function resolveRetroDefaultDir(): string | null {
+  try {
+    return execSync('git rev-parse --show-toplevel', {
+      stdio: ['ignore', 'pipe', 'ignore'],
+      encoding: 'utf-8',
+    }).trim();
+  } catch {
+    return null;
+  }
+}
+
 function prompt(question: string, defaultValue: string): Promise<string> {
   const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
   return new Promise((resolve) => {
@@ -249,7 +261,7 @@ export const initCommand = new Command('init')
   )
   .option('-d, --dir <path>', 'Target directory for CLAUDE.md')
   .option('-y, --yes', 'Skip confirmation, use defaults')
-  .option('--retro', 'Upsert the iterative-learning (retro) block instead of the work-logging block. Requires --cortex.')
+  .option('--retro', 'Upsert the iterative-learning (retro) block instead of the work-logging block. Requires --cortex. When no -d is given: writes silently to the git repo root if inside a repo; prompts with cwd as the default otherwise.')
   .option('--cortex <name>', 'Cortex name baked into the retro block commands (required with --retro).')
   .addHelpText('after', `
 Modes:
@@ -268,11 +280,16 @@ Modes:
     install the default block at workspace level, then run --retro at
     each repo root for the cortex-specific commands.
 
+    Target directory when no -d is given:
+    - Inside a git repo: writes to the git repo root silently (no prompt).
+    - Outside a git repo: prompts with cwd as the seeded default (--yes
+      skips the prompt and uses cwd directly).
+
 Examples:
   think init                              # work-log block in ~/CLAUDE.md
   think init --dir . --yes                # work-log block in ./CLAUDE.md
-  think init --retro --cortex fx-tracker  # retro block in ~/CLAUDE.md
-  think init --dir . --retro --cortex my-repo --yes
+  think init --retro --cortex fx-tracker  # retro block at git root (silent)
+  think init --dir . --retro --cortex my-repo  # retro block in ./CLAUDE.md
 `)
   .action(async function (this: Command, opts: { dir?: string; yes?: boolean; retro?: boolean; cortex?: string }) {
     // The program declares a global `-C, --cortex <name>` option which shadows
@@ -303,6 +320,24 @@ Examples:
 
     if (opts.dir) {
       targetDir = path.resolve(opts.dir);
+    } else if (opts.retro) {
+      // --retro without -d: use git toplevel silently (in-repo is the 99% case);
+      // fall back to a cwd-seeded prompt (or cwd directly with --yes) when not
+      // inside a git repo, since the outside-a-repo destination is ambiguous.
+      const gitTop = resolveRetroDefaultDir();
+      if (gitTop !== null) {
+        targetDir = gitTop;
+      } else if (opts.yes) {
+        targetDir = process.cwd();
+      } else {
+        const cwd = process.cwd();
+        targetDir = await prompt(
+          `Where should CLAUDE.md be written? ${chalk.dim(`(${cwd})`)} `,
+          cwd,
+        );
+        targetDir = targetDir.replace(/^~/, home);
+        targetDir = path.resolve(targetDir);
+      }
     } else if (opts.yes) {
       targetDir = defaultDir;
     } else {
