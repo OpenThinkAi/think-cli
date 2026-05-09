@@ -35,6 +35,7 @@ That routes the report directly to the maintainers without any public trace. Inc
 - Subprocess invocations — git, npm (used by the update check), launchctl (used by the auto-curate LaunchAgent).
 - Input validation on any value that flows from config, CLI arguments, or remote engram content into a subprocess argv or filesystem path.
 - The Claude Agent SDK call sites — see [Agent topology](#agent-topology) for the full inventory and the architectural defense (`tools: []` on every call).
+- Data flow to external destinations — see [Data destinations](#data-destinations) for the inventory and per-destination retention.
 
 ### Out of scope
 
@@ -114,6 +115,20 @@ What the model can produce that lands somewhere persistent:
 All four sinks are local SQLite. Model output is parsed via JSON-shaped responses; structurally-malformed output is rejected before any write. The `narrative` field of an episode memory is the only free-form text sink — it lands in the local DB and only reaches outside the machine if the user explicitly syncs that cortex.
 
 Cross-reference: [Threat model — Untrusted content](#untrusted-content--pulled-engrams-proxy-events-file-imports), [Per-curation data envelope](#per-curation-data-envelope-llm-consent).
+
+## Data destinations
+
+User data leaves the local SQLite cortex via these paths. All are gated behind explicit user action (config + invocation); none happen silently on a fresh install.
+
+| Destination | Trigger | Content shipped | Retention story |
+|---|---|---|---|
+| **Anthropic (Claude API)** | `think curate`, `think curate --consolidate`, `think curate --episode`, `think long-term backfill`, `think curate-retros`, `think summary` | Per-curation envelope (see below) — memories, summaries, engrams, retro pairs | Anthropic's API retention applies; no per-call deletion. Gated by `THINK_LLM_CONSENT` / `cortex.llmConsent` (AGT-065). |
+| **Cortex sync remote** (git remote OR fs folder) | `think cortex push`, `think cortex sync`, auto-sync LaunchAgent | Curated memories + long-term events as JSONL. Engrams never leave. | Whatever the remote retains — git history is permanent unless rewritten; iCloud/Dropbox/Syncthing follow their own retention. Memory tombstones do NOT propagate (BLOOM-122). |
+| **Subscription proxy** (`think serve` instance) | `think subscribe poll` (CLI → proxy GET /v1/events) | Read-only fetch from the proxy's `events` table — content originated upstream, not from this CLI. | Proxy's SQLite retention; cleanup is operator's responsibility. |
+| **npm registry** (update check) | First CLI invocation per 24h | Just an `npm view` HEAD against `@openthink/think` — no cortex content shipped. Disable with `THINK_NO_UPDATE_CHECK=1`. | npm logs the package query (standard registry telemetry). |
+| **Audit log** (`~/.local/share/think/sync-audit.log`) | Every export, import, network-send, network-receive | Local-only metadata trail (entry IDs, peer IDs, timestamps, file paths, counts) — NOT the message content itself. | Local file, rotates at 2MB to `sync-audit.log.1`; `think audit prune --before <date>` available (AGT-063). |
+
+Re-audit this inventory whenever a new connector lands on the subscribe surface — a new connector kind expands the third-party-content path and may add a new destination.
 
 ## Per-curation data envelope (LLM consent)
 
