@@ -1,4 +1,4 @@
-import { query } from '@anthropic-ai/claude-agent-sdk';
+import { query } from './claude-sdk.js';
 import { getCortexDb } from '../db/engrams.js';
 import { getPendingRetros } from '../db/retro-queries.js';
 import { wrapData } from './sanitize.js';

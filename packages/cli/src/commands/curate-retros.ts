@@ -16,6 +16,7 @@ import {
   runRetroDedupe,
 } from '../lib/retro-curator.js';
 import { acquireCurateLock } from '../lib/curate-lock.js';
+import { LlmConsentError } from '../lib/llm-consent.js';
 
 const DEFAULT_RELEGATE_AFTER_RUNS = 50;
 
@@ -101,6 +102,11 @@ async function runRetroCuration(cortex: string, dryRun: boolean, relegateAfterRu
     try {
       judgments = await runRetroDedupe(prompt);
     } catch (err) {
+      if (err instanceof LlmConsentError) {
+        console.error(chalk.red(err.message));
+        process.exitCode = 1;
+        return;
+      }
       const message = err instanceof Error ? err.message : String(err);
       console.error(chalk.red(`Retro dedupe failed: ${message}`));
       console.error(chalk.dim('  (no changes made; promotion and relegation passes skipped)'));

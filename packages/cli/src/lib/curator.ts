@@ -1,5 +1,5 @@
 import fs from 'node:fs';
-import { query } from '@anthropic-ai/claude-agent-sdk';
+import { query } from './claude-sdk.js';
 import { getCuratorMdPath } from './paths.js';
 import { wrapData } from './sanitize.js';
 import type { Engram } from '../db/engram-queries.js';
@@ -189,6 +189,36 @@ export interface LongTermEventContext {
   supersedes: string | null;
 }
 
+/**
+ * Default ceiling on the assembled curation prompt user-message in chars.
+ * ~50k chars ≈ 12-15k tokens — well within Claude's 200k context but
+ * bounds the volume of memory content shipped per call. AGT-065 AC #3.
+ * Override per cortex via `cortex.curatorPromptCharCap`.
+ */
+export const DEFAULT_CURATOR_PROMPT_CHAR_CAP = 50_000;
+
+/**
+ * Trim recentMemories oldest-first until the assembled lines fit under
+ * `cap` characters. Returns the kept slice plus how many were dropped so
+ * the caller can warn. The pending-engrams + long-term-events + curator-md
+ * portions of the prompt are not trimmed — they're load-bearing for the
+ * curator's evaluation; recent-memories is context that degrades gracefully.
+ */
+function trimRecentMemoriesToCap(memories: MemoryEntry[], cap: number): { kept: MemoryEntry[]; dropped: number } {
+  if (memories.length === 0) return { kept: [], dropped: 0 };
+  let total = memories.reduce((n, m) => n + `- [${m.ts}] ${m.author}: ${m.content}\n`.length, 0);
+  if (total <= cap) return { kept: memories, dropped: 0 };
+
+  const kept = [...memories]; // mutate copy
+  let dropped = 0;
+  while (kept.length > 0 && total > cap) {
+    const removed = kept.shift()!; // oldest first (memories are time-ordered ascending in this slice)
+    total -= `- [${removed.ts}] ${removed.author}: ${removed.content}\n`.length;
+    dropped++;
+  }
+  return { kept, dropped };
+}
+
 export function assembleCurationPrompt(params: {
   recentMemories: MemoryEntry[];
   longtermSummary: string | null;
@@ -199,11 +229,20 @@ export function assembleCurationPrompt(params: {
   selectivity?: 'low' | 'medium' | 'high';
   granularity?: 'detailed' | 'summary';
   maxMemoriesPerRun?: number;
-}): StructuredPrompt {
+  promptCharCap?: number;
+}): StructuredPrompt & { droppedRecentMemories?: number } {
   const longtermText = params.longtermSummary ?? '(no long-term summary yet)';
 
-  const recentText = params.recentMemories.length > 0
-    ? params.recentMemories
+  // AGT-065 AC #3: cap on assembled prompt size. Trim recent-memories
+  // oldest-first until the line-by-line size fits under the configured
+  // cap. The trim is intentionally crude — characters, not tokens, and
+  // only on the recent-memories portion — to keep the assembler fast and
+  // its behaviour easy to reason about.
+  const cap = params.promptCharCap ?? DEFAULT_CURATOR_PROMPT_CHAR_CAP;
+  const { kept: recentMemories, dropped: droppedRecentMemories } = trimRecentMemoriesToCap(params.recentMemories, cap);
+
+  const recentText = recentMemories.length > 0
+    ? recentMemories
         .map(m => `- [${m.ts}] ${m.author}: ${m.content}`)
         .join('\n')
     : '(no recent memories)';
@@ -281,7 +320,7 @@ export function assembleCurationPrompt(params: {
     systemPrompt += '\n\nAdditional instructions:\n' + tuning.map(t => `- ${t}`).join('\n');
   }
 
-  return { systemPrompt, userMessage };
+  return { systemPrompt, userMessage, droppedRecentMemories };
 }
 
 export function parseMemoriesJsonl(content: string): MemoryEntry[] {

@@ -20,6 +20,7 @@ import { getSyncAdapter } from '../sync/registry.js';
 import { formatSyncError } from '../sync/errors.js';
 import type { MemoryEntry } from '../lib/curator.js';
 import { acquireCurateLock } from '../lib/curate-lock.js';
+import { LlmConsentError } from '../lib/llm-consent.js';
 
 export const curateCommand = new Command('curate')
   .description('Run curation: evaluate pending engrams and promote to memories')
@@ -139,6 +140,11 @@ export const curateCommand = new Command('curate')
       try {
         narrative = await runEpisodeCuration(prompt);
       } catch (err) {
+        if (err instanceof LlmConsentError) {
+          console.error(chalk.red(err.message));
+          closeCortexDb(cortex);
+          process.exit(1);
+        }
         const message = err instanceof Error ? err.message : String(err);
         console.error(chalk.red(`Episode curation failed: ${message}`));
         closeCortexDb(cortex);
@@ -223,6 +229,10 @@ export const curateCommand = new Command('curate')
         setLongtermSummary(cortex, newSummary);
         console.log(chalk.green('✓') + ` Long-term summary updated (${older.length} memories consolidated)`);
       } catch (err) {
+        if (err instanceof LlmConsentError) {
+          console.error(chalk.red(err.message));
+          process.exit(1);
+        }
         const message = err instanceof Error ? err.message : String(err);
         console.error(chalk.red(`Consolidation failed: ${message}`));
         process.exit(1);
@@ -268,12 +278,26 @@ export const curateCommand = new Command('curate')
       selectivity: config.cortex?.selectivity,
       granularity: config.cortex?.granularity,
       maxMemoriesPerRun: config.cortex?.maxMemoriesPerRun,
+      promptCharCap: config.cortex?.curatorPromptCharCap,
     });
+    if (curationPrompt.droppedRecentMemories && curationPrompt.droppedRecentMemories > 0) {
+      console.log(chalk.yellow(
+        `  ⚠ Curator prompt cap reached — trimmed ${curationPrompt.droppedRecentMemories} oldest recent memor${curationPrompt.droppedRecentMemories === 1 ? 'y' : 'ies'} from the context window. Tune via cortex.curatorPromptCharCap.`,
+      ));
+    }
 
     let curationResult;
     try {
       curationResult = await runCuration(curationPrompt);
     } catch (err) {
+      // AGT-065: surface the consent failure with the actionable message
+      // verbatim — no `Curation failed:` prefix that would obscure the
+      // env/config snippet the user needs to copy.
+      if (err instanceof LlmConsentError) {
+        console.error(chalk.red(err.message));
+        closeCortexDb(cortex);
+        process.exit(1);
+      }
       const message = err instanceof Error ? err.message : String(err);
       console.error(chalk.red(`Curation failed: ${message}`));
       closeCortexDb(cortex);

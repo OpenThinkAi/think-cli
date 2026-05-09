@@ -73,10 +73,49 @@ We defend against this with two layers:
 
 Neither layer defends against an attacker who has full write access to your home directory — at that point they could install a trojaned `think` binary directly. The layered validation exists to make less-privileged compromises (a tutorial with a malicious "paste this command" step, a stale onboarding link) unexploitable.
 
+## Per-curation data envelope (LLM consent)
+
+`think curate`, `think long-term backfill`, `think curate --episode <key>`, `think curate-retros`, and `think summary` all ship cortex content to Anthropic via the Claude Agent SDK. As of AGT-065, that is **gated behind explicit opt-in** — the CLI fails closed by default and exits with an actionable error pointing at this section.
+
+**Opt in via either:**
+
+```sh
+# Environment variable (one-shot or in your shell profile)
+export THINK_LLM_CONSENT=1
+```
+
+```json
+// Persistent config at ~/.config/think/config.json
+{
+  "cortex": { "llmConsent": true, ... }
+}
+```
+
+**What ships, per call:**
+
+| Command | Frequency | Envelope shipped |
+|---|---|---|
+| `think curate` | Manual or auto-curate scheduler (every 5 min when pending engrams exist) | Long-term summary; up to 30 most-recent long-term events; recent memories (last 14 days, capped at `cortex.curatorPromptCharCap` chars — default 50_000); contributor's `~/.think/curator.md`; up to 200 pending engrams. The cap trims recent memories oldest-first when assembled size exceeds it. |
+| `think long-term backfill` | Manual, one-time | One Claude call per month of history. Each call ships that month's memories plus a digest of prior batches' proposed events for supersession context. `--dry-run` ships **nothing** (AGT-061). |
+| `think curate --episode <key>` | Manual | All engrams tagged with the episode key, plus the existing narrative memory if re-curating. |
+| `think curate-retros` | Manual | Pairs of retro candidates (FTS-matched) sent to Claude for equivalence judgment. |
+| `think summary` | Manual | Engram entries from the requested time window. Falls back to raw output on consent failure. |
+
+**Auto-curate amplifies frequency.** The LaunchAgent at `~/Library/LaunchAgents/dev.openthink.curate.plist` runs `think curate` every 5 minutes when pending engrams exist. With consent granted, the same envelope ships on every run; without consent the LaunchAgent fails closed and the failure is logged to the agent's log file.
+
+**The prompt cap is a hard ceiling, not a target.** Override per cortex:
+
+```json
+{ "cortex": { "curatorPromptCharCap": 25000, ... } }
+```
+
+Lowering the cap reduces volume but trims older recent-memory context the curator uses to recognize already-recorded facts. Raising it lets larger cortexes ship more context per call.
+
 ## Known trade-offs
 
 These are intentional design choices, not vulnerabilities:
 
-- **`think curate` invokes Claude with the current cortex's memories.** API costs and content leave your machine for Anthropic. This is the intended product behavior. Set `THINK_NO_UPDATE_CHECK=1` if you want to disable the separate `npm view` network call.
+- **Claude Agent SDK consent is opt-in but irreversible per call.** Once consent is granted and a curate run completes, the data has reached Anthropic. There is no per-turn confirmation; the gate is at process entry. If you're working on a sensitive cortex, scope `THINK_LLM_CONSENT` to the shell session rather than committing it to your shell profile, and consider a separate cortex with consent disabled.
+- **Memory tombstones do not propagate across sync** — see SyncAdapter contract test `enforceImmutableMemories`. A `think memory delete <id>` removes the row locally; peers retain their copy. Right-to-erasure across machines is architecturally not supported (BLOOM-122 invariant). Use `think pause` to suppress engram creation if you don't want content to land in the first place.
 - **`cortex pull` / `push` operates directly on a git remote you configured.** No sandbox, no content review. You're trusting the remote to hold honest data.
 - **LaunchAgent auto-curation runs as your user.** No privilege escalation, but any compromise of `~/.think/curator.md` or the cortex DB would run with your permissions.
