@@ -42,6 +42,13 @@ export interface InsertRetroParams {
   /** Set when ingesting a wire-format row that arrived already-tombstoned. */
   tombstoned_at?: string | null;
   tombstone_reason?: string | null;
+  /**
+   * Initial promoted state. Defaults to 0 (curator decides via dedupe-merge
+   * frequency). Direct user emits pass `1` — a `think retro add` is itself
+   * the user attesting that the observation matters, so it should surface
+   * in default recall without waiting for a duplicate to arrive.
+   */
+  promoted?: 0 | 1;
 }
 
 export function insertRetro(cortexName: string, params: InsertRetroParams): RetroRow {
@@ -54,13 +61,23 @@ export function insertRetro(cortexName: string, params: InsertRetroParams): Retr
   const originPeerId = params.origin_peer_id === undefined ? getPeerId() : params.origin_peer_id;
   const tombstonedAt = params.tombstoned_at ?? null;
   const tombstoneReason = params.tombstone_reason ?? null;
+  const promoted = params.promoted ?? 0;
 
   db.prepare(
-    `INSERT INTO retros (id, content, kind, cortex_name, created_at, occurrences, sync_version, origin_peer_id, tombstoned_at, tombstone_reason)
-     VALUES (?, ?, ?, ?, ?, 1, (SELECT COALESCE(MAX(sync_version), 0) + 1 FROM retros), ?, ?, ?)`
-  ).run(id, params.content, kind, cortexName, now, originPeerId, tombstonedAt, tombstoneReason);
+    `INSERT INTO retros (id, content, kind, cortex_name, created_at, occurrences, sync_version, origin_peer_id, tombstoned_at, tombstone_reason, promoted)
+     VALUES (?, ?, ?, ?, ?, 1, (SELECT COALESCE(MAX(sync_version), 0) + 1 FROM retros), ?, ?, ?, ?)`
+  ).run(id, params.content, kind, cortexName, now, originPeerId, tombstonedAt, tombstoneReason, promoted);
 
   return db.prepare('SELECT * FROM retros WHERE id = ?').get(id) as unknown as RetroRow;
+}
+
+/** Total non-tombstoned retros for a cortex. */
+export function getRetroCount(cortexName: string): number {
+  const db = getCortexDb(cortexName);
+  const row = db.prepare(
+    'SELECT COUNT(*) AS n FROM retros WHERE cortex_name = ? AND tombstoned_at IS NULL'
+  ).get(cortexName) as { n: number };
+  return row.n;
 }
 
 export function insertRetroIfNotExists(

@@ -162,4 +162,170 @@ describe('think retro command', () => {
 
     expect(pushSpy).toHaveBeenCalledWith(cortex, expect.objectContaining({ skip: false }));
   });
+
+  // AGT-209 / GH#47: direct user emits land at promoted=1 so `retro recall`
+  // surfaces them immediately. Prior behaviour (curator-only promotion via
+  // occurrences>=2) made single-emit retros invisible by default and broke
+  // the round-trip the user expects after `retro add`.
+  it('retro add writes promoted=1 (AGT-209 AC #1)', async () => {
+    const cortex = 'promoted-on-add-test';
+    const prog = makeProgram();
+    await prog.parseAsync(['node', 'think', 'retro', 'user-attested observation', '--cortex', cortex]);
+
+    const db = getCortexDb(cortex);
+    const row = db.prepare('SELECT promoted FROM retros LIMIT 1').get() as { promoted: number };
+    expect(row.promoted).toBe(1);
+  });
+
+  it('retro add subcommand also writes promoted=1 (AGT-209 AC #1)', async () => {
+    const cortex = 'promoted-on-add-sub-test';
+    const prog = makeProgram();
+    await prog.parseAsync(['node', 'think', '-C', cortex, 'retro', 'add', 'add subcommand observation']);
+
+    const db = getCortexDb(cortex);
+    const row = db.prepare('SELECT promoted FROM retros LIMIT 1').get() as { promoted: number };
+    expect(row.promoted).toBe(1);
+  });
+});
+
+// AGT-209 / GH#47 round-trip: end-to-end CLI behaviour — emit then recall in
+// the same process must surface the just-emitted retro under default flags.
+describe('think retro add → retro recall round-trip (AGT-209 AC #1)', () => {
+  let originalHome: string | undefined;
+  let tmpHome: string;
+
+  beforeEach(() => {
+    originalHome = process.env.THINK_HOME;
+    tmpHome = mkdtempSync(join(tmpdir(), 'think-retro-roundtrip-test-'));
+    process.env.THINK_HOME = tmpHome;
+    closeAllCortexDbs();
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    // Stub auto-propagation so the round-trip doesn't fork a background sync
+    // process during the test (would race the cleanup tear-down).
+    vi.spyOn(autoPropagate, 'pushForWriteBackground').mockImplementation(() => {});
+    vi.spyOn(autoPropagate, 'pullForRead').mockResolvedValue(undefined);
+  });
+
+  afterEach(() => {
+    closeAllCortexDbs();
+    if (originalHome === undefined) delete process.env.THINK_HOME;
+    else process.env.THINK_HOME = originalHome;
+    rmSync(tmpHome, { recursive: true, force: true });
+    vi.restoreAllMocks();
+    process.exitCode = 0;
+  });
+
+  it('a single retro add is visible via default retro recall', async () => {
+    const cortex = 'roundtrip-test';
+    const text = 'roundtrip retro observation';
+
+    const prog1 = makeProgram();
+    await prog1.parseAsync(['node', 'think', 'retro', 'add', text, '--cortex', cortex]);
+    expect(process.exitCode).toBeFalsy();
+
+    const prog2 = makeProgram();
+    await prog2.parseAsync(['node', 'think', 'retro', 'recall', '--cortex', cortex]);
+    expect(process.exitCode).toBeFalsy();
+
+    const output = (console.log as ReturnType<typeof vi.fn>).mock.calls.flat().join('\n');
+    expect(output).toContain(text);
+  });
+});
+
+// AGT-209 / GH#47 AC #3: when first-emit persistence fails, exit non-zero
+// and surface the error rather than printing a misleading success checkmark.
+describe('think retro add — first-emit failure surfacing (AGT-209 AC #3)', () => {
+  let originalHome: string | undefined;
+  let tmpHome: string;
+
+  beforeEach(() => {
+    originalHome = process.env.THINK_HOME;
+    tmpHome = mkdtempSync(join(tmpdir(), 'think-retro-loudfail-test-'));
+    process.env.THINK_HOME = tmpHome;
+    closeAllCortexDbs();
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    closeAllCortexDbs();
+    if (originalHome === undefined) delete process.env.THINK_HOME;
+    else process.env.THINK_HOME = originalHome;
+    rmSync(tmpHome, { recursive: true, force: true });
+    vi.restoreAllMocks();
+    process.exitCode = 0;
+  });
+
+  it('first-emit exits non-zero when adapter.push reports errors', async () => {
+    const { saveConfig, getConfig } = await import('../../src/lib/config.js');
+    const { GitSyncAdapter } = await import('../../src/sync/git-adapter.js');
+
+    saveConfig({
+      ...getConfig(),
+      cortex: { author: 'test', repo: 'git@example.invalid:org/cortex.git' },
+    });
+
+    // Reachable but push reports a downstream error (auth, ref-protection,
+    // anything the lazy createOrphanBranch can't paper over).
+    vi.spyOn(GitSyncAdapter.prototype, 'isReachable').mockResolvedValue(true);
+    vi.spyOn(GitSyncAdapter.prototype, 'push').mockResolvedValue({
+      pushed: 0,
+      pulled: 0,
+      errors: ['simulated remote write failure'],
+    });
+
+    const cortex = 'first-emit-fail-test';
+    const prog = makeProgram();
+    await prog.parseAsync(['node', 'think', 'retro', 'add', 'observation that will fail to push', '--cortex', cortex]);
+
+    expect(process.exitCode).toBe(1);
+    const errOutput = (console.error as ReturnType<typeof vi.fn>).mock.calls.flat().join('\n');
+    expect(errOutput).toContain('simulated remote write failure');
+  });
+
+  it('first-emit exits non-zero when adapter.push throws', async () => {
+    const { saveConfig, getConfig } = await import('../../src/lib/config.js');
+    const { GitSyncAdapter } = await import('../../src/sync/git-adapter.js');
+
+    saveConfig({
+      ...getConfig(),
+      cortex: { author: 'test', repo: 'git@example.invalid:org/cortex.git' },
+    });
+
+    vi.spyOn(GitSyncAdapter.prototype, 'isReachable').mockResolvedValue(true);
+    vi.spyOn(GitSyncAdapter.prototype, 'push').mockRejectedValue(new Error('network exploded'));
+
+    const cortex = 'first-emit-throw-test';
+    const prog = makeProgram();
+    await prog.parseAsync(['node', 'think', 'retro', 'add', 'observation that throws', '--cortex', cortex]);
+
+    expect(process.exitCode).toBe(1);
+    const errOutput = (console.error as ReturnType<typeof vi.fn>).mock.calls.flat().join('\n');
+    expect(errOutput).toContain('network exploded');
+  });
+
+  it('first-emit falls through to background path when remote is unreachable', async () => {
+    // Offline emit is a supported mode — auto-sync will retry. Don't fail
+    // the user for being on a flaky connection.
+    const { saveConfig, getConfig } = await import('../../src/lib/config.js');
+    const { GitSyncAdapter } = await import('../../src/sync/git-adapter.js');
+
+    saveConfig({
+      ...getConfig(),
+      cortex: { author: 'test', repo: 'git@example.invalid:org/cortex.git' },
+    });
+
+    vi.spyOn(GitSyncAdapter.prototype, 'isReachable').mockResolvedValue(false);
+    const pushSpy = vi.spyOn(GitSyncAdapter.prototype, 'push');
+    const bgSpy = vi.spyOn(autoPropagate, 'pushForWriteBackground').mockImplementation(() => {});
+
+    const cortex = 'first-emit-offline-test';
+    const prog = makeProgram();
+    await prog.parseAsync(['node', 'think', 'retro', 'add', 'offline observation', '--cortex', cortex]);
+
+    expect(process.exitCode).toBeFalsy();
+    expect(pushSpy).not.toHaveBeenCalled();
+    expect(bgSpy).toHaveBeenCalled();
+  });
 });

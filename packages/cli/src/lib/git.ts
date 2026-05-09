@@ -154,6 +154,22 @@ export function fetchBranch(branchName: string): void {
   runGit(['fetch', 'origin', '--', branchName]);
 }
 
+/**
+ * Idempotent: if `branchName` already exists on the remote, no-op. Otherwise
+ * create it as an empty orphan branch and push it.
+ *
+ * `cortex create` calls `createOrphanBranch` once at cortex creation, but if
+ * the create-time push fails (transient network, missing write perm at that
+ * moment), the cortex exists locally with no remote ref — and every future
+ * sync's `fetchBranch` fails with `fatal: couldn't find remote ref <name>`.
+ * Calling this from the sync paths self-heals that state on the next attempt.
+ */
+export function ensureRemoteBranch(branchName: string): void {
+  assertSafePositional(branchName, 'branch name');
+  if (branchExists(branchName)) return;
+  createOrphanBranch(branchName);
+}
+
 export function readFileFromBranch(branchName: string, filePath: string): string | null {
   assertSafePositional(branchName, 'branch name');
   try {

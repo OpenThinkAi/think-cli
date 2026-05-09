@@ -7,6 +7,7 @@ import readline from 'node:readline';
 import { getConfig, saveConfig, getPeerId } from '../lib/config.js';
 import { getCortexDb, closeCortexDb } from '../db/engrams.js';
 import { getMemoryCount, getSyncCursor } from '../db/memory-queries.js';
+import { getRetroCount } from '../db/retro-queries.js';
 import { getEngramDbPath, getEngramsDir } from '../lib/paths.js';
 import { getSyncAdapter } from '../sync/registry.js';
 import { LocalFsSyncAdapter } from '../sync/local-fs-adapter.js';
@@ -501,11 +502,13 @@ cortexCommand.addCommand(new Command('status')
     }
 
     const memoryCount = getMemoryCount(cortex);
+    const retroCount = getRetroCount(cortex);
     const adapter = getSyncAdapter();
     const backendName = adapter?.isAvailable() ? adapter.name : 'none';
 
     console.log(`Cortex: ${chalk.cyan(cortex)}`);
     console.log(`Memories: ${memoryCount}`);
+    console.log(`Retros: ${retroCount}`);
     console.log(`Backend: ${backendName}`);
 
     if (config.cortex?.fs?.path) {
@@ -515,8 +518,14 @@ cortexCommand.addCommand(new Command('status')
     }
 
     if (adapter?.isAvailable()) {
+      // Memories and retros push independently and have separate cursors.
+      // Reporting only the memories cursor would let a retro-only cortex
+      // read as `(never synced)` even after a successful retro push, which
+      // is exactly the misleading state AGT-209 / GH#47 surfaced.
       const pushCursor = getSyncCursor(cortex, adapter.name, 'push');
-      console.log(`Last push cursor: ${pushCursor ?? chalk.dim('(never synced)')}`);
+      const retroCursor = getSyncCursor(cortex, adapter.name, 'push_retros');
+      console.log(`Last memory push: ${pushCursor ?? chalk.dim('(never synced)')}`);
+      console.log(`Last retro push:  ${retroCursor ?? chalk.dim('(never synced)')}`);
     }
 
     closeCortexDb(cortex);
