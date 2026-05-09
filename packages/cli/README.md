@@ -114,6 +114,22 @@ think pause    # suppress engram creation (silent no-op)
 think resume   # re-enable
 ```
 
+## Long-term backfill — what gets sent to Anthropic
+
+`think long-term backfill` is a one-time pass that uses Claude to extract durable long-term events (adoptions, migrations, pivots, decisions, milestones, incidents) from your historical memories. By default, **it ships memory content to Anthropic** — one Claude SDK call per month of memories, with each call carrying that month's memories plus a summary hint and prior-batch context for supersession.
+
+Three modes:
+
+| Flag | Anthropic calls | Local writes | Use when |
+|---|---|---|---|
+| `--dry-run` | **zero** | none | You want to know how much data a real run would ship without sending anything. Prints memory count, monthly breakdown, and an envelope description. |
+| `--preview-prompt` | one per month | none | You want to see the actual LLM-generated proposals before deciding whether to apply them. Same data envelope as a real run. |
+| (no flags) | one per month | yes | Real run — proposals get inserted into the long-term events table. |
+
+Opt out by **not running the command**, or by running with `--dry-run` to see scope first. There is no "redact-and-run" mode — if you have memory content you don't want shipped, delete it locally before running backfill (`think delete <id>` for individual entries) or pause before adding it (`think pause`).
+
+The system prompt and per-batch user-message structure are in `src/commands/long-term.ts` (`BACKFILL_SYSTEM_PROMPT` and `runBackfillBatch`). `--dry-run` prints a summary of that envelope; read the source for the exact wording.
+
 ### Curator guidance
 
 Each contributor can guide their curator with a personal prompt:

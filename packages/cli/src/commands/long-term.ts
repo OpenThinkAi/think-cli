@@ -189,10 +189,15 @@ export const longTermCommand = new Command('long-term')
   .description('Manage long-term memory events (durable decisions, transitions, milestones)');
 
 longTermCommand.addCommand(new Command('backfill')
-  .description('One-time pass that extracts long-term events from historical memories')
+  .description('One-time pass that extracts long-term events from historical memories. Without flags, ships memory content to Anthropic for curation. See --dry-run for a fully-local preview.')
   .option('--force', 'Run even if long-term events already exist')
-  .option('--dry-run', 'Preview events that would be recorded, do not write')
-  .action(async (opts: { force?: boolean; dryRun?: boolean }) => {
+  .option('--dry-run', 'Local-only preview: counts + monthly breakdown + prompt envelope description. Does NOT contact Anthropic and does NOT ship any memory content. Use --preview-prompt to run the LLM-driven preview.')
+  .option('--preview-prompt', 'Run the curator prompts against Anthropic for each month and print proposed events without persisting them. ⚠️ Ships the same memory data envelope as a real run (one Claude SDK call per month). Use --dry-run if you want a preview without contacting Anthropic.')
+  .action(async (opts: { force?: boolean; dryRun?: boolean; previewPrompt?: boolean }) => {
+    if (opts.dryRun && opts.previewPrompt) {
+      console.error(chalk.red('--dry-run and --preview-prompt are mutually exclusive. --dry-run is local-only; --preview-prompt makes Anthropic calls.'));
+      process.exit(1);
+    }
     const config = getConfig();
     const cortex = config.cortex?.active;
     if (!cortex) {
@@ -238,11 +243,43 @@ longTermCommand.addCommand(new Command('backfill')
     }
 
     const monthKeys = [...byMonth.keys()].sort();
-    console.log(chalk.cyan(`Backfilling long-term events: ${memories.length} memories across ${monthKeys.length} month${monthKeys.length === 1 ? '' : 's'}...`));
+
+    // AGT-061: --dry-run is local-only. Bail BEFORE any runBackfillBatch call
+    // so no memory content reaches Anthropic. Users who want the LLM-driven
+    // preview (the previous --dry-run behaviour) opt in explicitly with
+    // --preview-prompt.
+    if (opts.dryRun) {
+      console.log(chalk.cyan(`Backfill --dry-run (local only — no data sent to Anthropic):`));
+      console.log(chalk.dim(`  Memories: ${memories.length}`));
+      console.log(chalk.dim(`  Months: ${monthKeys.length}`));
+      for (const month of monthKeys) {
+        console.log(chalk.dim(`    ${month}: ${byMonth.get(month)!.length} memories`));
+      }
+      console.log();
+      console.log(chalk.dim('Prompt envelope a real run would ship to Anthropic (per-month batch):'));
+      console.log(chalk.dim('  - System prompt: long-term curator instructions (in src/commands/long-term.ts as BACKFILL_SYSTEM_PROMPT)'));
+      console.log(chalk.dim('  - User message:'));
+      console.log(chalk.dim('    - Existing long-term summary (hint, ~kb)'));
+      console.log(chalk.dim('    - Long-term events from prior batches (for supersession context, grows per month)'));
+      console.log(chalk.dim('    - Memories in this month (the new content shipped each call)'));
+      console.log(chalk.dim('  - Output shape: JSON array of {ts, kind, title, content, topics, supersedes?, source_memory_ids}'));
+      console.log();
+      console.log(chalk.yellow('To preview the actual LLM-generated proposals, re-run with --preview-prompt.'));
+      console.log(chalk.yellow('--preview-prompt DOES contact Anthropic — same data envelope as a real run.'));
+      closeCortexDb(cortex);
+      return;
+    }
+
+    const isPreview = !!opts.previewPrompt;
+    const headerPrefix = isPreview ? `Backfill --preview-prompt (Anthropic calls, no local writes):` : `Backfilling long-term events:`;
+    console.log(chalk.cyan(`${headerPrefix} ${memories.length} memories across ${monthKeys.length} month${monthKeys.length === 1 ? '' : 's'}...`));
+    if (isPreview) {
+      console.log(chalk.yellow(`  ⚠ Each month's batch ships memory content to Anthropic. ${monthKeys.length} call${monthKeys.length === 1 ? '' : 's'} total.`));
+    }
 
     const priorEvents: EventForPrompt[] = [];
     let totalInserted = 0;
-    const proposalsForDryRun: Array<{ month: string; events: LongTermEventProposal[] }> = [];
+    const proposalsForPreview: Array<{ month: string; events: LongTermEventProposal[] }> = [];
 
     for (const month of monthKeys) {
       const memoriesInMonth = byMonth.get(month)!;
@@ -250,8 +287,8 @@ longTermCommand.addCommand(new Command('backfill')
 
       try {
         const proposals = await runBackfillBatch(month, memoriesInMonth, summary, priorEvents);
-        if (opts.dryRun) {
-          proposalsForDryRun.push({ month, events: proposals });
+        if (isPreview) {
+          proposalsForPreview.push({ month, events: proposals });
           console.log(chalk.dim(`${proposals.length} events proposed`));
           // Preview-mode: still track as if inserted so supersession context works across batches.
           for (const ev of proposals) {
@@ -309,17 +346,17 @@ longTermCommand.addCommand(new Command('backfill')
       }
     }
 
-    if (opts.dryRun) {
+    if (isPreview) {
       console.log();
-      console.log(chalk.cyan('Dry-run summary:'));
-      for (const { month, events } of proposalsForDryRun) {
+      console.log(chalk.cyan('Preview summary (no writes performed):'));
+      for (const { month, events } of proposalsForPreview) {
         if (events.length === 0) continue;
         console.log(chalk.dim(`  ${month}:`));
         for (const ev of events) {
           console.log(`    ${chalk.green('+')} [${ev.kind}] ${ev.title}`);
         }
       }
-      const total = proposalsForDryRun.reduce((n, m) => n + m.events.length, 0);
+      const total = proposalsForPreview.reduce((n, m) => n + m.events.length, 0);
       console.log(chalk.dim(`  Total: ${total} events would be recorded.`));
       closeCortexDb(cortex);
       return;
