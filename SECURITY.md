@@ -34,6 +34,7 @@ That routes the report directly to the maintainers without any public trace. Inc
 - Local storage — SQLite DBs under `~/.think/engrams/`, the config file at `~/.config/think/config.json`, the curator at `~/.think/curator.md`.
 - Subprocess invocations — git, npm (used by the update check), launchctl (used by the auto-curate LaunchAgent).
 - Input validation on any value that flows from config, CLI arguments, or remote engram content into a subprocess argv or filesystem path.
+- The Claude Agent SDK call sites — see [Agent topology](#agent-topology) for the full inventory and the architectural defense (`tools: []` on every call).
 
 ### Out of scope
 
@@ -72,6 +73,47 @@ We defend against this with two layers:
 2. The git wrapper further guards every subprocess invocation site with leading-hyphen checks on branch names and inserts `--` separators where git supports them. Belt-and-suspenders against any bypass of layer 1.
 
 Neither layer defends against an attacker who has full write access to your home directory — at that point they could install a trojaned `think` binary directly. The layered validation exists to make less-privileged compromises (a tutorial with a malicious "paste this command" step, a stale onboarding link) unexploitable.
+
+## Agent topology
+
+Where the Claude Agent SDK lives in this codebase, what it can and can't do, and why the architecture bounds the blast radius of a malicious model output.
+
+### Six call sites, all `tools: []`
+
+Every `query()` call is gated through `lib/claude-sdk.ts`'s wrapped re-export ([Per-curation data envelope](#per-curation-data-envelope-llm-consent) below) and configured with `tools: []`. That posture is the load-bearing defense: with no tools the model can produce text but cannot invoke a function, write a file, run a shell command, fetch a URL, or escape the context. Output is parsed back into structured memory rows by code we control.
+
+| Module | Command | Purpose |
+|---|---|---|
+| `lib/curator.ts` | `think curate` | Promote pending engrams to memories |
+| `lib/curator.ts` | `think curate --consolidate` | Consolidate older memories into long-term summary |
+| `lib/curator.ts` | `think curate --episode <key>` | Synthesize episode engrams into a narrative memory |
+| `lib/retro-curator.ts` | `think curate-retros` | Pairwise equivalence judgment for retro dedupe |
+| `lib/claude.ts` | `think summary` | AI-generated work-log summaries |
+| `commands/long-term.ts` | `think long-term backfill` | Per-month curation of historical memories into long-term events |
+
+Grep for `query({` in `packages/cli/src/` to enumerate; the count and shape will move as the codebase evolves.
+
+A new `query()` call site without `tools: []` would be a security regression. A future contributor adding an agentic feature should land it as a separate ticket with explicit threat-model review.
+
+### Two untrusted-input surfaces
+
+Both feed into the agent path via curation:
+
+1. **Peer-pulled memories.** `cortex pull` / `cortex sync` ingest content authored by other peers. Sanitized via `validateEngramContent` and wrapped with `<data>` delimiters before reaching the model. Treat as untrusted at the same level as any external input. See [Untrusted content — pulled engrams, proxy events, file imports](#untrusted-content--pulled-engrams-proxy-events-file-imports).
+2. **`think subscribe poll` events.** Connector-emitted payloads (GitHub webhooks, Linear ticket events, etc.) authored by third parties. Routed through the same `validateEngramContent` chokepoint as peer memories (AGT-059), the baseline PII strip + per-subscription redact selectors (AGT-066), and `wrapData()` delimiters before reaching the curator.
+
+### Four model-output sinks
+
+What the model can produce that lands somewhere persistent:
+
+- `memories` table (curator promotion)
+- `long_term_events` table (long-term backfill, consolidation)
+- `longterm_summary` (consolidate)
+- Episode `memories` rows with `episode_key` set (episode curation)
+
+All four sinks are local SQLite. Model output is parsed via JSON-shaped responses; structurally-malformed output is rejected before any write. The `narrative` field of an episode memory is the only free-form text sink — it lands in the local DB and only reaches outside the machine if the user explicitly syncs that cortex.
+
+Cross-reference: [Threat model — Untrusted content](#untrusted-content--pulled-engrams-proxy-events-file-imports), [Per-curation data envelope](#per-curation-data-envelope-llm-consent).
 
 ## Per-curation data envelope (LLM consent)
 
