@@ -36,6 +36,36 @@ The prompts in `.stamp/reviewers/*.md` are currently the stock starters scaffold
 
 Prompt-tuning without polluting verdict history: `stamp reviewers test <name> --diff <revspec>` runs a reviewer against any diff without recording to the DB.
 
+## Publishing a release
+
+`@openthink/think` is published to npm by `.github/workflows/publish.yml`, which fires on every push to `main` (including the post-receive mirror push from the stamp server) and publishes only when `packages/cli/package.json` declares a version that isn't already on the registry. Every non-bump merge no-ops safely.
+
+Cutting a release:
+
+```sh
+# From main, off the latest stamped merge
+git checkout -b release/vX.Y.Z main
+# Bump packages/cli/package.json "version" → X.Y.Z
+npm install --package-lock-only        # refresh root package-lock.json
+git add packages/cli/package.json package-lock.json
+git commit -m "chore: bump version to X.Y.Z"
+
+# Stamp + merge as usual
+stamp review --diff main..HEAD
+git checkout main
+stamp merge release/vX.Y.Z --into main
+stamp push main                         # server mirrors to GitHub; workflow fires
+```
+
+The workflow:
+
+- Reads version from `packages/cli/package.json` and skips silently if `npm view @openthink/think@<version>` already returns it.
+- Runs `npm ci` + `npm test -w @openthink/think` before publishing (a red test blocks the publish).
+- Publishes with `npm publish --provenance` from `packages/cli/`, attaching an SLSA build attestation. Auth is OIDC trusted-publishing — no `NPM_TOKEN` secret in repo settings.
+- Derives the npm dist-tag from the version: bare `X.Y.Z` → `latest`; `X.Y.Z-alpha.N` → `alpha` (likewise `beta`, `rc`, etc.) so prereleases never clobber `latest`.
+
+**One-time setup (npm side):** Trusted Publishing must be configured at <https://www.npmjs.com/package/@openthink/think/access> → Publishing access → GitHub Actions → trusted publisher pointing at this repo + `publish.yml`. The first workflow run fails loudly if it isn't set.
+
 ## Adding a new pusher (future-team case)
 
 Solo-operator setup today. To add someone else who'd push stamped merges:
