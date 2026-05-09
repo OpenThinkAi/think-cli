@@ -1,22 +1,24 @@
-FROM node:22-alpine AS builder
+FROM oven/bun:1-alpine AS builder
 WORKDIR /app
 
 # Single workspace post-AGT-030: the proxy server folded into the CLI, so
-# the build context is just `packages/cli`. Copy manifests first so npm can
-# warm the lockfile cache layer before we drop the source on top.
-COPY package.json package-lock.json ./
+# the build context is just `packages/cli`. Copy manifests + lockfile first
+# so bun can warm the install cache layer before we drop the source on top.
+# Bun (AGT-060) replaces npm here for cross-platform optional-natives
+# correctness and frozen-lockfile enforcement matching CI.
+COPY package.json bun.lock ./
 COPY packages/cli/package.json ./packages/cli/
 
-RUN npm ci --workspace=@openthink/think --include-workspace-root
+RUN bun install --frozen-lockfile
 
 COPY packages/cli ./packages/cli
-RUN npm run build -w @openthink/think
+RUN bun run --cwd packages/cli build
 
 FROM node:22-alpine
 WORKDIR /app
 ENV NODE_ENV=production
 
-COPY --from=builder /app/package.json /app/package-lock.json ./
+COPY --from=builder /app/package.json ./
 COPY --from=builder /app/packages/cli/package.json ./packages/cli/
 COPY --from=builder /app/packages/cli/dist ./packages/cli/dist
 COPY --from=builder /app/node_modules ./node_modules

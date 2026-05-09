@@ -81,9 +81,22 @@ jobs:
             echo "${{ steps.version.outputs.name }}@${{ steps.version.outputs.version }} not on npm — will publish."
           fi
 
+      - name: setup bun
+        if: steps.check.outputs.published == 'false'
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      # Frozen-lockfile install via bun (AGT-060). Switching off `npm ci`
+      # closes the supply-chain drift gap that npm's cross-platform
+      # optional-natives bug (npm/cli#4828) forced open in test.yml; bun
+      # handles those natives correctly so the committed bun.lock is
+      # actually exercised here. The publish step itself stays on the
+      # npm CLI for OIDC trusted publishing — bun's publish path doesn't
+      # support npm Trusted Publisher OIDC yet.
       - name: install
         if: steps.check.outputs.published == 'false'
-        run: npm ci
+        run: bun install --frozen-lockfile
 
       # The CLI workspace's `test` script runs vitest, which uses the
       # tsx loader against TypeScript sources — surfacing compilation
@@ -92,7 +105,7 @@ jobs:
       # prepublishOnly, would catch type errors at build time anyway).
       - name: test
         if: steps.check.outputs.published == 'false'
-        run: npm test -w @openthink/think
+        run: bun run --cwd packages/cli test
 
       # Build is invoked automatically via packages/cli/package.json's
       # prepublishOnly script before the tarball is assembled, so no

@@ -8,9 +8,9 @@
     "packages/cli"
   ],
   "scripts": {
-    "build": "npm run build --workspaces --if-present",
-    "test": "npm run test --workspaces --if-present",
-    "dev": "npm run dev -w @openthink/think"
+    "build": "bun run --cwd packages/cli build",
+    "test": "bun run --cwd packages/cli test",
+    "dev": "bun run --cwd packages/cli dev"
   },
   "homepage": "https://openthink.dev",
   "repository": {
