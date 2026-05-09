@@ -1,6 +1,6 @@
 import { Command } from 'commander';
 import chalk from 'chalk';
-import { query } from '@anthropic-ai/claude-agent-sdk';
+import { query } from '../lib/claude-sdk.js';
 import { getConfig } from '../lib/config.js';
 import { getMemories, getLongtermSummary } from '../db/memory-queries.js';
 import {
@@ -11,6 +11,7 @@ import {
 } from '../db/long-term-queries.js';
 import { closeCortexDb } from '../db/engrams.js';
 import { wrapData } from '../lib/sanitize.js';
+import { LlmConsentError } from '../lib/llm-consent.js';
 import type { LongTermEventProposal } from '../lib/curator.js';
 import { getSyncAdapter } from '../sync/registry.js';
 import { formatSyncError } from '../sync/errors.js';
@@ -342,6 +343,16 @@ longTermCommand.addCommand(new Command('backfill')
         const skipNote = skippedInBatch > 0 ? chalk.dim(` (${skippedInBatch} duplicate${skippedInBatch === 1 ? '' : 's'} skipped)`) : '';
         console.log(chalk.green(`${newInBatch} events`) + skipNote);
       } catch (err) {
+        // Bail the whole backfill on consent failure — surface the
+        // actionable error message verbatim, don't keep iterating months
+        // that will all hit the same gate (AGT-065).
+        if (err instanceof LlmConsentError) {
+          console.log(chalk.red('aborted'));
+          console.error();
+          console.error(chalk.red(err.message));
+          closeCortexDb(cortex);
+          process.exit(1);
+        }
         console.log(chalk.red(`failed: ${err instanceof Error ? err.message : String(err)}`));
       }
     }

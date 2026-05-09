@@ -3,6 +3,7 @@ import chalk from 'chalk';
 import { getEntries, getEntriesByWeek, type Entry } from '../db/queries.js';
 import { getEngrams, type Engram } from '../db/engram-queries.js';
 import { generateSummary } from '../lib/claude.js';
+import { LlmConsentError } from '../lib/llm-consent.js';
 import { closeDb } from '../db/client.js';
 import { closeCortexDb } from '../db/engrams.js';
 import { getConfig } from '../lib/config.js';
@@ -88,8 +89,15 @@ export const summaryCommand = new Command('summary')
             const summary = await generateSummary(engramsToEntries(engrams));
             console.log(summary);
           } catch (err) {
-            const msg = err instanceof Error ? err.message : String(err);
-            console.error(chalk.red(`Error generating summary: ${msg}`));
+            // AGT-065: render the consent message verbatim (multi-line
+            // with copy-pasteable env/config snippets) — the generic
+            // "Error generating summary:" prefix would obscure it.
+            if (err instanceof LlmConsentError) {
+              console.error(chalk.red(err.message));
+            } else {
+              const msg = err instanceof Error ? err.message : String(err);
+              console.error(chalk.red(`Error generating summary: ${msg}`));
+            }
             console.log(chalk.dim('\nFalling back to raw output:\n'));
             console.log(formatRawEngrams(engrams));
           }
@@ -137,8 +145,12 @@ export const summaryCommand = new Command('summary')
           const summary = await generateSummary(entries);
           console.log(summary);
         } catch (err) {
-          const msg = err instanceof Error ? err.message : String(err);
-          console.error(chalk.red(`Error generating summary: ${msg}`));
+          if (err instanceof LlmConsentError) {
+            console.error(chalk.red(err.message));
+          } else {
+            const msg = err instanceof Error ? err.message : String(err);
+            console.error(chalk.red(`Error generating summary: ${msg}`));
+          }
           console.log(chalk.dim('\nFalling back to raw output:\n'));
           console.log(formatRaw(entries));
         }

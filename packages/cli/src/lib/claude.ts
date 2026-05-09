@@ -1,4 +1,4 @@
-import { query } from '@anthropic-ai/claude-agent-sdk';
+import { query } from './claude-sdk.js';
 import type { Entry } from '../db/queries.js';
 import { wrapData } from './sanitize.js';
 

@@ -31,6 +31,19 @@ export interface CortexConfig {
   idleWindowMinutes?: number;
   staleWindowMinutes?: number;
   retroRelegateAfterRuns?: number;
+  /**
+   * Persistent opt-in to ship cortex content to Anthropic via the Claude
+   * Agent SDK (`think curate`, `think long-term backfill`, episode
+   * curation, retro dedupe). The CLI fails closed if this is `false`/
+   * unset AND `THINK_LLM_CONSENT` env var is also unset (AGT-065).
+   */
+  llmConsent?: boolean;
+  /**
+   * Hard ceiling on the assembled curation prompt size in characters.
+   * Default 50_000 (~12k tokens). When exceeded, the assembler trims
+   * recent-memories oldest-first and prints a warning. AGT-065 INFO #20.
+   */
+  curatorPromptCharCap?: number;
 }
 
 export interface SubscriptionsConfig {
