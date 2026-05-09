@@ -44,13 +44,17 @@ export const migrateDataCommand = new Command('migrate-data')
     // 2. Insert memories with deterministic IDs
     console.log(chalk.cyan(`Importing ${memories.length} memories...`));
     let inserted = 0;
+    const flagged: string[] = [];
 
     for (const m of memories) {
       const id = deterministicId(m.ts, m.author, m.content);
       // origin_peer_id falls through to the local-peer default. This is a
       // legacy file→sqlite import on the same machine — the local peer is
       // the original author of these rows in every realistic case.
-      const wasInserted = insertMemoryIfNotExists(cortex, {
+      // insertMemoryIfNotExists validates internally (AGT-059) so legacy
+      // file content gets the same opportunistic-warning treatment as
+      // peer-pulled memories rather than landing unchecked.
+      const { inserted: wasInserted, warnings } = insertMemoryIfNotExists(cortex, {
         id,
         ts: m.ts,
         author: m.author,
@@ -58,6 +62,13 @@ export const migrateDataCommand = new Command('migrate-data')
         source_ids: m.source_ids,
       });
       if (wasInserted) inserted++;
+      if (warnings.length > 0) {
+        flagged.push(`Imported memory from ${m.author} (${m.ts}) flagged: ${warnings.join(', ')}`);
+      }
+    }
+    if (flagged.length > 0) {
+      console.log(chalk.yellow(`  ⚠ ${flagged.length} row${flagged.length === 1 ? '' : 's'} produced validation warnings:`));
+      for (const f of flagged) console.log(chalk.yellow(`    ${f}`));
     }
 
     // 3. Migrate longterm summary

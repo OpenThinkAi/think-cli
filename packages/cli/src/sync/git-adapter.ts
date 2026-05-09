@@ -316,7 +316,10 @@ export class GitSyncAdapter implements SyncAdapter {
       // for legacy data is genuinely unknown, and faking it would hide
       // that fact from any future query that scopes by origin. New lines
       // round-trip the originator.
-      const wasInserted = insertMemoryIfNotExists(cortex, {
+      // insertMemoryIfNotExists also validates internally post-AGT-059;
+      // the explicit pre-call above already produced any warnings, so the
+      // chokepoint pass is idempotent and returns warnings: [] here.
+      const { inserted } = insertMemoryIfNotExists(cortex, {
         id,
         ts: m.ts,
         author: m.author,
@@ -326,7 +329,7 @@ export class GitSyncAdapter implements SyncAdapter {
         decisions: m.decisions,
         origin_peer_id: m.origin_peer_id ?? null,
       });
-      if (wasInserted) result.pulled++;
+      if (inserted) result.pulled++;
     }
   }
 

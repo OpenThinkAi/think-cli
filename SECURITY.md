@@ -42,7 +42,7 @@ That routes the report directly to the maintainers without any public trace. Inc
 - The security properties of any third-party git host you configure as your cortex remote — GitHub, GitLab, a self-hosted server, etc., are your trust anchor for the remote side.
 - Reviewer or curator prompt engineering — the quality of AI-generated summaries and memory promotion decisions is a product concern, not a security vulnerability.
 
-### Untrusted content — pulled engrams
+### Untrusted content — pulled engrams, proxy events, file imports
 
 The primary residual risk worth naming explicitly:
 
@@ -53,7 +53,14 @@ The primary residual risk worth naming explicitly:
 
 **Neither is a security boundary.** The regex is opportunistic — a malicious peer bypasses with paraphrase, translation, or novel wording. The actual boundary is the system prompt in the agent itself, which instructs the model to treat `<data>` content as inert data, not instructions.
 
-Do not add a cortex peer you don't trust at the same level as any other source of input your AI agent will read.
+**The same opportunistic-warning treatment applies to proxy event payloads and file imports.** As of AGT-059, `validateEngramContent` runs inside the DB write functions (`insertEngram` and `insertMemoryIfNotExists`) rather than only at caller-side edges, so:
+
+- Events arriving via `think subscribe poll` from a configured proxy (GitHub PR/issue webhooks, Linear ticket events, etc.) are length-capped and prompt-injection-scanned before they land as engrams. Warnings surface to stderr in the poll loop.
+- Memories migrated via `think cortex migrate` from a legacy git-backed cortex into the local-fs backend get the same scan during import. Warnings batch-print at the end of the migration.
+
+These paths previously bypassed validation entirely. The chokepoint covers them now without requiring every caller to remember to validate first. As with peer-pulled engrams, this is **opportunistic warning, not a security boundary** — paraphrase still bypasses, the agent's system prompt is still the actual line of defense.
+
+Do not add a cortex peer, configure a proxy, or import a file you don't trust at the same level as any other source of input your AI agent will read.
 
 ### Configuration tampering
 

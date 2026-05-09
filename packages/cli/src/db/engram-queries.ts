@@ -1,8 +1,20 @@
 import { v7 as uuidv7 } from 'uuid';
 import { getCortexDb } from './engrams.js';
 import { getConfig } from '../lib/config.js';
+import { validateEngramContent } from '../lib/sanitize.js';
 
 const DEFAULT_ENGRAM_TTL_DAYS = 14;
+
+/**
+ * Result shape for `insertEngram`. Carries warnings produced by the centralized
+ * `validateEngramContent` pass so the caller can surface them — `subscribe poll`
+ * (proxy events) and `migrate-data` historically bypassed validation; AGT-059
+ * moved the call inside the DB write to close that gap.
+ */
+export interface InsertEngramResult {
+  engram: Engram;
+  warnings: string[];
+}
 
 export interface Engram {
   id: string;
@@ -25,7 +37,7 @@ export interface InsertEngramParams {
   decisions?: string[];
 }
 
-export function insertEngram(cortexName: string, params: InsertEngramParams): Engram {
+export function insertEngram(cortexName: string, params: InsertEngramParams): InsertEngramResult {
   const db = getCortexDb(cortexName);
   const id = uuidv7();
   const now = new Date();
@@ -37,11 +49,19 @@ export function insertEngram(cortexName: string, params: InsertEngramParams): En
   const context = params.context ?? null;
   const decisions = params.decisions?.length ? JSON.stringify(params.decisions) : null;
 
+  // Centralized validation chokepoint (AGT-059). Every write path that lands
+  // here gets length-cap truncation + prompt-injection-pattern warnings —
+  // including paths that historically bypassed it (subscribe poll, migrate-
+  // data). Idempotent: callers that already pre-validated pass already-
+  // sanitized content; the second pass is a no-op and returns no warnings.
+  const { content: sanitizedContent, warnings } = validateEngramContent(params.content);
+
   db.prepare(
     `INSERT INTO engrams (id, content, created_at, expires_at, episode_key, context, decisions) VALUES (?, ?, ?, ?, ?, ?, ?)`
-  ).run(id, params.content, created_at, expires_at, episodeKey, context, decisions);
+  ).run(id, sanitizedContent, created_at, expires_at, episodeKey, context, decisions);
 
-  return { id, content: params.content, created_at, expires_at, evaluated_at: null, promoted: null, deleted_at: null, episode_key: episodeKey, context, decisions };
+  const engram: Engram = { id, content: sanitizedContent, created_at, expires_at, evaluated_at: null, promoted: null, deleted_at: null, episode_key: episodeKey, context, decisions };
+  return { engram, warnings };
 }
 
 export function getPendingEngrams(cortexName: string, limit: number = 200): Engram[] {

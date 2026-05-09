@@ -1,6 +1,21 @@
 import { v7 as uuidv7 } from 'uuid';
 import { getCortexDb } from './engrams.js';
 import { getPeerId } from '../lib/config.js';
+import { validateEngramContent } from '../lib/sanitize.js';
+
+/**
+ * Result shape for `insertMemoryIfNotExists`. AGT-059 moved
+ * `validateEngramContent` from caller-side edges into the DB write so
+ * `migrate-data` and other historically-bypassing paths get the same
+ * length cap + prompt-injection-pattern warnings. The shape mirrors what
+ * `GitSyncAdapter.processMemories` already does locally — `inserted` for
+ * the existing idempotency signal, `warnings` for the centralized advisory
+ * output.
+ */
+export interface InsertMemoryIfNotExistsResult {
+  inserted: boolean;
+  warnings: string[];
+}
 
 export interface MemoryRow {
   id: string;
@@ -61,13 +76,18 @@ export function insertMemory(cortexName: string, params: InsertMemoryParams): Me
   return row;
 }
 
-export function insertMemoryIfNotExists(cortexName: string, params: InsertMemoryParams & { id: string }): boolean {
+export function insertMemoryIfNotExists(cortexName: string, params: InsertMemoryParams & { id: string }): InsertMemoryIfNotExistsResult {
   const db = getCortexDb(cortexName);
   const existing = db.prepare('SELECT id FROM memories WHERE id = ?').get(params.id);
-  if (existing) return false;
+  if (existing) return { inserted: false, warnings: [] };
 
-  insertMemory(cortexName, params);
-  return true;
+  // Centralized validation chokepoint (AGT-059). `migrate-data` historically
+  // bypassed validation; routing through here closes that gap. Sync-adapter
+  // callers already pre-validate, so the second pass is idempotent and
+  // returns no new warnings — net behavior is unchanged for existing paths.
+  const { content: sanitizedContent, warnings } = validateEngramContent(params.content);
+  insertMemory(cortexName, { ...params, content: sanitizedContent });
+  return { inserted: true, warnings };
 }
 
 export function getMemories(cortexName: string, params: {
