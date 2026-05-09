@@ -10,6 +10,23 @@ services:
       - "4823:4823"
     volumes:
       - open-think-data:/data
+    # AGT-064 AC #5: restart policy + resource caps. `unless-stopped` keeps
+    # the proxy alive across host reboots while still respecting an explicit
+    # `docker compose down`. Caps are conservative single-tenant defaults
+    # — `think serve` is a thin Hono app over node:sqlite, so 512M / 1.0
+    # CPU is plenty under realistic load and bounds the blast radius of a
+    # connector pathology (runaway poll, payload flood). Tune up if real
+    # workload demands it.
+    #
+    # `deploy.resources.limits` is honored by Compose v2 (`docker compose`)
+    # but silently ignored by legacy Compose v1 (`docker-compose`, dash). If
+    # you're running v1, the limits don't apply — upgrade to v2.
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: "1.0"
 
 volumes:
   open-think-data:
