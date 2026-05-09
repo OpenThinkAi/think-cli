@@ -432,7 +432,10 @@ export class LocalFsSyncAdapter implements SyncAdapter {
         if (warnings.length > 0) {
           result.errors.push(`Pulled memory from ${m.author} flagged: ${warnings.join(', ')}`);
         }
-        const wasInserted = insertMemoryIfNotExists(cortex, {
+        // insertMemoryIfNotExists also validates internally post-AGT-059;
+        // the explicit pre-call above already produced any warnings, so
+        // the chokepoint pass is idempotent and returns warnings: [] here.
+        const { inserted } = insertMemoryIfNotExists(cortex, {
           id,
           ts: m.ts,
           author: m.author,
@@ -446,7 +449,7 @@ export class LocalFsSyncAdapter implements SyncAdapter {
           // standard suffix and land as null — honest unknown.
           origin_peer_id: m.origin_peer_id ?? writerPeer ?? null,
         });
-        if (wasInserted) result.pulled++;
+        if (inserted) result.pulled++;
       }
 
       updated[file] = nonEmpty.length;

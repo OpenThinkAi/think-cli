@@ -87,9 +87,12 @@ export const syncCommand = new Command('sync')
         }
       }
 
-      // Route to cortex engram DB
+      // Route to cortex engram DB. insertEngram now validates internally
+      // (AGT-059) — the explicit validateEngramContent call earlier in this
+      // action stays for the caller-side warning printout it does today;
+      // insertEngram's own pass is idempotent on already-sanitized input.
       const decisions = opts.decision?.length ? opts.decision : undefined;
-      const engram = insertEngram(cortex, { content: message, episodeKey: opts.episode, context: opts.context, decisions });
+      const { engram } = insertEngram(cortex, { content: message, episodeKey: opts.episode, context: opts.context, decisions });
 
       if (!opts.silent) {
         const badge = chalk.cyan(`[${cortex}]`);

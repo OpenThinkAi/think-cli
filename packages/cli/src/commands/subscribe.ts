@@ -351,7 +351,11 @@ subscribeCommand.addCommand(new Command('poll')
         }
         if (resp.events.length === 0) break;
         for (const ev of resp.events) {
-          insertEngram(cortex, {
+          // insertEngram validates internally (AGT-059); proxy event payloads
+          // are adversary-controllable so warnings here close the audit gap
+          // for #12 and #13. Surface them via the same yellow-prefix pattern
+          // used elsewhere; quiet mode suppresses since this is a poll loop.
+          const { warnings } = insertEngram(cortex, {
             content: typeof ev.payload === 'string' ? ev.payload : JSON.stringify(ev.payload),
             episodeKey: `subscribe:${s.kind}`,
             context: JSON.stringify({
@@ -362,6 +366,11 @@ subscribeCommand.addCommand(new Command('poll')
               event_id: ev.id,
             }),
           });
+          if (!opts.quiet) {
+            for (const w of warnings) {
+              console.error(chalk.yellow(`[subscribe poll] ${s.id}: ${w}`));
+            }
+          }
           totalInserted += 1;
           if (ev.server_seq > cursor) cursor = ev.server_seq;
         }

@@ -97,6 +97,14 @@ The GitHub connector — first real-world target after `mock` — has a forward-
 
 Read endpoints (`GET /v1/events`, `GET /v1/subscriptions/...`) are unchanged and unaware of the scheduler — connectors and consumers stay decoupled through the events table.
 
+## Untrusted payloads — opportunistic validation
+
+External proxy events are connector-defined and not schema-validated server-side (see [Storage](#storage)). On the CLI consumer side (`think subscribe poll`), payloads land in the local engram DB via `insertEngram`. As of AGT-059, that function runs `validateEngramContent` internally so every event payload — including ones crafted by an upstream that the consumer can't fully trust — gets the same length-cap + prompt-injection-pattern scan that peer-pulled cortex memories already received. Warnings surface to stderr in the poll loop (one yellow line per flagged payload, prefixed with `[subscribe poll] <subscription_id>:`).
+
+This is **opportunistic warning, not a security boundary** — see [`SECURITY.md`](../../SECURITY.md#untrusted-content--pulled-engrams-proxy-events-file-imports). The regex list is bypassable by paraphrase. The actual line of defense is the system prompt in any downstream Claude Agent SDK call, which instructs the model to treat `<data>` content as inert data.
+
+The server itself (this `think serve` process) does **not** run the same scan against incoming connector payloads — events are stored opaquely as `payload_json` and the validation runs on the CLI side as content flows into the local engram pipeline. If you operate a multi-tenant proxy, you should consider connector-side egress filtering separately.
+
 ## Credentials
 
 Connectors that hit external sources need credentials (GitHub PAT, Linear API key, etc.). 0.5.0 introduces a write-and-test surface for storing them encrypted at rest:
