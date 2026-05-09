@@ -94,6 +94,25 @@ describe('think retro command', () => {
     },
   );
 
+  // Both `retroCommand` (parent) and `addSubcommand` declare `--kind`. With
+  // the duplicate declaration, commander routes the trailing `--kind <k>`
+  // to the parent's option, so the subcommand's local `opts.kind` is
+  // undefined. The fix reads the value via optsWithGlobals (mirroring how
+  // recallSubcommand handles `--cortex`). Without it, the documented
+  // `think retro add ... --kind ...` form silently dropped the kind.
+  it.each(['convention', 'invariant', 'prior_decision', 'gotcha'] as const)(
+    'retro add subcommand stores --kind %s on the row (parent/child option name collision)',
+    async (kind) => {
+      const cortex = `add-kind-test-${kind}`;
+      const prog = makeProgram();
+      await prog.parseAsync(['node', 'think', 'retro', 'add', `add-form observation kind ${kind}`, '--cortex', cortex, '--kind', kind]);
+
+      const db = getCortexDb(cortex);
+      const row = db.prepare('SELECT kind FROM retros LIMIT 1').get() as { kind: string };
+      expect(row.kind).toBe(kind);
+    },
+  );
+
   it('does not appear in engrams table (cross-table isolation)', async () => {
     const cortex = 'isolation-test';
     const uniqueToken = 'isolationtokeneng9xyz';

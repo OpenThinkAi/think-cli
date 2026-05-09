@@ -120,7 +120,7 @@ const addSubcommand = new Command('add')
   .argument('<message>', 'The observation to record')
   .option('--kind <kind>', `Observation kind: ${VALID_KINDS.join(' | ')}`)
   .action(async function (this: Command, message: string, opts: { kind?: string }) {
-    const globalOpts = this.optsWithGlobals() as { cortex?: string; sync?: boolean };
+    const globalOpts = this.optsWithGlobals() as { cortex?: string; sync?: boolean; kind?: string };
     const cortex = globalOpts.cortex;
 
     if (!cortex) {
@@ -130,7 +130,15 @@ const addSubcommand = new Command('add')
       return;
     }
 
-    const kind = parseKindOpt(opts.kind);
+    // Both `retroCommand` (parent) and `addSubcommand` (this) declare
+    // `--kind`. When the user runs `think retro add "..." --kind <k>`,
+    // commander routes the value to the parent's option, so this
+    // subcommand's local `opts.kind` is undefined. Mirror the pattern
+    // recallSubcommand uses for `--cortex`: read both, prefer the local
+    // value when present, fall back to the parent. Without this, the
+    // documented `think retro add ... --kind ...` form silently dropped
+    // the kind on the floor (rows landed with kind=NULL).
+    const kind = parseKindOpt(opts.kind ?? globalOpts.kind);
     if (kind === false) return;
     await emitRetro(cortex, message, kind, !(globalOpts.sync ?? true));
   });
