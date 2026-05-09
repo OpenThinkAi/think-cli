@@ -59,6 +59,14 @@ export interface SubscriptionsConfig {
    * up hundreds and the file gets noisy.
    */
   cursors?: Record<string, number>;
+  /**
+   * Per-subscription JSONPath-subset redact selectors (AGT-066). Applied
+   * during `think subscribe poll` after the baseline PII strip and before
+   * the payload lands as engram content. Selector format is `$.a.b.c.d`
+   * or `a.b.c.d` (leading `$.` optional, no array indices/wildcards/
+   * filters). See `src/lib/subscribe-redact.ts`.
+   */
+  redact?: Record<string, string[]>;
 }
 
 export interface Config {

@@ -105,6 +105,54 @@ This is **opportunistic warning, not a security boundary** — see [`SECURITY.md
 
 The server itself (this `think serve` process) does **not** run the same scan against incoming connector payloads — events are stored opaquely as `payload_json` and the validation runs on the CLI side as content flows into the local engram pipeline. If you operate a multi-tenant proxy, you should consider connector-side egress filtering separately.
 
+## Third-party content data flow + redact (AGT-066)
+
+`think subscribe` connectors pull events authored by **other people** — commenters on a GitHub issue, reporters of a Linear ticket, senders of a webhook — and persist the full payload as engram content. Once that engram lands, it flows through the same curator path as your own first-party content and (with `THINK_LLM_CONSENT` granted) reaches Anthropic.
+
+`think subscribe add` requires explicit acknowledgment of this data flow:
+
+- **Interactive sessions** show a y/N prompt naming the kind/pattern + reminding that the curator route to Anthropic is gated by separate consent.
+- **Non-interactive sessions** (CI, scripts) must pass `--accept-data-flow` or the command refuses with a pointer to that flag.
+
+> **Breaking change as of AGT-066.** Pre-AGT-066 `think subscribe add <kind> <pattern>` succeeded silently. Existing CI/script callers that don't pass `--accept-data-flow` now exit 1 with an actionable error naming the flag. This is intentional — the friction is the point.
+
+Two redaction layers run on the CLI side during `think subscribe poll`, in order, before the payload lands as engram content:
+
+### 1. Baseline PII strip (always on)
+
+Recursive walk over the payload's keys, removing any field whose name matches the baseline list (case-insensitive on the standard hyphenated form for headers):
+
+| Pattern | Catches |
+|---|---|
+| `email`, `*_email`, `email_*` | `email`, `commenter_email`, `from_email`, `notification_email` |
+| `gpg`, `gpg_*`, `*_gpg` | `gpg`, `gpg_key`, `signing_gpg` |
+| `ip`, `*_ip`, `ip_*`, `x-real-ip`, `x-forwarded-for`, `client-ip` | webhook delivery headers and connector-emitted IP fields |
+| `phone`, `*_phone`, `phone_*` | any field whose name suggests a phone number (`phone_number`, `phone_primary`, `phone_country`, `last_phone`, etc.) |
+
+Implementation in `packages/cli/src/lib/subscribe-redact.ts` (`stripBaselinePii`). Strings, numbers, and other primitives pass through unchanged. The function deep-copies — it never mutates the input.
+
+### 2. Per-subscription redact selectors (opt-in)
+
+Configured per subscription via `subscriptions.redact[<id>]` in `~/.config/think/config.json`. Set with:
+
+```sh
+think subscribe redact-set <id> '$.user.email' '$.headers.x-real-ip'
+think subscribe redact-set <id>   # zero paths clears all selectors for this id
+```
+
+Selector format is a strict JSONPath subset:
+
+- ✓ `$.a.b.c` and `a.b.c` (the `$.` prefix is optional)
+- ✗ Bare root `$` — rejected on purpose. The clear-all path is `redact-set <id>` with zero arguments; `$` would be a "looks like it worked but didn't" footgun.
+- ✗ Array indices: `$.users[0].email`
+- ✗ Wildcards: `$.users[*].email`
+- ✗ Filters: `$.users[?(@.id==1)].email`
+- ✗ Recursive descent: `$..email`
+
+Selectors that don't parse fail at config-write time (`redact-set` validates) so a typo doesn't silently no-op at poll time. Selectors that parse but reference paths not present on a given payload silently no-op (the payload shape varies per event).
+
+`think subscribe show` lists configured selectors alongside cursors and the proxy URL — both surfaces print `(none)` when empty so the redact configuration is discoverable from `show` even before any selectors are set.
+
 ## Credentials
 
 Connectors that hit external sources need credentials (GitHub PAT, Linear API key, etc.). 0.5.0 introduces a write-and-test surface for storing them encrypted at rest:

@@ -3,6 +3,7 @@ import chalk from 'chalk';
 import { getConfig, saveConfig, type SubscriptionsConfig } from '../lib/config.js';
 import { insertEngram } from '../db/engram-queries.js';
 import { closeCortexDb } from '../db/engrams.js';
+import { stripBaselinePii, applyRedactSelectors, parseSelector } from '../lib/subscribe-redact.js';
 import {
   ProxyError,
   createSubscription,
@@ -162,7 +163,18 @@ subscribeCommand.addCommand(new Command('add')
   .description('Create a subscription on the proxy (e.g. `think subscribe add mock 3`)')
   .argument('<kind>', 'Source kind (today only `mock` is registered; github/linear/... land in follow-ups)')
   .argument('<pattern>', 'Pattern the connector understands (kind-specific)')
-  .action(async (kind: string, pattern: string) => {
+  .option('--accept-data-flow', 'Acknowledge that ingested events flow into the curator (and to Anthropic if curator consent is granted). Required for non-interactive use; interactive sessions get a y/N prompt instead.')
+  .action(async (kind: string, pattern: string, opts: { acceptDataFlow?: boolean }) => {
+    // AGT-066 AC #1: explicit acknowledgment that third-party events
+    // (commenter words, ticket bodies, webhook payloads) will land in
+    // local engrams and flow to the curator. Friction is the point.
+    const acknowledged = opts.acceptDataFlow ?? (await promptDataFlowConsent(kind, pattern));
+    if (!acknowledged) {
+      console.error(chalk.red('subscribe add: declined; no subscription created.'));
+      process.exitCode = 1;
+      return;
+    }
+
     const proxy = getProxyConfig();
     try {
       const sub = await createSubscription(proxy, kind, pattern);
@@ -170,11 +182,41 @@ subscribeCommand.addCommand(new Command('add')
       console.log(`  ${chalk.cyan('id:')}      ${sub.id}`);
       console.log(`  ${chalk.cyan('kind:')}    ${sub.kind}`);
       console.log(`  ${chalk.cyan('pattern:')} ${sub.pattern}`);
+      console.log(chalk.dim(`  Configure per-subscription redact selectors with:`));
+      console.log(chalk.dim(`    think subscribe redact-set ${sub.id} '$.user.email' '$.headers.x-real-ip'`));
     } catch (err) {
       if (err instanceof ProxyError) fail(`subscribe add: ${err.message}`);
       throw err;
     }
   }));
+
+async function promptDataFlowConsent(kind: string, pattern: string): Promise<boolean> {
+  // Non-interactive (CI, scripts, automation): refuse with a clear pointer
+  // to --accept-data-flow. Interactive sessions get a y/N prompt.
+  if (!process.stdin.isTTY) {
+    console.error(chalk.red(`subscribe add: non-interactive session and --accept-data-flow not set.`));
+    console.error(chalk.red(`Re-run with: think subscribe add ${kind} ${pattern} --accept-data-flow`));
+    return false;
+  }
+
+  console.log(chalk.yellow(`Heads up: this subscription will pull events from a ${kind} source authored by other people`));
+  console.log(chalk.yellow(`(commenters, ticket authors, webhook senders). Each event lands as a local engram and`));
+  console.log(chalk.yellow(`flows through curation — if curator consent is granted (THINK_LLM_CONSENT or`));
+  console.log(chalk.yellow(`cortex.llmConsent), that content reaches Anthropic.`));
+  console.log();
+  console.log(chalk.dim(`Baseline PII strip (email, GPG, IP headers, phone) runs at ingestion. Per-subscription`));
+  console.log(chalk.dim(`redact selectors can be added later via 'think subscribe redact-set'.`));
+  console.log();
+
+  const readline = await import('node:readline');
+  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+  return new Promise((resolve) => {
+    rl.question('Acknowledge and create the subscription? [y/N] ', (answer) => {
+      rl.close();
+      resolve(/^y(es)?$/i.test(answer.trim()));
+    });
+  });
+}
 
 // `think subscribe list`
 subscribeCommand.addCommand(new Command('list')
@@ -351,12 +393,23 @@ subscribeCommand.addCommand(new Command('poll')
         }
         if (resp.events.length === 0) break;
         for (const ev of resp.events) {
+          // AGT-066: baseline PII strip (email, GPG, IP headers, phone)
+          // followed by per-subscription redact selectors (JSONPath subset).
+          // Both produce new objects rather than mutating ev.payload.
+          // Strings pass through unchanged — both layers are no-ops on
+          // primitives. The redacted shape is what lands as engram content
+          // and what subsequent context blocks reference.
+          const subRedact = sub.redact?.[s.id] ?? [];
+          const stripped = stripBaselinePii(ev.payload);
+          const redacted = applyRedactSelectors(stripped, subRedact);
+          const contentForEngram = typeof redacted === 'string' ? redacted : JSON.stringify(redacted);
+
           // insertEngram validates internally (AGT-059); proxy event payloads
           // are adversary-controllable so warnings here close the audit gap
           // for #12 and #13. Surface them via the same yellow-prefix pattern
           // used elsewhere; quiet mode suppresses since this is a poll loop.
           const { warnings } = insertEngram(cortex, {
-            content: typeof ev.payload === 'string' ? ev.payload : JSON.stringify(ev.payload),
+            content: contentForEngram,
             episodeKey: `subscribe:${s.kind}`,
             context: JSON.stringify({
               source: 'subscribe',
@@ -474,10 +527,71 @@ subscribeCommand.addCommand(new Command('show')
     console.log(`Proxy: ${chalk.cyan(subscriptions.proxyUrl)}`);
     console.log(`Token: ${chalk.dim('(redacted)')}`);
     const cursors = subscriptions.cursors ?? {};
-    const ids = Object.keys(cursors);
-    if (ids.length > 0) {
+    const cursorIds = Object.keys(cursors);
+    if (cursorIds.length > 0) {
       console.log(`Cursors:`);
-      for (const id of ids) console.log(`  ${id}: ${cursors[id]}`);
+      for (const id of cursorIds) console.log(`  ${id}: ${cursors[id]}`);
+    } else {
+      console.log(`Cursors: ${chalk.dim('(none)')}`);
+    }
+    // Print "(none)" when no selectors are configured so the redact
+    // surface is discoverable from `show` even before any are set —
+    // mirrors the cursors empty-case for parity. AGT-066 follow-up.
+    const redact = subscriptions.redact ?? {};
+    const redactIds = Object.keys(redact);
+    if (redactIds.length > 0) {
+      console.log(`Redact selectors:`);
+      for (const id of redactIds) console.log(`  ${id}: ${(redact[id] ?? []).join(', ')}`);
+    } else {
+      console.log(`Redact selectors: ${chalk.dim('(none)')}`);
+    }
+  }));
+
+// `think subscribe redact-set <id> <path1> [path2...]` (AGT-066 AC #3)
+//
+// Per-subscription JSONPath-subset selectors applied during `poll` after
+// the baseline PII strip. Selector format: `$.a.b.c` or `a.b.c`. Pass
+// zero paths after the id to clear all selectors for that subscription.
+subscribeCommand.addCommand(new Command('redact-set')
+  .description('Set per-subscription JSONPath-subset redact selectors (e.g. `$.user.email`)')
+  .argument('<id>', 'Subscription id (from `think subscribe list`)')
+  .argument('[paths...]', 'JSONPath-subset selectors. Pass zero to clear all selectors for this subscription.')
+  .action((id: string, paths: string[]) => {
+    // Validate every selector at config-write time so a typo is caught
+    // here rather than silently swallowed at poll time.
+    const invalid: string[] = [];
+    for (const p of paths) {
+      if (parseSelector(p) === null) invalid.push(p);
+    }
+    if (invalid.length > 0) {
+      console.error(chalk.red(`subscribe redact-set: invalid selector${invalid.length === 1 ? '' : 's'}:`));
+      for (const p of invalid) console.error(chalk.red(`  ${p}`));
+      console.error(chalk.dim(`Supported syntax: \`$.a.b.c\` or \`a.b.c\` — no array indices, wildcards, or filters.`));
+      process.exitCode = 1;
+      return;
+    }
+
+    rewriteSubscriptions((existing) => {
+      if (!existing) {
+        // No subscriptions config at all means the user hasn't run
+        // `subscribe configure` — surface that instead of writing a
+        // half-shaped config row that would later confuse `getProxyConfig`.
+        throw new Error('No subscriptions config. Run `think subscribe configure --proxy <url>` first.');
+      }
+      const redact = { ...(existing.redact ?? {}) };
+      if (paths.length === 0) {
+        delete redact[id];
+      } else {
+        redact[id] = paths;
+      }
+      return { ...existing, redact };
+    });
+
+    if (paths.length === 0) {
+      console.log(chalk.green('✓') + ` Cleared redact selectors for ${id}`);
+    } else {
+      console.log(chalk.green('✓') + ` Set ${paths.length} redact selector${paths.length === 1 ? '' : 's'} for ${id}:`);
+      for (const p of paths) console.log(`  ${p}`);
     }
   }));
 

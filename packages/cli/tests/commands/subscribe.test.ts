@@ -135,7 +135,7 @@ describe('think subscribe surface', () => {
       logs.push(String(line));
     });
 
-    await run(['add', 'mock', '3']);
+    await run(['add', 'mock', '3', '--accept-data-flow']);
     // Captured `id:` line is the second print after the ✓ banner; pull it out.
     const idLine = logs.find((l) => l.includes('id:'));
     expect(idLine).toBeDefined();
@@ -164,7 +164,7 @@ describe('think subscribe surface', () => {
       logs.push(String(line));
     });
 
-    await run(['add', 'mock', '2']);
+    await run(['add', 'mock', '2', '--accept-data-flow']);
     const idLine = logs.find((l) => l.includes('id:'))!;
     const subId = idLine.split('id:')[1]!.trim().replace(/\x1b\[\d+m/g, '');
 

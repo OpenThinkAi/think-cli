@@ -63,8 +63,20 @@ If you need to rotate today: provision a new key, point `THINK_VAULT_KEY` at it,
 
 The takeaway: the vault key has the same recovery profile as a session secret, not a database backup. Treat it like a deployment secret, not a long-lived archive.
 
+## Third-party content data flow (CLI-side redact)
+
+The proxy server stores connector event payloads opaquely (`payload_json` in the `events` table) — it does not parse, validate, or redact them. **Redaction runs on the CLI side**, during `think subscribe poll`, before the payload lands as engram content (AGT-066). Two layers, in order:
+
+1. **Baseline PII strip** (always on) — recursive walk that drops any field whose key matches the baseline patterns (`email`, `*_email`, `email_*`, `gpg`, `gpg_*`, `*_gpg`, `ip`, `*_ip`, `ip_*`, `x-real-ip`, `x-forwarded-for`, `client-ip`, `phone`, `*_phone`, `phone_*`). Case-insensitive on the standard hyphenated form for headers. Each PII category uses three suffix shapes (bare, `_x` suffix, `x_` prefix) — symmetry matters because the prefix shape (e.g. `phone_number`) is often the canonical field name in real payloads.
+
+2. **Per-subscription redact selectors** (opt-in) — JSONPath-subset (`$.a.b.c` form only, no array indices/wildcards/filters/recursive descent). Configured via `think subscribe redact-set <id> <selector...>`; stored at `subscriptions.redact[<id>]` in `~/.config/think/config.json`.
+
+The CLI also runs `validateEngramContent` inside `insertEngram` itself (AGT-059), so prompt-injection-pattern warnings and length-cap truncation apply to redacted-but-still-untrusted payloads. See [`docs/serve.md`](docs/serve.md#third-party-content-data-flow--redact-agt-066) for the full envelope and selector syntax.
+
+**Caveat: redact runs CLI-side, not server-side.** If you operate a multi-tenant `think serve` proxy and don't trust that every CLI consumer enforces redaction, you should add connector-side egress filtering before the payload lands in the proxy's events table. The current architecture treats the proxy as a single-tenant deployment under the CLI operator's control.
+
 ## Scope of this document
 
-This file covers the server's source-credential surface. Other server-side concerns (auth token comparison, SQLite file permissions, `/v1/cortexes/*` retirement semantics) are documented in code comments and [`packages/cli/docs/serve.md`](docs/serve.md). CLI threats (cortex sync, untrusted peer engrams, config tampering) live at the root [`SECURITY.md`](../../SECURITY.md).
+This file covers the server's source-credential surface and the CLI-side redact layer that depends on it. Other server-side concerns (auth token comparison, SQLite file permissions, `/v1/cortexes/*` retirement semantics) are documented in code comments and [`packages/cli/docs/serve.md`](docs/serve.md). CLI threats (cortex sync, untrusted peer engrams, config tampering) live at the root [`SECURITY.md`](../../SECURITY.md).
 
 Vulnerability disclosure: follow the root [`SECURITY.md`](../../SECURITY.md) reporting flow.
