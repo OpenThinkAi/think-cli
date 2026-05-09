@@ -20,6 +20,7 @@ import {
   bumpRecallStats,
   getRetrosBySyncVersion,
   applyRetroTombstone,
+  getRetroCount,
 } from '../../src/db/retro-queries.js';
 
 describe('retro-queries', () => {
@@ -140,6 +141,26 @@ describe('retro-queries', () => {
     expect(row.promoted).toBe(0);
     expect(row.last_recalled_at).toBeNull();
     expect(row.recalled_count).toBe(0);
+  });
+
+  it('insertRetro with promoted: 1 round-trips that value (AGT-209 AC #1)', () => {
+    const row = insertRetro(cortex, { content: 'user-attested retro', promoted: 1 });
+    expect(row.promoted).toBe(1);
+  });
+
+  it('getRetroCount returns count of non-tombstoned retros (AGT-209 AC #2)', () => {
+    expect(getRetroCount(cortex)).toBe(0);
+    insertRetro(cortex, { content: 'first retro' });
+    expect(getRetroCount(cortex)).toBe(1);
+    const r2 = insertRetro(cortex, { content: 'second retro' });
+    insertRetro(cortex, { content: 'third retro' });
+    expect(getRetroCount(cortex)).toBe(3);
+
+    // Tombstoning excludes the row from the count
+    const db = getCortexDb(cortex);
+    db.prepare('UPDATE retros SET tombstoned_at = ? WHERE id = ?')
+      .run(new Date().toISOString(), r2.id);
+    expect(getRetroCount(cortex)).toBe(2);
   });
 
   it('getPendingRetros returns non-tombstoned retros ordered by created_at', () => {

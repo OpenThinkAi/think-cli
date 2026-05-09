@@ -9,9 +9,11 @@ import {
   VALID_KINDS,
   type RetroKind,
 } from '../db/retro-queries.js';
+import { getSyncCursor } from '../db/memory-queries.js';
 import { validateEngramContent } from '../lib/sanitize.js';
 import { getEngramDbPath } from '../lib/paths.js';
 import { pullForRead, pushForWriteBackground } from '../lib/auto-propagate.js';
+import { getSyncAdapter } from '../sync/registry.js';
 
 // Returns RetroKind|null on success, false on validation error (caller must check).
 function parseKindOpt(kindStr: string | undefined): RetroKind | null | false {
@@ -25,7 +27,7 @@ function parseKindOpt(kindStr: string | undefined): RetroKind | null | false {
   return kindStr as RetroKind;
 }
 
-function emitRetro(cortex: string, message: string, kind: RetroKind | null, skipSync = false): void {
+async function emitRetro(cortex: string, message: string, kind: RetroKind | null, skipSync = false): Promise<void> {
   const validated = validateEngramContent(message);
   if (validated.warnings.length > 0) {
     for (const w of validated.warnings) {
@@ -40,7 +42,22 @@ function emitRetro(cortex: string, message: string, kind: RetroKind | null, skip
     console.log(`${chalk.green('✓')} created cortex ${chalk.cyan(`[${cortex}]`)}`);
   }
 
-  const row = insertRetro(cortex, { content: validated.content, kind });
+  // First-emit detection happens BEFORE insert: a fresh cortex (or one whose
+  // retro stream has never pushed) gets a synchronous remote push so any
+  // initialisation failure surfaces with a non-zero exit code instead of
+  // landing silently in auto-sync.log.
+  const adapter = getSyncAdapter();
+  const isFirstRetroPush =
+    !skipSync &&
+    adapter?.isAvailable() === true &&
+    getSyncCursor(cortex, adapter.name, 'push_retros') === null;
+
+  // promoted=1 on direct user emits. The retro curator continues to manage
+  // promote/relegate cycles for cross-peer rows that come in via sync at
+  // promoted=0; what changes is that an explicit `think retro add` is itself
+  // the user attesting that the observation matters, so it surfaces in
+  // default `retro recall` immediately instead of waiting for a duplicate.
+  const row = insertRetro(cortex, { content: validated.content, kind, promoted: 1 });
 
   const badge = chalk.cyan(`[${cortex}]`);
   const ts = chalk.gray(row.created_at.slice(0, 16).replace('T', ' '));
@@ -49,6 +66,47 @@ function emitRetro(cortex: string, message: string, kind: RetroKind | null, skip
   console.log(`  ${row.content}`);
 
   closeCortexDb(cortex);
+
+  if (isFirstRetroPush && adapter) {
+    // Synchronous first push: surfaces remote-init errors loudly. The git
+    // adapter's push path lazily creates the orphan branch via
+    // ensureRemoteBranch when the remote ref is missing, so the typical
+    // cause of `fatal: couldn't find remote ref` (orphan create silently
+    // failed during `cortex create`) self-heals here. Genuine failures
+    // (auth, network) still surface as a non-zero exit and an error line.
+    try {
+      const reachable = await adapter.isReachable();
+      if (!reachable) {
+        // Fall through to background path — offline emit is an explicit
+        // supported mode (the auto-sync agent will retry).
+        try {
+          pushForWriteBackground(cortex, { skip: skipSync });
+        } catch {
+          // Best-effort; background spawn failures never surface to the caller
+        }
+        return;
+      }
+      const result = await adapter.push(cortex);
+      if (result.errors.length > 0) {
+        for (const err of result.errors) {
+          console.error(chalk.red(`  Error: ${err}`));
+        }
+        console.error(
+          chalk.red(
+            `\n  The retro was written locally but the first remote push failed.\n` +
+              `  Run \`think cortex sync --cortex ${cortex}\` to retry once the underlying issue is resolved.`,
+          ),
+        );
+        process.exitCode = 1;
+      }
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      console.error(chalk.red(`  Error: ${message}`));
+      process.exitCode = 1;
+    }
+    return;
+  }
+
   try {
     pushForWriteBackground(cortex, { skip: skipSync });
   } catch {
@@ -61,7 +119,7 @@ const addSubcommand = new Command('add')
   .description('Emit a retro (explicit form; equivalent to: think retro "<message>")')
   .argument('<message>', 'The observation to record')
   .option('--kind <kind>', `Observation kind: ${VALID_KINDS.join(' | ')}`)
-  .action(function (this: Command, message: string, opts: { kind?: string }) {
+  .action(async function (this: Command, message: string, opts: { kind?: string }) {
     const globalOpts = this.optsWithGlobals() as { cortex?: string; sync?: boolean };
     const cortex = globalOpts.cortex;
 
@@ -74,7 +132,7 @@ const addSubcommand = new Command('add')
 
     const kind = parseKindOpt(opts.kind);
     if (kind === false) return;
-    emitRetro(cortex, message, kind, !(globalOpts.sync ?? true));
+    await emitRetro(cortex, message, kind, !(globalOpts.sync ?? true));
   });
 
 // Read subcommand: think retro recall [<query>] --cortex <name>
@@ -190,7 +248,7 @@ Examples:
 `)
   .addCommand(addSubcommand)
   .addCommand(recallSubcommand)
-  .action(function (this: Command, message: string | undefined, opts: { kind?: string; sync: boolean }) {
+  .action(async function (this: Command, message: string | undefined, opts: { kind?: string; sync: boolean }) {
     // Legacy emit form: fires when first positional doesn't match "add" or "recall".
     if (!message) {
       this.outputHelp();
@@ -209,5 +267,5 @@ Examples:
 
     const kind = parseKindOpt(opts.kind);
     if (kind === false) return;
-    emitRetro(cortex, message, kind, !opts.sync);
+    await emitRetro(cortex, message, kind, !opts.sync);
   });

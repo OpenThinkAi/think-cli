@@ -213,4 +213,46 @@ describe('git retro sync', () => {
     expect(idsOnA).toContain(rA.id);
     expect(idsOnA).toContain(rB.id);
   });
+
+  // AGT-209 / GH#47: when `cortex create` succeeded locally but the orphan-
+  // branch push silently failed (transient remote write-perm, network blip),
+  // every subsequent sync's `fetchBranch` raised `fatal: couldn't find remote
+  // ref <name>` permanently. The push/pull paths now lazily create the
+  // missing orphan branch via ensureRemoteBranch so the cortex self-heals.
+  it('sync self-heals a missing orphan branch (AGT-209 AC #4)', async () => {
+    const { createPeerPair } = await import('../fixtures/peer-pair.js');
+    const { insertRetro } = await import('../../src/db/retro-queries.js');
+
+    pair = createPeerPair();
+    remote = factory.setupRemote(pair.cortexName) as GitRemote;
+
+    // Configure peer A but skip configurePeer's createCortex step so the
+    // remote ref intentionally does NOT exist — simulates the "local cortex
+    // exists, remote orphan never landed" failure mode AGT-209 reported.
+    pair.peerA.activate();
+    saveConfig({
+      ...getConfig(),
+      cortex: {
+        repo: remote.url,
+        author: 'test-peer-A',
+      },
+    });
+    const adapter = factory.createAdapter();
+
+    insertRetro(pair.cortexName, { content: 'first retro on a never-pushed cortex' });
+
+    // Pre-condition: the remote ref does not exist yet.
+    const branchesBefore = await adapter.listRemoteCortexes();
+    expect(branchesBefore).not.toContain(pair.cortexName);
+
+    // Sync used to fail with `fatal: couldn't find remote ref`. With the
+    // ensureRemoteBranch self-heal, push lazily creates the orphan and the
+    // retro lands on the remote.
+    const result = await adapter.sync(pair.cortexName);
+    expect(result.errors).toEqual([]);
+    expect(result.pushed).toBeGreaterThanOrEqual(1);
+
+    const branchesAfter = await adapter.listRemoteCortexes();
+    expect(branchesAfter).toContain(pair.cortexName);
+  });
 });

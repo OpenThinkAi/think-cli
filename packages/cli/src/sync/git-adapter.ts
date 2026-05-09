@@ -5,6 +5,7 @@ import {
   readFileFromBranch,
   appendAndCommit,
   createOrphanBranch,
+  ensureRemoteBranch,
   branchExists,
   listRemoteBranches,
   listBranchFiles,
@@ -79,6 +80,10 @@ export class GitSyncAdapter implements SyncAdapter {
 
     try {
       ensureRepoCloned();
+      // Self-heal a never-pushed orphan branch before fetchBranch — otherwise
+      // any cortex whose `cortex create` push silently failed is permanently
+      // stuck on `fatal: couldn't find remote ref <name>`. See AGT-209.
+      ensureRemoteBranch(cortex);
       fetchBranch(cortex);
     } catch (err) {
       result.errors.push(err instanceof Error ? err.message : String(err));
@@ -330,6 +335,10 @@ export class GitSyncAdapter implements SyncAdapter {
 
     try {
       ensureRepoCloned();
+      // Mirrors the push path: a never-pushed orphan branch must self-heal
+      // before fetch, or pull-then-push (cortex sync) re-emits the same
+      // `fatal: couldn't find remote ref` error AGT-209 reported.
+      ensureRemoteBranch(cortex);
       fetchBranch(cortex);
     } catch (err) {
       result.errors.push(err instanceof Error ? err.message : String(err));
