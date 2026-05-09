@@ -10,33 +10,26 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
       - uses: actions/setup-node@v4
         with:
+          # Bun runs install/test/build; node:24 is still the runtime target
+          # for the bundled binary (vitest is invoked through `bun run test`
+          # which spawns node under the hood).
           node-version: '24'
-          cache: npm
       - run: git config --global user.email "ci@example.com"
       - run: git config --global user.name "CI"
-      # Workaround for npm/cli#4828: cross-platform lockfiles cause `npm ci`
-      # (and `npm install` against the existing lockfile) to skip
-      # platform-matching optional native bindings, which makes vitest 4
-      # crash at startup because rolldown can't load its native binding.
-      # The npm bug report itself recommends deleting both node_modules and
-      # package-lock.json and running a fresh `npm install` — that re-resolves
-      # from package.json and correctly picks the current-platform optionals.
-      #
-      # Trade-off accepted: we lose `npm ci`'s lockfile-drift detection,
-      # because the committed lockfile (generated on macOS-arm64) is
-      # structurally different from one regenerated on linux-x64 — npm
-      # bakes platform-specific rollup/rolldown native binding entries
-      # into the lockfile based on the generating platform, so a naive
-      # `git diff --exit-code` against the regen always fails with ~300
-      # lines of platform churn. Until we switch off npm to a package
-      # manager that handles cross-platform optional natives correctly
-      # (pnpm/bun/yarn — to be filed as a follow-up ticket), supply-chain
-      # drift detection has to live outside this workflow.
-      - run: rm -rf node_modules package-lock.json
-      - run: npm install --no-audit --no-fund
-      - run: npm test
+      # Frozen-lockfile install (AGT-060). Switching from npm to bun closes
+      # the supply-chain drift gap that npm/cli#4828 forced open: bun's
+      # lockfile (`bun.lock`) handles cross-platform optional native bindings
+      # without baking platform-specific entries that diverge between dev
+      # (macOS-arm64) and CI (linux-x64), so `--frozen-lockfile` works on
+      # every PR without lockfile churn. A drift in committed bun.lock vs.
+      # package.json now fails the workflow rather than silently re-resolving.
+      - run: bun install --frozen-lockfile
+      - run: bun run --cwd packages/cli test
       # Tests run against the TS source via tsx, so they don't catch bundling
       # bugs in dist/. Boot the bundled artifact via `think serve` and hit
       # /v1/health to make sure the published binary actually starts (e.g.
@@ -44,7 +37,7 @@ jobs:
       # paths work). Post-AGT-030 the proxy ships inside the CLI package.
       - name: Smoke-test bundled `think serve`
         run: |
-          npm run build -w @openthink/think
+          bun run --cwd packages/cli build
           THINK_TOKEN=smoke-token PORT=18327 \
             THINK_DB_PATH="$(mktemp -t open-think-smoke.XXXXXX.sqlite)" \
             node packages/cli/dist/index.js serve &

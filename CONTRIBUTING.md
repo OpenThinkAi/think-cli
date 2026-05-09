@@ -12,19 +12,24 @@ Thanks for your interest in contributing! Here's how to get started.
 ```bash
 git clone git@github.com:OpenThinkAi/think-cli.git
 cd think-cli
-npm install
-npm run dev -- sync "test entry"
+bun install
+bun run dev -- sync "test entry"
 ```
 
-Requires **Node 22.5+** (uses `node:sqlite`).
+Requires **Node 22.5+** (uses `node:sqlite`) and **bun** for install/build/test (the runtime is still Node — bun handles the dev tooling). Install bun from <https://bun.sh> if you don't have it. Bun replaced npm in this repo because npm bakes platform-specific optional native bindings into `package-lock.json`, which breaks cross-platform `npm ci` (see `npm/cli#4828`).
+
+You can still run the published binary or invoke individual scripts via `node`/`npx` — bun is only required for the in-repo install/build/test cycle.
 
 ## Making changes
 
 1. Fork the repo and create a branch from `main`
 2. Make your changes
-3. Run `npm run build` to verify everything compiles
-4. Commit with a clear message describing what and why
-5. Open a PR against `main`
+3. Run `bun run build` to verify everything compiles
+4. Run `bun run test` to verify tests still pass
+5. Commit with a clear message describing what and why
+6. Open a PR against `main`
+
+CI uses `bun install --frozen-lockfile`, so include the updated `bun.lock` in your commit if you've added or upgraded dependencies — a drifted lockfile fails the workflow.
 
 ## Pull requests
 
