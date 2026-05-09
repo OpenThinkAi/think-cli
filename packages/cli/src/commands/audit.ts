@@ -1,6 +1,6 @@
 import { Command } from 'commander';
 import chalk from 'chalk';
-import { readAuditLog, type AuditEntry } from '../lib/audit.js';
+import { readAuditLog, pruneAuditLog, type AuditEntry } from '../lib/audit.js';
 
 const typeLabels: Record<AuditEntry['type'], (s: string) => string> = {
   'export': chalk.blue,
@@ -44,3 +44,35 @@ export const auditCommand = new Command('audit')
 
     console.log(chalk.dim(`\n${shown.length} events` + (entries.length > limit ? ` (showing last ${limit} of ${entries.length})` : '')));
   });
+
+// AGT-063: drop entries older than --before from the active log (and
+// optionally the rotated archive). Useful when the audit log accumulates
+// retention you don't want to keep — work-intensity patterns, peer
+// relationships, file paths can all be trimmed back to a recent window.
+auditCommand.addCommand(new Command('prune')
+  .description('Drop audit entries older than the given date (--before <iso-date>)')
+  .requiredOption('--before <date>', 'ISO-8601 date (YYYY-MM-DD or full timestamp). Entries strictly before this drop.')
+  .option('--include-archive', 'Also prune the rotated archive (sync-audit.log.1)')
+  .action((opts: { before: string; includeArchive?: boolean }) => {
+    // Validate the cutoff parses to a real date; reject obvious garbage
+    // before we rewrite the log file.
+    const parsed = new Date(opts.before);
+    if (Number.isNaN(parsed.getTime())) {
+      console.error(chalk.red(`think audit prune: --before ${JSON.stringify(opts.before)} is not a valid ISO date.`));
+      process.exitCode = 1;
+      return;
+    }
+
+    // Re-emit the cutoff as a normalized ISO so the comparison against
+    // entry timestamps is unambiguous (the entries are written as
+    // `new Date().toISOString()` upstream).
+    const cutoffIso = parsed.toISOString();
+    const pruned = pruneAuditLog(cutoffIso, { includeArchive: opts.includeArchive });
+
+    if (pruned === 0) {
+      console.log(chalk.dim(`No audit entries before ${cutoffIso}.`));
+    } else {
+      const scope = opts.includeArchive ? 'active log + archive' : 'active log';
+      console.log(`${chalk.green('✓')} Pruned ${pruned} audit entr${pruned === 1 ? 'y' : 'ies'} from the ${scope} (cutoff: ${cutoffIso}).`);
+    }
+  }));
