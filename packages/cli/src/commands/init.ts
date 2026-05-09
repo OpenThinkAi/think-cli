@@ -11,26 +11,51 @@ const END_MARKER = '<!-- think:end -->';
 const RETRO_BEGIN_MARKER = '<!-- think:retro:begin (managed by `think init --retro` — do not edit between markers) -->';
 const RETRO_END_MARKER = '<!-- think:retro:end -->';
 
+// Default work-log template, reframed toward minimum-necessary. The
+// previous version instructed agents to log "every meaningful action
+// and decisions made in conversation" with "this is not optional"
+// framing — biased toward over-collection of context that often
+// included customer names, internal architecture, and personnel
+// discussions. The privacy paragraph below names the engrams →
+// curation → Anthropic data flow so users can choose informedly.
 const WORKLOG_BLOCK = `# Work Logging
 
-**After every commit, push, PR, deploy, Linear update, non-trivial tool-assisted action, or decision made in conversation, immediately run \`think sync\` before responding to the user's next request. This is not optional.**
+After shipping a change (commit pushed, PR opened, deploy completed, or a decision committed to and acted on), run \`think sync\` to record the outcome:
 
 \`\`\`
-think sync "concise summary of what was done" --silent
-think sync "explored X, decided against it" --decision "Decided against X because Y" --silent
+think sync "concise summary of what shipped" --silent
+think sync "Decided against X because Y" --decision "Decided against X because Y" --silent
 \`\`\`
 
-**Do log:** features built, bugs fixed, PRs created/reviewed, deploys, config changes, refactors completed, investigations concluded, decisions made (including decisions to NOT do something), documents written, Linear/external system updates
+**Do log:** shipped outcomes — features built, bugs fixed, PRs created/reviewed, deploys, config changes, refactors completed, decisions committed to (including decisions to NOT do something), documents written, Linear/external system updates.
 
-**Don't log:** clarifying questions, exploration, failed attempts, reading code, debugging dead ends, conversation that didn't produce an outcome
+**Don't log:** conversational deliberation, exploration, failed attempts, reading code, debugging dead ends, clarifying questions, anything that didn't produce a shipped outcome.
+
+**Privacy: where these entries go.** Each \`think sync\` writes a local engram. The curator (\`think curate\`) consolidates engrams into memories; with curator consent granted (\`THINK_LLM_CONSENT=1\` or \`cortex.llmConsent\` in \`~/.config/think/config.json\`), curated content is sent to Anthropic for synthesis. Choose what to log accordingly — anything about customers, internal architecture, or personnel ends up in the same pipeline as anything else. \`think pause\` suppresses engram creation if you need a pause window.
 
 **How to log:**
-- One entry per completed task, not per tool call or file edit
+- One entry per shipped outcome, not per tool call or file edit
 - Frame as accomplishments: "Implemented X", "Fixed Y", "Reviewed Z"
-- Decisions to not pursue something are logged as: "Decided against X because Y"
+- Decisions not to pursue something: "Decided against X because Y"
 - If a task spans the whole session, log at the end
-- If multiple distinct things were done, log each separately
+- If multiple distinct things shipped, log each separately
 - Keep entries concise but specific enough to be useful in a weekly summary
+`;
+
+// `--minimal` template. Even more conservative than the default —
+// only explicit shipped outcomes, no decision-narration, no example
+// showing how to log negative decisions. For users who want the
+// absolute floor of what gets sent to Anthropic if they grant curator
+// consent later.
+const MINIMAL_WORKLOG_BLOCK = `# Work Logging (minimal)
+
+When you ship a change, log the outcome:
+
+\`\`\`
+think sync "shipped X" --silent
+\`\`\`
+
+That's all. Don't run \`think sync\` for exploration, debugging, decisions that weren't acted on, or anything mid-conversation. Logged entries become engrams; with curator consent granted (\`THINK_LLM_CONSENT=1\`), curated content reaches Anthropic. The minimal template keeps that pipeline narrow by design — augment with the default template (\`think init --yes\`) if you decide you want richer logging later.
 `;
 
 const OTEAM_EXTRA_LINE = `\n**Under an \`oteam\` workspace:** run \`think recall\` before \`oteam assign\` and \`think sync\` after each role-pipeline hand-off.\n`;
@@ -85,10 +110,44 @@ function detectOteamWorkspace(home: string): boolean {
   }
 }
 
-function buildBlock(oteamPresent: boolean): string {
+function buildBlock(oteamPresent: boolean, minimal = false): string {
+  if (minimal) {
+    // Wrap the minimal body in the same begin/end markers as the default
+    // path so `upsertBlock` can replace-in-place across re-runs and
+    // `--minimal` ↔ default switches. Without the markers, every
+    // re-invocation would append a fresh block (no marker → no
+    // existing-block detection → fall through to plain append).
+    return `${BEGIN_MARKER}\n${MINIMAL_WORKLOG_BLOCK}${END_MARKER}\n`;
+  }
   const oteamSegment = oteamPresent ? OTEAM_EXTRA_LINE : '';
   const body = `${WORKLOG_BLOCK}${oteamSegment}\n${RETRO_BLOCK}`;
   return `${BEGIN_MARKER}\n${body}${END_MARKER}\n`;
+}
+
+// Pre-write disclosure of the engrams → curation → Anthropic data flow
+// for interactive sessions. Returns true if the user confirms; false to
+// abort. `--yes` and `--minimal` skip this entirely (non-interactive
+// bypass). Non-interactive sessions without a bypass flag refuse with
+// an actionable error before printing any disclosure text.
+async function promptLoggingConfirmation(): Promise<boolean> {
+  if (!process.stdin.isTTY) {
+    // Refuse before printing the wall of yellow disclosure — script
+    // callers should see the actionable error first, not a body of
+    // copy that's irrelevant in their context.
+    console.error(chalk.red('think init: non-interactive session — pass --yes (default template) or --minimal to skip the disclosure prompt.'));
+    return false;
+  }
+
+  console.log(chalk.yellow(`Heads up: this writes a CLAUDE.md block instructing Claude Code to run \`think sync\` on shipped outcomes.`));
+  console.log(chalk.yellow(`Each \`think sync\` is a local engram. With curator consent (\`THINK_LLM_CONSENT=1\` or`));
+  console.log(chalk.yellow(`\`cortex.llmConsent\`), curated content flows to Anthropic for synthesis.`));
+  console.log();
+  console.log(chalk.dim(`This template (the non-minimal default) logs shipped outcomes + decisions, no conversational deliberation.`));
+  console.log(chalk.dim(`To skip this prompt: \`think init --yes\` (this template) or \`think init --minimal\` (more conservative).`));
+  console.log();
+
+  const answer = await prompt(`Write the CLAUDE.md block? [Y/n] `, 'y');
+  return /^y(es)?$/i.test(answer.trim());
 }
 
 function buildRetroBlock(cortex: string): string {
@@ -261,6 +320,7 @@ export const initCommand = new Command('init')
   )
   .option('-d, --dir <path>', 'Target directory for CLAUDE.md')
   .option('-y, --yes', 'Skip confirmation, use defaults')
+  .option('--minimal', 'Write a conservative work-log template that logs only explicit shipped outcomes — no decision narration, no oteam adaptation, no retro pattern. Skips the disclosure prompt. Mutually exclusive with --retro.')
   .option('--retro', 'Upsert the iterative-learning (retro) block instead of the work-logging block. Requires --cortex. When no -d is given: writes silently to the git repo root if inside a repo; prompts with cwd as the default otherwise.')
   .option('--cortex <name>', 'Cortex name baked into the retro block commands (required with --retro).')
   .addHelpText('after', `
@@ -291,13 +351,18 @@ Examples:
   think init --retro --cortex fx-tracker  # retro block at git root (silent)
   think init --dir . --retro --cortex my-repo  # retro block in ./CLAUDE.md
 `)
-  .action(async function (this: Command, opts: { dir?: string; yes?: boolean; retro?: boolean; cortex?: string }) {
+  .action(async function (this: Command, opts: { dir?: string; yes?: boolean; minimal?: boolean; retro?: boolean; cortex?: string }) {
     // The program declares a global `-C, --cortex <name>` option which shadows
     // the subcommand-local `--cortex` when invoked through the full CLI. Fall
     // back to the global so both `think -C foo init --retro` and
     // `think init --retro --cortex foo` resolve to the same value.
     const globalOpts = this.optsWithGlobals() as { cortex?: string };
     const cortex = opts.cortex ?? globalOpts.cortex;
+
+    if (opts.minimal && opts.retro) {
+      console.error(chalk.red('think init: --minimal and --retro are mutually exclusive (one writes the work-log block, the other writes the retro block).'));
+      process.exit(1);
+    }
 
     if (opts.retro && !cortex) {
       console.error(chalk.red('think init --retro: --cortex <name> is required.'));
@@ -374,11 +439,33 @@ Examples:
       return;
     }
 
-    const oteamPresent = detectOteamWorkspace(home);
-    const block = buildBlock(oteamPresent);
-    const label = 'work logging';
+    // Pre-write disclosure prompt unless suppressed by --yes (default
+    // template, no prompt) or --minimal (minimal template, no prompt).
+    // The prompt names the data flow and bails on a No without writing
+    // anything. `--retro` writes its own (separate) block and does NOT
+    // get this disclosure today — retro-block setup is run per-repo and
+    // is invoked programmatically by orchestrator skills like
+    // /assign-ticket; adding interactive friction there would block
+    // those flows. The retro path's own data flow disclosure lives in
+    // SECURITY.md "Per-curation data envelope" + retro-recall docs.
+    if (!opts.yes && !opts.minimal) {
+      const proceed = await promptLoggingConfirmation();
+      if (!proceed) {
+        // The user said no — that's an explicit choice, not a failure.
+        // Dim text + exit 1 lets scripts branch on the exit code without
+        // the message reading like an error to the human.
+        console.log(chalk.dim('think init: aborted; no file written.'));
+        process.exit(1);
+      }
+    }
 
-    if (oteamPresent) {
+    const oteamPresent = detectOteamWorkspace(home);
+    const block = buildBlock(oteamPresent, opts.minimal);
+    const label = opts.minimal ? 'minimal work logging' : 'work logging';
+
+    if (opts.minimal) {
+      console.log(chalk.dim('Writing the minimal work-log template — no oteam adaptation, no retro pattern, no decision narration.'));
+    } else if (oteamPresent) {
       console.log(chalk.dim('Detected oteam workspace — block tuned for role-pipeline cadence.'));
     }
 

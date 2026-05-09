@@ -145,7 +145,10 @@ describe('think init — scoped marker block', () => {
     expect(content.startsWith(before)).toBe(true);
     expect(content.endsWith(after)).toBe(true);
     expect(content).not.toContain('stale body');
-    expect(content).toContain('**After every commit');
+    // AGT-067: WORKLOG_BLOCK reframed from "After every commit, push, …
+    // this is not optional" to a minimum-necessary-shaped "After
+    // shipping a change … run think sync to record the outcome".
+    expect(content).toContain('After shipping a change');
   });
 
   it('migrates a legacy unscoped block in place, writes a backup, and prints a notice', async () => {
@@ -470,5 +473,121 @@ describe('think init --retro — directory resolution (AC #6)', () => {
 
     expect(existsSync(path.join(homeRoot, 'CLAUDE.md'))).toBe(true);
     expect(existsSync(path.join(tempDir1, 'CLAUDE.md'))).toBe(false);
+  });
+});
+
+// AGT-067: --minimal flag writes a conservative work-log template; --yes
+// skips the new disclosure prompt; --minimal and --retro are mutually
+// exclusive; the new default template carries the privacy disclosure
+// paragraph naming the engrams → curation → Anthropic data flow.
+describe('think init — minimum-necessary defaults + --minimal flag (AGT-067)', () => {
+  let homeRoot: string;
+  let projectDir: string;
+  let prevHome: string | undefined;
+
+  beforeEach(() => {
+    homeRoot = mkdtempSync(path.join(tmpdir(), 'think-init-067-home-'));
+    projectDir = mkdtempSync(path.join(tmpdir(), 'think-init-067-project-'));
+    prevHome = process.env.HOME;
+    process.env.HOME = homeRoot;
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    rmSync(homeRoot, { recursive: true, force: true });
+    rmSync(projectDir, { recursive: true, force: true });
+    if (prevHome === undefined) delete process.env.HOME;
+    else process.env.HOME = prevHome;
+    vi.restoreAllMocks();
+  });
+
+  function readClaude(): string {
+    return readFileSync(path.join(projectDir, 'CLAUDE.md'), 'utf-8');
+  }
+
+  it('--minimal writes the minimal template (no decision narration, no oteam adaptation, no retro pattern)', async () => {
+    await initCommand.parseAsync(['--dir', projectDir, '--minimal'], { from: 'user' });
+
+    const content = readClaude();
+    expect(content).toContain('# Work Logging (minimal)');
+    expect(content).toContain('When you ship a change, log the outcome');
+    // No decision-narration example
+    expect(content).not.toContain('Decided against X because Y');
+    // No retro pattern in minimal template
+    expect(content).not.toContain('# Iterative Learning');
+    // No oteam adaptation in minimal template
+    expect(content).not.toContain('Under an `oteam` workspace');
+  });
+
+  it('default template (no --minimal) includes the privacy disclosure paragraph (AC #2)', async () => {
+    await initCommand.parseAsync(['--dir', projectDir, '--yes'], { from: 'user' });
+
+    const content = readClaude();
+    expect(content).toContain('Privacy: where these entries go');
+    expect(content).toContain('THINK_LLM_CONSENT');
+    expect(content).toContain('cortex.llmConsent');
+    // Reframed away from over-collection — old framing should be gone
+    expect(content).not.toContain('this is not optional');
+    expect(content).not.toContain('non-trivial tool-assisted action');
+    // New "shipped outcomes" framing should be present
+    expect(content).toContain('After shipping a change');
+  });
+
+  it('--minimal and --retro are mutually exclusive', async () => {
+    const exitSpy = vi.spyOn(process, 'exit').mockImplementation(((code?: number) => {
+      throw new Error(`process.exit(${code})`);
+    }) as never);
+
+    await expect(
+      initCommand.parseAsync(['--dir', projectDir, '--minimal', '--retro', '--cortex', 'foo'], { from: 'user' }),
+    ).rejects.toThrow(/process\.exit\(1\)/);
+
+    expect(existsSync(path.join(projectDir, 'CLAUDE.md'))).toBe(false);
+    exitSpy.mockRestore();
+  });
+
+  it('--minimal skips the disclosure prompt (AC #3 bypass) and writes silently', async () => {
+    // Without --yes or --minimal we'd hit the disclosure prompt — which would
+    // hang in a non-TTY test. --minimal is one of the documented bypass paths;
+    // confirming the file lands without any prompt interaction.
+    await initCommand.parseAsync(['--dir', projectDir, '--minimal'], { from: 'user' });
+    expect(existsSync(path.join(projectDir, 'CLAUDE.md'))).toBe(true);
+  });
+
+  it('--yes (existing flag) skips the disclosure prompt and writes the new default template (AC #5)', async () => {
+    // Pre-AGT-067 callers passing --yes got the maximal "every meaningful
+    // action" template. Post-AGT-067 they get the new minimum-necessary
+    // default (still skipping the prompt, but with the toned-down framing).
+    await initCommand.parseAsync(['--dir', projectDir, '--yes'], { from: 'user' });
+
+    const content = readClaude();
+    expect(content).toContain('After shipping a change');
+    expect(content).not.toContain('this is not optional');
+  });
+
+  it('--minimal is idempotent across re-runs — block markers wrap the body so upsert replaces in place', async () => {
+    // Round-1 stamp review caught this: pre-fix, MINIMAL_WORKLOG_BLOCK
+    // returned without BEGIN/END_MARKER wrapping, so each `--minimal`
+    // re-run appended a fresh block. Now markered, upsert replaces.
+    await initCommand.parseAsync(['--dir', projectDir, '--minimal'], { from: 'user' });
+    await initCommand.parseAsync(['--dir', projectDir, '--minimal'], { from: 'user' });
+    await initCommand.parseAsync(['--dir', projectDir, '--minimal'], { from: 'user' });
+
+    const content = readClaude();
+    const headerCount = (content.match(/# Work Logging \(minimal\)/g) ?? []).length;
+    expect(headerCount).toBe(1);
+  });
+
+  it('switching --minimal ↔ default replaces the block in place (no duplicate sections)', async () => {
+    await initCommand.parseAsync(['--dir', projectDir, '--minimal'], { from: 'user' });
+    await initCommand.parseAsync(['--dir', projectDir, '--yes'], { from: 'user' });
+
+    const content = readClaude();
+    // After switching, only the default-template header should remain;
+    // the minimal header is replaced (not appended alongside).
+    expect(content).not.toContain('# Work Logging (minimal)');
+    expect(content).toContain('# Work Logging\n');
+    expect(content).toContain('After shipping a change');
   });
 });
