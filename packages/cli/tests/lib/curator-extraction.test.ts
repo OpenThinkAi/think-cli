@@ -76,7 +76,7 @@ describe('extractFirstFencedBlock (AGT-222)', () => {
     expect(parsed.purge_ids).toEqual([]);
   });
 
-  it('accepts language tags other than json (jsonc, json5, lowercase only)', () => {
+  it('accepts language tags other than json (jsonc, json5)', () => {
     expect(extractFirstFencedBlock('```jsonc\n{"a":1}\n```')).toBe('{"a":1}');
     expect(extractFirstFencedBlock('```json5\n{"a":1}\n```')).toBe('{"a":1}');
   });

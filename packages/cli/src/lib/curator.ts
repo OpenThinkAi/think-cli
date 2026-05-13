@@ -334,6 +334,11 @@ export function assembleCurationPrompt(params: {
  * fence and take everything up to the next closing fence; if the opening
  * fence has no matching close (truncated response), we return what follows
  * the opener so the downstream parse can still try and surface a clear error.
+ *
+ * runConsolidation passes plain-text summaries through this helper too. A
+ * summary that legitimately contains an inline triple-backtick block would
+ * get truncated to that block's contents — acceptable because consolidation
+ * prompts produce narrative prose, not code-bearing markdown.
  */
 export function extractFirstFencedBlock(text: string): string {
   const open = text.match(/```[a-zA-Z0-9_-]*\n?/);
