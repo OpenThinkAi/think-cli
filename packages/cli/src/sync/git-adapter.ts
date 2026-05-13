@@ -127,8 +127,15 @@ export class GitSyncAdapter implements SyncAdapter {
     // Format as JSONL lines (include episode_key and decisions when present).
     // Memories are immutable via sync — local tombstones are intentionally not
     // emitted here. See SyncAdapter docs for the invariant.
+    //
+    // The origin_peer_id guard prevents pulled rows from being re-emitted on
+    // the next push (AGT-250). Pull-side `insertMemoryIfNotExists` bumps
+    // `sync_version`, so foreign-authored rows would otherwise come back
+    // through `getMemoriesBySyncVersion` and get appended to this peer's
+    // bucket file, accumulating duplicates across devices.
+    const localPeer = getPeerId();
     const newLines = newMemories
-      .filter(m => !m.deleted_at)
+      .filter(m => !m.deleted_at && m.origin_peer_id === localPeer)
       .map(m => {
         let decisions: string[] = [];
         if (m.decisions) {

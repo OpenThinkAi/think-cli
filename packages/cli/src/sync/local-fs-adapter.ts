@@ -160,9 +160,18 @@ export class LocalFsSyncAdapter implements SyncAdapter {
     // not emitted. The contract test `enforceImmutableMemories` locks this in.
     // source_ids and decisions are both written by us via JSON.stringify on
     // insert, so we trust them as parseable here without try/catch.
+    //
+    // The origin_peer_id guard prevents pulled rows from being re-emitted
+    // into this peer's bucket files (AGT-250). Pull-side `insertMemoryIfNotExists`
+    // bumps `sync_version`, so a row authored by peer B and ingested here
+    // would otherwise come back through `getMemoriesBySyncVersion` on the
+    // next push. Filtering on `origin_peer_id === localPeer` keeps each
+    // peer's bucket file containing only the rows it actually authored.
+    const localPeer = getPeerId();
     const newLines: string[] = [];
     for (const m of newMemories) {
       if (m.deleted_at) continue;
+      if (m.origin_peer_id !== localPeer) continue;
       const decisions = m.decisions ? JSON.parse(m.decisions) as string[] : [];
       newLines.push(JSON.stringify({
         ts: m.ts,

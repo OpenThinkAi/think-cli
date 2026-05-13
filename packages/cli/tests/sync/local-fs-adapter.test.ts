@@ -360,3 +360,120 @@ describe('local-fs retro sync', () => {
     expect(linesAfterSecond).toBe(2);
   });
 });
+
+// AGT-250: pulled memories must never be re-emitted into the puller's bucket
+// files. The contract suite already asserts the SyncResult-level behaviour;
+// this block asserts the on-disk artefact directly — that's what users see
+// when they inspect the cortex folder, and what AC #1/#2 are scoped to.
+describe('local-fs memory push dedup (AGT-250)', () => {
+  let pair: ReturnType<typeof import('../fixtures/peer-pair.js').createPeerPair> | null = null;
+  let remote: FsRemote | null = null;
+
+  afterEach(() => {
+    if (remote) factory.teardownRemote!(remote);
+    pair?.cleanup();
+    pair = null;
+    remote = null;
+  });
+
+  it('pull-only peer writes zero bucket lines on subsequent push', async () => {
+    const { createPeerPair } = await import('../fixtures/peer-pair.js');
+    const { insertMemory } = await import('../../src/db/memory-queries.js');
+    const { deterministicId } = await import('../../src/lib/deterministic-id.js');
+    const { readdirSync } = await import('node:fs');
+    const { join } = await import('node:path');
+
+    pair = createPeerPair();
+    remote = factory.setupRemote(pair.cortexName) as FsRemote;
+    pair.peerA.activate();
+    factory.configurePeer(pair.peerA, pair.cortexName, remote);
+    pair.peerB.activate();
+    factory.configurePeer(pair.peerB, pair.cortexName, remote);
+    const adapter = factory.createAdapter();
+
+    pair.peerA.activate();
+    insertMemory(pair.cortexName, {
+      id: deterministicId('2026-04-29T12:00:00Z', 'a', 'authored by A'),
+      ts: '2026-04-29T12:00:00Z',
+      author: 'a',
+      content: 'authored by A',
+    });
+    await adapter.sync(pair.cortexName);
+
+    pair.peerB.activate();
+    await adapter.sync(pair.cortexName); // B pulls A's memory, then runs its push pass
+
+    // B never authored anything locally — it should have written no bucket
+    // file of its own. The cortex dir contains exactly one memory bucket
+    // (A's) and nothing from B.
+    const cortexDir = join(remote.rootPath, pair.cortexName);
+    const memoryBuckets = readdirSync(cortexDir)
+      .filter(f => f.endsWith('.jsonl') && !f.includes('-long-term') && !f.includes('-retros'));
+    expect(memoryBuckets).toHaveLength(1);
+  });
+
+  it('two-peer round-trip leaves exactly one bucket line per memory id', async () => {
+    const { createPeerPair } = await import('../fixtures/peer-pair.js');
+    const { insertMemory } = await import('../../src/db/memory-queries.js');
+    const { deterministicId } = await import('../../src/lib/deterministic-id.js');
+    const { readdirSync, readFileSync } = await import('node:fs');
+    const { join } = await import('node:path');
+
+    pair = createPeerPair();
+    remote = factory.setupRemote(pair.cortexName) as FsRemote;
+    pair.peerA.activate();
+    factory.configurePeer(pair.peerA, pair.cortexName, remote);
+    pair.peerB.activate();
+    factory.configurePeer(pair.peerB, pair.cortexName, remote);
+    const adapter = factory.createAdapter();
+
+    const idA = deterministicId('2026-04-29T12:00:00Z', 'a', 'from A');
+    const idB = deterministicId('2026-04-29T12:01:00Z', 'b', 'from B');
+
+    pair.peerA.activate();
+    insertMemory(pair.cortexName, {
+      id: idA,
+      ts: '2026-04-29T12:00:00Z',
+      author: 'a',
+      content: 'from A',
+    });
+    pair.peerB.activate();
+    insertMemory(pair.cortexName, {
+      id: idB,
+      ts: '2026-04-29T12:01:00Z',
+      author: 'b',
+      content: 'from B',
+    });
+
+    // Three sync rounds is enough to fully converge two peers (push, pull,
+    // push) — the third round is where a buggy implementation would re-emit
+    // pulled rows into the local bucket.
+    pair.peerA.activate();
+    await adapter.sync(pair.cortexName);
+    pair.peerB.activate();
+    await adapter.sync(pair.cortexName);
+    pair.peerA.activate();
+    await adapter.sync(pair.cortexName);
+    pair.peerB.activate();
+    await adapter.sync(pair.cortexName);
+
+    const cortexDir = join(remote.rootPath, pair.cortexName);
+    const memoryBuckets = readdirSync(cortexDir)
+      .filter(f => f.endsWith('.jsonl') && !f.includes('-long-term') && !f.includes('-retros'));
+
+    // Count occurrences of each memory id across all bucket files.
+    const occurrences = new Map<string, number>();
+    for (const file of memoryBuckets) {
+      const raw = readFileSync(join(cortexDir, file), 'utf-8');
+      for (const line of raw.split('\n')) {
+        if (line.length === 0) continue;
+        const parsed = JSON.parse(line) as { ts: string; author: string; content: string };
+        const id = deterministicId(parsed.ts, parsed.author, parsed.content);
+        occurrences.set(id, (occurrences.get(id) ?? 0) + 1);
+      }
+    }
+
+    expect(occurrences.get(idA)).toBe(1);
+    expect(occurrences.get(idB)).toBe(1);
+  });
+});

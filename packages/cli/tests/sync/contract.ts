@@ -247,6 +247,41 @@ export function runSyncAdapterContractTests<TRemote>(
       expect(after).not.toBe(before);
     });
 
+    it('pulled memories do not re-emit on the next push (AGT-250)', async () => {
+      // A pushes one memory; B pulls it; B's next push must report
+      // pushed=0 — pulled rows are not the puller's to re-publish. Without
+      // this guard, the row would be re-emitted into B's bucket file and
+      // come back to A as a duplicate on A's next pull.
+      const { pair: p, adapter } = await setup();
+
+      asPeer(p.peerA, () => {
+        insertMemory(p.cortexName, {
+          id: deterministicId('2026-04-29T12:00:00Z', 'a', 'no re-emit'),
+          ts: '2026-04-29T12:00:00Z',
+          author: 'a',
+          content: 'no re-emit',
+        });
+      });
+
+      p.peerA.activate();
+      const aPush = await adapter.push(p.cortexName);
+      expect(aPush.pushed).toBe(1);
+
+      p.peerB.activate();
+      const bPull = await adapter.pull(p.cortexName);
+      expect(bPull.pulled).toBe(1);
+
+      // The bug: B's next push would re-emit the row A authored.
+      const bPush = await adapter.push(p.cortexName);
+      expect(bPush.errors).toEqual([]);
+      expect(bPush.pushed).toBe(0);
+
+      // And A's next pull sees nothing new — B never wrote anything.
+      p.peerA.activate();
+      const aPull = await adapter.pull(p.cortexName);
+      expect(aPull.pulled).toBe(0);
+    });
+
     it('engrams never propagate to the other peer', async () => {
       const { pair: p, adapter } = await setup();
 
