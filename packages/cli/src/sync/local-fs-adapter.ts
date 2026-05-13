@@ -303,12 +303,30 @@ export class LocalFsSyncAdapter implements SyncAdapter {
     const newRetros = getRetrosBySyncVersion(cortex, lastVersion);
     if (newRetros.length === 0) return;
 
-    const newLines = newRetros.map(r => serializeRetroForSync(r));
-    const maxVersion = Math.max(...newRetros.map(r => r.sync_version));
+    // The origin_peer_id guard prevents pulled rows from being re-emitted
+    // into this peer's bucket files (AGT-254). Pull-side `insertRetroIfNotExists`
+    // bumps `sync_version`, so a row authored by peer B and ingested here
+    // would otherwise come back through `getRetrosBySyncVersion` on the
+    // next push. Filtering on `origin_peer_id === localPeer` keeps each
+    // peer's bucket file containing only the rows it actually authored.
+    const localPeer = getPeerId();
+    const newLines: string[] = [];
+    let maxVersion = 0;
+    for (const r of newRetros) {
+      if (r.origin_peer_id !== localPeer) continue;
+      newLines.push(serializeRetroForSync(r));
+      if (r.sync_version > maxVersion) maxVersion = r.sync_version;
+    }
+    if (newLines.length === 0) {
+      // All rows were foreign — advance cursor to avoid re-scanning them.
+      const foreignMax = Math.max(...newRetros.map(r => r.sync_version));
+      setSyncCursor(cortex, this.name, 'push_retros', String(foreignMax));
+      return;
+    }
 
     const dir = this.cortexDir(cortex);
     fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
-    const file = path.join(dir, getPeerId() + RETROS_SUFFIX);
+    const file = path.join(dir, localPeer + RETROS_SUFFIX);
 
     try {
       fs.appendFileSync(file, newLines.join('\n') + '\n');

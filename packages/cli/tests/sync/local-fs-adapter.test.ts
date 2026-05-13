@@ -477,3 +477,100 @@ describe('local-fs memory push dedup (AGT-250)', () => {
     expect(occurrences.get(idB)).toBe(1);
   });
 });
+
+// AGT-254: pulled retros must never be re-emitted into the puller's bucket
+// files. The contract suite already asserts the SyncResult-level behaviour;
+// this block asserts the on-disk artefact directly.
+describe('local-fs retro push dedup (AGT-254)', () => {
+  let pair: ReturnType<typeof import('../fixtures/peer-pair.js').createPeerPair> | null = null;
+  let remote: FsRemote | null = null;
+
+  afterEach(() => {
+    if (remote) factory.teardownRemote!(remote);
+    pair?.cleanup();
+    pair = null;
+    remote = null;
+  });
+
+  it('pull-only peer writes zero retro bucket lines on subsequent push', async () => {
+    const { createPeerPair } = await import('../fixtures/peer-pair.js');
+    const { insertRetro } = await import('../../src/db/retro-queries.js');
+    const { readdirSync } = await import('node:fs');
+    const { join } = await import('node:path');
+
+    pair = createPeerPair();
+    remote = factory.setupRemote(pair.cortexName) as FsRemote;
+    pair.peerA.activate();
+    factory.configurePeer(pair.peerA, pair.cortexName, remote);
+    pair.peerB.activate();
+    factory.configurePeer(pair.peerB, pair.cortexName, remote);
+    const adapter = factory.createAdapter();
+
+    pair.peerA.activate();
+    insertRetro(pair.cortexName, { content: 'retro authored by A' });
+    await adapter.sync(pair.cortexName);
+
+    pair.peerB.activate();
+    await adapter.sync(pair.cortexName); // B pulls A's retro, then runs its push pass
+
+    // B never authored anything locally — it should have written no retro
+    // bucket file of its own. The cortex dir contains exactly one retro
+    // bucket (A's) and nothing from B.
+    const cortexDir = join(remote.rootPath, pair.cortexName);
+    const retroBuckets = readdirSync(cortexDir)
+      .filter(f => f.includes('-retros') && f.endsWith('.jsonl'));
+    expect(retroBuckets).toHaveLength(1);
+  });
+
+  it('two-peer round-trip leaves exactly one bucket line per retro id', async () => {
+    const { createPeerPair } = await import('../fixtures/peer-pair.js');
+    const { insertRetro } = await import('../../src/db/retro-queries.js');
+    const { readdirSync, readFileSync } = await import('node:fs');
+    const { join } = await import('node:path');
+
+    pair = createPeerPair();
+    remote = factory.setupRemote(pair.cortexName) as FsRemote;
+    pair.peerA.activate();
+    factory.configurePeer(pair.peerA, pair.cortexName, remote);
+    pair.peerB.activate();
+    factory.configurePeer(pair.peerB, pair.cortexName, remote);
+    const adapter = factory.createAdapter();
+
+    let idA: string;
+    let idB: string;
+
+    pair.peerA.activate();
+    idA = insertRetro(pair.cortexName, { content: 'retro from A' }).id;
+    pair.peerB.activate();
+    idB = insertRetro(pair.cortexName, { content: 'retro from B' }).id;
+
+    // Three sync rounds converges two peers — the third round is where a
+    // buggy implementation would re-emit pulled rows into the local bucket.
+    pair.peerA.activate();
+    await adapter.sync(pair.cortexName);
+    pair.peerB.activate();
+    await adapter.sync(pair.cortexName);
+    pair.peerA.activate();
+    await adapter.sync(pair.cortexName);
+    pair.peerB.activate();
+    await adapter.sync(pair.cortexName);
+
+    const cortexDir = join(remote.rootPath, pair.cortexName);
+    const retroBuckets = readdirSync(cortexDir)
+      .filter(f => f.includes('-retros') && f.endsWith('.jsonl'));
+
+    // Count occurrences of each retro id across all bucket files.
+    const occurrences = new Map<string, number>();
+    for (const file of retroBuckets) {
+      const raw = readFileSync(join(cortexDir, file), 'utf-8');
+      for (const line of raw.split('\n')) {
+        if (line.length === 0) continue;
+        const parsed = JSON.parse(line) as { id: string };
+        occurrences.set(parsed.id, (occurrences.get(parsed.id) ?? 0) + 1);
+      }
+    }
+
+    expect(occurrences.get(idA)).toBe(1);
+    expect(occurrences.get(idB)).toBe(1);
+  });
+});
