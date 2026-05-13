@@ -225,12 +225,28 @@ export class GitSyncAdapter implements SyncAdapter {
     const newRetros = getRetrosBySyncVersion(cortex, lastVersion);
     if (newRetros.length === 0) return;
 
-    const newLines = newRetros.map(r => serializeRetroForSync(r));
+    // The origin_peer_id guard prevents pulled rows from being re-emitted
+    // into this peer's bucket files (AGT-254). Pull-side insertRetroIfNotExists
+    // bumps sync_version, so foreign-authored rows would otherwise come back
+    // through getRetrosBySyncVersion and get committed to this peer's
+    // bucket file, accumulating duplicates across devices.
+    const localPeer = getPeerId();
+    const newLines = newRetros
+      .filter(r => r.origin_peer_id === localPeer)
+      .map(r => serializeRetroForSync(r));
+
+    // Advance the cursor past all scanned rows (including foreign ones) so
+    // they are not re-examined on the next push pass.
     const maxVersion = Math.max(...newRetros.map(r => r.sync_version));
+
+    if (newLines.length === 0) {
+      setSyncCursor(cortex, 'git', 'push_retros', String(maxVersion));
+      return;
+    }
 
     const config = getConfig();
     const commitMsg = `retros: ${config.cortex?.author ?? 'unknown'}, ${newLines.length} retro${newLines.length === 1 ? '' : 's'}`;
-    const retroFile = getPeerId() + RETROS_SUFFIX;
+    const retroFile = localPeer + RETROS_SUFFIX;
 
     try {
       appendAndCommit(cortex, newLines, commitMsg, 3, retroFile);

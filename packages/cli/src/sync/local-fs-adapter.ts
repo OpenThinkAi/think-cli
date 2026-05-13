@@ -303,12 +303,29 @@ export class LocalFsSyncAdapter implements SyncAdapter {
     const newRetros = getRetrosBySyncVersion(cortex, lastVersion);
     if (newRetros.length === 0) return;
 
-    const newLines = newRetros.map(r => serializeRetroForSync(r));
+    // The origin_peer_id guard prevents pulled rows from being re-emitted
+    // into this peer's bucket files (AGT-254). Pull-side `insertRetroIfNotExists`
+    // bumps `sync_version`, so a row authored by peer B and ingested here
+    // would otherwise come back through `getRetrosBySyncVersion` on the
+    // next push. Filtering on `origin_peer_id === localPeer` keeps each
+    // peer's bucket file containing only the rows it actually authored.
+    //
+    // maxVersion spans all scanned rows (local and foreign) so the cursor
+    // always advances past every row in this batch — mirroring git-adapter.
+    const localPeer = getPeerId();
+    const newLines = newRetros
+      .filter(r => r.origin_peer_id === localPeer)
+      .map(r => serializeRetroForSync(r));
     const maxVersion = Math.max(...newRetros.map(r => r.sync_version));
+
+    if (newLines.length === 0) {
+      setSyncCursor(cortex, this.name, 'push_retros', String(maxVersion));
+      return;
+    }
 
     const dir = this.cortexDir(cortex);
     fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
-    const file = path.join(dir, getPeerId() + RETROS_SUFFIX);
+    const file = path.join(dir, localPeer + RETROS_SUFFIX);
 
     try {
       fs.appendFileSync(file, newLines.join('\n') + '\n');
