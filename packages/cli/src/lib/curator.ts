@@ -323,6 +323,32 @@ export function assembleCurationPrompt(params: {
   return { systemPrompt, userMessage, droppedRecentMemories };
 }
 
+/**
+ * Extract the body of the first fenced code block in `text`, regardless of
+ * what surrounds it. Returns the trimmed full input when no fence is found.
+ *
+ * The model is instructed to return raw JSON, but Sonnet occasionally wraps
+ * its response in ```…``` and tacks on prose commentary after the closing
+ * fence (AGT-222). Anchoring the close at end-of-string would miss that
+ * trailing-prose case and break `JSON.parse`. We scan for the first opening
+ * fence and take everything up to the next closing fence; if the opening
+ * fence has no matching close (truncated response), we return what follows
+ * the opener so the downstream parse can still try and surface a clear error.
+ *
+ * runConsolidation passes plain-text summaries through this helper too. A
+ * summary that legitimately contains an inline triple-backtick block would
+ * get truncated to that block's contents — acceptable because consolidation
+ * prompts produce narrative prose, not code-bearing markdown.
+ */
+export function extractFirstFencedBlock(text: string): string {
+  const open = text.match(/```[a-zA-Z0-9_-]*\n?/);
+  if (!open || open.index === undefined) return text.trim();
+  const after = text.slice(open.index + open[0].length);
+  const closeIdx = after.search(/\n?```/);
+  if (closeIdx === -1) return after.trim();
+  return after.slice(0, closeIdx).trim();
+}
+
 export function parseMemoriesJsonl(content: string): MemoryEntry[] {
   if (!content.trim()) return [];
   const entries: MemoryEntry[] = [];
@@ -393,11 +419,7 @@ export async function runCuration(curationPrompt: StructuredPrompt): Promise<Cur
     throw new Error('No result returned from curation');
   }
 
-  // Strip markdown code fences if present
-  let cleaned = result.trim();
-  if (cleaned.startsWith('```')) {
-    cleaned = cleaned.replace(/^```(?:json)?\n?/, '').replace(/\n?```$/, '');
-  }
+  const cleaned = extractFirstFencedBlock(result);
 
   const raw = JSON.parse(cleaned);
 
@@ -516,7 +538,7 @@ export async function runConsolidation(existingLongterm: string | null, agingMem
     throw new Error('No result returned from consolidation');
   }
 
-  return result.trim();
+  return extractFirstFencedBlock(result);
 }
 
 const EPISODE_CURATION_SYSTEM_PROMPT = `You are a memory curator specializing in task narratives. You receive chronological events from a bounded task (a code review, a bug fix, a deploy, an investigation) and synthesize them into a narrative memory.
@@ -610,11 +632,7 @@ export async function runEpisodeCuration(prompt: StructuredPrompt): Promise<stri
     throw new Error('No result returned from episode curation');
   }
 
-  // Strip markdown code fences if present
-  let cleaned = result.trim();
-  if (cleaned.startsWith('```')) {
-    cleaned = cleaned.replace(/^```(?:json)?\n?/, '').replace(/\n?```$/, '');
-  }
+  const cleaned = extractFirstFencedBlock(result);
 
   let raw: unknown;
   try {
