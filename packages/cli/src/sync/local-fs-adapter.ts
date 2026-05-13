@@ -309,18 +309,17 @@ export class LocalFsSyncAdapter implements SyncAdapter {
     // would otherwise come back through `getRetrosBySyncVersion` on the
     // next push. Filtering on `origin_peer_id === localPeer` keeps each
     // peer's bucket file containing only the rows it actually authored.
+    //
+    // maxVersion spans all scanned rows (local and foreign) so the cursor
+    // always advances past every row in this batch — mirroring git-adapter.
     const localPeer = getPeerId();
-    const newLines: string[] = [];
-    let maxVersion = 0;
-    for (const r of newRetros) {
-      if (r.origin_peer_id !== localPeer) continue;
-      newLines.push(serializeRetroForSync(r));
-      if (r.sync_version > maxVersion) maxVersion = r.sync_version;
-    }
+    const newLines = newRetros
+      .filter(r => r.origin_peer_id === localPeer)
+      .map(r => serializeRetroForSync(r));
+    const maxVersion = Math.max(...newRetros.map(r => r.sync_version));
+
     if (newLines.length === 0) {
-      // All rows were foreign — advance cursor to avoid re-scanning them.
-      const foreignMax = Math.max(...newRetros.map(r => r.sync_version));
-      setSyncCursor(cortex, this.name, 'push_retros', String(foreignMax));
+      setSyncCursor(cortex, this.name, 'push_retros', String(maxVersion));
       return;
     }
 
