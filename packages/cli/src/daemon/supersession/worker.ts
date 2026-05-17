@@ -19,6 +19,7 @@
 import embed from '../../lib/embed.js';
 import { searchVectors } from '../../lib/search-vectors.js';
 import { getCortexDb } from '../../db/engrams.js';
+import { sanitizeName } from '../../lib/paths.js';
 import { runSupersession } from './call.js';
 import { applySupersession } from './apply.js';
 import type { RetroEntry, RetroCandidate } from './call.js';
@@ -41,12 +42,17 @@ const SIMILARITY_THRESHOLD = 0.6;
  * Run the full supersession pipeline for a newly-stored retro entry.
  *
  * 1. Embed the content (reuses the singleton pipeline already warm from sync).
- * 2. Vector-search L2 for top-K same-kind retro candidates.
- * 3. Triage gate: if no candidates above threshold, skip the LLM call.
+ * 2. Vector-search L2 for top-K candidates.
+ * 3. Triage gate: filter to same-kind retro candidates above threshold;
+ *    skip the LLM call entirely if none qualify.
  * 4. LLM supersession call (runSupersession).
- * 5. Apply result (applySupersession).
+ * 5. Filter LLM-returned supersedes IDs against the actual candidate set
+ *    (prevents prompt-injection from marking unrelated entries as superseded).
+ * 6. Apply result (applySupersession).
  *
  * Errors bubble up to the caller (sync-handler wraps in .catch with a warn log).
+ *
+ * @param cortex Must be the sanitized cortex name (safeCortex from sync-handler).
  */
 export async function runSupersessionWorker(
   newEntryId: string,
@@ -54,51 +60,67 @@ export async function runSupersessionWorker(
   content: string,
   cortex: string,
 ): Promise<void> {
+  // Re-sanitize defensively — callers pass safeCortex but an explicit guard
+  // prevents future call sites from accidentally passing unsanitized values.
+  const safeCortex = sanitizeName(cortex);
+
   // Step 1: embed the new entry's content
   const queryVec = await embed(content);
 
-  // Step 2: vector search for top-K candidates
-  const searchResults = searchVectors(cortex, queryVec, CANDIDATE_K);
+  // Step 2: vector search for top-K candidates (all kinds; filtered in step 3)
+  const searchResults = searchVectors(safeCortex, queryVec, CANDIDATE_K);
 
-  // Step 3: triage — filter to same-kind retro candidates above threshold,
-  // excluding the new entry itself
-  const db = getCortexDb(cortex);
+  // Step 3: triage — filter to retro-kind candidates above threshold,
+  // excluding the new entry itself. Entries written before migration 14
+  // have kind = NULL; treat them as retro candidates conservatively so
+  // legacy data participates in supersession.
   const aboveThreshold = searchResults.filter(
     (r) => r.id !== newEntryId && r.similarity >= SIMILARITY_THRESHOLD,
   );
 
   if (aboveThreshold.length === 0) {
     // No candidates above threshold — skip LLM call entirely.
-    // Still apply empty-topics result so the topics_json column is consistent.
-    applySupersession(newEntryId, { supersedes: [], topics: [], isDuplicate: false }, cortex);
     return;
   }
 
-  // Fetch full content + ts for each candidate from L2
+  // Fetch full content + ts + kind for each candidate from L2; filter to
+  // retro-kind (kind = 'retro' OR kind IS NULL for pre-migration rows).
+  const db = getCortexDb(safeCortex);
   const candidates: RetroCandidate[] = [];
   for (const { id } of aboveThreshold) {
     const row = db.prepare(
-      `SELECT id, ts, content FROM memories WHERE id = ? AND deleted_at IS NULL`,
-    ).get(id) as { id: string; ts: string; content: string } | undefined;
+      `SELECT id, ts, content, kind FROM memories
+       WHERE id = ? AND deleted_at IS NULL AND (kind = 'retro' OR kind IS NULL)`,
+    ).get(id) as { id: string; ts: string; content: string; kind: string | null } | undefined;
     if (row) {
       candidates.push({ id: row.id, date: row.ts, content: row.content });
     }
   }
 
   if (candidates.length === 0) {
-    applySupersession(newEntryId, { supersedes: [], topics: [], isDuplicate: false }, cortex);
+    // All above-threshold entries are non-retro kinds — skip LLM call.
     return;
   }
 
   // Step 4: LLM call
   const newRetro: RetroEntry = {
-    cortex,
+    cortex: safeCortex,
     date: newEntryTs,
     content,
   };
 
   const result = await runSupersession(newRetro, candidates);
 
-  // Step 5: apply
-  applySupersession(newEntryId, result, cortex);
+  // Step 5: filter LLM-returned supersedes IDs against the actual candidate
+  // set. This prevents prompt-injection in retro content from causing the LLM
+  // to return IDs that were never presented as candidates, which would
+  // incorrectly mark unrelated entries as superseded.
+  const candidateIds = new Set(candidates.map((c) => c.id));
+  const safeResult = {
+    ...result,
+    supersedes: result.supersedes.filter((id) => candidateIds.has(id)),
+  };
+
+  // Step 6: apply
+  applySupersession(newEntryId, safeResult, safeCortex);
 }

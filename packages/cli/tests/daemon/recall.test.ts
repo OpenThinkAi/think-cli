@@ -158,7 +158,7 @@ describe('handleRecall (AGT-285)', () => {
   it('throws when topic filter requested but topics column absent', async () => {
     const db = getCortexDb(CORTEX);
     const cols = (db.prepare('PRAGMA table_info(memories)').all() as { name: string }[]).map(c => c.name);
-    if (cols.includes('topics') || cols.includes('topics_json')) {
+    if (cols.includes('topics_json')) {
       // Migration 14 added topics_json — "absent" path is unreachable; skip.
       return;
     }

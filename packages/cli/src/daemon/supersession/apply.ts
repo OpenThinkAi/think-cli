@@ -57,6 +57,14 @@ function readL1Lines(cortexDir: string): Record<string, unknown>[] {
  * Append a single JSONL line to the active L1 page for the cortex.
  * Mirrors the page-file naming convention from sync-handler.ts.
  * Does NOT commit or push — that is the push-debounce worker's job.
+ *
+ * NOTE: If `cortexDir` exists but contains no JSONL files, this function
+ * creates `000001.jsonl` containing only the appended line. A page that
+ * opens with a tombstone (no original write) indicates a state divergence
+ * (L2 was written but L1 was not, or files were removed from L1). The caller
+ * (`applySupersession`) guards against this scenario by checking whether the
+ * original entry was found in L1 before calling this function. This case
+ * should be unreachable in normal operation.
  */
 function appendToL1(cortexDir: string, obj: Record<string, unknown>): void {
   if (!fs.existsSync(cortexDir)) return; // cortex dir missing — no-op
@@ -120,12 +128,20 @@ export function applySupersession(
         deleted_at: now,
         tombstone_reason: 'duplicate_detected_by_supersession',
       });
+      // Log a note line (visible in daemon log / stderr)
+      console.info(
+        `[supersession] note: retro ${newEntryId} detected as duplicate; tombstoned`,
+      );
+    } else {
+      // L2 tombstone is set above; L1 entry was not found (possible if the
+      // L1 write is still in-flight or the page file is not yet flushed).
+      // L2 and L1 are now inconsistent — log loudly so it appears in the
+      // daemon log and can be investigated.
+      console.warn(
+        `[supersession] warn: retro ${newEntryId} detected as duplicate and tombstoned in L2,` +
+        ` but could not find original entry in L1 (${cortexDir}); L1 not updated`,
+      );
     }
-
-    // Log a note line (visible in daemon log / stderr)
-    console.info(
-      `[supersession] note: retro ${newEntryId} detected as duplicate; tombstoned`,
-    );
 
     // When tombstoned we still apply topics below (to the now-deleted row).
     // This is intentional — the row exists in L2 for lineage; topics help
