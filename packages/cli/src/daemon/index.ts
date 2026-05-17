@@ -27,6 +27,7 @@ import { getConfig } from '../lib/config.js';
 import { getThinkDir } from '../lib/paths.js';
 import { getDaemonPidPath, isDaemonRunning, removePidFile } from '../lib/daemon-status.js';
 import { DEFAULT_DAEMON_TCP_PORT } from '../lib/daemon-constants.js';
+import { parseLineFraming, dispatchRequest } from './protocol.js';
 
 // ---------------------------------------------------------------------------
 // Paths
@@ -52,13 +53,24 @@ export interface DaemonOptions {
 }
 
 // ---------------------------------------------------------------------------
-// Connection handler stub (protocol arrives in AGT-280)
+// Connection handler — JSON-line protocol (AGT-280)
 // ---------------------------------------------------------------------------
 
 function handleConnection(socket: net.Socket): void {
-  // Protocol arrives in AGT-280. Until then, close immediately so a curious
-  // client doesn't pin a file descriptor open indefinitely.
-  socket.destroy();
+  // Drive the async iterator; each iteration yields one parsed request.
+  // Errors and malformed lines are handled inside parseLineFraming/dispatchRequest
+  // without closing the connection.
+  (async () => {
+    for await (const request of parseLineFraming(socket)) {
+      // dispatchRequest is intentionally not awaited per-request so that a
+      // slow handler for one request does not block reading subsequent lines
+      // (supports multiple concurrent in-flight requests on a single connection).
+      dispatchRequest(socket, request).catch(() => { /* errors sent as error responses */ });
+    }
+  })().catch(() => {
+    // If the iterator itself throws (socket error etc.), tear down the socket.
+    socket.destroy();
+  });
 }
 
 // ---------------------------------------------------------------------------

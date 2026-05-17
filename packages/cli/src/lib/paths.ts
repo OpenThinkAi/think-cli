@@ -98,3 +98,12 @@ export function ensureThinkDirs(): void {
   fs.mkdirSync(getIndexDir(), { recursive: true });
   fs.mkdirSync(getLongtermDir(), { recursive: true });
 }
+
+/**
+ * Path to the daemon Unix socket (macOS/Linux).
+ * On Windows the daemon binds TCP instead; callers that need to branch on
+ * platform should check `process.platform === 'win32'` separately.
+ */
+export function getDaemonSocketPath(): string {
+  return path.join(getThinkDir(), 'daemon.sock');
+}
