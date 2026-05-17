@@ -89,6 +89,26 @@ export interface DaemonConfig {
   tcpPort?: number;
 }
 
+export interface RecallConfig {
+  /**
+   * Exponential decay constant for recency-weighted ranking.
+   *
+   * score = cosine × exp(-recency_decay × (max_seq - entry_seq))
+   *
+   * At decay=0.05:
+   *   seq_distance=0  → weight=1.00 (most recent entry, full weight)
+   *   seq_distance=14 → weight≈0.50 (~half weight)
+   *   seq_distance=28 → weight≈0.25 (~quarter weight)
+   *
+   * This ensures the most recent ~20 entries always dominate regardless of
+   * corpus age or absolute timestamp spread — recency is corpus-relative,
+   * not wall-clock-relative.
+   *
+   * Default: 0.05
+   */
+  recency_decay?: number;
+}
+
 export interface Config {
   peerId: string;
   syncPort: number;
@@ -97,6 +117,7 @@ export interface Config {
   subscriptions?: SubscriptionsConfig;
   search?: SearchConfig;
   daemon?: DaemonConfig;
+  recall?: RecallConfig;
 }
 
 export function getConfigDir(): string {

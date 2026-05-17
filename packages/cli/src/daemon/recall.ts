@@ -1,7 +1,8 @@
 /**
- * Daemon `recall` endpoint — AGT-285
+ * Daemon `recall` endpoint — AGT-285 / AGT-291
  *
- * Embed query → brute-force or sqlite-vec cosine search → return ranked entries.
+ * Embed query → brute-force or sqlite-vec cosine search → recency-weighted
+ * rerank → return ranked entries.
  *
  * Params:
  *   cortex  string   (required) — target cortex name (validated via sanitizeName)
@@ -21,12 +22,39 @@
  * JSON1 unavailable for topic), the handler throws rather than silently returning
  * unfiltered results. Callers that request a filter are asserting intent; silent
  * pass-through is worse than an explicit error.
+ *
+ * Recency weighting (AGT-291):
+ *   score = cosine × exp(-decay × (max_seq - entry_seq))
+ *
+ * `max_seq` is MAX(activity_seq) for the cortex — a single cheap query served by
+ * the descending idx_entries_activity_seq index (AGT-270). `decay` defaults to
+ * 0.05, which gives ~50% weight at seq_distance=14 and ~25% at seq_distance=28,
+ * so the most recent ~20 entries always dominate regardless of corpus age or
+ * wall-clock spread. Tunable via config.recall.recency_decay.
+ *
+ * For the sqlite-vec engine, ANN search returns candidates sorted by vector
+ * distance only — there is no per-row metadata hook inside the KNN scan. We
+ * compensate by over-fetching (RECENCY_OVERFETCH_FACTOR × limit) and reranking
+ * in JS. This is the only pluggable-engine-safe path; the overfetch is bounded
+ * and cheap because sqlite-vec KNN is sub-10ms even at 3–5× the final limit.
  */
 
 import type { DatabaseSync } from 'node:sqlite';
 import embed from '../lib/embed.js';
 import { getCortexDb } from '../db/engrams.js';
 import { searchVectors } from '../lib/search-vectors.js';
+import { getConfig } from '../lib/config.js';
+
+// How many extra candidates to fetch from sqlite-vec before JS rerank.
+// 5× ensures the reranked window is wide enough that a very recent entry
+// with moderate cosine can displace old-but-high-cosine entries.
+const RECENCY_OVERFETCH_FACTOR = 5;
+
+// Default decay constant. At 0.05:
+//   seq_distance=0  → weight=1.00
+//   seq_distance=14 → weight≈0.50
+//   seq_distance=28 → weight≈0.25
+const DEFAULT_DECAY = 0.05;
 
 // ---------------------------------------------------------------------------
 // Types
@@ -40,7 +68,13 @@ export interface RecallEntry {
   content: string;
   /** Parsed topics array; empty array if column absent or value unparseable. */
   topics: string[];
+  /** Raw cosine similarity in [−1, 1] before recency weighting. */
   similarity: number;
+  /**
+   * Final ranking score: cosine × exp(-decay × (max_seq - entry_seq)).
+   * Equals `similarity` when activity_seq is unavailable (pre-AGT-291 rows).
+   */
+  score: number;
   cortex: string;
 }
 
@@ -50,6 +84,8 @@ interface HydratedRow {
   content: string;
   kind: string | null;
   topics: string | null;
+  /** Null for rows that pre-date the AGT-291 activity_seq backfill. */
+  activity_seq: number | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -59,6 +95,7 @@ interface HydratedRow {
 interface ColumnInfo {
   hasKind: boolean;
   hasTopics: boolean;
+  hasActivitySeq: boolean;
 }
 
 const columnInfoCache = new WeakMap<DatabaseSync, ColumnInfo>();
@@ -72,7 +109,11 @@ function getColumnInfo(db: DatabaseSync): ColumnInfo {
       (c) => c.name,
     ),
   );
-  const info: ColumnInfo = { hasKind: cols.has('kind'), hasTopics: cols.has('topics') };
+  const info: ColumnInfo = {
+    hasKind: cols.has('kind'),
+    hasTopics: cols.has('topics'),
+    hasActivitySeq: cols.has('activity_seq'),
+  };
   columnInfoCache.set(db, info);
   return info;
 }
@@ -98,7 +139,7 @@ function isValidIso8601(s: string): boolean {
  * Implements the `recall` daemon method.
  *
  * @param params  Validated incoming params from the protocol dispatcher.
- * @returns       Array of {@link RecallEntry} sorted by cosine similarity desc.
+ * @returns       Array of {@link RecallEntry} sorted by recency-weighted score desc.
  */
 export async function handleRecall(
   params: Record<string, unknown>,
@@ -158,7 +199,7 @@ export async function handleRecall(
 
   // ── discover optional columns (cached per DB instance) ─────────────────────
 
-  const { hasKind, hasTopics } = getColumnInfo(db);
+  const { hasKind, hasTopics, hasActivitySeq } = getColumnInfo(db);
 
   // Fail fast if the caller requested a filter against a column that doesn't
   // exist yet. Silent pass-through is worse than an explicit error.
@@ -177,11 +218,35 @@ export async function handleRecall(
 
   const queryVec = await embed(query);
 
-  // ── vector search ──────────────────────────────────────────────────────────
-  // searchVectors delegates to the configured engine (brute-force or sqlite-vec)
-  // and returns up to `limit` results sorted by cosine similarity desc.
+  // ── recency decay config ───────────────────────────────────────────────────
+  // score = cosine × exp(-decay × (max_seq - entry_seq))
+  // Default 0.05 → ~50% weight at seq_distance=14, ~25% at seq_distance=28.
+  const decay = getConfig().recall?.recency_decay ?? DEFAULT_DECAY;
 
-  const vectorResults = searchVectors(cortexName, queryVec, limit);
+  // ── max_seq (one query, served by descending idx_entries_activity_seq) ─────
+  // Used as the "current" anchor for recency distance. When the column is absent
+  // (pre-migration DBs) or no rows have been backfilled, falls back to null and
+  // recency weighting is skipped (score = cosine, matching the pre-AGT-291 behavior).
+  let maxSeq: number | null = null;
+  if (hasActivitySeq) {
+    const seqRow = db.prepare(
+      'SELECT MAX(activity_seq) AS max_seq FROM memories WHERE deleted_at IS NULL',
+    ).get() as { max_seq: number | null };
+    maxSeq = seqRow.max_seq;
+  }
+
+  // ── vector search ──────────────────────────────────────────────────────────
+  // For the sqlite-vec engine, ANN search has no per-row metadata hook inside
+  // the KNN scan, so we over-fetch by RECENCY_OVERFETCH_FACTOR and rerank in JS.
+  // The brute-force engine already returns all candidates; we still pass the
+  // larger fetch window so the hydration query brings back enough rows for rerank.
+  // After reranking, results are sliced to `limit`.
+  const engine = getConfig().search?.engine ?? 'brute-force';
+  const fetchLimit = (hasActivitySeq && maxSeq !== null && engine === 'sqlite-vec')
+    ? limit * RECENCY_OVERFETCH_FACTOR
+    : limit;
+
+  const vectorResults = searchVectors(cortexName, queryVec, fetchLimit);
   if (vectorResults.length === 0) {
     return [];
   }
@@ -221,6 +286,7 @@ export async function handleRecall(
     'content',
     hasKind ? 'kind' : 'NULL as kind',
     hasTopics ? 'topics' : "'[]' as topics",
+    hasActivitySeq ? 'activity_seq' : 'NULL as activity_seq',
   ].join(', ');
 
   let rows: HydratedRow[];
@@ -251,6 +317,18 @@ export async function handleRecall(
     // `WHERE id IN (vectorIds)`, so the map lookup is always present.
     const similarity = simMap.get(row.id)!;
 
+    // Recency weight: exp(-decay × (max_seq - entry_seq)).
+    // Falls back to weight=1 when activity_seq is unavailable — preserves
+    // pre-AGT-291 ranking for DBs that haven't been reindexed yet.
+    let score: number;
+    if (maxSeq !== null && row.activity_seq !== null) {
+      const seqDistance = maxSeq - row.activity_seq;
+      const weight = Math.exp(-decay * seqDistance);
+      score = similarity * weight;
+    } else {
+      score = similarity;
+    }
+
     return {
       id: row.id,
       ts: row.ts,
@@ -258,12 +336,14 @@ export async function handleRecall(
       content: row.content,
       topics: topicsValue,
       similarity,
+      score,
       cortex: cortexName,
     };
   });
 
-  // Sort descending by similarity and return.
-  // `entries.length <= vectorResults.length <= limit`, so no slice needed.
-  entries.sort((a, b) => b.similarity - a.similarity);
-  return entries;
+  // Sort descending by recency-weighted score, then slice to `limit`.
+  // The over-fetched window (for sqlite-vec) may contain more than `limit` rows
+  // after hydration; slicing after sort ensures the caller gets exactly `limit`.
+  entries.sort((a, b) => b.score - a.score);
+  return entries.slice(0, limit);
 }
