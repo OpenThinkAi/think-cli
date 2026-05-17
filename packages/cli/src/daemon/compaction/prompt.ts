@@ -8,8 +8,9 @@
  *   projects/think-v3/compaction-prompt.md  (the "## System prompt" code block)
  *
  * IMPORTANT: If that file changes, COMPACTION_SYSTEM_PROMPT must be re-synced.
- * The test `prompt.test.ts` hashes both the constant and the source file and
- * fails loudly on divergence — run `npm test` to catch any drift.
+ * The test `prompt.test.ts` computes a SHA-256 of COMPACTION_SYSTEM_PROMPT and
+ * compares it against a SHA-256 of the extracted code block from the source file,
+ * failing loudly on divergence — run `npm test` to catch any drift.
  */
 
 // ---------------------------------------------------------------------------
@@ -20,8 +21,9 @@
  * System prompt used by the compaction worker.
  *
  * Derived from `projects/think-v3/compaction-prompt.md` — if that file
- * changes this constant MUST be updated to match. The test suite enforces
- * this via a hash comparison and will fail if they diverge.
+ * changes this constant MUST be updated to match. The test suite reads that
+ * file, extracts the "## System prompt" code block, and SHA-256 hashes both
+ * the file text and this constant, failing if they diverge.
  */
 export const COMPACTION_SYSTEM_PROMPT =
   `You are the compaction worker for \`think\`, a local agent-memory CLI. You receive ONE new freeform memory entry and up to 10 recent related entries retrieved by embedding similarity. Your job is to (1) rewrite the new entry into a single self-contained line that encodes its current state plus the relevant trajectory, (2) decide which prior entries it supersedes, and (3) extract topic tags.
@@ -93,30 +95,21 @@ export interface CompactionMessages {
 // ---------------------------------------------------------------------------
 
 /**
- * Strip prompt-injection patterns from candidate content before embedding
- * into the user message.  Removes naked `<system>`, `<human>`, `<assistant>`,
- * and `<prompt>` open/close tags (case-insensitive, with optional attributes).
- * Preserves the text content that follows the tag so the meaning is not lost.
+ * Strip prompt-injection patterns from content before embedding into the user
+ * message.  Removes naked `<system>`, `<human>`, `<assistant>`, and `<prompt>`
+ * open/close tags (case-insensitive, with optional attributes).  Preserves the
+ * text content that follows the tag so the meaning is not lost.
+ *
+ * Applied to BOTH newEntry.content and candidate content — either path can
+ * carry externally-sourced text.
  */
-function sanitizeCandidateContent(content: string): string {
+function sanitizeContent(content: string): string {
   return content.replace(/<\/?(system|human|assistant|prompt)(\s[^>]*)?\s*>/gi, '');
 }
 
 // ---------------------------------------------------------------------------
 // Message builder
 // ---------------------------------------------------------------------------
-
-/**
- * Format an ISO-8601 timestamp as a YYYY-MM-DD date string for display in
- * the CONTEXT block.  Falls back to the raw string on parse failure.
- */
-function formatDate(ts: string): string {
-  try {
-    return ts.slice(0, 10); // "YYYY-MM-DD"
-  } catch {
-    return ts;
-  }
-}
 
 /**
  * Build the messages array ready for the Anthropic SDK compaction call.
@@ -140,20 +133,21 @@ export function buildCompactionMessages(
   newEntry: NewEntry,
   candidates: CandidateEntry[],
 ): CompactionMessages {
-  const n = candidates.length;
-
   const contextLines = candidates.map((c) => {
-    const safeContent = sanitizeCandidateContent(c.content);
-    const date = formatDate(c.ts);
+    const safeContent = sanitizeContent(c.content);
+    const date = c.ts.slice(0, 10); // "YYYY-MM-DD"
     const topicsList = c.topics.join(', ');
-    return `[id=${c.id}] ${date} — ${safeContent}. topics: [${topicsList}]`;
+    // Append separator period only when the content doesn't already end with
+    // sentence-terminal punctuation to avoid doubled/mismatched punctuation.
+    const terminal = /[.?!;]$/.test(safeContent) ? '' : '.';
+    return `[id=${c.id}] ${date} — ${safeContent}${terminal} topics: [${topicsList}]`;
   });
 
   const userMsg = [
     `NEW ENTRY (${newEntry.ts}):`,
-    newEntry.content,
+    sanitizeContent(newEntry.content),
     '',
-    `CONTEXT (top-${n} by similarity):`,
+    `CONTEXT (top-${candidates.length} by similarity):`,
     ...contextLines,
   ].join('\n');
 
