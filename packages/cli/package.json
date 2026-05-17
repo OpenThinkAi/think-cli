@@ -46,6 +46,9 @@
     "uuid": "^11.1.0",
     "zod": "^4.4.1"
   },
+  "optionalDependencies": {
+    "@huggingface/transformers": "4.2.0"
+  },
   "devDependencies": {
     "@types/node": "^22.14.1",
     "@types/uuid": "^10.0.0",

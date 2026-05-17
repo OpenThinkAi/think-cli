@@ -12,6 +12,8 @@ npm install -g @openthink/think
 
 > **Note:** The curator and summary features use the [Claude Agent SDK](https://www.npmjs.com/package/@anthropic-ai/claude-agent-sdk), which is distributed under Anthropic's commercial terms. You'll need a Claude subscription for these features to work. All other functionality (logging, recall, sync, export) works without it.
 
+> **Note (semantic features — opt-in):** Semantic recall (downstream in v3) uses `Xenova/bge-small-en-v1.5` via `@huggingface/transformers` (~150 MB model + a large transitive native-binary tree). The dep is **optional** — default `npm install` does not pull it. Install explicitly to enable: `npm install @huggingface/transformers@4.2.0`. When activated by downstream tickets, the model auto-downloads from HuggingFace on first use, cached in `~/.cache/huggingface/` (override with `$HF_HOME`), with a 300-second timeout. Without the dep installed, `think recall` continues to use keyword (FTS) ranking unchanged.
+
 ## Quick start
 
 ```bash
@@ -145,6 +147,7 @@ think curator show    # print current guidance
 - **Config:** `~/.config/think/config.json`
 - **Curator guidance:** `~/.think/curator.md`
 - **Entries (no cortex):** `~/.local/share/think/think.db`
+- **Embedding model cache:** `~/.cache/huggingface/` — only present when `@huggingface/transformers` is installed (see semantic features note above). Stores `Xenova/bge-small-en-v1.5` (~150 MB); override location with `$HF_HOME`. Cached ONNX files are loaded directly without re-verification, so in shared environments (CI workers, multi-user machines) set `$HF_HOME` to a per-user, non-world-writable directory.
 
 Override the data directory with `$THINK_HOME`.
 
