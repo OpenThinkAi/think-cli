@@ -22,20 +22,14 @@
 import fs from 'node:fs';
 import net from 'node:net';
 import path from 'node:path';
-import os from 'node:os';
 import { readPackageVersion } from '../lib/version.js';
 import { getConfig } from '../lib/config.js';
-import { getDaemonPidPath } from '../lib/daemon-status.js';
+import { getThinkDir } from '../lib/paths.js';
+import { getDaemonPidPath, isDaemonRunning, removePidFile } from '../lib/daemon-status.js';
 
 // ---------------------------------------------------------------------------
 // Paths
 // ---------------------------------------------------------------------------
-
-function getThinkDir(): string {
-  const override = process.env.THINK_HOME;
-  if (override) return override;
-  return path.join(os.homedir(), '.think');
-}
 
 function getDaemonLogPath(): string {
   return path.join(getThinkDir(), 'daemon.log');
@@ -71,7 +65,7 @@ function handleConnection(socket: net.Socket): void {
 // ---------------------------------------------------------------------------
 
 /**
- * Write `process.pid` to `~/.think/daemon.pid` with 0600 permissions.
+ * Write `process.pid` to `pidPath` with 0600 permissions.
  * Creates the directory if needed. Throws on failure.
  */
 function writePidFile(pidPath: string): void {
@@ -80,66 +74,38 @@ function writePidFile(pidPath: string): void {
 }
 
 /**
- * Remove the PID file. Swallows ENOENT (already gone). Re-throws other errors.
- */
-function removePidFile(pidPath: string): void {
-  try {
-    fs.unlinkSync(pidPath);
-  } catch (err: unknown) {
-    if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
-  }
-}
-
-/**
- * On startup, check for an existing PID file. If a live daemon is already
- * running, exits with an error message. If the recorded process is dead
- * (stale), deletes the file so we can overwrite it. Returns `true` if the
- * caller should proceed with startup, `false` if we already called
- * `process.exit`.
+ * On startup, check for an existing PID file using isDaemonRunning().
+ * If a live daemon is already running, writes an error and returns false so the
+ * caller can exit. If the recorded process is dead (stale), removes the file
+ * and returns true so the caller can overwrite it. This should be unreachable
+ * because the socket-bind check (AGT-279) fires first, but we defend here
+ * for race conditions.
  */
 function checkExistingPidFile(pidPath: string, writeLine: (msg: string) => void): boolean {
-  let raw: string;
-  try {
-    raw = fs.readFileSync(pidPath, 'utf8').trim();
-  } catch (err: unknown) {
-    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return true; // no file — proceed
-    throw err;
-  }
+  const status = isDaemonRunning();
 
-  const pid = parseInt(raw, 10);
-  if (!Number.isFinite(pid) || pid <= 0) {
-    writeLine(`warn: daemon.pid contains invalid value "${raw}" — overwriting`);
-    removePidFile(pidPath);
+  if (!status.running && !status.stale) {
+    // No PID file → proceed
     return true;
   }
 
-  try {
-    process.kill(pid, 0);
-    // Process is alive — another daemon is running. This should be unreachable
-    // because the socket-bind check (AGT-279) fires first, but we defend here
-    // for race conditions.
+  if (status.running) {
+    // Process is alive — another daemon is running.
     process.stderr.write(
-      `error: another daemon is already running (pid=${pid}, detected via PID file). ` +
+      `error: another daemon is already running (pid=${status.pid}, detected via PID file). ` +
       `Kill the existing process or remove ${pidPath}.\n`,
     );
     return false;
-  } catch (err: unknown) {
-    const code = (err as NodeJS.ErrnoException).code;
-    if (code === 'ESRCH') {
-      writeLine(`stale PID file detected (pid=${pid} is dead) — overwriting`);
-      removePidFile(pidPath);
-      return true;
-    }
-    if (code === 'EPERM') {
-      // Process exists but we lack permission to signal it — treat as alive.
-      process.stderr.write(
-        `error: another daemon appears to be running (pid=${pid}, EPERM). ` +
-        `Kill the existing process or remove ${pidPath}.\n`,
-      );
-      return false;
-    }
-    throw err;
   }
+
+  // stale: true — process is dead → remove and overwrite
+  if (status.pid !== undefined) {
+    writeLine(`stale PID file detected (pid=${status.pid} is dead) — overwriting`);
+  } else {
+    writeLine(`stale PID file detected (corrupt content) — overwriting`);
+  }
+  removePidFile(pidPath);
+  return true;
 }
 
 // ---------------------------------------------------------------------------

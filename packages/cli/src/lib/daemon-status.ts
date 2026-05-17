@@ -7,27 +7,32 @@
  *
  * Exported API:
  *   isDaemonRunning() → { running: boolean, pid?: number, stale?: boolean }
+ *   getDaemonPidPath() → string
+ *   removePidFile(pidPath) → void
  *
  * Used by:
+ *   packages/cli/src/daemon/index.ts (startup check + write + cleanup)
  *   AGT-282 (spawn-or-connect), AGT-284 (think daemon status)
  */
 
 import fs from 'node:fs';
 import path from 'node:path';
-import os from 'node:os';
-
-// ---------------------------------------------------------------------------
-// Paths
-// ---------------------------------------------------------------------------
-
-function getThinkDir(): string {
-  const override = process.env.THINK_HOME;
-  if (override) return override;
-  return path.join(os.homedir(), '.think');
-}
+import { getThinkDir } from './paths.js';
 
 export function getDaemonPidPath(): string {
   return path.join(getThinkDir(), 'daemon.pid');
+}
+
+/**
+ * Remove the PID file. Swallows ENOENT (already gone). Re-throws other errors.
+ * Exported so daemon startup can remove a stale file before writing a fresh one.
+ */
+export function removePidFile(pidPath: string): void {
+  try {
+    fs.unlinkSync(pidPath);
+  } catch (err: unknown) {
+    if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -36,7 +41,12 @@ export function getDaemonPidPath(): string {
 
 export interface DaemonStatus {
   running: boolean;
-  /** The PID from the file, if any. Present when running=true or stale=true. */
+  /**
+   * The PID from the file, when parseable. Present when running=true, or
+   * when stale=true and the file contained a valid integer. Absent when the
+   * PID file did not exist, or when the file content could not be parsed as
+   * a positive integer (corrupt file).
+   */
   pid?: number;
   /** true when the PID file existed but the process is dead. */
   stale?: boolean;
@@ -46,9 +56,10 @@ export interface DaemonStatus {
  * Check if the daemon is currently running by reading the PID file.
  *
  * Returns:
- *   { running: true,  pid }         — process alive
- *   { running: false, pid, stale: true }  — PID file exists, process dead
- *   { running: false }              — no PID file
+ *   { running: true,  pid }              — process alive
+ *   { running: false, pid, stale: true } — PID file exists, process dead
+ *   { running: false, stale: true }      — PID file exists but content is corrupt
+ *   { running: false }                   — no PID file
  */
 export function isDaemonRunning(): DaemonStatus {
   const pidPath = getDaemonPidPath();
@@ -66,7 +77,7 @@ export function isDaemonRunning(): DaemonStatus {
 
   const pid = parseInt(raw, 10);
   if (!Number.isFinite(pid) || pid <= 0) {
-    // Corrupt PID file — treat as stale
+    // Corrupt PID file — treat as stale; pid omitted since it's unparseable
     return { running: false, stale: true };
   }
 

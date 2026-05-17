@@ -16,10 +16,10 @@ import {
   mkdtempSync,
   rmSync,
   writeFileSync,
-  existsSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { spawnSync } from 'node:child_process';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -27,6 +27,19 @@ import { join } from 'node:path';
 
 function tmpThinkHome(): string {
   return mkdtempSync(join(tmpdir(), 'think-pid-test-'));
+}
+
+/**
+ * Spawn a short-lived child process and return its PID after it has exited.
+ * This is more reliable than scanning a fixed PID range because the kernel
+ * guarantees the PID is not recycled before we've had a chance to use it.
+ */
+function getRecentlyDeadPid(): number {
+  const result = spawnSync(process.execPath, ['-e', '']);
+  if (result.pid == null || result.pid <= 0) {
+    throw new Error('Could not spawn child process to obtain a dead PID');
+  }
+  return result.pid;
 }
 
 // ---------------------------------------------------------------------------
@@ -57,25 +70,10 @@ describe('isDaemonRunning', () => {
     expect(result).toEqual({ running: false });
   });
 
-  it('returns { running: false, stale: true } for a stale PID file (dead process)', async () => {
-    // Find a PID that is guaranteed not to be running.
-    // We use a very large number that is almost certainly unused; if kill(0)
-    // somehow hits it, we try the next value. Virtually always the first
-    // candidate works.
-    function findDeadPid(): number {
-      for (let candidate = 99990; candidate <= 99999; candidate++) {
-        try {
-          process.kill(candidate, 0);
-          // Process exists — try the next one.
-        } catch (err: unknown) {
-          if ((err as NodeJS.ErrnoException).code === 'ESRCH') return candidate;
-          if ((err as NodeJS.ErrnoException).code === 'EPERM') continue; // exists, owned by someone else
-        }
-      }
-      throw new Error('Could not find a guaranteed-dead PID in range 99990-99999');
-    }
+  it('returns { running: false, stale: true, pid } for a stale PID file (dead process)', async () => {
+    // Spawn a process and wait for it to exit so we have a PID we know is dead.
+    const deadPid = getRecentlyDeadPid();
 
-    const deadPid = findDeadPid();
     const pidFile = join(thinkHome, 'daemon.pid');
     writeFileSync(pidFile, String(deadPid) + '\n', { encoding: 'utf8' });
 
@@ -99,7 +97,7 @@ describe('isDaemonRunning', () => {
     expect(result.stale).toBeUndefined();
   });
 
-  it('returns { running: false, stale: true } for a corrupt PID file', async () => {
+  it('returns { running: false, stale: true } with no pid for a corrupt PID file', async () => {
     const pidFile = join(thinkHome, 'daemon.pid');
     writeFileSync(pidFile, 'not-a-number\n', { encoding: 'utf8' });
 
@@ -108,5 +106,6 @@ describe('isDaemonRunning', () => {
 
     expect(result.running).toBe(false);
     expect(result.stale).toBe(true);
+    expect(result.pid).toBeUndefined();
   });
 });
