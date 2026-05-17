@@ -237,7 +237,8 @@ describe.skipIf(process.platform === 'win32')(
 
       const combined = stderrLines.join('');
       expect(combined).toMatch(/another daemon is already running/);
-      expect(combined).toMatch(/think daemon status/);
+      // Error advises an actionable next step (remove path or kill process).
+      expect(combined).toMatch(/remove .*daemon\.sock|Kill the existing/);
 
       stderrSpy.mockRestore();
       exitSpy.mockRestore();

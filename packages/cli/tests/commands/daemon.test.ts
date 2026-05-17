@@ -41,11 +41,14 @@ describe('daemon module', () => {
 
     const daemonPromise = runDaemon({ foreground: true, socketPath });
 
-    // Wait until "daemon ready" is logged.
-    await new Promise<void>((resolve) => {
+    // Wait until "daemon ready" is logged, with a rejection guard so a
+    // never-firing log doesn't burn the full vitest timeout silently.
+    await new Promise<void>((resolve, reject) => {
+      const start = Date.now();
       const interval = setInterval(() => {
         const output = stderrSpy.mock.calls.map(([m]) => String(m)).join('');
-        if (output.includes('think daemon ready')) { clearInterval(interval); resolve(); }
+        if (output.includes('think daemon ready')) { clearInterval(interval); resolve(); return; }
+        if (Date.now() - start > 5_000) { clearInterval(interval); reject(new Error('daemon never logged ready')); }
       }, 10);
     });
 

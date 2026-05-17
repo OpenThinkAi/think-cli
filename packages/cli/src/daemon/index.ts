@@ -7,8 +7,8 @@
  *  - Bind a net.Server on ~/.think/daemon.sock (Unix) or localhost TCP (Windows)
  *  - EADDRINUSE stale-socket detection: connect-test → unlink + rebind if dead,
  *    exit cleanly if alive
- *  - chmod socket to 0600 immediately after bind
- *  - Log each incoming connection at DEBUG level; hand off to handleConnection()
+ *  - chmod socket to 0600 immediately after bind, before accepting connections
+ *  - Log each incoming connection at debug level; hand off to handleConnection()
  *  - On shutdown: close server, unlink socket file
  *
  * NOT in this ticket:
@@ -43,6 +43,12 @@ function getDaemonLogPath(): string {
 // ---------------------------------------------------------------------------
 
 export interface DaemonOptions {
+  /**
+   * Unix domain socket path. Used on macOS/Linux. Ignored on Windows, which
+   * binds localhost TCP instead (port from `config.daemon.tcpPort`, default
+   * 47821). Callers should still pass a sensible path so the field carries
+   * one consistent value across platforms.
+   */
   socketPath: string;
   foreground: boolean;
 }
@@ -51,8 +57,10 @@ export interface DaemonOptions {
 // Connection handler stub (protocol arrives in AGT-280)
 // ---------------------------------------------------------------------------
 
-function handleConnection(_socket: net.Socket): void {
-  // No-op until AGT-280 wires the JSON-line protocol.
+function handleConnection(socket: net.Socket): void {
+  // Protocol arrives in AGT-280. Until then, close immediately so a curious
+  // client doesn't pin a file descriptor open indefinitely.
+  socket.destroy();
 }
 
 // ---------------------------------------------------------------------------
@@ -62,6 +70,9 @@ function handleConnection(_socket: net.Socket): void {
 /**
  * Returns true if a live daemon is accepting connections on `socketPath`.
  * Tries to connect; on ECONNREFUSED/ENOENT/timeout returns false.
+ * 1500 ms timeout — loaded systems can be slow to accept; the connect-test
+ * gates whether we unlink a socket, so a false-negative here would destroy
+ * a live daemon's socket. Err on the side of waiting.
  */
 function isSocketAlive(socketPath: string): Promise<boolean> {
   return new Promise((resolve) => {
@@ -69,7 +80,7 @@ function isSocketAlive(socketPath: string): Promise<boolean> {
     const timer = setTimeout(() => {
       client.destroy();
       resolve(false);
-    }, 500);
+    }, 1500);
     client.on('connect', () => {
       clearTimeout(timer);
       client.destroy();
@@ -117,10 +128,6 @@ export async function runDaemon(options: DaemonOptions): Promise<void> {
     }
   }
 
-  function writeDebug(msg: string): void {
-    writeLine(`DEBUG ${msg}`);
-  }
-
   function closeLog(): void {
     if (logFd !== null) {
       try { fs.closeSync(logFd); } catch { /* ignore */ }
@@ -147,6 +154,18 @@ export async function runDaemon(options: DaemonOptions): Promise<void> {
     writeLine(`socket-path=${socketPath}`);
   }
 
+  /**
+   * User-facing message when another daemon already holds the bind address.
+   * Path-specific hint stays actionable even before AGT-285 lands a
+   * `think daemon status` subcommand.
+   */
+  function alreadyRunningMessage(): string {
+    if (isWindows && tcpPort !== null) {
+      return `error: another daemon is already running (TCP 127.0.0.1:${tcpPort}). Kill the existing process or change config.daemon.tcpPort.\n`;
+    }
+    return `error: another daemon is already running. Kill the existing process or, if you believe this is stale, remove ${socketPath}.\n`;
+  }
+
   // ---------------------------------------------------------------------------
   // Bind net.Server with EADDRINUSE stale-socket detection
   // ---------------------------------------------------------------------------
@@ -155,63 +174,73 @@ export async function runDaemon(options: DaemonOptions): Promise<void> {
 
   const server = net.createServer((socket) => {
     connectionCount += 1;
-    writeDebug(`connection #${connectionCount} accepted (remoteAddress=${socket.remoteAddress ?? 'unix'})`);
+    writeLine(`debug: connection #${connectionCount} accepted (remoteAddress=${socket.remoteAddress ?? 'unix'})`);
     handleConnection(socket);
   });
 
   async function bindServer(): Promise<void> {
     return new Promise((resolve, reject) => {
+      function handleListenError(err: NodeJS.ErrnoException): void {
+        if (err.code !== 'EADDRINUSE') {
+          reject(err);
+          return;
+        }
+
+        if (isWindows || socketPath === null) {
+          // TCP on Windows: EADDRINUSE means another daemon owns the port.
+          process.stderr.write(alreadyRunningMessage());
+          closeLog();
+          process.exit(1);
+        }
+
+        // Unix socket EADDRINUSE: connect-test to distinguish live vs stale.
+        writeLine(`EADDRINUSE on ${socketPath} — testing liveness`);
+        isSocketAlive(socketPath)
+          .then((alive) => {
+            if (alive) {
+              process.stderr.write(alreadyRunningMessage());
+              closeLog();
+              process.exit(1);
+            }
+            // Stale socket from a previous crash — unlink and retry.
+            writeLine(`stale socket detected — unlinking ${socketPath} and rebinding`);
+            try {
+              fs.unlinkSync(socketPath!);
+            } catch (unlinkErr: unknown) {
+              reject(unlinkErr);
+              return;
+            }
+            tryListen();
+          })
+          .catch(reject);
+      }
+
       function tryListen(): void {
         server.removeAllListeners('error');
-        server.once('error', async (err: NodeJS.ErrnoException) => {
-          if (err.code !== 'EADDRINUSE') {
-            reject(err);
-            return;
-          }
-
-          if (isWindows || socketPath === null) {
-            // TCP on Windows: EADDRINUSE means another daemon owns the port.
-            process.stderr.write('error: another daemon is already running. Try: think daemon status\n');
-            closeLog();
-            process.exit(1);
-          }
-
-          // Unix socket EADDRINUSE: connect-test to distinguish live vs stale.
-          writeLine(`EADDRINUSE on ${socketPath} — testing liveness`);
-          const alive = await isSocketAlive(socketPath);
-          if (alive) {
-            process.stderr.write('error: another daemon is already running. Try: think daemon status\n');
-            closeLog();
-            process.exit(1);
-          }
-
-          // Stale socket from a previous crash — unlink and retry.
-          writeLine(`stale socket detected — unlinking ${socketPath} and rebinding`);
-          try {
-            fs.unlinkSync(socketPath);
-          } catch (unlinkErr: unknown) {
-            reject(unlinkErr);
-            return;
-          }
-          tryListen();
-        });
+        server.once('error', handleListenError);
 
         if (isWindows && tcpPort !== null) {
           server.listen(tcpPort, '127.0.0.1', () => resolve());
         } else if (socketPath !== null) {
           server.listen(socketPath, () => {
-            // chmod immediately after bind, before the caller proceeds.
-            // This ensures no window between socket creation and permission
-            // restriction where an unprivileged local user could connect.
+            // chmod immediately after bind — restricts permissions as soon
+            // as possible after the kernel creates the socket inode. The OS
+            // creates the file with umask-derived perms first, so a small
+            // (microsecond) window exists; chmod failure is hard-fatal so
+            // we never accept connections on a permissive socket.
             try {
               fs.chmodSync(socketPath!, 0o600);
             } catch (chmodErr: unknown) {
-              // Log but don't hard-abort — the socket is still functional;
-              // the system's umask may have already restricted it.
-              writeLine(`warning: could not chmod socket to 0600: ${String(chmodErr)}`);
+              try { fs.unlinkSync(socketPath!); } catch { /* best-effort */ }
+              reject(new Error(`could not chmod socket to 0600 at ${socketPath}: ${String(chmodErr)}`));
+              return;
             }
             resolve();
           });
+        } else {
+          // Unreachable — `socketPath` is set on non-Windows and `tcpPort`
+          // is set on Windows. Guard against future drift.
+          reject(new Error('no bind target: neither socketPath nor tcpPort is set'));
         }
       }
 
@@ -234,7 +263,7 @@ export async function runDaemon(options: DaemonOptions): Promise<void> {
   function shutdown(signal: string): void {
     writeLine(`shutting down… (signal=${signal})`);
     server.close(() => {
-      if (socketPath !== null && !isWindows) {
+      if (socketPath !== null) {
         try { fs.unlinkSync(socketPath); } catch { /* already gone */ }
       }
       closeLog();
