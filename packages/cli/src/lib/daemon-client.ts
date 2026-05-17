@@ -14,8 +14,8 @@
  *           OR { "request_id": "<uuid>", "error": { "code": "<string>", "message": "<string>" } }\n
  *
  * DaemonClient is keep-alive: one connection is shared across all RPC calls
- * within a single CLI invocation. On process exit the connection is closed
- * cleanly via a `process.on('exit')` handler.
+ * within a single CLI invocation. A module-level `process.on('exit')` handler
+ * closes the active connection even if the caller forgets.
  *
  * Per-call timeout: 30 s by default (overridable per call).
  *
@@ -26,9 +26,10 @@
 import net from 'node:net';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
-import { v4 as uuidv4 } from 'uuid';
+import { randomUUID } from 'node:crypto';
 import { getThinkDir } from './paths.js';
 import { getConfig } from './config.js';
+import { DEFAULT_DAEMON_TCP_PORT } from './daemon-constants.js';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -102,6 +103,20 @@ function isErrorResponse(r: WireResponse): r is WireErrorResponse {
 }
 
 // ---------------------------------------------------------------------------
+// Module-level exit handler — registered once, not per-connection (AC #5).
+// ---------------------------------------------------------------------------
+
+/**
+ * The currently active connection. A module-level reference so the single
+ * exit handler can always reach it without per-instance listener accumulation.
+ */
+let _activeConnection: DaemonConnection | null = null;
+
+process.on('exit', () => {
+  _activeConnection?.close();
+});
+
+// ---------------------------------------------------------------------------
 // DaemonClient
 // ---------------------------------------------------------------------------
 
@@ -113,8 +128,8 @@ function isErrorResponse(r: WireResponse): r is WireErrorResponse {
  * `request_id`.
  *
  * Call `client.close()` to tear down the connection gracefully. The module
- * also registers a `process.on('exit')` handler so the connection is closed
- * even if the caller forgets.
+ * also maintains a module-level exit handler so the connection is closed
+ * cleanly even if the caller forgets.
  */
 export interface DaemonClient {
   call(method: string, params?: Record<string, unknown>, timeoutMs?: number): Promise<unknown>;
@@ -143,8 +158,8 @@ class DaemonConnection implements DaemonClient {
     socket.on('close', () => this.onClose());
     socket.on('error', (err: Error) => this.onError(err));
 
-    // Clean up on process exit (AC #5).
-    process.on('exit', () => this.close());
+    // Register this as the active connection for the module-level exit handler.
+    _activeConnection = this;
   }
 
   call(
@@ -156,7 +171,7 @@ class DaemonConnection implements DaemonClient {
       return Promise.reject(new Error('DaemonClient: connection is closed'));
     }
 
-    const requestId = uuidv4();
+    const requestId = randomUUID();
     const wire: WireRequest = { request_id: requestId, method, params };
 
     return new Promise<unknown>((resolve, reject) => {
@@ -182,6 +197,8 @@ class DaemonConnection implements DaemonClient {
   close(): void {
     if (this.closed) return;
     this.closed = true;
+    // Clear module-level reference so the exit handler no longer references us.
+    if (_activeConnection === this) _activeConnection = null;
     // Reject all in-flight calls so their callers don't hang.
     for (const [, entry] of this.pending) {
       clearTimeout(entry.timer);
@@ -278,7 +295,7 @@ function isRetryableConnectError(code: string | undefined): boolean {
 function getConnectTarget(): net.NetConnectOpts {
   if (process.platform === 'win32') {
     const config = getConfig();
-    const port = config.daemon?.tcpPort ?? 47821;
+    const port = config.daemon?.tcpPort ?? DEFAULT_DAEMON_TCP_PORT;
     return { host: '127.0.0.1', port };
   }
   return { path: getDaemonSocketPath() };
