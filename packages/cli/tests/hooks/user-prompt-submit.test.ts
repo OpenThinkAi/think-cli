@@ -12,7 +12,7 @@
  * `connectDaemon` is mocked so no real daemon is required.
  */
 import { Readable, Writable } from 'node:stream';
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 // ---------------------------------------------------------------------------
 // Mock daemon-client before any import of the hook module
@@ -215,7 +215,6 @@ describe('writeEmpty', () => {
 
 describe('main() stdin→stdout integration (mocked daemon)', () => {
   beforeEach(() => {
-    vi.clearAllMocks();
     mockCall.mockReset();
     mockClose.mockReset();
     mockConnect.mockReset();
