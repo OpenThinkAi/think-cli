@@ -37,6 +37,7 @@ import { DEFAULT_DAEMON_TCP_PORT } from '../lib/daemon-constants.js';
 import { parseLineFraming, dispatchRequest } from './protocol.js';
 import { handleSync } from './sync-handler.js';
 import { handleStatus } from './status.js';
+import { compactionQueue, scanAndEnqueueUncompacted } from './compaction/queue.js';
 
 // ---------------------------------------------------------------------------
 // Paths
@@ -336,6 +337,20 @@ export async function runDaemon(options: DaemonOptions): Promise<void> {
   } else {
     writeLine(`think daemon ready (socket=${socketPath})`);
   }
+
+  // ---------------------------------------------------------------------------
+  // Compaction queue startup (AGT-299)
+  //
+  // 1. Start the serial worker loop.
+  // 2. Scan L1 for raw kind=memory entries with no compaction_links row and
+  //    re-enqueue them. Capped at 100 per cortex; older entries via `think reindex`.
+  //    Queue runs in DRY_RUN mode until AGT-301 ships.
+  // ---------------------------------------------------------------------------
+
+  compactionQueue.start();
+
+  const activeCortex = getConfig().cortex?.active;
+  if (activeCortex) scanAndEnqueueUncompacted(compactionQueue, [activeCortex]);
 
   // ---------------------------------------------------------------------------
   // Graceful shutdown (AGT-283)
