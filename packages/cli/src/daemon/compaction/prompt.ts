@@ -130,11 +130,15 @@ export function buildCompactionMessages(
   const contextLines = candidates.map((c) => {
     const safeContent = sanitizeContent(c.content);
     const date = c.ts.slice(0, 10); // "YYYY-MM-DD"
-    const topicsList = c.topics.join(', ');
+    // Sanitize topics and id: strip newlines to prevent line-break injection that
+    // could spoof a fake NEW ENTRY or CONTEXT header in the assembled message.
+    const safeTopics = c.topics.map((t) => t.replace(/[\r\n]/g, ''));
+    const safeId = c.id.replace(/[\r\n]/g, '');
+    const topicsList = safeTopics.join(', ');
     // Append separator period only when the content doesn't already end with
     // sentence-terminal punctuation to avoid doubled/mismatched punctuation.
     const terminal = /[.?!]$/.test(safeContent) ? '' : '.';
-    return `[id=${c.id}] ${date} — ${safeContent}${terminal} topics: [${topicsList}]`;
+    return `[id=${safeId}] ${date} — ${safeContent}${terminal} topics: [${topicsList}]`;
   });
 
   const userMsg = [
