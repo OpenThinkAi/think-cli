@@ -9,8 +9,9 @@
  *
  * IMPORTANT: If that file changes, COMPACTION_SYSTEM_PROMPT must be re-synced.
  * The test `prompt.test.ts` computes a SHA-256 of COMPACTION_SYSTEM_PROMPT and
- * compares it against a SHA-256 of the extracted code block from the source file,
- * failing loudly on divergence — run `npm test` to catch any drift.
+ * compares it against a hardcoded sentinel hash — any change to the constant will
+ * cause that test to fail loudly.  Update EXPECTED_PROMPT_HASH in the test after
+ * intentionally editing this constant.
  */
 
 // ---------------------------------------------------------------------------
@@ -21,9 +22,10 @@
  * System prompt used by the compaction worker.
  *
  * Derived from `projects/think-v3/compaction-prompt.md` — if that file
- * changes this constant MUST be updated to match. The test suite reads that
- * file, extracts the "## System prompt" code block, and SHA-256 hashes both
- * the file text and this constant, failing if they diverge.
+ * changes this constant MUST be updated to match. The test suite hashes this
+ * constant against a hardcoded sentinel (`EXPECTED_PROMPT_HASH` in prompt.test.ts)
+ * and fails loudly if the value drifts.  Update the sentinel after any
+ * intentional edit to this constant.
  */
 export const COMPACTION_SYSTEM_PROMPT =
   `You are the compaction worker for \`think\`, a local agent-memory CLI. You receive ONE new freeform memory entry and up to 10 recent related entries retrieved by embedding similarity. Your job is to (1) rewrite the new entry into a single self-contained line that encodes its current state plus the relevant trajectory, (2) decide which prior entries it supersedes, and (3) extract topic tags.
