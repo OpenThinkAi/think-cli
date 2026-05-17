@@ -114,8 +114,12 @@ export async function daemonRpc(
           settle(() =>
             reject(new DaemonRpcError(err.code ?? 'unknown_error', err.message ?? 'daemon error')),
           );
-        } else {
+        } else if ('result' in obj) {
           settle(() => resolve(obj['result']));
+        } else {
+          settle(() =>
+            reject(new Error(`daemonRpc: malformed response — no result or error field`)),
+          );
         }
         return;
       }

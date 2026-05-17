@@ -233,6 +233,10 @@ export async function* parseLineFraming(
   socket.on('data', onData);
   socket.on('end', onEnd);
   socket.on('error', onError);
+  // 'close' fires when socket.destroy() is called locally (no preceding 'end'
+  // or 'error'). Without this listener, nextItem() would hang indefinitely and
+  // the finally block would never clean up.
+  socket.on('close', onEnd);
 
   try {
     while (true) {
@@ -244,6 +248,7 @@ export async function* parseLineFraming(
     socket.off('data', onData);
     socket.off('end', onEnd);
     socket.off('error', onError);
+    socket.off('close', onEnd);
   }
 }
 
@@ -260,16 +265,23 @@ const builtinMethods: Map<string, MethodHandler> = new Map([
 ]);
 
 /**
+ * Shared empty methods map. Pass as the third argument to `dispatchRequest`
+ * when no supplemental handlers are needed, to avoid per-call allocations.
+ */
+export const NO_EXTRA_METHODS: ReadonlyMap<string, never> = new Map();
+
+/**
  * Dispatch one parsed request to the appropriate handler and write the
  * response back on `socket`.
  *
  * Callers (daemon/index.ts) can pass an additional `methods` map to
- * supplement the built-ins as more API methods land.
+ * supplement the built-ins as more API methods land. Pass `NO_EXTRA_METHODS`
+ * when no supplemental handlers are needed.
  */
 export async function dispatchRequest(
   socket: net.Socket,
   request: DaemonRequest,
-  methods: Map<string, MethodHandler> = new Map(),
+  methods: ReadonlyMap<string, MethodHandler> = NO_EXTRA_METHODS,
 ): Promise<void> {
   const handler = methods.get(request.method) ?? builtinMethods.get(request.method);
 
