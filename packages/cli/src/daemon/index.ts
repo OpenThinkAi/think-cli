@@ -2,6 +2,7 @@
  * think daemon entry point — AGT-278 scaffold + AGT-279 Unix socket server
  *                            + AGT-281 PID file with stale-detection
  *                            + AGT-283 graceful shutdown with drain
+ *                            + AGT-286 sync RPC endpoint
  *
  * Responsibilities:
  *  - Write startup log to ~/.think/daemon.log (or stderr when --foreground)
@@ -18,9 +19,11 @@
  *    stale-PID detection on startup; remove PID file on clean shutdown
  *  - AGT-283: shutdown RPC method triggers the same graceful sequence.
  *    process.on('exit') provides last-ditch cleanup for unexpected exits.
+ *  - AGT-286: sync RPC method writes to L1 and L2.
  *
  * NOT in this ticket:
- *  - API endpoints (AGT-285+)
+ *  - Compaction queue (AGT-299)
+ *  - Push-to-remote debounce (AGT-309)
  */
 
 import fs from 'node:fs';
@@ -32,6 +35,7 @@ import { getThinkDir } from '../lib/paths.js';
 import { getDaemonPidPath, isDaemonRunning, removePidFile } from '../lib/daemon-status.js';
 import { DEFAULT_DAEMON_TCP_PORT } from '../lib/daemon-constants.js';
 import { parseLineFraming, dispatchRequest } from './protocol.js';
+import { handleSync } from './sync-handler.js';
 
 // ---------------------------------------------------------------------------
 // Paths
@@ -413,6 +417,7 @@ export async function runDaemon(options: DaemonOptions): Promise<void> {
         return 'shutting_down';
       },
     ],
+    ['sync', handleSync],
   ]);
 
   // Wire the connection handler now that daemonMethods and inFlight are in scope.
