@@ -35,6 +35,7 @@ import { getConfig } from '../lib/config.js';
 import { EMBEDDING_MODEL_NAME } from '../lib/embed.js';
 import { getMemoryCount, getSyncCursor } from '../db/memory-queries.js';
 import { sanitizeName } from '../lib/paths.js';
+import { compactionQueue } from './compaction/queue.js';
 
 // ---------------------------------------------------------------------------
 // Constants / defaults
@@ -51,7 +52,12 @@ export interface CortexStatusEntry {
   entries: number;
   last_sync_pull: string | null;
   last_sync_push: string | null;
-  /** Always 0 until AGT-301 (compaction worker) lands. */
+  /**
+   * Number of compaction jobs queued or in-flight for this cortex.
+   * The queue runs in DRY_RUN mode (no LLM calls, no writes) until
+   * AGT-301 ships. depth=0 means the queue is idle; depth>0 means jobs
+   * are pending processing.
+   */
   compaction_queue_depth: number;
   /** Always 0 until AGT-305 (supersession worker) lands. */
   supersession_queue_depth: number;
@@ -96,8 +102,8 @@ function getCortexStatus(cortexName: string): CortexStatusEntry {
     entries,
     last_sync_pull,
     last_sync_push,
-    // Queue depth placeholders — wired to real workers in AGT-301 / AGT-305.
-    compaction_queue_depth: 0,
+    compaction_queue_depth: compactionQueue.getDepth(cortexName),
+    // Supersession queue depth placeholder — wired to real worker in AGT-305.
     supersession_queue_depth: 0,
     warnings,
   };

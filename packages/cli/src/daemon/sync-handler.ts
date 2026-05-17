@@ -35,6 +35,7 @@ import { getIndexDbPath, getRepoPath, sanitizeName } from '../lib/paths.js';
 import { getCortexDb } from '../db/engrams.js';
 import { assignNextSeq } from '../db/activity-seq.js';
 import embed, { EMBEDDING_MODEL_NAME } from '../lib/embed.js';
+import { compactionQueue } from './compaction/queue.js';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -343,6 +344,12 @@ export async function handleSync(params: Record<string, unknown>): Promise<SyncR
     EMBEDDING_MODEL_NAME,
     activitySeq,
   );
+
+  // Fire-and-forget: enqueue compaction job after L1+L2 write completes.
+  // Only `kind=memory` entries are compacted (retro/event are not — per v3 design).
+  if (kind === 'memory') {
+    compactionQueue.enqueue(id, safeCortex);
+  }
 
   // Build advisory warnings for fields accepted but not yet L2-queryable.
   const warnings: string[] = [];
