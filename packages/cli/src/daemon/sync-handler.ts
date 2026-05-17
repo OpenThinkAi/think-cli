@@ -83,6 +83,10 @@ export interface SyncParams {
  * Response shape for the `sync` RPC.
  *
  * - `status: 'stored'` — entry written to L1 and L2 successfully.
+ *   NOTE: for `kind=retro`, a supersession check runs asynchronously after this
+ *   response is returned. A `status: 'stored'` response for a retro means the
+ *   entry is written, NOT that it will be retained — the async check may later
+ *   tombstone it as a duplicate. The daemon log records tombstone events.
  * - `status: 'queued'` — reserved for AGT-299 (L1 written, L2 pending
  *   compaction replay); not yet returned by this implementation.
  * - `supersession_scheduled` — present and `true` for every `kind=retro` entry.

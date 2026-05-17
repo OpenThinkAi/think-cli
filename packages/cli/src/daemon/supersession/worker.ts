@@ -70,10 +70,10 @@ export async function runSupersessionWorker(
   // Step 2: vector search for top-K candidates (all kinds; filtered in step 3)
   const searchResults = searchVectors(safeCortex, queryVec, CANDIDATE_K);
 
-  // Step 3: triage — filter to retro-kind candidates above threshold,
-  // excluding the new entry itself. Entries written before migration 14
-  // have kind = NULL; treat them as retro candidates conservatively so
-  // legacy data participates in supersession.
+  // Step 3: triage — filter by similarity threshold, excluding the new entry.
+  // Kind filtering (retro only) happens in the SQL query below. Entries written
+  // before migration 14 have kind = NULL; the SQL treats them as retro candidates
+  // conservatively so legacy data participates in supersession.
   const aboveThreshold = searchResults.filter(
     (r) => r.id !== newEntryId && r.similarity >= SIMILARITY_THRESHOLD,
   );
@@ -86,12 +86,14 @@ export async function runSupersessionWorker(
   // Fetch full content + ts + kind for each candidate from L2; filter to
   // retro-kind (kind = 'retro' OR kind IS NULL for pre-migration rows).
   const db = getCortexDb(safeCortex);
+  const candidateStmt = db.prepare(
+    `SELECT id, ts, content, kind FROM memories
+     WHERE id = ? AND deleted_at IS NULL AND (kind = 'retro' OR kind IS NULL)`,
+  );
   const candidates: RetroCandidate[] = [];
   for (const { id } of aboveThreshold) {
-    const row = db.prepare(
-      `SELECT id, ts, content, kind FROM memories
-       WHERE id = ? AND deleted_at IS NULL AND (kind = 'retro' OR kind IS NULL)`,
-    ).get(id) as { id: string; ts: string; content: string; kind: string | null } | undefined;
+    const row = candidateStmt.get(id) as
+      { id: string; ts: string; content: string; kind: string | null } | undefined;
     if (row) {
       candidates.push({ id: row.id, date: row.ts, content: row.content });
     }

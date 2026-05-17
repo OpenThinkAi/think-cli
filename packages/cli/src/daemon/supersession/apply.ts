@@ -120,7 +120,7 @@ export function applySupersession(
     // Find the original L1 entry so we can preserve its fields.
     const cortexDir = path.join(getRepoPath(), safeCortex);
     const original = readL1Lines(cortexDir).find(
-      (l) => (l as { id?: string }).id === newEntryId,
+      (l) => l['id'] === newEntryId,
     );
     if (original) {
       appendToL1(cortexDir, {
