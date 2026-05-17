@@ -105,15 +105,17 @@ export async function handleRecall(
 ): Promise<RecallEntry[]> {
   // ── validate params ────────────────────────────────────────────────────────
 
-  const cortexName = params['cortex'];
-  if (typeof cortexName !== 'string' || cortexName.trim().length === 0) {
+  const cortexNameRaw = params['cortex'];
+  if (typeof cortexNameRaw !== 'string' || cortexNameRaw.trim().length === 0) {
     throw new Error('recall: missing or empty required param "cortex"');
   }
+  const cortexName = cortexNameRaw.trim();
 
-  const query = params['query'];
-  if (typeof query !== 'string' || query.trim().length === 0) {
+  const queryRaw = params['query'];
+  if (typeof queryRaw !== 'string' || queryRaw.trim().length === 0) {
     throw new Error('recall: missing or empty required param "query"');
   }
+  const query = queryRaw.trim();
 
   const limitRaw = params['limit'];
   if (limitRaw !== undefined) {
@@ -261,6 +263,7 @@ export async function handleRecall(
   });
 
   // Sort descending by similarity and return.
+  // `entries.length <= vectorResults.length <= limit`, so no slice needed.
   entries.sort((a, b) => b.similarity - a.similarity);
-  return entries.slice(0, limit);
+  return entries;
 }
