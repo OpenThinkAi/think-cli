@@ -150,6 +150,79 @@ function isValidIso8601(s: string): boolean {
 }
 
 // ---------------------------------------------------------------------------
+// Shared param parsing (avoids duplication between single-cortex and federated paths)
+// ---------------------------------------------------------------------------
+
+/**
+ * Parsed and validated recall params (excluding cortex/scope, which are
+ * resolved by the top-level dispatcher before reaching the inner functions).
+ */
+interface ParsedRecallParams {
+  query: string;
+  limit: number;
+  kind: string | undefined;
+  topic: string | undefined;
+  since: string | undefined;
+  decay: number;
+}
+
+/**
+ * Validate and extract the common recall params from the raw params map.
+ * Throws on any validation error.
+ */
+function parseRecallParams(params: Record<string, unknown>): ParsedRecallParams {
+  const queryRaw = params['query'];
+  if (typeof queryRaw !== 'string' || queryRaw.trim().length === 0) {
+    throw new Error('recall: missing or empty required param "query"');
+  }
+  const query = queryRaw.trim();
+
+  const limitRaw = params['limit'];
+  if (limitRaw !== undefined) {
+    if (
+      typeof limitRaw !== 'number' ||
+      !Number.isFinite(limitRaw) ||
+      limitRaw <= 0 ||
+      !Number.isInteger(limitRaw)
+    ) {
+      throw new Error(
+        `recall: 'limit' must be a positive integer, got ${JSON.stringify(limitRaw)}`,
+      );
+    }
+    if (limitRaw > MAX_LIMIT) {
+      throw new Error(
+        `recall: 'limit' must not exceed ${MAX_LIMIT}, got ${limitRaw}`,
+      );
+    }
+  }
+  const limit = (limitRaw as number | undefined) ?? 20;
+
+  const kind = typeof params['kind'] === 'string' ? params['kind'] : undefined;
+  const topic = typeof params['topic'] === 'string' ? params['topic'] : undefined;
+
+  const sinceRaw = params['since'];
+  if (sinceRaw !== undefined) {
+    if (typeof sinceRaw !== 'string' || !isValidIso8601(sinceRaw)) {
+      throw new Error(
+        `recall: 'since' must be an ISO-8601 date string (format check only), got ${JSON.stringify(sinceRaw)}`,
+      );
+    }
+  }
+  const since = typeof sinceRaw === 'string' ? sinceRaw : undefined;
+
+  const cfg = getConfig();
+  const decay = cfg.recall?.recencyDecay ?? DEFAULT_DECAY;
+
+  return { query, limit, kind, topic, since, decay };
+}
+
+// ---------------------------------------------------------------------------
+// Scope validation (module-scope constant, not per-call allocation)
+// ---------------------------------------------------------------------------
+
+const VALID_SCOPES: ReadonlySet<string> = new Set(['active', 'accessible', 'all']);
+
+// ---------------------------------------------------------------------------
 // Handler
 // ---------------------------------------------------------------------------
 
@@ -168,7 +241,6 @@ export async function handleRecall(
   params: Record<string, unknown>,
 ): Promise<RecallEntry[]> {
   // ── validate scope ─────────────────────────────────────────────────────────
-  const VALID_SCOPES: ReadonlySet<string> = new Set(['active', 'accessible', 'all']);
   const scopeRaw = params['scope'];
   if (scopeRaw !== undefined && (typeof scopeRaw !== 'string' || !VALID_SCOPES.has(scopeRaw))) {
     throw new Error(
@@ -177,15 +249,15 @@ export async function handleRecall(
   }
   const scope: RecallScope = (scopeRaw as RecallScope | undefined) ?? 'accessible';
 
-  // ── validate params ────────────────────────────────────────────────────────
-
+  // ── route by scope + cortex ────────────────────────────────────────────────
   const cortexNameRaw = params['cortex'];
   // cortex is optional when scope is "accessible" or "all" (fan-out to all
-  // local cortexes). It remains required only when scope="active" (no
-  // auto-discovery). If cortex is provided with scope="accessible"/"all",
-  // it short-circuits the fan-out (treat as scope="active" on that cortex).
+  // local cortexes). It is required (or config.cortex.active is used as
+  // fallback) when scope="active". If cortex is provided with
+  // scope="accessible"/"all", it short-circuits the fan-out: only that
+  // cortex is queried. Use scope="active" for clarity in single-cortex usage.
   if (scope === 'active') {
-    if (typeof cortexNameRaw !== 'string' || (cortexNameRaw as string).trim().length === 0) {
+    if (typeof cortexNameRaw !== 'string' || cortexNameRaw.trim().length === 0) {
       // Fall back to the active cortex from config when cortex param is absent.
       const cfg = getConfig();
       const activeCortex = cfg.cortex?.active;
@@ -196,18 +268,20 @@ export async function handleRecall(
       }
       return recallSingleCortex(activeCortex.trim(), params);
     }
-    return recallSingleCortex((cortexNameRaw as string).trim(), params);
+    return recallSingleCortex(cortexNameRaw.trim(), params);
   }
 
   // scope is "accessible" or "all"
-  if (typeof cortexNameRaw === 'string' && (cortexNameRaw as string).trim().length > 0) {
+  if (typeof cortexNameRaw === 'string' && cortexNameRaw.trim().length > 0) {
     // Explicit cortex overrides federation — query only that cortex.
-    return recallSingleCortex((cortexNameRaw as string).trim(), params);
+    return recallSingleCortex(cortexNameRaw.trim(), params);
   }
 
   // ── federated recall ───────────────────────────────────────────────────────
   // "all" is reserved for future remote-peer federation. For the alpha release,
-  // "all" behaves identically to "accessible" (local cortexes only).
+  // "all" behaves identically to "accessible" (local cortexes only). When remote
+  // federation ships, "all" will additionally query remote peers not cloned
+  // locally; callers using "all" will automatically gain remote results then.
   return recallFederated(params);
 }
 
@@ -216,12 +290,13 @@ export async function handleRecall(
 // ---------------------------------------------------------------------------
 
 /**
- * Query a single cortex by name. All filtering, embedding, and recency
- * ranking is performed here. Called by `handleRecall` for single-cortex
- * paths; also called per-cortex by `recallFederated`.
+ * Low-level single-cortex query given a pre-computed embedding vector.
+ * Called by `recallSingleCortex` and `recallFederated` (one call per cortex
+ * in the fan-out). Not called directly by `handleRecall`.
  *
- * The embed step is NOT performed here — the caller must provide the
- * pre-computed query vector. This avoids re-embedding on every fan-out leg.
+ * `limit` is the *user-facing* limit — this function applies the
+ * RECENCY_OVERFETCH_FACTOR internally when needed. Callers must NOT
+ * pre-multiply `limit`; doing so would square the overfetch factor.
  *
  * @internal
  */
@@ -361,7 +436,7 @@ async function recallOneCortexWithVec(
 // ---------------------------------------------------------------------------
 
 /**
- * Full pipeline for recalling from one named cortex: validates params, embeds
+ * Full pipeline for recalling from one named cortex: parses params, embeds
  * query, queries the cortex, reranks, truncates. Used when `cortex` is
  * explicitly provided or scope="active".
  */
@@ -369,54 +444,11 @@ async function recallSingleCortex(
   cortexName: string,
   params: Record<string, unknown>,
 ): Promise<RecallEntry[]> {
-  const queryRaw = params['query'];
-  if (typeof queryRaw !== 'string' || queryRaw.trim().length === 0) {
-    throw new Error('recall: missing or empty required param "query"');
-  }
-  const query = queryRaw.trim();
-
-  const limitRaw = params['limit'];
-  if (limitRaw !== undefined) {
-    if (
-      typeof limitRaw !== 'number' ||
-      !Number.isFinite(limitRaw) ||
-      limitRaw <= 0 ||
-      !Number.isInteger(limitRaw)
-    ) {
-      throw new Error(
-        `recall: 'limit' must be a positive integer, got ${JSON.stringify(limitRaw)}`,
-      );
-    }
-    if (limitRaw > MAX_LIMIT) {
-      throw new Error(
-        `recall: 'limit' must not exceed ${MAX_LIMIT}, got ${limitRaw}`,
-      );
-    }
-  }
-  const limit = (limitRaw as number | undefined) ?? 20;
-
-  const kind = typeof params['kind'] === 'string' ? params['kind'] : undefined;
-  const topic = typeof params['topic'] === 'string' ? params['topic'] : undefined;
-
-  const sinceRaw = params['since'];
-  if (sinceRaw !== undefined) {
-    if (typeof sinceRaw !== 'string' || !isValidIso8601(sinceRaw)) {
-      throw new Error(
-        `recall: 'since' must be an ISO-8601 date string (format check only), got ${JSON.stringify(sinceRaw)}`,
-      );
-    }
-  }
-  const since = typeof sinceRaw === 'string' ? sinceRaw : undefined;
-
-  const cfg = getConfig();
-  const decay = cfg.recall?.recencyDecay ?? DEFAULT_DECAY;
-
+  const { query, limit, kind, topic, since, decay } = parseRecallParams(params);
   const queryVec = await embed(query);
-
   const entries = await recallOneCortexWithVec(
     cortexName, queryVec, limit, kind, topic, since, decay,
   );
-
   entries.sort((a, b) => b.score - a.score);
   return entries.slice(0, limit);
 }
@@ -445,54 +477,18 @@ async function recallSingleCortex(
 async function recallFederated(
   params: Record<string, unknown>,
 ): Promise<RecallEntry[]> {
-  const queryRaw = params['query'];
-  if (typeof queryRaw !== 'string' || queryRaw.trim().length === 0) {
-    throw new Error('recall: missing or empty required param "query"');
-  }
-  const query = queryRaw.trim();
+  const { query, limit, kind, topic, since, decay } = parseRecallParams(params);
 
-  const limitRaw = params['limit'];
-  if (limitRaw !== undefined) {
-    if (
-      typeof limitRaw !== 'number' ||
-      !Number.isFinite(limitRaw) ||
-      limitRaw <= 0 ||
-      !Number.isInteger(limitRaw)
-    ) {
-      throw new Error(
-        `recall: 'limit' must be a positive integer, got ${JSON.stringify(limitRaw)}`,
-      );
-    }
-    if (limitRaw > MAX_LIMIT) {
-      throw new Error(
-        `recall: 'limit' must not exceed ${MAX_LIMIT}, got ${limitRaw}`,
-      );
-    }
-  }
-  const limit = (limitRaw as number | undefined) ?? 20;
-
-  const kind = typeof params['kind'] === 'string' ? params['kind'] : undefined;
-  const topic = typeof params['topic'] === 'string' ? params['topic'] : undefined;
-
-  const sinceRaw = params['since'];
-  if (sinceRaw !== undefined) {
-    if (typeof sinceRaw !== 'string' || !isValidIso8601(sinceRaw)) {
-      throw new Error(
-        `recall: 'since' must be an ISO-8601 date string (format check only), got ${JSON.stringify(sinceRaw)}`,
-      );
-    }
-  }
-  const since = typeof sinceRaw === 'string' ? sinceRaw : undefined;
-
-  const cfg = getConfig();
-  const decay = cfg.recall?.recencyDecay ?? DEFAULT_DECAY;
-
-  // Embed once, shared across all cortex legs.
+  // Embed once; the vector is shared across all cortex legs so the model is
+  // only invoked once regardless of how many cortexes are queried.
   const queryVec = await embed(query);
 
-  // Enumerate all locally-cloned cortexes from git branches.
-  // listRemoteBranches() reads refs/heads/* from ~/.think/repo via ls-remote.
-  // An empty list (no branches, no remote) produces an empty result set.
+  // Enumerate all locally-cloned cortexes.
+  // listRemoteBranches() enumerates branches in the local ~/.think/repo clone
+  // via `git ls-remote --heads origin` — branch names = cortex names. Each
+  // branch is a separate cortex's L1 store; the corresponding L2 SQLite index
+  // lives at ~/.think/index/<cortex>.db.
+  const cfg = getConfig();
   let cortexNames: string[];
   try {
     cortexNames = listRemoteBranches();
@@ -508,15 +504,17 @@ async function recallFederated(
   }
 
   // Fan out to all cortexes in parallel. Per-cortex failures are caught
-  // individually so one bad cortex doesn't abort the entire federated query.
-  // Over-fetch per cortex so that reranking has enough candidates globally.
-  const perCortexLimit = limit * RECENCY_OVERFETCH_FACTOR;
-
+  // individually so one unavailable/corrupt cortex doesn't abort the query.
+  //
+  // Pass `limit` (not a pre-inflated value) to recallOneCortexWithVec — that
+  // function owns the RECENCY_OVERFETCH_FACTOR calculation internally. Passing
+  // an already-inflated value would apply the factor twice (limit × factor²),
+  // contradicting the <100ms latency target.
   const perCortexResults = await Promise.all(
     cortexNames.map(async (name) => {
       try {
         return await recallOneCortexWithVec(
-          name, queryVec, perCortexLimit, kind, topic, since, decay,
+          name, queryVec, limit, kind, topic, since, decay,
         );
       } catch {
         // Partial failure: cortex N is unavailable; contribute zero results.
