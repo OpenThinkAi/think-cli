@@ -5,13 +5,13 @@
  * ONE underlying pipeline() invocation (i.e., no duplicate model instantiations).
  *
  * Strategy: vi.mock('@huggingface/transformers') intercepts the lazy import
- * inside getPipeline(); a load counter tracks how many times pipeline() is
- * called. vi.resetModules() + dynamic import gives a fresh module state so
- * pipelinePromise starts as null for each test run.
+ * inside getPipeline(); vi.resetModules() + dynamic import gives a fresh module
+ * state so pipelinePromise starts as null for each test run.
  *
  * Actual model download is never triggered — the mock resolves immediately.
  */
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { EMBEDDING_MODEL_NAME } from '../../src/lib/embed.js';
 
 // ---------------------------------------------------------------------------
 // Mock @huggingface/transformers BEFORE any module under test is imported.
@@ -20,9 +20,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 // ---------------------------------------------------------------------------
 
 vi.mock('@huggingface/transformers', () => {
-  let callCount = 0;
   const pipelineMock = vi.fn(async (_task: string, _model: string, _opts?: unknown) => {
-    callCount += 1;
     // Simulate a brief async load (10ms) so concurrent callers truly race.
     await new Promise<void>((resolve) => setTimeout(resolve, 10));
     // Return a minimal Pipeline function that produces a fake 384-dim Float32Array.
@@ -34,8 +32,6 @@ vi.mock('@huggingface/transformers', () => {
     });
     return fakePipeline;
   });
-  // Expose callCount on the mock so tests can read it.
-  (pipelineMock as unknown as { getCallCount: () => number }).getCallCount = () => callCount;
 
   return { pipeline: pipelineMock };
 });
@@ -45,10 +41,6 @@ describe('embed singleton — concurrent load dedup', () => {
     // Reset the module registry so pipelinePromise resets to null for every test.
     vi.resetModules();
     // Clear call counts on all mocks so tests are independent.
-    vi.clearAllMocks();
-  });
-
-  afterEach(() => {
     vi.clearAllMocks();
   });
 
@@ -75,7 +67,7 @@ describe('embed singleton — concurrent load dedup', () => {
     expect(pipelineMock).toHaveBeenCalledTimes(1);
     expect(pipelineMock).toHaveBeenCalledWith(
       'feature-extraction',
-      'Xenova/bge-small-en-v1.5',
+      EMBEDDING_MODEL_NAME,
       expect.objectContaining({ progress_callback: expect.any(Function) })
     );
   });
