@@ -269,6 +269,31 @@ export const migrations: Migration[] = [
       }
     },
   },
+  {
+    version: 12,
+    up: (db) => {
+      // Reverse index for `think expand <id>` (AGT-271). Populated when
+      // compacted entries are indexed (AGT-303). Fully rebuildable from
+      // entries by unpacking compacted_from arrays. Uses IF NOT EXISTS
+      // so re-running the migration is a no-op.
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS compaction_links (
+          raw_id TEXT NOT NULL,
+          compacted_id TEXT NOT NULL,
+          PRIMARY KEY (raw_id, compacted_id)
+        ) STRICT;
+      `);
+
+      // The composite PRIMARY KEY (raw_id, compacted_id) already serves
+      // "WHERE raw_id = ?" via its leading-column prefix — no separate
+      // forward index needed. Add an explicit index for the reverse path
+      // so getRawForCompaction (WHERE compacted_id = ?) avoids full scans.
+      db.exec(`
+        CREATE INDEX IF NOT EXISTS idx_compaction_links_compacted_id
+          ON compaction_links(compacted_id);
+      `);
+    },
+  },
 ];
 
 /** Returns the per-cortex SQLite connection (holds engrams, memories, longterm_summary, and sync_cursors tables) */
