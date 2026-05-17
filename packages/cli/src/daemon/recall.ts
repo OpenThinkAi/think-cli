@@ -45,7 +45,7 @@ import embed from '../lib/embed.js';
 import { getCortexDb } from '../db/engrams.js';
 import { searchVectors } from '../lib/search-vectors.js';
 import { getConfig } from '../lib/config.js';
-import { listRemoteBranches } from '../lib/git.js';
+import { listLocalBranches } from '../lib/git.js';
 
 // How many extra candidates to fetch from sqlite-vec before JS rerank.
 // 5× ensures the reranked window is wide enough that a very recent entry
@@ -285,10 +285,17 @@ export async function handleRecall(
   }
 
   // ── federated recall ───────────────────────────────────────────────────────
-  // "all" is reserved for future remote-peer federation. For the alpha release,
-  // "all" behaves identically to "accessible" (local cortexes only). When remote
-  // federation ships, "all" will additionally query remote peers not cloned
-  // locally; callers using "all" will automatically gain remote results then.
+  // scope="all" is reserved for future remote-peer federation. For the alpha
+  // release, "all" behaves identically to "accessible" (local cortexes only).
+  // Emit a warning so callers can see the ALPHA/no-op status at runtime.
+  // When remote federation ships, "all" will automatically include remote peers
+  // not locally cloned — callers using "all" today will gain remote results
+  // without re-opting-in. Use "accessible" to pin to local-only behavior.
+  if (scope === 'all') {
+    process.stderr.write(
+      'think recall: scope="all" is ALPHA — currently behaves identically to "accessible" (local cortexes only). Remote-peer federation is not yet implemented.\n',
+    );
+  }
   return recallFederated(params);
 }
 
@@ -344,6 +351,12 @@ async function recallOneCortexWithVec(
     maxSeq = seqRow.max_seq;
   }
 
+  // For the sqlite-vec engine, ANN search has no per-row metadata hook inside
+  // the KNN scan, so we over-fetch by RECENCY_OVERFETCH_FACTOR and rerank in JS.
+  // For brute-force, searchVectors ignores the `limit` parameter entirely and
+  // returns all live candidates (see searchBruteForce in lib/search-vectors.ts),
+  // so the inflated fetchLimit is also safe there — brute-force ignores it anyway.
+  // After reranking, results are sliced to `limit` by the caller.
   const fetchLimit = (hasActivitySeq && maxSeq !== null)
     ? limit * RECENCY_OVERFETCH_FACTOR
     : limit;
@@ -467,17 +480,13 @@ async function recallSingleCortex(
  * Fan out the query to all accessible cortexes in parallel, merge
  * results, rerank globally, and truncate to `limit`.
  *
- * Cortex enumeration: `listRemoteBranches()` calls `git ls-remote --heads
- * origin` against the user's own `~/.think/repo` remote. This is one
- * network call per federated recall. It is gracefully degraded: if the
- * remote is unreachable or the repo is not yet initialised, the handler
- * falls back to `config.cortex.active` (single cortex) or returns empty.
- * The <100ms warm latency target assumes the remote is local or on LAN
- * (localhost git daemon / NFS / iCloud Drive synced path). If the remote
- * is over WAN, latency will be higher — that is a known trade-off for the
- * alpha release. A follow-up can replace `listRemoteBranches` with a
- * local-refs scan (`git for-each-ref refs/heads/`) to eliminate the
- * network dependency.
+ * Cortex enumeration: `listLocalBranches()` reads `refs/heads/*` from the
+ * local `~/.think/repo` clone via `git for-each-ref`. This is a fast,
+ * local-only call that does NOT block on network I/O — safe to use inside
+ * the async daemon handler. Only branches that have been fetched locally
+ * appear in the list; a cortex that exists on the remote but has never been
+ * fetched locally will not be queried. That is the intended semantics for
+ * the "accessible" scope level.
  *
  * Per-cortex queries run concurrently via Promise.all. Each cortex's
  * recency normalization uses its own max_seq — cortex A's "most recent"
@@ -497,17 +506,16 @@ async function recallFederated(
   // only invoked once regardless of how many cortexes are queried.
   const queryVec = await embed(query);
 
-  // Enumerate accessible cortexes via the remote branch list.
-  // listRemoteBranches() runs `git ls-remote --heads origin` — one network
-  // call. Branch names map 1:1 to cortex names (each branch is a cortex's
-  // L1 store; L2 SQLite lives at ~/.think/index/<cortex>.db).
+  // Enumerate locally-known cortexes via local git refs (no network call).
+  // listLocalBranches() uses `git for-each-ref refs/heads/` — sync but does
+  // not block on I/O. Branch names map 1:1 to cortex names.
   const cfg = getConfig();
   let cortexNames: string[];
   try {
-    cortexNames = listRemoteBranches();
+    cortexNames = listLocalBranches();
   } catch (err) {
-    // Enumeration failure (no remote, no network, repo not yet initialised).
-    // Emit a warning so it is visible in daemon logs, then degrade gracefully.
+    // Enumeration failure (repo not yet initialised, git not found, etc.).
+    // Fall back to the active cortex from config if set.
     const msg = err instanceof Error ? err.message : String(err);
     process.stderr.write(`think recall: cortex enumeration failed (${msg}); falling back to active cortex\n`);
     const activeCortex = cfg.cortex?.active;
@@ -515,7 +523,14 @@ async function recallFederated(
   }
 
   if (cortexNames.length === 0) {
-    return [];
+    // Throw rather than silently returning [] — an agent receiving an empty
+    // result cannot distinguish "no matching entries" from "recall was unable
+    // to query any cortex," and the latter is a misconfiguration that should
+    // surface as an error, not silence.
+    throw new Error(
+      'recall: no cortexes available to query. The git repo may not be initialised and no active cortex is configured. ' +
+      'Run "think cortex setup" or set cortex.active in config.',
+    );
   }
 
   // Fan out to all cortexes in parallel. Per-cortex failures are caught

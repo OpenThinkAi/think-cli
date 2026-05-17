@@ -106,7 +106,7 @@ describe('handleRecall — federated recall (AGT-306)', () => {
     vi.spyOn(embedModule, 'default').mockResolvedValue(axis(1));
 
     // Mock: listRemoteBranches() returns our two test cortexes
-    vi.spyOn(gitModule, 'listRemoteBranches').mockReturnValue([CORTEX_A, CORTEX_B]);
+    vi.spyOn(gitModule, 'listLocalBranches').mockReturnValue([CORTEX_A, CORTEX_B]);
 
     // Default scope is "accessible" — should fan out to both cortexes
     const results = await handleRecall({ query: 'target-only-in-cortex-b', limit: 20 });
@@ -152,7 +152,7 @@ describe('handleRecall — federated recall (AGT-306)', () => {
     }
 
     vi.spyOn(embedModule, 'default').mockResolvedValue(axis(0));
-    vi.spyOn(gitModule, 'listRemoteBranches').mockReturnValue([CORTEX_A, CORTEX_B]);
+    vi.spyOn(gitModule, 'listLocalBranches').mockReturnValue([CORTEX_A, CORTEX_B]);
 
     const results = await handleRecall({ query: 'test', limit: 20 });
 
@@ -186,7 +186,7 @@ describe('handleRecall — federated recall (AGT-306)', () => {
       .run(toBlob(axis(0)), rowB.id);
 
     vi.spyOn(embedModule, 'default').mockResolvedValue(axis(0));
-    vi.spyOn(gitModule, 'listRemoteBranches').mockReturnValue([CORTEX_A, CORTEX_B]);
+    vi.spyOn(gitModule, 'listLocalBranches').mockReturnValue([CORTEX_A, CORTEX_B]);
 
     // No scope param → defaults to "accessible"
     const results = await handleRecall({ query: 'test', limit: 10 });
@@ -209,7 +209,7 @@ describe('handleRecall — federated recall (AGT-306)', () => {
       .run(toBlob(axis(0)), rowA.id);
 
     vi.spyOn(embedModule, 'default').mockResolvedValue(axis(0));
-    vi.spyOn(gitModule, 'listRemoteBranches').mockReturnValue([CORTEX_A]);
+    vi.spyOn(gitModule, 'listLocalBranches').mockReturnValue([CORTEX_A]);
 
     const accessibleResults = await handleRecall({ query: 'test', scope: 'accessible' });
     const allResults = await handleRecall({ query: 'test', scope: 'all' });
@@ -242,7 +242,7 @@ describe('handleRecall — federated recall (AGT-306)', () => {
       .run(toBlob(axis(0)), rowB.id);
 
     // listRemoteBranches should NOT be called for scope="active"
-    const branchSpy = vi.spyOn(gitModule, 'listRemoteBranches');
+    const branchSpy = vi.spyOn(gitModule, 'listLocalBranches');
     vi.spyOn(embedModule, 'default').mockResolvedValue(axis(0));
 
     const results = await handleRecall({
@@ -283,7 +283,7 @@ describe('handleRecall — federated recall (AGT-306)', () => {
     dbB.prepare('UPDATE memories SET embedding = ? WHERE id = ?')
       .run(toBlob(axis(0)), rowB.id);
 
-    const branchSpy = vi.spyOn(gitModule, 'listRemoteBranches');
+    const branchSpy = vi.spyOn(gitModule, 'listLocalBranches');
     vi.spyOn(embedModule, 'default').mockResolvedValue(axis(0));
 
     // Explicit cortex + default scope → single cortex, no federation
@@ -309,7 +309,7 @@ describe('handleRecall — federated recall (AGT-306)', () => {
 
     vi.spyOn(embedModule, 'default').mockResolvedValue(axis(0));
     // List includes a broken cortex (no DB file) and a healthy one.
-    vi.spyOn(gitModule, 'listRemoteBranches').mockReturnValue([
+    vi.spyOn(gitModule, 'listLocalBranches').mockReturnValue([
       CORTEX_A,
       'nonexistent-broken-cortex',
     ]);
@@ -348,7 +348,7 @@ describe('handleRecall — federated recall (AGT-306)', () => {
     }
 
     vi.spyOn(embedModule, 'default').mockResolvedValue(axis(0));
-    vi.spyOn(gitModule, 'listRemoteBranches').mockReturnValue([CORTEX_A, CORTEX_B]);
+    vi.spyOn(gitModule, 'listLocalBranches').mockReturnValue([CORTEX_A, CORTEX_B]);
 
     // 20 total candidates across 2 cortexes, limit=7
     const results = await handleRecall({ query: 'test', limit: 7 });
