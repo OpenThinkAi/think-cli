@@ -65,16 +65,23 @@ const DEFAULT_DECAY = 0.05;
 /**
  * Federation scope for the `recall` RPC (AGT-306).
  *
- * "active"     — query only the caller's active cortex (from config, or from
- *                the `cortex` param if provided).
- * "accessible" — (default) query all locally-cloned cortexes, i.e. every git
- *                branch present under ~/.think/repo refs/heads/*. If `cortex`
- *                is also provided alongside this scope, it behaves as "active"
- *                on that cortex (explicit cortex overrides the fan-out).
- * "all"        — ALPHA: reserved for future remote-peer federation. For the
- *                alpha release, "all" is identical to "accessible". When remote
- *                federation ships, "all" will additionally query remote peers
- *                that are not cloned locally.
+ * "active"     — query only the caller's active cortex. Uses the `cortex`
+ *                param if provided; falls back to `config.cortex.active`.
+ *                Throws if neither is set.
+ *
+ * "accessible" — (default) fan out to all accessible cortexes enumerated by
+ *                `listRemoteBranches()`. If a `cortex` param is also provided
+ *                alongside this scope, the federation fan-out is **skipped**
+ *                and only that one cortex is queried — the `scope` param is
+ *                effectively treated as "active". Use `scope="active"` for
+ *                clarity when querying a single named cortex.
+ *
+ * "all"        — ALPHA: reserved for future remote-peer federation. Currently
+ *                behaves **identically to "accessible"** (local cortexes only).
+ *                When remote federation ships, "all" will **automatically**
+ *                include remote peers that are not locally cloned — callers
+ *                using "all" today will gain remote results without re-opting-in.
+ *                Use "accessible" if you want to pin to local-only behavior.
  */
 export type RecallScope = 'active' | 'accessible' | 'all';
 
@@ -286,7 +293,7 @@ export async function handleRecall(
 }
 
 // ---------------------------------------------------------------------------
-// recallSingleCortex — inner implementation for one cortex
+// recallOneCortexWithVec — low-level per-cortex vector query
 // ---------------------------------------------------------------------------
 
 /**
@@ -296,9 +303,8 @@ export async function handleRecall(
  *
  * `limit` is the *user-facing* limit — this function applies the
  * RECENCY_OVERFETCH_FACTOR internally when needed. Callers must NOT
- * pre-multiply `limit`; doing so would square the overfetch factor.
- *
- * @internal
+ * pre-multiply `limit`; doing so would square the overfetch factor and
+ * contradict the <100ms latency target.
  */
 async function recallOneCortexWithVec(
   cortexName: string,
@@ -458,21 +464,29 @@ async function recallSingleCortex(
 // ---------------------------------------------------------------------------
 
 /**
- * Fan out the query to all locally-cloned cortexes in parallel, merge
+ * Fan out the query to all accessible cortexes in parallel, merge
  * results, rerank globally, and truncate to `limit`.
+ *
+ * Cortex enumeration: `listRemoteBranches()` calls `git ls-remote --heads
+ * origin` against the user's own `~/.think/repo` remote. This is one
+ * network call per federated recall. It is gracefully degraded: if the
+ * remote is unreachable or the repo is not yet initialised, the handler
+ * falls back to `config.cortex.active` (single cortex) or returns empty.
+ * The <100ms warm latency target assumes the remote is local or on LAN
+ * (localhost git daemon / NFS / iCloud Drive synced path). If the remote
+ * is over WAN, latency will be higher — that is a known trade-off for the
+ * alpha release. A follow-up can replace `listRemoteBranches` with a
+ * local-refs scan (`git for-each-ref refs/heads/`) to eliminate the
+ * network dependency.
  *
  * Per-cortex queries run concurrently via Promise.all. Each cortex's
  * recency normalization uses its own max_seq — cortex A's "most recent"
  * entry is not penalised because cortex B has a larger seq space.
  *
- * If a cortex fails (e.g. its L2 is missing or corrupt), the error is
- * swallowed and that cortex contributes zero results rather than poisoning
- * the whole response. The design intent: partial degradation is better than
- * a total failure when one of N cortexes has an issue.
- *
- * Latency target (AGT-306): 5 cortexes × 10K entries each in <100ms warm.
- * The dominant cost is embed() (one call, shared across all cortex legs),
- * not the per-cortex SQLite queries.
+ * Per-cortex failures are caught individually. A missing or corrupt L2 DB
+ * contributes zero results rather than aborting the whole federated query
+ * (partial degradation > total failure). Failures are emitted to stderr
+ * so they are visible in daemon logs.
  */
 async function recallFederated(
   params: Record<string, unknown>,
@@ -483,18 +497,19 @@ async function recallFederated(
   // only invoked once regardless of how many cortexes are queried.
   const queryVec = await embed(query);
 
-  // Enumerate all locally-cloned cortexes.
-  // listRemoteBranches() enumerates branches in the local ~/.think/repo clone
-  // via `git ls-remote --heads origin` — branch names = cortex names. Each
-  // branch is a separate cortex's L1 store; the corresponding L2 SQLite index
-  // lives at ~/.think/index/<cortex>.db.
+  // Enumerate accessible cortexes via the remote branch list.
+  // listRemoteBranches() runs `git ls-remote --heads origin` — one network
+  // call. Branch names map 1:1 to cortex names (each branch is a cortex's
+  // L1 store; L2 SQLite lives at ~/.think/index/<cortex>.db).
   const cfg = getConfig();
   let cortexNames: string[];
   try {
     cortexNames = listRemoteBranches();
-  } catch {
-    // If enumeration fails (e.g. repo not yet initialised), fall back to
-    // the active cortex from config if available, otherwise return empty.
+  } catch (err) {
+    // Enumeration failure (no remote, no network, repo not yet initialised).
+    // Emit a warning so it is visible in daemon logs, then degrade gracefully.
+    const msg = err instanceof Error ? err.message : String(err);
+    process.stderr.write(`think recall: cortex enumeration failed (${msg}); falling back to active cortex\n`);
     const activeCortex = cfg.cortex?.active;
     cortexNames = activeCortex ? [activeCortex] : [];
   }
@@ -516,15 +531,18 @@ async function recallFederated(
         return await recallOneCortexWithVec(
           name, queryVec, limit, kind, topic, since, decay,
         );
-      } catch {
-        // Partial failure: cortex N is unavailable; contribute zero results.
+      } catch (err) {
+        // Partial failure: cortex is unavailable or corrupt; contribute zero
+        // results. Emit to stderr so the failure is visible in daemon logs.
+        const msg = err instanceof Error ? err.message : String(err);
+        process.stderr.write(`think recall: cortex "${name}" failed — ${msg}\n`);
         return [] as RecallEntry[];
       }
     }),
   );
 
   // Pool all candidates, sort globally by recency-weighted score, truncate.
-  const allEntries: RecallEntry[] = ([] as RecallEntry[]).concat(...perCortexResults);
+  const allEntries = perCortexResults.flat();
   allEntries.sort((a, b) => b.score - a.score);
   return allEntries.slice(0, limit);
 }
