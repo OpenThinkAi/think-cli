@@ -118,12 +118,6 @@ export async function* parseLineFraming(
   // ---------------------------------------------------------------------------
 
   function processLine(lineBuffer: Buffer): void {
-    if (tooLarge) {
-      // We already sent the error for this oversized line; just reset.
-      tooLarge = false;
-      return;
-    }
-
     const line = lineBuffer.toString('utf8').trim();
     if (line.length === 0) return;
 

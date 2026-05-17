@@ -286,8 +286,6 @@ describe.skipIf(process.platform === 'win32')('sendResponse', () => {
   });
 
   it('serializes result response as a single JSON line', async () => {
-    const received: string[] = [];
-
     const server = await new Promise<net.Server>((resolve, reject) => {
       const s = net.createServer((conn) => {
         sendResponse(conn, { request_id: 'r1', result: { ok: true } });

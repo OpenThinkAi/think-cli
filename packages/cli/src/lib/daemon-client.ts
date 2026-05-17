@@ -14,9 +14,8 @@
  */
 
 import net from 'node:net';
-import path from 'node:path';
-import os from 'node:os';
 import { v4 as uuidv4 } from 'uuid';
+import { getDaemonSocketPath } from './paths.js';
 
 // ---------------------------------------------------------------------------
 // Errors
@@ -31,15 +30,6 @@ export class DaemonRpcError extends Error {
     super(message);
     this.name = 'DaemonRpcError';
   }
-}
-
-// ---------------------------------------------------------------------------
-// Path resolution
-// ---------------------------------------------------------------------------
-
-function getSocketPath(): string {
-  const thinkHome = process.env.THINK_HOME ?? path.join(os.homedir(), '.think');
-  return path.join(thinkHome, 'daemon.sock');
 }
 
 // ---------------------------------------------------------------------------
@@ -63,7 +53,7 @@ export async function daemonRpc(
     timeoutMs?: number;
   } = {},
 ): Promise<unknown> {
-  const socketPath = opts.socketPath ?? getSocketPath();
+  const socketPath = opts.socketPath ?? getDaemonSocketPath();
   const timeoutMs = opts.timeoutMs ?? 5000;
   const requestId = uuidv4();
 
