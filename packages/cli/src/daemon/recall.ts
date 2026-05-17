@@ -101,6 +101,16 @@ export interface RecallEntry {
    * Equals `similarity` when activity_seq is unavailable (pre-AGT-291 rows).
    */
   score: number;
+  /**
+   * Name of the cortex that produced this entry — always present, never
+   * empty. Set unconditionally in `recallOneCortexWithVec` for both the
+   * single-cortex and federated paths (AGT-307).
+   *
+   * Invariant: every element of the `recall` RPC response array has a
+   * non-empty `cortex` string. This must be preserved by all future
+   * recall code paths (including JSON output — AGT-319 — and the MCP
+   * tool response — AGT-315).
+   */
   cortex: string;
 }
 
