@@ -1,6 +1,7 @@
 /**
  * think daemon entry point — AGT-278 scaffold + AGT-279 Unix socket server
  *                            + AGT-281 PID file with stale-detection
+ *                            + AGT-283 graceful shutdown with drain
  *
  * Responsibilities:
  *  - Write startup log to ~/.think/daemon.log (or stderr when --foreground)
@@ -10,12 +11,15 @@
  *    exit cleanly if alive
  *  - chmod socket to 0600 immediately after bind, before accepting connections
  *  - Log each incoming connection at debug level; hand off to handleConnection()
- *  - On shutdown: close server, unlink socket file
+ *  - On shutdown: stop accepting new connections → drain in-flight requests
+ *    (up to 5s timeout, force-close after) → close server → unlink socket +
+ *    PID files → exit 0
  *  - AGT-281: Write PID to ~/.think/daemon.pid (0600) after socket bind;
  *    stale-PID detection on startup; remove PID file on clean shutdown
+ *  - AGT-283: shutdown RPC method triggers the same graceful sequence.
+ *    process.on('exit') provides last-ditch cleanup for unexpected exits.
  *
  * NOT in this ticket:
- *  - JSON-line protocol (AGT-280)
  *  - API endpoints (AGT-285+)
  */
 
@@ -50,27 +54,6 @@ export interface DaemonOptions {
    */
   socketPath: string;
   foreground: boolean;
-}
-
-// ---------------------------------------------------------------------------
-// Connection handler — JSON-line protocol (AGT-280)
-// ---------------------------------------------------------------------------
-
-function handleConnection(socket: net.Socket): void {
-  // Drive the async iterator; each iteration yields one parsed request.
-  // Errors and malformed lines are handled inside parseLineFraming/dispatchRequest
-  // without closing the connection.
-  (async () => {
-    for await (const request of parseLineFraming(socket)) {
-      // dispatchRequest is intentionally not awaited per-request so that a
-      // slow handler for one request does not block reading subsequent lines
-      // (supports multiple concurrent in-flight requests on a single connection).
-      dispatchRequest(socket, request).catch(() => { /* errors sent as error responses */ });
-    }
-  })().catch(() => {
-    // If the iterator itself throws (socket error etc.), tear down the socket.
-    socket.destroy();
-  });
 }
 
 // ---------------------------------------------------------------------------
@@ -246,11 +229,14 @@ export async function runDaemon(options: DaemonOptions): Promise<void> {
 
   let connectionCount = 0;
 
-  const server = net.createServer((socket) => {
-    connectionCount += 1;
-    writeLine(`debug: connection #${connectionCount} accepted (remoteAddress=${socket.remoteAddress ?? 'unix'})`);
-    handleConnection(socket);
-  });
+  // Counts requests currently being handled. Incremented synchronously before
+  // dispatchRequest; decremented in the .finally() microtask (AGT-283 drain).
+  let inFlight = 0;
+
+  // The connection handler and daemonMethods (including the shutdown RPC) are
+  // wired up after bindServer() completes — shutdown() needs server + pidPath
+  // in scope. Create the server without a connection handler for now.
+  const server = net.createServer();
 
   function bindServer(): Promise<void> {
     return new Promise((resolve, reject) => {
@@ -347,24 +333,111 @@ export async function runDaemon(options: DaemonOptions): Promise<void> {
   }
 
   // ---------------------------------------------------------------------------
-  // Signal handlers — shutdown
+  // Graceful shutdown (AGT-283)
+  //
+  // Sequence:
+  //   1. Stop accepting new connections (server.close()).
+  //   2. Wait up to DRAIN_TIMEOUT_MS for in-flight requests to reach zero.
+  //   3. Unlink socket + PID files.
+  //   4. Exit 0.
+  //
+  // The drain is purely counter-based: increment before dispatchRequest,
+  // decrement in the finally clause (see handleConnection). If requests are
+  // still in-flight after DRAIN_TIMEOUT_MS we force-exit anyway.
   // ---------------------------------------------------------------------------
 
-  function shutdown(signal: string): void {
-    writeLine(`shutting down… (signal=${signal})`);
-    server.close(() => {
-      if (socketPath !== null) {
-        try { fs.unlinkSync(socketPath); } catch { /* already gone */ }
+  const DRAIN_TIMEOUT_MS = 5000;
+  const DRAIN_POLL_MS    = 50;
+
+  let shutdownInitiated = false;
+
+  function shutdown(reason: string): void {
+    if (shutdownInitiated) return;
+    shutdownInitiated = true;
+
+    writeLine(`shutting down (reason=${reason}, inFlightRequests=${inFlight})`);
+
+    // Step 1: stop accepting new connections.
+    server.close();
+
+    // Step 2: drain loop — poll inFlight until zero or timeout.
+    const deadline = Date.now() + DRAIN_TIMEOUT_MS;
+
+    function drain(): void {
+      if (inFlight <= 0 || Date.now() >= deadline) {
+        if (inFlight > 0) {
+          writeLine(`drain timeout reached; ${inFlight} request(s) still in-flight — force-closing`);
+        } else {
+          writeLine(`drain complete`);
+        }
+        // Step 3: unlink socket + PID files.
+        if (socketPath !== null) {
+          try { fs.unlinkSync(socketPath); } catch { /* already gone */ }
+        }
+        try { removePidFile(pidPath); } catch { /* best-effort */ }
+        closeLog();
+        // Step 4: exit.
+        process.exit(0);
+        return;
       }
-      // Remove PID file on clean shutdown (AGT-281).
-      try { removePidFile(pidPath); } catch { /* best-effort */ }
-      closeLog();
-      process.exit(0);
-    });
+      setTimeout(drain, DRAIN_POLL_MS);
+    }
+
+    drain();
   }
+
+  // Last-ditch cleanup on any exit — defensive belt in case shutdown was
+  // skipped (e.g., uncaught exception, external kill -9 won't hit this but
+  // normal exits will).
+  process.on('exit', () => {
+    if (socketPath !== null) {
+      try { fs.unlinkSync(socketPath); } catch { /* already gone */ }
+    }
+    try { removePidFile(pidPath); } catch { /* best-effort */ }
+  });
 
   process.on('SIGTERM', () => shutdown('SIGTERM'));
   process.on('SIGINT',  () => shutdown('SIGINT'));
+
+  // ---------------------------------------------------------------------------
+  // shutdown RPC method (AGT-283)
+  // ---------------------------------------------------------------------------
+
+  const daemonMethods = new Map<string, (params: Record<string, unknown>) => Promise<unknown> | unknown>([
+    [
+      'shutdown',
+      (_params) => {
+        // Respond first, then initiate shutdown on the next tick so the
+        // response has a chance to be flushed before the server stops.
+        setImmediate(() => shutdown('shutdown-rpc'));
+        return 'shutting_down';
+      },
+    ],
+  ]);
+
+  // Wire the connection handler now that daemonMethods and inFlight are in scope.
+  server.on('connection', (socket: net.Socket) => {
+    connectionCount += 1;
+    writeLine(`debug: connection #${connectionCount} accepted (remoteAddress=${socket.remoteAddress ?? 'unix'})`);
+
+    // Drive the async iterator; each iteration yields one parsed request.
+    // Errors and malformed lines are handled inside parseLineFraming/dispatchRequest
+    // without closing the connection.
+    (async () => {
+      for await (const request of parseLineFraming(socket)) {
+        // Track in-flight count around each dispatch (AGT-283 drain).
+        inFlight += 1;
+        dispatchRequest(socket, request, daemonMethods).catch(() => {
+          // errors are sent as error responses; decrement still required
+        }).finally(() => {
+          inFlight -= 1;
+        });
+      }
+    })().catch(() => {
+      // If the iterator itself throws (socket error etc.), tear down the socket.
+      socket.destroy();
+    });
+  });
 
   if (options.foreground) {
     // Foreground: attach to stdin so Ctrl-C / EOF work naturally in a terminal.
