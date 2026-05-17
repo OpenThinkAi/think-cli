@@ -86,10 +86,10 @@ export interface SyncParams {
  * - `status: 'queued'` — reserved for AGT-299 (L1 written, L2 pending
  *   compaction replay); not yet returned by this implementation.
  * - `supersession_scheduled` — present and `true` for every `kind=retro` entry.
- *   An async supersession check was scheduled regardless of whether there are
- *   candidates. The entry MAY be tombstoned as a duplicate — there is no
- *   completion callback or follow-up signal. Tombstone events are recorded only
- *   in the daemon log. Callers should surface this to the user as an advisory.
+ *   An async check was scheduled regardless of whether there are candidates.
+ *   The entry MAY be tombstoned as a duplicate. There is no completion signal;
+ *   tombstone events appear only in the daemon log. Callers should surface this
+ *   to the user as an advisory, not as a definitive tombstone warning.
  * - `warnings` — advisory messages (e.g. fields accepted but not yet
  *   queryable via L2). Callers should surface these to the user.
  */
@@ -99,8 +99,10 @@ export interface SyncResult {
   /**
    * True for every `kind=retro` entry. An async supersession check was scheduled
    * and will run shortly after this response is returned. The check may tombstone
-   * the entry as a duplicate — there is no completion callback. Check the daemon
-   * log for tombstone events.
+   * the entry as a duplicate — there is no completion callback or follow-up signal.
+   * Tombstone events are recorded only in the daemon log (console.info line).
+   * Callers may surface this to the user as "duplicate check running; retro may
+   * be suppressed if it duplicates an existing one."
    */
   supersession_scheduled?: boolean;
   warnings?: string[];

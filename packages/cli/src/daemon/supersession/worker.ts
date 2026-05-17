@@ -43,16 +43,18 @@ const SIMILARITY_THRESHOLD = 0.6;
  *
  * 1. Embed the content (reuses the singleton pipeline already warm from sync).
  * 2. Vector-search L2 for top-K candidates.
- * 3. Triage gate: filter to same-kind retro candidates above threshold;
- *    skip the LLM call entirely if none qualify.
- * 4. LLM supersession call (runSupersession).
- * 5. Filter LLM-returned supersedes IDs against the actual candidate set
- *    (prevents prompt-injection from marking unrelated entries as superseded).
- * 6. Apply result (applySupersession).
+ * 3. Triage by similarity threshold; return early if nothing qualifies.
+ * 4. Fetch candidate content + kind from L2; filter to retro-kind only.
+ *    Return early if all above-threshold entries are non-retro.
+ * 5. LLM supersession call (runSupersession).
+ * 6. Filter LLM-returned supersedes IDs against the actual candidate set
+ *    (prompt-injection guard).
+ * 7. Apply result (applySupersession).
  *
  * Errors bubble up to the caller (sync-handler wraps in .catch with a warn log).
  *
- * @param cortex Must be the sanitized cortex name (safeCortex from sync-handler).
+ * @param cortex Sanitized via `sanitizeName()` inside this function; callers may
+ *   pass either a pre-sanitized or unsanitized value — both are safe.
  */
 export async function runSupersessionWorker(
   newEntryId: string,
@@ -81,8 +83,12 @@ export async function runSupersessionWorker(
   }
 
   // Step 4: fetch full content + ts for each above-threshold candidate from L2,
-  // filtering to retro-kind only (kind = 'retro' OR kind IS NULL for rows written
-  // before migration 14 added the kind column).
+  // filtering to retro-kind only. `kind IS NULL` includes rows written before
+  // migration 14 added the kind column — those rows were written by the v3 sync
+  // handler as retros (kind='retro' in L1) but L2 hadn't been backfilled yet.
+  // Accepting them as retro candidates is a deliberate conservative tradeoff:
+  // some may be memory-kind entries; the LLM will correctly classify them as
+  // COEXISTS rather than REPLACES/DUPLICATE in that case.
   const db = getCortexDb(safeCortex);
   const candidateStmt = db.prepare(
     `SELECT id, ts, content, kind FROM memories

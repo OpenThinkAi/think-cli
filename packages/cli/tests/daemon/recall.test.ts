@@ -136,10 +136,12 @@ describe('handleRecall (AGT-285)', () => {
   });
 
   // ── kind/topic filter errors when columns absent ──────────────────────────
-  // NOTE (AGT-304): migration 14 always adds `kind` and `topics_json` to freshly
-  // migrated DBs, making the "column absent" error paths in handleRecall permanently
-  // unreachable in any environment that has run through migration 14. Skipped
-  // explicitly so the test runner reports them as skipped (not silently passing).
+  // NOTE (AGT-304): migration 14 unconditionally adds `kind` and `topics_json` to
+  // every migrated DB via `getCortexDb`, which runs all pending migrations on first
+  // open. These columns are therefore always present — no test setup can produce a
+  // DB without them without reverting the migration. The "column absent" error paths
+  // in `handleRecall` are permanently unreachable. Tests are marked `it.skip` so the
+  // runner reports them as explicitly skipped rather than silently green.
 
   it.skip('throws when kind filter requested but kind column absent', async () => {
     vi.spyOn(embedModule, 'default').mockResolvedValue(axis(0));
