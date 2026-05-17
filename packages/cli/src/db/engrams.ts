@@ -310,6 +310,31 @@ export const migrations: Migration[] = [
       db.exec('CREATE INDEX IF NOT EXISTS idx_entries_activity_seq ON memories(activity_seq DESC);');
     },
   },
+  {
+    version: 14,
+    up: (db) => {
+      // Add supersession columns for AGT-304. Both nullable — null means the
+      // entry has never been superseded. `superseded_at` is an ISO-8601
+      // timestamp; `superseded_by` is the id of the newer entry that replaced
+      // this one. Idempotent via IF NOT EXISTS column check so re-running the
+      // migration is safe.
+      const cols = db.prepare('PRAGMA table_info(memories)').all() as { name: string }[];
+      if (!cols.some(c => c.name === 'superseded_at')) {
+        db.exec('ALTER TABLE memories ADD COLUMN superseded_at TEXT;');
+      }
+      if (!cols.some(c => c.name === 'superseded_by')) {
+        db.exec('ALTER TABLE memories ADD COLUMN superseded_by TEXT;');
+      }
+      if (!cols.some(c => c.name === 'kind')) {
+        db.exec('ALTER TABLE memories ADD COLUMN kind TEXT;');
+      }
+      if (!cols.some(c => c.name === 'topics_json')) {
+        db.exec('ALTER TABLE memories ADD COLUMN topics_json TEXT;');
+      }
+      db.exec('CREATE INDEX IF NOT EXISTS idx_memories_superseded_at ON memories(superseded_at);');
+      db.exec('CREATE INDEX IF NOT EXISTS idx_memories_kind ON memories(kind);');
+    },
+  },
 ];
 
 /** Returns the per-cortex SQLite connection (holds engrams, memories, longterm_summary, and sync_cursors tables) */

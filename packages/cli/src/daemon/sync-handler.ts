@@ -37,6 +37,7 @@ import { assignNextSeq } from '../db/activity-seq.js';
 import embed, { EMBEDDING_MODEL_NAME } from '../lib/embed.js';
 import { compactionQueue } from './compaction/queue.js';
 import { pushDebouncer } from './push-debouncer.js';
+import { runSupersessionWorker } from './supersession/worker.js';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -84,12 +85,24 @@ export interface SyncParams {
  * - `status: 'stored'` — entry written to L1 and L2 successfully.
  * - `status: 'queued'` — reserved for AGT-299 (L1 written, L2 pending
  *   compaction replay); not yet returned by this implementation.
+ * - `supersession_scheduled` — present and `true` for every `kind=retro` entry.
+ *   An async supersession check was scheduled regardless of whether there are
+ *   candidates. The entry MAY be tombstoned as a duplicate — there is no
+ *   completion callback or follow-up signal. Tombstone events are recorded only
+ *   in the daemon log. Callers should surface this to the user as an advisory.
  * - `warnings` — advisory messages (e.g. fields accepted but not yet
  *   queryable via L2). Callers should surface these to the user.
  */
 export interface SyncResult {
   entry_id: string;
   status: 'stored' | 'queued';
+  /**
+   * True for every `kind=retro` entry. An async supersession check was scheduled
+   * and will run shortly after this response is returned. The check may tombstone
+   * the entry as a duplicate — there is no completion callback. Check the daemon
+   * log for tombstone events.
+   */
+  supersession_scheduled?: boolean;
   warnings?: string[];
 }
 
@@ -359,6 +372,20 @@ export async function handleSync(params: Record<string, unknown>): Promise<SyncR
     compactionQueue.enqueue(id, safeCortex);
   }
 
+  // --- async supersession worker for retros (AGT-304) ---
+  // Fire-and-forget: vector search + LLM call happens after the sync response
+  // is returned to the caller. Errors are logged but do not fail the sync.
+  if (kind === 'retro') {
+    setImmediate(() => {
+      runSupersessionWorker(id, ts, content, safeCortex).catch((err: unknown) => {
+        console.warn(
+          `[supersession] worker error for entry ${id}: ` +
+          `${err instanceof Error ? err.message : String(err)}`,
+        );
+      });
+    });
+  }
+
   // Schedule a debounced git commit + push for this cortex (AGT-309).
   // `skipPush` suppresses the remote push when the caller is offline or
   // running integration tests that have no configured remote (AGT-293).
@@ -380,6 +407,7 @@ export async function handleSync(params: Record<string, unknown>): Promise<SyncR
   return {
     entry_id: id,
     status: 'stored',
+    ...(kind === 'retro' ? { supersession_scheduled: true } : {}),
     ...(warnings.length > 0 ? { warnings } : {}),
   };
 }
