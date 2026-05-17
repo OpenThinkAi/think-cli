@@ -25,8 +25,10 @@
 
 import net from 'node:net';
 import path from 'node:path';
+import fs from 'node:fs';
 import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
+import { fileURLToPath } from 'node:url';
 import { getThinkDir } from './paths.js';
 import { getConfig } from './config.js';
 import { DEFAULT_DAEMON_TCP_PORT } from './daemon-constants.js';
@@ -66,8 +68,9 @@ function getDaemonLogPath(): string {
  * same packages/cli/<root>/<subdir> shape.
  */
 function getDaemonEntryPath(): string {
-  // import.meta.url is always available in ESM; __dirname is not.
-  const thisFile = new URL(import.meta.url).pathname;
+  // fileURLToPath is the correct ESM replacement for __dirname — it strips
+  // the Windows drive-letter slash that `.pathname` leaves behind.
+  const thisFile = fileURLToPath(import.meta.url);
   // Go up two levels: lib/ → src_or_dist/ → packages/cli/
   const pkgRoot = path.resolve(path.dirname(thisFile), '..', '..');
   return path.join(pkgRoot, 'dist', 'daemon', 'index.js');
@@ -238,7 +241,7 @@ class DaemonConnection implements DaemonClient {
     if (typeof parsed !== 'object' || parsed === null) return;
 
     const resp = parsed as WireResponse;
-    const requestId = (resp as Record<string, unknown>)['request_id'];
+    const requestId = resp.request_id;
     if (typeof requestId !== 'string') return;
 
     const entry = this.pending.get(requestId);
@@ -259,6 +262,7 @@ class DaemonConnection implements DaemonClient {
   private onClose(): void {
     if (!this.closed) {
       this.closed = true;
+      if (_activeConnection === this) _activeConnection = null;
       for (const [, entry] of this.pending) {
         clearTimeout(entry.timer);
         entry.reject(new Error('DaemonClient: socket closed unexpectedly'));
@@ -270,6 +274,7 @@ class DaemonConnection implements DaemonClient {
   private onError(err: Error): void {
     if (!this.closed) {
       this.closed = true;
+      if (_activeConnection === this) _activeConnection = null;
       for (const [, entry] of this.pending) {
         clearTimeout(entry.timer);
         entry.reject(err);
@@ -331,9 +336,18 @@ function tryConnect(): Promise<net.Socket> {
  *
  * Uses `process.execPath` (the running Node binary) rather than a PATH lookup
  * to avoid binary-injection risks.
+ *
+ * Throws immediately if the compiled daemon entry point does not exist,
+ * so the caller gets an actionable error instead of silently exhausting
+ * the 5-second retry loop with an empty daemon.log.
  */
 function spawnDaemon(): void {
   const entry = getDaemonEntryPath();
+  if (!fs.existsSync(entry)) {
+    throw new Error(
+      `daemon binary not found at ${entry} — run \`npm run build\` first`,
+    );
+  }
   const child = spawn(process.execPath, [entry], {
     detached: true,
     stdio: 'ignore',
@@ -353,6 +367,8 @@ export interface ConnectDaemonOptions {
    * Override the function used to spawn the daemon process.
    * Defaults to the production `spawnDaemon()` which uses `child_process.spawn`.
    * Tests inject a function that starts an in-process echo server instead.
+   *
+   * @internal — test-injection seam only; do not use in production code.
    */
   _spawnOverride?: () => void;
 }
