@@ -236,3 +236,95 @@ describe.skipIf(process.platform === 'win32')(
     }, 10_000);
   },
 );
+
+// ---------------------------------------------------------------------------
+// Tests: DaemonUnavailableError — AGT-289
+// ---------------------------------------------------------------------------
+
+describe.skipIf(process.platform === 'win32')(
+  'connectDaemon — DaemonUnavailableError (degraded mode)',
+  () => {
+    let thinkHome: string;
+    let originalThinkHome: string | undefined;
+
+    beforeEach(() => {
+      originalThinkHome = process.env.THINK_HOME;
+      thinkHome = mkdtempSync(join(tmpdir(), 'think-client-degraded-'));
+      process.env.THINK_HOME = thinkHome;
+    });
+
+    afterEach(() => {
+      if (originalThinkHome === undefined) delete process.env.THINK_HOME;
+      else process.env.THINK_HOME = originalThinkHome;
+      rmSync(thinkHome, { recursive: true, force: true });
+    });
+
+    it('throws DaemonUnavailableError (not plain Error) on spawn timeout', async () => {
+      const { connectDaemon, DaemonUnavailableError } = await import('../../src/lib/daemon-client.js');
+
+      let caught: unknown;
+      try {
+        await connectDaemon({ _spawnOverride: () => {} });
+      } catch (err) {
+        caught = err;
+      }
+
+      expect(caught).toBeInstanceOf(DaemonUnavailableError);
+      const err = caught as InstanceType<typeof DaemonUnavailableError>;
+      expect(err.name).toBe('DaemonUnavailableError');
+      expect(err.message).toMatch(/daemon failed to start/);
+      // logPath should point inside the thinkHome dir.
+      expect(err.logPath).toContain(thinkHome);
+      expect(err.logPath).toContain('daemon.log');
+    }, 10_000);
+
+    it('DaemonUnavailableError thrown by _spawnOverride propagates with logPath intact', async () => {
+      // When _spawnOverride throws DaemonUnavailableError (simulating the
+      // binary-not-found branch in spawnDaemon), connectDaemon lets it propagate
+      // rather than swallowing or wrapping it. This verifies the propagation
+      // contract so callers can safely catch DaemonUnavailableError from any
+      // throw site inside the connection path.
+      const { connectDaemon, DaemonUnavailableError } = await import('../../src/lib/daemon-client.js');
+
+      const fakeLogPath = join(thinkHome, 'daemon.log');
+      let caught: unknown;
+      try {
+        await connectDaemon({
+          _spawnOverride: () => {
+            throw new DaemonUnavailableError(
+              `daemon binary not found at /fake/path — run \`npm run build\` first`,
+              fakeLogPath,
+            );
+          },
+        });
+      } catch (err) {
+        caught = err;
+      }
+
+      expect(caught).toBeInstanceOf(DaemonUnavailableError);
+      const err = caught as InstanceType<typeof DaemonUnavailableError>;
+      expect(err.message).toMatch(/binary not found/);
+      expect(err.logPath).toBe(fakeLogPath);
+    }, 10_000);
+
+    it('is distinguishable from generic Error by instanceof check', async () => {
+      // Callers (recall, sync, retro) use `instanceof DaemonUnavailableError`
+      // to decide whether to degrade silently or surface an unexpected error.
+      const { connectDaemon, DaemonUnavailableError } = await import('../../src/lib/daemon-client.js');
+
+      let caught: unknown;
+      try {
+        await connectDaemon({ _spawnOverride: () => {} });
+      } catch (err) {
+        caught = err;
+      }
+
+      // Must be instance of DaemonUnavailableError specifically (not just Error).
+      expect(caught).toBeInstanceOf(DaemonUnavailableError);
+      // Must also pass plain Error check (it extends Error).
+      expect(caught).toBeInstanceOf(Error);
+      // A plain Error must NOT satisfy DaemonUnavailableError instanceof.
+      expect(new Error('plain')).not.toBeInstanceOf(DaemonUnavailableError);
+    }, 10_000);
+  },
+);

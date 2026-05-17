@@ -162,6 +162,69 @@ export function renderPersonalAll(cortex: string, { days, query }: { days: numbe
   }
 }
 
+/**
+ * Run FTS-only recall against the local L2 index (the v2 search path).
+ * Used directly when the daemon is unavailable (degraded mode — AGT-289).
+ */
+function runFtsRecall(cortex: string, query: string, opts: { engrams?: boolean; limit: number }): void {
+  const { limit } = opts;
+
+  // Default: FTS search against memories AND long-term events.
+  const matchingMemories = dedupeBy(
+    searchMemories(cortex, query, limit),
+    m => JSON.stringify([m.ts, m.author, m.content]),
+  );
+
+  // Long-term: FTS match on title/content + topic match (free-form tokens).
+  const queryTopics = query.toLowerCase().split(/[\s,]+/).filter(Boolean);
+  const ftsEvents = searchLongTermEvents(cortex, query, limit);
+  const topicEvents = getRecentLongTermEventsForContext(cortex, { topics: queryTopics, limit });
+  const matchingEvents = dedupeBy([...ftsEvents, ...topicEvents], e => e.id);
+
+  if (matchingEvents.length > 0) {
+    console.log(chalk.cyan(`Long-term history (${matchingEvents.length}):`));
+    renderLongTermEvents(cortex, matchingEvents);
+    console.log();
+  }
+
+  if (matchingMemories.length > 0) {
+    console.log(chalk.cyan(`Matching memories (${matchingMemories.length}):`));
+    for (const m of matchingMemories) {
+      const ts = m.ts.slice(0, 16).replace('T', ' ');
+      console.log(`  ${chalk.gray(ts)} ${chalk.dim(m.author + ':')} ${m.content}`);
+      printDecisions(m);
+    }
+    console.log();
+  } else if (matchingEvents.length === 0) {
+    // Fall back to long-term summary when neither FTS nor events match
+    const longterm = getLongtermSummary(cortex);
+    if (longterm) {
+      console.log(chalk.dim('No matching memories or events. Showing legacy long-term summary:'));
+      console.log(`  ${longterm}`);
+      console.log();
+    } else {
+      console.log(chalk.dim('No matching memories or long-term events.'));
+      console.log();
+    }
+  }
+
+  // Optionally include engrams
+  if (opts.engrams) {
+    const matchingEngrams = dedupeBy(
+      searchEngrams(cortex, query, limit),
+      e => JSON.stringify([e.created_at, e.content]),
+    );
+    if (matchingEngrams.length > 0) {
+      console.log(chalk.cyan(`Matching engrams (${matchingEngrams.length}):`));
+      for (const e of matchingEngrams) {
+        const ts = e.created_at.slice(0, 16).replace('T', ' ');
+        console.log(`  ${chalk.gray(ts)} ${e.content}`);
+      }
+      console.log();
+    }
+  }
+}
+
 export const recallCommand = new Command('recall')
   .argument('<query>', 'What to recall')
   .description('Search memories and local engrams')
@@ -187,60 +250,10 @@ export const recallCommand = new Command('recall')
       return;
     }
 
-    // Default: FTS search against memories AND long-term events.
-    const matchingMemories = dedupeBy(
-      searchMemories(cortex, query, limit),
-      m => JSON.stringify([m.ts, m.author, m.content]),
-    );
-
-    // Long-term: FTS match on title/content + topic match (free-form tokens).
-    const queryTopics = query.toLowerCase().split(/[\s,]+/).filter(Boolean);
-    const ftsEvents = searchLongTermEvents(cortex, query, limit);
-    const topicEvents = getRecentLongTermEventsForContext(cortex, { topics: queryTopics, limit });
-    const matchingEvents = dedupeBy([...ftsEvents, ...topicEvents], e => e.id);
-
-    if (matchingEvents.length > 0) {
-      console.log(chalk.cyan(`Long-term history (${matchingEvents.length}):`));
-      renderLongTermEvents(cortex, matchingEvents);
-      console.log();
-    }
-
-    if (matchingMemories.length > 0) {
-      console.log(chalk.cyan(`Matching memories (${matchingMemories.length}):`));
-      for (const m of matchingMemories) {
-        const ts = m.ts.slice(0, 16).replace('T', ' ');
-        console.log(`  ${chalk.gray(ts)} ${chalk.dim(m.author + ':')} ${m.content}`);
-        printDecisions(m);
-      }
-      console.log();
-    } else if (matchingEvents.length === 0) {
-      // Fall back to long-term summary when neither FTS nor events match
-      const longterm = getLongtermSummary(cortex);
-      if (longterm) {
-        console.log(chalk.dim('No matching memories or events. Showing legacy long-term summary:'));
-        console.log(`  ${longterm}`);
-        console.log();
-      } else {
-        console.log(chalk.dim('No matching memories or long-term events.'));
-        console.log();
-      }
-    }
-
-    // Optionally include engrams
-    if (opts.engrams) {
-      const matchingEngrams = dedupeBy(
-        searchEngrams(cortex, query, limit),
-        e => JSON.stringify([e.created_at, e.content]),
-      );
-      if (matchingEngrams.length > 0) {
-        console.log(chalk.cyan(`Matching engrams (${matchingEngrams.length}):`));
-        for (const e of matchingEngrams) {
-          const ts = e.created_at.slice(0, 16).replace('T', ' ');
-          console.log(`  ${chalk.gray(ts)} ${e.content}`);
-        }
-        console.log();
-      }
-    }
-
+    // AGT-289: Hook point for daemon recall routing. When the daemon recall RPC
+    // is wired (later phase), call probeDaemon(100) here — if daemon is up,
+    // route to daemon for vector recall; if not, print the degraded note and
+    // fall through to runFtsRecall. Currently FTS is the only path.
+    runFtsRecall(cortex, query, { engrams: opts.engrams, limit });
     closeCortexDb(cortex);
   });
