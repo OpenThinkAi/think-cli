@@ -10,10 +10,10 @@
  * 4. Worker skip: entry not found in L2 — depth drops to 0 without retry.
  * 5. Backfill: scanAndEnqueueUncompacted enqueues raw kind=memory entries that
  *    have no compaction_links row, skipping compactions and capping at 100.
- * 6. Triage gate (AGT-300): entry with high similarity to existing → LLM path runs
- *    (verified via _compactionsRun counter and getStats()).
+ * 6. Triage gate (AGT-300): entry with high similarity to existing → gate passes
+ *    (verified via compactions_passed_triage counter and getStats()).
  * 7. Triage gate (AGT-300): entry orthogonal to all existing → LLM skipped
- *    (verified via _compactionsSkippedTriage counter and getStats()).
+ *    (verified via compactions_skipped_triage counter and getStats()).
  *
  * No real network calls are made — DRY_RUN=true in the module means the SDK is
  * never loaded. The @huggingface/transformers mock keeps the DB layer hermetic.
@@ -180,11 +180,11 @@ describe('CompactionQueue', () => {
 
   // ── AGT-300 triage gate tests ──────────────────────────────────────────────
 
-  it('triage gate: entry with high similarity to existing → LLM path runs (compactions_run incremented)', async () => {
+  it('triage gate: entry with high similarity to existing → gate passes (compactions_passed_triage incremented)', async () => {
     // Two entries share nearly identical embeddings — cosine similarity will
     // be close to 1.0, well above the default threshold of 0.6.
-    // The triage gate should pass through and the compactions_run counter
-    // should be incremented (DRY_RUN=true so no actual LLM call is made).
+    // The triage gate should pass through and the compactions_passed_triage
+    // counter should be incremented (DRY_RUN=true so no actual LLM call is made).
     const { CompactionQueue } = await import('../../../src/daemon/compaction/queue.js');
     const { getCortexDb } = await import('../../../src/db/engrams.js');
 
@@ -192,12 +192,9 @@ describe('CompactionQueue', () => {
     const db = getCortexDb(cortex);
     const ts = new Date().toISOString();
 
-    // Create a unit vector (all entries in this dim at 1/√384 each).
+    // Both entries use the same unit direction (cosine ≈ 1.0, well above 0.6).
     const dim = 384;
-    const norm = Math.sqrt(dim * (1 / dim) * (1 / dim) * dim); // = 1 since already unit
-    // Use a simple constant-direction unit vector.
     const unitA = new Float32Array(dim).fill(1 / Math.sqrt(dim));
-    // Existing entry uses the same direction (cos ≈ 1.0).
     const unitB = new Float32Array(dim).fill(1 / Math.sqrt(dim));
 
     const existingId = 'triage-existing-1';
@@ -216,9 +213,6 @@ describe('CompactionQueue', () => {
       VALUES (?, ?, 'tester', 'new content about same topics', '[]', ?, NULL, 1, 'peer', ?)
     `).run(newId, ts, ts, Buffer.from(unitB.buffer));
 
-    // Dummy norm variable suppression — both are the same value so this is fine.
-    void norm;
-
     const queue = new CompactionQueue();
     queue.enqueue(newId, cortex);
     queue.start();
@@ -230,11 +224,11 @@ describe('CompactionQueue', () => {
 
     expect(queue.getDepth(cortex)).toBe(0);
     const stats = queue.getStats();
-    expect(stats.compactions_run).toBe(1);
+    expect(stats.compactions_passed_triage).toBe(1);
     expect(stats.compactions_skipped_triage).toBe(0);
   });
 
-  it('triage gate: entry orthogonal to existing → LLM skipped (compactions_skipped_triage incremented)', async () => {
+  it('triage gate: entry orthogonal to existing → gate skips, LLM not reached (compactions_skipped_triage incremented)', async () => {
     // The new entry's embedding is orthogonal (cosine ≈ 0) to all existing
     // entries. With default threshold 0.6 the triage gate should skip the LLM.
     const { CompactionQueue } = await import('../../../src/daemon/compaction/queue.js');
@@ -281,7 +275,7 @@ describe('CompactionQueue', () => {
     expect(queue.getDepth(cortex)).toBe(0);
     const stats = queue.getStats();
     expect(stats.compactions_skipped_triage).toBe(1);
-    expect(stats.compactions_run).toBe(0);
+    expect(stats.compactions_passed_triage).toBe(0);
   });
 });
 

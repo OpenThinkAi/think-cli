@@ -95,10 +95,12 @@ export class CompactionQueue {
   private _compactionsSkippedTriage = 0;
 
   /**
-   * Number of compaction jobs that passed the triage gate and triggered an
-   * LLM call. Resets on process restart.
+   * Number of compaction jobs that passed the triage gate (i.e., similarity
+   * was above threshold). In DRY_RUN mode (until AGT-301 ships) no actual LLM
+   * call is made, but the gate was passed — hence "passed_triage" rather than
+   * "ran". Resets on process restart.
    */
-  private _compactionsRun = 0;
+  private _compactionsPassedTriage = 0;
 
   /**
    * Optional pipeline override for testing. When set, `runCompactionPipeline`
@@ -162,12 +164,14 @@ export class CompactionQueue {
    * Values reset on daemon restart.
    *
    * - `compactions_skipped_triage`: jobs where max cosine < threshold → LLM skipped.
-   * - `compactions_run`: jobs that passed the triage gate → LLM was called.
+   * - `compactions_passed_triage`: jobs where max cosine ≥ threshold → gate passed.
+   *   In DRY_RUN mode (until AGT-301 ships), no actual LLM call is made even when
+   *   the gate passes; the counter reflects "passed the gate", not "called the LLM".
    */
-  getStats(): { compactions_skipped_triage: number; compactions_run: number } {
+  getStats(): { compactions_skipped_triage: number; compactions_passed_triage: number } {
     return {
       compactions_skipped_triage: this._compactionsSkippedTriage,
-      compactions_run: this._compactionsRun,
+      compactions_passed_triage: this._compactionsPassedTriage,
     };
   }
 
@@ -262,7 +266,7 @@ export class CompactionQueue {
    *   1. Read entry content + embedding from L2.
    *   2. If the embedding is present, vector-search L2 for the top-K most
    *      similar entries in the same cortex (excluding the entry itself).
-   *   3. If max(candidate.cosine) < triage_threshold, skip the LLM call and
+   *   3. If max(candidate.cosine) < triageThreshold, skip the LLM call and
    *      return { status: "no_compaction_needed" } — the raw entry IS the
    *      current entry (no compacted entry is written).
    *   4. If above threshold (or no embedding yet), fall through to the LLM
@@ -296,7 +300,7 @@ export class CompactionQueue {
     // same cortex is similar enough to warrant compaction. If not, the new
     // entry is net-new on its topic and the LLM call is unnecessary.
     if (embedding !== null) {
-      const threshold = getConfig().compaction?.triage_threshold ?? TRIAGE_THRESHOLD_DEFAULT;
+      const threshold = getConfig().compaction?.triageThreshold ?? TRIAGE_THRESHOLD_DEFAULT;
       const candidates = searchVectors(job.cortex, embedding, TRIAGE_TOP_K + 1);
 
       // Exclude the entry itself from the candidate list (it may appear in the
@@ -318,7 +322,7 @@ export class CompactionQueue {
     }
     // ── End triage gate ───────────────────────────────────────────────────────
 
-    this._compactionsRun++;
+    this._compactionsPassedTriage++;
 
     if (DRY_RUN) {
       // Dry-run: log intent without calling the LLM or writing any output.

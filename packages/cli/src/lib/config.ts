@@ -121,12 +121,11 @@ export interface CompactionConfig {
    * its topic and there is nothing to fold.
    *
    * Range: [−1, 1]. Higher = stricter (more entries skip LLM). The default
-   * 0.6 is estimated to skip ~70% of new memories that have no similar
-   * prior entries.
+   * 0.6 is a rough heuristic; tune after observing your corpus in alpha.
    *
    * Default: 0.6
    */
-  triage_threshold?: number;
+  triageThreshold?: number;
 }
 
 export interface Config {
