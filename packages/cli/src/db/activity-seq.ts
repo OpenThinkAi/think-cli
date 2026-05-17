@@ -13,10 +13,12 @@ import { getCortexDb } from './engrams.js';
  * decay (AGT-291) uses `current_max_seq - entry_seq` as its anchor, so
  * recently-written entries always dominate regardless of wall-clock spread.
  *
- * Implementation: a single SQL UPDATE with an inline ranking subquery so the
- * entire pass is one round-trip to SQLite (O(N log N) sort, O(1) per-row
- * write). On-disk update volume is bounded by the index size — no row-by-row
- * loop, no per-row prepared-statement round-trips.
+ * Implementation: two SQL statements wrapped in a single transaction —
+ * (1) a CTE UPDATE that ranks all live rows by (ts ASC, id ASC) and assigns
+ * their seq in one SQL pass (O(N log N) sort, no per-row round-trips), and
+ * (2) a targeted NULL-out of tombstoned rows so deleted entries never hold
+ * stale seq values. The transaction makes both updates atomic so a concurrent
+ * soft-delete landing between the two statements cannot produce a split state.
  *
  * Idempotent: calling this function twice on an unchanged cortex produces the
  * same values both times.
@@ -28,24 +30,35 @@ import { getCortexDb } from './engrams.js';
 export function recomputeActivitySeq(cortexName: string): void {
   const db = getCortexDb(cortexName);
 
-  // Single-pass UPDATE using a CTE to rank all rows by (ts ASC, id ASC).
-  // ROW_NUMBER() is available in SQLite 3.25+ (Node 22 ships SQLite 3.46+).
-  db.exec(`
-    WITH ranked AS (
-      SELECT
-        id,
-        ROW_NUMBER() OVER (ORDER BY ts ASC, id ASC) AS seq
-      FROM memories
-      WHERE deleted_at IS NULL
-    )
-    UPDATE memories
-    SET activity_seq = ranked.seq
-    FROM ranked
-    WHERE memories.id = ranked.id
-  `);
+  // Wrap both statements in a transaction so a concurrent soft-delete landing
+  // between them cannot leave a deleted row with a stale non-null activity_seq.
+  // node:sqlite uses BEGIN/COMMIT/ROLLBACK (no db.transaction() wrapper).
+  db.exec('BEGIN');
+  try {
+    // CTE ranks all live rows by (ts ASC, id ASC).
+    // ROW_NUMBER() is available in SQLite 3.25+ (Node 22 ships SQLite 3.46+).
+    db.exec(`
+      WITH ranked AS (
+        SELECT
+          id,
+          ROW_NUMBER() OVER (ORDER BY ts ASC, id ASC) AS seq
+        FROM memories
+        WHERE deleted_at IS NULL
+      )
+      UPDATE memories
+      SET activity_seq = ranked.seq
+      FROM ranked
+      WHERE memories.id = ranked.id
+    `);
 
-  // Null-out deleted rows so they don't hold stale seq values.
-  db.exec(`UPDATE memories SET activity_seq = NULL WHERE deleted_at IS NOT NULL`);
+    // Null-out deleted rows so they don't hold stale seq values.
+    db.exec(`UPDATE memories SET activity_seq = NULL WHERE deleted_at IS NOT NULL`);
+
+    db.exec('COMMIT');
+  } catch (err) {
+    db.exec('ROLLBACK');
+    throw err;
+  }
 }
 
 /**
