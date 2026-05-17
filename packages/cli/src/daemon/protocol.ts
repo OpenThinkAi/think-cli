@@ -148,7 +148,7 @@ export async function* parseLineFraming(
     if (typeof obj['method'] !== 'string') {
       sendResponse(socket, {
         request_id: requestId,
-        error: { code: 'parse_error', message: 'missing or invalid "method" field' },
+        error: { code: 'invalid_request', message: 'missing or invalid "method" field' },
       });
       return;
     }
@@ -261,7 +261,7 @@ type MethodHandler = (
 ) => Promise<unknown> | unknown;
 
 const builtinMethods: Map<string, MethodHandler> = new Map([
-  ['ping', async () => 'pong'],
+  ['ping', () => 'pong'],
 ]);
 
 /**

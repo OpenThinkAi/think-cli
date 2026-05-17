@@ -106,6 +106,12 @@ export async function daemonRpc(
         if (typeof parsed !== 'object' || parsed === null) continue;
 
         const obj = parsed as Record<string, unknown>;
+        // NOTE: framing-level errors (payload_too_large, parse_error) arrive
+        // with request_id "" because the line's id is unknown at framing time.
+        // Those responses never match `requestId` and are silently skipped;
+        // the caller sees a timeout rather than the framing error code.
+        // In practice the client always sends well-formed sub-1MB requests,
+        // so this path is unreachable in normal operation.
         if (obj['request_id'] !== requestId) continue;
 
         // This line is our response.
