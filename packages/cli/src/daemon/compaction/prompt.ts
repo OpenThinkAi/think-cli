@@ -3,15 +3,6 @@
  *
  * Exports the verbatim system prompt and a helper to build the messages array
  * ready for the Anthropic SDK call.
- *
- * Source of truth for the system prompt text:
- *   projects/think-v3/compaction-prompt.md  (the "## System prompt" code block)
- *
- * IMPORTANT: If that file changes, COMPACTION_SYSTEM_PROMPT must be re-synced.
- * The test `prompt.test.ts` computes a SHA-256 of COMPACTION_SYSTEM_PROMPT and
- * compares it against a hardcoded sentinel hash — any change to the constant will
- * cause that test to fail loudly.  Update EXPECTED_PROMPT_HASH in the test after
- * intentionally editing this constant.
  */
 
 // ---------------------------------------------------------------------------
@@ -21,11 +12,12 @@
 /**
  * System prompt used by the compaction worker.
  *
- * Derived from `projects/think-v3/compaction-prompt.md` — if that file
- * changes this constant MUST be updated to match. The test suite hashes this
- * constant against a hardcoded sentinel (`EXPECTED_PROMPT_HASH` in prompt.test.ts)
- * and fails loudly if the value drifts.  Update the sentinel after any
- * intentional edit to this constant.
+ * Source of truth: `projects/think-v3/compaction-prompt.md` (the "## System prompt"
+ * code block).  If that file changes this constant MUST be updated to match.
+ *
+ * The test suite hashes this constant against a hardcoded sentinel
+ * (`EXPECTED_PROMPT_HASH` in `prompt.test.ts`) and fails loudly on drift.
+ * After any intentional edit, update `EXPECTED_PROMPT_HASH` in the test.
  */
 export const COMPACTION_SYSTEM_PROMPT =
   `You are the compaction worker for \`think\`, a local agent-memory CLI. You receive ONE new freeform memory entry and up to 10 recent related entries retrieved by embedding similarity. Your job is to (1) rewrite the new entry into a single self-contained line that encodes its current state plus the relevant trajectory, (2) decide which prior entries it supersedes, and (3) extract topic tags.
@@ -141,7 +133,7 @@ export function buildCompactionMessages(
     const topicsList = c.topics.join(', ');
     // Append separator period only when the content doesn't already end with
     // sentence-terminal punctuation to avoid doubled/mismatched punctuation.
-    const terminal = /[.?!;]$/.test(safeContent) ? '' : '.';
+    const terminal = /[.?!]$/.test(safeContent) ? '' : '.';
     return `[id=${c.id}] ${date} — ${safeContent}${terminal} topics: [${topicsList}]`;
   });
 
