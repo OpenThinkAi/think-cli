@@ -178,14 +178,13 @@ export async function runDaemon(options?: Partial<DaemonOptions>): Promise<void>
     process.stdin.on('end', () => shutdown('stdin-close'));
     logger.log('think daemon ready');
   } else {
-    // Non-foreground: DO NOT attach stdin or register an 'end' handler — stdin
-    // may be /dev/null (backgrounded shell) which fires 'end' immediately and
-    // would cause the daemon to exit right after printing its startup line.
-    // The event loop will be kept alive by the socket server (AGT-279).
+    // Non-foreground: socket server not yet wired (AGT-279); the process will
+    // exit immediately after this block because nothing holds the event loop open.
+    // Emit an honest message rather than a false "started" confirmation.
     process.stdout.write(
-      `think daemon started (pid=${process.pid}). Logs: ${getDaemonLogPath()}\n`,
+      `think daemon: socket not yet bound — use --foreground to run in development mode (socket binding lands in AGT-279).\n`,
     );
-    logger.log('think daemon ready');
+    logger.log('think daemon ready (no socket — exiting)');
   }
 }
 

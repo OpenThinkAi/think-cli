@@ -68,9 +68,9 @@ describe('daemon module', () => {
     // stdin must NOT be resumed in non-foreground mode (stdin may be /dev/null).
     expect(stdinResumeSpy).not.toHaveBeenCalled();
 
-    // A confirmation message should appear on stdout.
+    // An honest "not yet" message should appear on stdout (no false "started" claim).
     const stdoutOutput = stdoutSpy.mock.calls.map(([msg]) => msg as string).join('');
-    expect(stdoutOutput).toMatch(/think daemon started/);
-    expect(stdoutOutput).toMatch(/pid=\d+/);
+    expect(stdoutOutput).toMatch(/think daemon/);
+    expect(stdoutOutput).toMatch(/--foreground/);
   });
 });

@@ -27,5 +27,5 @@ const startSubcommand = new Command('start')
   });
 
 export const daemonCommand = new Command('daemon')
-  .description('Manage the think resident daemon process')
+  .description('Start the think resident daemon process (stop/status land in AGT-279+)')
   .addCommand(startSubcommand);
