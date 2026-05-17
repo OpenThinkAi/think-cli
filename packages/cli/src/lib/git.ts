@@ -6,8 +6,10 @@ import { getConfig } from './config.js';
 import { validateRepoUrl, repoUrlsEquivalent } from './repo-url.js';
 
 // Sanitized environment for git subprocesses — strips variables that could
-// alter git behavior (hook injection, credential interception, path redirection)
-function safeGitEnv(): NodeJS.ProcessEnv {
+// alter git behavior (hook injection, credential interception, path redirection).
+// Exported so async git helpers in other modules (e.g., push-debouncer.ts) can
+// reuse the canonical env-prep logic without duplicating it.
+export function safeGitEnv(): NodeJS.ProcessEnv {
   const env = { ...process.env };
   // Prevent attacker-controlled env vars from influencing git operations
   delete env.GIT_SSH_COMMAND;

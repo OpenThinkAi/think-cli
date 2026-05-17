@@ -36,6 +36,7 @@ import { getCortexDb } from '../db/engrams.js';
 import { assignNextSeq } from '../db/activity-seq.js';
 import embed, { EMBEDDING_MODEL_NAME } from '../lib/embed.js';
 import { compactionQueue } from './compaction/queue.js';
+import { pushDebouncer } from './push-debouncer.js';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -69,6 +70,12 @@ export interface SyncParams {
   content: string;
   kind: EntryKind;
   topics?: string[];
+  /**
+   * When true, the push-debouncer schedules the local git commit but skips
+   * the remote push for this write cycle. Intended for AGT-293 offline mode
+   * and integration tests that run without a remote.
+   */
+  skipPush?: boolean;
 }
 
 /**
@@ -95,7 +102,7 @@ export interface SyncResult {
  * Throws `Error` with a user-readable message that names the offending field.
  */
 function validateSyncParams(raw: Record<string, unknown>): SyncParams {
-  const { cortex, content, kind, topics } = raw;
+  const { cortex, content, kind, topics, skipPush } = raw;
 
   if (typeof cortex !== 'string' || cortex.length === 0) {
     throw new Error("invalid field 'cortex': must be a non-empty string");
@@ -142,6 +149,7 @@ function validateSyncParams(raw: Record<string, unknown>): SyncParams {
     content,
     kind: kind as EntryKind,
     topics: parsedTopics,
+    skipPush: skipPush === true,
   };
 }
 
@@ -255,7 +263,7 @@ function appendToL1(cortexDir: string, line: string): void {
 export async function handleSync(params: Record<string, unknown>): Promise<SyncResult> {
   // --- validation ---
   // validateSyncParams throws Error with a user-readable message on failure.
-  const { cortex, content, kind, topics } = validateSyncParams(params);
+  const { cortex, content, kind, topics, skipPush } = validateSyncParams(params);
 
   if (!cortexExists(cortex)) {
     throw new Error(`cortex '${cortex}' not found; run: think cortex create ${cortex}`);
@@ -350,6 +358,11 @@ export async function handleSync(params: Record<string, unknown>): Promise<SyncR
   if (kind === 'memory') {
     compactionQueue.enqueue(id, safeCortex);
   }
+
+  // Schedule a debounced git commit + push for this cortex (AGT-309).
+  // `skipPush` suppresses the remote push when the caller is offline or
+  // running integration tests that have no configured remote (AGT-293).
+  pushDebouncer.notify(safeCortex, skipPush);
 
   // Build advisory warnings for fields accepted but not yet L2-queryable.
   const warnings: string[] = [];
