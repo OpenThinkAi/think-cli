@@ -12,6 +12,11 @@
  *     search up to ~100K vectors. Opt-in via `think config set search.engine
  *     sqlite-vec`. Falls back to brute-force if the extension load fails
  *     (Windows / unsupported Node binary / missing native module).
+ *
+ * Both backends return similarity on the cosine scale [−1, 1], higher = more
+ * similar. For the sqlite-vec backend, vec0 returns Euclidean (L2) distance;
+ * because stored embeddings are L2-normalized unit vectors, the conversion is
+ * `cosine_similarity = 1 − dist² / 2`.
  */
 
 import type { DatabaseSync } from 'node:sqlite';
@@ -21,6 +26,7 @@ import { getConfig } from './config.js';
 
 export interface VectorSearchResult {
   id: string;
+  /** Cosine similarity in [−1, 1]. Higher = more similar. */
   similarity: number;
 }
 
@@ -50,13 +56,6 @@ function searchBruteForce(
 const sqliteVecLoadCache = new Map<DatabaseSync, boolean>();
 
 /**
- * Per-db backfill flag. Once the one-time backfill runs for a DB instance we
- * never re-scan the memories table. This avoids an O(n) full-table scan on
- * every subsequent query.
- */
-const backfilledDbs = new Set<DatabaseSync>();
-
-/**
  * Attempts to load sqlite-vec into `db`. Returns true on success, false on
  * failure (with a warning logged to stderr). Results are cached per db
  * instance so the load attempt only happens once per process per DB.
@@ -82,27 +81,29 @@ function tryLoadSqliteVec(db: DatabaseSync): boolean {
 }
 
 /**
- * Ensures the vec0 virtual table exists and is backfilled from the memories
- * table. The backfill runs exactly once per DB instance per process — tracked
- * via `backfilledDbs` so subsequent calls are no-ops (no repeated O(n) scan).
- * Dimension is an integer derived from the query vector length.
+ * Ensures the vec0 virtual table exists and is up-to-date. Re-syncs on every
+ * call via `INSERT OR IGNORE` so newly inserted memories are always visible to
+ * KNN search (the brute-force path does a fresh full-table scan every call;
+ * this keeps the two backends consistent). At <50K vectors the resync scan is
+ * fast enough to be acceptable in the CLI's usage pattern.
+ *
+ * Note: `dim` must be a non-negative integer (it comes from `Float32Array.length`).
  */
 function ensureVecTable(db: DatabaseSync, dim: number): void {
   db.exec(
-    `CREATE VIRTUAL TABLE IF NOT EXISTS memories_vec USING vec0(embedding float[${Math.trunc(dim)}])`,
+    `CREATE VIRTUAL TABLE IF NOT EXISTS memories_vec USING vec0(embedding float[${dim}])`,
   );
 
-  if (backfilledDbs.has(db)) return;
-
-  // One-time backfill: catch any rows that existed before the virtual table
-  // was created. The vec0 rowid corresponds to memories.rowid.
+  // Sync any rows not yet in the virtual table. Runs on every search call so
+  // that memories inserted after table creation are immediately visible.
+  // INSERT OR IGNORE is a no-op for rows already present, so this is safe to
+  // call repeatedly.
   db.exec(`
     INSERT OR IGNORE INTO memories_vec(rowid, embedding)
     SELECT rowid, embedding
     FROM memories
     WHERE embedding IS NOT NULL AND deleted_at IS NULL
   `);
-  backfilledDbs.add(db);
 }
 
 function searchSqliteVec(
@@ -123,6 +124,9 @@ function searchSqliteVec(
   // can be smaller than `limit` when deleted rows dominate the top candidates.
   const fetchK = limit * 2;
 
+  // vec0 returns Euclidean (L2) distance for `float` columns. For L2-normalized
+  // unit vectors: cosine_similarity = 1 − dist² / 2. This ensures `.similarity`
+  // is on the same cosine scale [−1, 1] as the brute-force backend.
   const rows = db.prepare(`
     SELECT m.id, mv.distance
     FROM memories_vec mv
@@ -138,7 +142,7 @@ function searchSqliteVec(
 
   return rows
     .slice(0, limit)
-    .map((r) => ({ id: r.id, similarity: 1 - r.distance }));
+    .map((r) => ({ id: r.id, similarity: 1 - (r.distance * r.distance) / 2 }));
 }
 
 // ─── public API ───────────────────────────────────────────────────────────────

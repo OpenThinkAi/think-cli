@@ -19,6 +19,11 @@ const ALLOWED_KEYS = new Set([
   'search.engine',
 ]);
 
+/** Keys whose values must be one of a known enum. Checked at set time. */
+const ENUM_KEYS: Record<string, string[]> = {
+  'search.engine': ['brute-force', 'sqlite-vec'],
+};
+
 export const configCommand = new Command('config')
   .description('View or update think configuration');
 
@@ -37,6 +42,13 @@ configCommand.addCommand(new Command('set')
     if (!ALLOWED_KEYS.has(key)) {
       console.error(chalk.red(`Unknown config key: ${key}`));
       console.error(chalk.dim(`Allowed keys: ${[...ALLOWED_KEYS].join(', ')}`));
+      process.exit(1);
+    }
+
+    const allowed = ENUM_KEYS[key];
+    if (allowed !== undefined && !allowed.includes(value)) {
+      console.error(chalk.red(`Invalid value for ${key}: ${JSON.stringify(value)}`));
+      console.error(chalk.dim(`Allowed values: ${allowed.join(', ')}`));
       process.exit(1);
     }
 
