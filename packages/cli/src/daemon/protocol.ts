@@ -172,9 +172,9 @@ export async function* parseLineFraming(
       const nl = chunk.indexOf(0x0a /* '\n' */, offset);
 
       if (nl === -1) {
-        // No newline in this chunk — accumulate.
+        // No newline in this chunk — accumulate (or discard if already over limit).
         const remaining = chunk.subarray(offset);
-        if (bufferedBytes + remaining.length > MAX_LINE_BYTES) {
+        if (tooLarge || bufferedBytes + remaining.length > MAX_LINE_BYTES) {
           if (!tooLarge) {
             // Send the error once per oversized line.
             // We don't know the request_id because the line isn't complete yet.
@@ -184,7 +184,7 @@ export async function* parseLineFraming(
             });
             tooLarge = true;
           }
-          // Drain — don't accumulate; just discard.
+          // Drain — don't accumulate; just discard bytes belonging to this line.
           chunks.length = 0;
           bufferedBytes = 0;
         } else {
@@ -259,6 +259,9 @@ const builtinMethods: Map<string, MethodHandler> = new Map([
   ['ping', async () => 'pong'],
 ]);
 
+/** Sentinel empty map — reused across calls so no allocation per dispatch. */
+const EMPTY_METHODS = new Map<string, MethodHandler>();
+
 /**
  * Dispatch one parsed request to the appropriate handler and write the
  * response back on `socket`.
@@ -269,7 +272,7 @@ const builtinMethods: Map<string, MethodHandler> = new Map([
 export async function dispatchRequest(
   socket: net.Socket,
   request: DaemonRequest,
-  methods: Map<string, MethodHandler> = new Map(),
+  methods: Map<string, MethodHandler> = EMPTY_METHODS,
 ): Promise<void> {
   const handler = methods.get(request.method) ?? builtinMethods.get(request.method);
 
