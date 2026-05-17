@@ -125,6 +125,71 @@ describe('migration v11 — embedding columns (AGT-269)', () => {
   });
 });
 
+describe('migration v13 — activity_seq column (AGT-270)', () => {
+  it('adds activity_seq column to memories', () => {
+    const db = new DatabaseSync(':memory:');
+    runMigrations(db, migrations);
+
+    const cols = db.prepare('PRAGMA table_info(memories)').all() as { name: string }[];
+    expect(cols.some(c => c.name === 'activity_seq')).toBe(true);
+
+    db.close();
+  });
+
+  it('creates idx_entries_activity_seq index', () => {
+    const db = new DatabaseSync(':memory:');
+    runMigrations(db, migrations);
+
+    const indexes = db.prepare(
+      "SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'idx_entries_activity_seq'"
+    ).all() as { name: string }[];
+    expect(indexes).toHaveLength(1);
+
+    db.close();
+  });
+
+  it('migration is idempotent — re-running does not throw', () => {
+    const db = new DatabaseSync(':memory:');
+    runMigrations(db, migrations);
+    expect(() => runMigrations(db, migrations)).not.toThrow();
+    db.close();
+  });
+
+  it('inserts a row without activity_seq (null) and reads it back as null', () => {
+    const db = new DatabaseSync(':memory:');
+    runMigrations(db, migrations);
+
+    db.prepare(
+      `INSERT INTO memories (id, ts, author, content, source_ids, created_at, sync_version)
+       VALUES ('no-seq', '2026-05-17T00:00:00Z', 'test', 'no seq', '[]', '2026-05-17T00:00:00Z', 1)`,
+    ).run();
+
+    const row = db.prepare('SELECT activity_seq FROM memories WHERE id = ?').get('no-seq') as {
+      activity_seq: number | null;
+    };
+    expect(row.activity_seq).toBeNull();
+
+    db.close();
+  });
+
+  it('stores and round-trips an explicit activity_seq value', () => {
+    const db = new DatabaseSync(':memory:');
+    runMigrations(db, migrations);
+
+    db.prepare(
+      `INSERT INTO memories (id, ts, author, content, source_ids, created_at, sync_version, activity_seq)
+       VALUES ('with-seq', '2026-05-17T00:00:00Z', 'test', 'with seq', '[]', '2026-05-17T00:00:00Z', 1, 42)`,
+    ).run();
+
+    const row = db.prepare('SELECT activity_seq FROM memories WHERE id = ?').get('with-seq') as {
+      activity_seq: number | null;
+    };
+    expect(row.activity_seq).toBe(42);
+
+    db.close();
+  });
+});
+
 describe('migration v7 backfill', () => {
   // Exercises the actual migration runner: open a fresh DB pinned at v6,
   // write a row (no origin_peer_id column exists yet), then run the full

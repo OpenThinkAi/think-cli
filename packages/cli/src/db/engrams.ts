@@ -294,6 +294,22 @@ export const migrations: Migration[] = [
       `);
     },
   },
+  {
+    version: 13,
+    up: (db) => {
+      // Add activity_seq column for v3 recency-weighted vector recall. The
+      // value is a stable integer position computed by ORDER BY ts ASC, id ASC
+      // within each cortex — stable across peers because it derives from L1
+      // contents, not local arrival time. Nullable so existing rows and new
+      // writes before the reindex backfill runs (AGT-292) are unaffected.
+      const cols = db.prepare('PRAGMA table_info(memories)').all() as { name: string }[];
+      if (!cols.some(c => c.name === 'activity_seq')) {
+        db.exec('ALTER TABLE memories ADD COLUMN activity_seq INTEGER;');
+      }
+      // Descending index for fast "give me the most recent N" queries.
+      db.exec('CREATE INDEX IF NOT EXISTS idx_entries_activity_seq ON memories(activity_seq DESC);');
+    },
+  },
 ];
 
 /** Returns the per-cortex SQLite connection (holds engrams, memories, longterm_summary, and sync_cursors tables) */
