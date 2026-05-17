@@ -27,7 +27,8 @@
  *   score = cosine × exp(-decay × (max_seq - entry_seq))
  *
  * `max_seq` is MAX(activity_seq) for the cortex — a single cheap query served by
- * the descending idx_entries_activity_seq index (AGT-270). `decay` defaults to
+ * the descending idx_entries_activity_seq index on the memories table (AGT-270 /
+ * migration 13 in engrams.ts). `decay` defaults to
  * 0.05, which gives ~50% weight at seq_distance=14 and ~25% at seq_distance=28,
  * so the most recent ~20 entries always dominate regardless of corpus age or
  * wall-clock spread. Tunable via config.recall.recencyDecay.
@@ -227,11 +228,12 @@ export async function handleRecall(
   const cfg = getConfig();
   const decay = cfg.recall?.recencyDecay ?? DEFAULT_DECAY;
 
-  // ── max_seq (one query, served by descending idx_entries_activity_seq) ─────
-  // Used as the "current" anchor for recency distance. When the column is absent
-  // (pre-migration DBs) or all rows have NULL activity_seq (not yet backfilled),
-  // falls back to null and recency weighting is skipped (score = cosine, matching
-  // the pre-AGT-291 behavior).
+  // ── max_seq (one query on memories.activity_seq) ──────────────────────────
+  // Served by the descending idx_entries_activity_seq index on memories (see
+  // migration 13 in db/engrams.ts). Used as the "current" anchor for recency
+  // distance. When the column is absent (pre-migration DBs) or all rows have NULL
+  // activity_seq (not yet backfilled via AGT-292), falls back to null and recency
+  // weighting is skipped (score = cosine, matching the pre-AGT-291 behavior).
   let maxSeq: number | null = null;
   if (hasActivitySeq) {
     const seqRow = db.prepare(
