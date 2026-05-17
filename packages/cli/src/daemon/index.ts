@@ -178,7 +178,7 @@ export async function runDaemon(options: DaemonOptions): Promise<void> {
     handleConnection(socket);
   });
 
-  async function bindServer(): Promise<void> {
+  function bindServer(): Promise<void> {
     return new Promise((resolve, reject) => {
       function handleListenError(err: NodeJS.ErrnoException): void {
         if (err.code !== 'EADDRINUSE') {
