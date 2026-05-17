@@ -211,16 +211,26 @@ describe('handleRecall (AGT-285)', () => {
 
   // ── error cases ──────────────────────────────────────────────────────────
 
-  it('throws on missing cortex param', async () => {
+  it('scope="active" throws when cortex param absent and no active cortex configured', async () => {
+    // Without a cortex param AND scope="active", the handler must throw.
+    // The default scope is "accessible" (federated), so we explicitly set active.
     await expect(
-      handleRecall({ query: 'test' }),
-    ).rejects.toThrow(/recall:.*cortex/i);
+      handleRecall({ query: 'test', scope: 'active' }),
+    ).rejects.toThrow(/recall:.*scope.*active.*cortex/i);
   });
 
-  it('throws on empty cortex param', async () => {
+  it('scope="active" throws when cortex param is empty string and no active cortex in config', async () => {
+    // Empty string with scope="active" falls back to config; config has no active
+    // cortex in the test environment → must throw.
     await expect(
-      handleRecall({ cortex: '', query: 'test' }),
-    ).rejects.toThrow(/recall:.*cortex/i);
+      handleRecall({ cortex: '', query: 'test', scope: 'active' }),
+    ).rejects.toThrow(/recall:.*scope.*active.*cortex/i);
+  });
+
+  it('throws on invalid scope value', async () => {
+    await expect(
+      handleRecall({ cortex: CORTEX, query: 'test', scope: 'bogus' }),
+    ).rejects.toThrow(/recall:.*scope/i);
   });
 
   it('throws on missing query param', async () => {
