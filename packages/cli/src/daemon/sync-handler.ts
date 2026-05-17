@@ -362,7 +362,7 @@ export async function handleSync(params: Record<string, unknown>): Promise<SyncR
   // Schedule a debounced git commit + push for this cortex (AGT-309).
   // `skipPush` suppresses the remote push when the caller is offline or
   // running integration tests that have no configured remote (AGT-293).
-  pushDebouncer.notify(safeCortex, skipPush ?? false);
+  pushDebouncer.notify(safeCortex, skipPush);
 
   // Build advisory warnings for fields accepted but not yet L2-queryable.
   const warnings: string[] = [];

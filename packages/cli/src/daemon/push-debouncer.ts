@@ -10,18 +10,22 @@
  * - Pending-entry counting: every `notify()` increments the pending count;
  *   the push sequence reads and resets it to build the commit message
  *   "auto: N entries via daemon <ISO>".
- * - Off-loop execution: the git operations run inside a new Promise resolved
- *   via setImmediate, keeping them off the daemon's synchronous event loop
- *   so they cannot block recall queries.
+ * - Off-loop execution: the git operations are deferred via `setImmediate`
+ *   so the sync handler's hot path returns immediately without waiting for
+ *   the first I/O syscall to dispatch.
  * - No infinite retry: on push failure the error is logged and the counter
  *   is reset. The next `notify()` call (triggered by the next write) will
  *   fire a fresh debounce cycle.
  * - skipPush flag (AGT-293): callers can suppress the push for this
- *   cortex on the current cycle (e.g., during offline tests).
+ *   cortex on the current cycle (e.g., during offline operation).
+ *   Note: when multiple `notify()` calls arrive within the debounce window
+ *   the last call's `skipPush` value wins, since each call cancels and
+ *   re-creates the timer with a fresh closure.
  */
 
 import { execFile } from 'node:child_process';
 import { getRepoPath, sanitizeName } from '../lib/paths.js';
+import { safeGitEnv } from '../lib/git.js';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -45,30 +49,18 @@ interface CortexState {
 // Helpers
 // ---------------------------------------------------------------------------
 
-/** Run a git subcommand in a given directory, returning stdout. */
+/** Run a git subcommand asynchronously in the given directory. */
 function runGitAsync(args: string[], cwd: string): Promise<string> {
   return new Promise((resolve, reject) => {
-    // Inherit the same security posture as lib/git.ts: disable hooks,
-    // fsmonitor, and strip env vars that alter git behaviour.
-    const safeEnv: NodeJS.ProcessEnv = { ...process.env };
-    delete safeEnv.GIT_SSH_COMMAND;
-    delete safeEnv.GIT_PROXY_COMMAND;
-    delete safeEnv.GIT_ASKPASS;
-    delete safeEnv.GIT_CONFIG_GLOBAL;
-    delete safeEnv.GIT_CONFIG_SYSTEM;
-    delete safeEnv.GIT_WORK_TREE;
-    delete safeEnv.GIT_DIR;
-    delete safeEnv.GIT_EXEC_PATH;
-    safeEnv.GIT_CONFIG_NOSYSTEM = '1';
-    safeEnv.GIT_TEMPLATE_DIR = '';
-
+    // Apply the canonical security posture from lib/git.ts: disable hooks,
+    // fsmonitor, and use the shared env-strip helper.
     const fullArgs = [
       '-c', 'core.hooksPath=/dev/null',
       '-c', 'core.fsmonitor=',
       ...args,
     ];
 
-    execFile('git', fullArgs, { cwd, encoding: 'utf-8', env: safeEnv }, (err, stdout, stderr) => {
+    execFile('git', fullArgs, { cwd, encoding: 'utf-8', env: safeGitEnv() }, (err, stdout, stderr) => {
       if (err) {
         const message = (err instanceof Error ? err.message : String(err)) +
           (stderr ? `\n${stderr}` : '');
@@ -119,12 +111,15 @@ export class PushDebouncer {
 
   /**
    * Notify the debouncer that a write occurred for the given cortex.
-   * Each call resets the 500ms timer and increments the pending-entry counter.
-   * When the timer fires, one `git add + commit + push` is executed.
+   * Each call resets the debounce timer and increments the pending-entry
+   * counter. When the timer fires, one `git add + commit + push` sequence
+   * is executed for all writes accumulated in the window.
    *
-   * @param cortex    Cortex name (must be safe — validated by sanitizeName).
+   * @param cortex    Cortex name (validated via sanitizeName).
    * @param skipPush  When true, skip the remote push (local commit still fires).
-   *                  Used by AGT-293 offline mode.
+   *                  Used by AGT-293 offline mode. In a burst where multiple
+   *                  calls arrive within the debounce window, the last call's
+   *                  `skipPush` value takes effect (last-write-wins).
    */
   notify(cortex: string, skipPush = false): void {
     let safeCortex: string;
@@ -143,30 +138,24 @@ export class PushDebouncer {
 
     state.pendingCount += 1;
 
-    // Cancel any existing timer (the burst coalesces into one push).
+    // Cancel any existing timer so the burst coalesces into one push.
     if (state.timer !== null) {
       clearTimeout(state.timer);
       state.timer = null;
     }
 
-    // Capture state for the closure at fire time.
-    const capturedState = state;
-
-    capturedState.timer = setTimeout(() => {
-      capturedState.timer = null;
+    state.timer = setTimeout(() => {
+      state!.timer = null;
 
       // Take the current count and reset it so overlapping `notify()` calls
       // that land while the push is in-flight create a fresh pending batch.
-      const count = capturedState.pendingCount;
-      capturedState.pendingCount = 0;
+      const count = state!.pendingCount;
+      state!.pendingCount = 0;
 
-      // Execute off the event loop so git I/O doesn't block recall queries.
+      // Defer execution so the sync handler's return path is not blocked by
+      // the first git I/O syscall dispatch.
       setImmediate(() => {
-        new Promise<void>(resolve => {
-          this._executePush(safeCortex, count, skipPush)
-            .then(resolve)
-            .catch(resolve); // errors are logged inside _executePush; never reject
-        });
+        void this._executePush(safeCortex, count, skipPush);
       });
     }, this.debounceMs);
   }
@@ -194,15 +183,14 @@ export class PushDebouncer {
       // Stage all changes in the cortex sub-directory.
       await git(['add', '--', safeCortex], repoPath);
 
-      // Check if there is anything to commit.
+      // Detect whether there is anything staged. `diff --cached --quiet`
+      // exits 0 when the staged area is clean, non-zero when changes exist.
       let hasStagedChanges: boolean;
       try {
         await git(['diff', '--cached', '--quiet', '--', safeCortex], repoPath);
-        // Exit code 0 means no changes.
-        hasStagedChanges = false;
+        hasStagedChanges = false; // exit 0 → nothing staged
       } catch {
-        // Non-zero exit code means there are staged changes.
-        hasStagedChanges = true;
+        hasStagedChanges = true; // non-zero exit → staged changes present
       }
 
       if (!hasStagedChanges) {
@@ -218,6 +206,7 @@ export class PushDebouncer {
         return;
       }
 
+      // `--` before the branch name separates it from any preceding options.
       await git(['push', 'origin', '--', safeCortex], repoPath);
       log(`pushed cortex '${safeCortex}' to origin`);
     } catch (err) {
