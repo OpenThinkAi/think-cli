@@ -45,6 +45,7 @@ import embed from '../lib/embed.js';
 import { getCortexDb } from '../db/engrams.js';
 import { searchVectors } from '../lib/search-vectors.js';
 import { getConfig } from '../lib/config.js';
+import { listLocalBranches } from '../lib/git.js';
 
 // How many extra candidates to fetch from sqlite-vec before JS rerank.
 // 5× ensures the reranked window is wide enough that a very recent entry
@@ -60,6 +61,30 @@ const DEFAULT_DECAY = 0.05;
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
+
+/**
+ * Federation scope for the `recall` RPC (AGT-306).
+ *
+ * "active"     — query only the caller's active cortex. Uses the `cortex`
+ *                param if provided; falls back to `config.cortex.active`.
+ *                Throws if neither is set.
+ *
+ * "accessible" — (default) fan out to all accessible cortexes enumerated by
+ *                `listLocalBranches()` (local git refs, no network). If a `cortex`
+ *                param is also provided
+ *                alongside this scope, the federation fan-out is **skipped**
+ *                and only that one cortex is queried — the `scope` param is
+ *                effectively treated as "active". Use `scope="active"` for
+ *                clarity when querying a single named cortex.
+ *
+ * "all"        — ALPHA: reserved for future remote-peer federation. Currently
+ *                behaves **identically to "accessible"** (local cortexes only).
+ *                When remote federation ships, "all" will **automatically**
+ *                include remote peers that are not locally cloned — callers
+ *                using "all" today will gain remote results without re-opting-in.
+ *                Use "accessible" if you want to pin to local-only behavior.
+ */
+export type RecallScope = 'active' | 'accessible' | 'all';
 
 export interface RecallEntry {
   id: string;
@@ -133,26 +158,27 @@ function isValidIso8601(s: string): boolean {
 }
 
 // ---------------------------------------------------------------------------
-// Handler
+// Shared param parsing (avoids duplication between single-cortex and federated paths)
 // ---------------------------------------------------------------------------
 
 /**
- * Implements the `recall` daemon method.
- *
- * @param params  Validated incoming params from the protocol dispatcher.
- * @returns       Array of {@link RecallEntry} sorted by recency-weighted score desc.
+ * Parsed and validated recall params (excluding cortex/scope, which are
+ * resolved by the top-level dispatcher before reaching the inner functions).
  */
-export async function handleRecall(
-  params: Record<string, unknown>,
-): Promise<RecallEntry[]> {
-  // ── validate params ────────────────────────────────────────────────────────
+interface ParsedRecallParams {
+  query: string;
+  limit: number;
+  kind: string | undefined;
+  topic: string | undefined;
+  since: string | undefined;
+  decay: number;
+}
 
-  const cortexNameRaw = params['cortex'];
-  if (typeof cortexNameRaw !== 'string' || cortexNameRaw.trim().length === 0) {
-    throw new Error('recall: missing or empty required param "cortex"');
-  }
-  const cortexName = cortexNameRaw.trim();
-
+/**
+ * Validate and extract the common recall params from the raw params map.
+ * Throws on any validation error.
+ */
+function parseRecallParams(params: Record<string, unknown>): ParsedRecallParams {
   const queryRaw = params['query'];
   if (typeof queryRaw !== 'string' || queryRaw.trim().length === 0) {
     throw new Error('recall: missing or empty required param "query"');
@@ -192,18 +218,129 @@ export async function handleRecall(
   }
   const since = typeof sinceRaw === 'string' ? sinceRaw : undefined;
 
-  // ── open cortex DB ─────────────────────────────────────────────────────────
+  const cfg = getConfig();
+  const decay = cfg.recall?.recencyDecay ?? DEFAULT_DECAY;
+
+  return { query, limit, kind, topic, since, decay };
+}
+
+// ---------------------------------------------------------------------------
+// Scope validation (module-scope constant, not per-call allocation)
+// ---------------------------------------------------------------------------
+
+const VALID_SCOPES: ReadonlySet<string> = new Set(['active', 'accessible', 'all']);
+
+// ---------------------------------------------------------------------------
+// Handler
+// ---------------------------------------------------------------------------
+
+/**
+ * Implements the `recall` daemon method — AGT-285 / AGT-291 / AGT-306.
+ *
+ * When `scope` is "accessible" or "all" (the default), this function fans out
+ * to all locally-cloned cortexes in parallel and merges the results.
+ * When `scope` is "active" (or when a `cortex` param is provided alongside
+ * scope="accessible"), it queries a single cortex.
+ *
+ * @param params  Validated incoming params from the protocol dispatcher.
+ * @returns       Array of {@link RecallEntry} sorted by recency-weighted score desc.
+ */
+export async function handleRecall(
+  params: Record<string, unknown>,
+): Promise<RecallEntry[]> {
+  // ── validate scope ─────────────────────────────────────────────────────────
+  const scopeRaw = params['scope'];
+  if (scopeRaw !== undefined && (typeof scopeRaw !== 'string' || !VALID_SCOPES.has(scopeRaw))) {
+    throw new Error(
+      `recall: 'scope' must be one of "active", "accessible", or "all", got ${JSON.stringify(scopeRaw)}`,
+    );
+  }
+  // Track whether scope was explicitly provided by the caller vs. defaulted.
+  // Used below to avoid noisy warnings for legacy callers that pass `cortex`
+  // without knowing about the new `scope` parameter.
+  const scopeExplicit = scopeRaw !== undefined;
+  const scope: RecallScope = (scopeRaw as RecallScope | undefined) ?? 'accessible';
+
+  // ── route by scope + cortex ────────────────────────────────────────────────
+  const cortexNameRaw = params['cortex'];
+  // cortex is optional when scope is "accessible" or "all" (fan-out to all
+  // local cortexes). It is required (or config.cortex.active is used as
+  // fallback) when scope="active". If cortex is provided with
+  // scope="accessible"/"all", it short-circuits the fan-out: only that
+  // cortex is queried. Use scope="active" for clarity in single-cortex usage.
+  if (scope === 'active') {
+    if (typeof cortexNameRaw !== 'string' || cortexNameRaw.trim().length === 0) {
+      // Fall back to the active cortex from config when cortex param is absent.
+      const cfg = getConfig();
+      const activeCortex = cfg.cortex?.active;
+      if (!activeCortex || activeCortex.trim().length === 0) {
+        throw new Error(
+          'recall: scope="active" requires either a "cortex" param or a configured active cortex (cortex.active in config)',
+        );
+      }
+      return recallSingleCortex(activeCortex.trim(), params);
+    }
+    return recallSingleCortex(cortexNameRaw.trim(), params);
+  }
+
+  // scope is "accessible" or "all"
+  if (typeof cortexNameRaw === 'string' && cortexNameRaw.trim().length > 0) {
+    // Explicit cortex overrides federation — only that cortex is queried.
+    // Warn only when the caller explicitly set scope (not when they omitted
+    // it and got the "accessible" default), so legacy callers that pass
+    // `cortex` without the new scope param are not noisy.
+    if (scopeExplicit) {
+      process.stderr.write(
+        `think recall: scope="${scope}" with explicit cortex="${cortexNameRaw.trim()}" — federation overridden, querying only that cortex. Use scope="active" for clarity.\n`,
+      );
+    }
+    return recallSingleCortex(cortexNameRaw.trim(), params);
+  }
+
+  // ── federated recall ───────────────────────────────────────────────────────
+  // scope="all" is reserved for future remote-peer federation. For the alpha
+  // release, "all" behaves identically to "accessible" (local cortexes only).
+  // Emit a warning so callers can see the ALPHA/no-op status at runtime.
+  // When remote federation ships, "all" will automatically include remote peers
+  // not locally cloned — callers using "all" today will gain remote results
+  // without re-opting-in. Use "accessible" to pin to local-only behavior.
+  if (scope === 'all') {
+    process.stderr.write(
+      'think recall: scope="all" is ALPHA — currently behaves identically to "accessible" (local cortexes only). Remote-peer federation is not yet implemented.\n',
+    );
+  }
+  return recallFederated(params);
+}
+
+// ---------------------------------------------------------------------------
+// recallOneCortexWithVec — low-level per-cortex vector query
+// ---------------------------------------------------------------------------
+
+/**
+ * Low-level single-cortex query given a pre-computed embedding vector.
+ * Called by `recallSingleCortex` and `recallFederated` (one call per cortex
+ * in the fan-out). Not called directly by `handleRecall`.
+ *
+ * `limit` is the *user-facing* limit — this function applies the
+ * RECENCY_OVERFETCH_FACTOR internally when needed. Callers must NOT
+ * pre-multiply `limit`; doing so would square the overfetch factor and
+ * contradict the <100ms latency target.
+ */
+async function recallOneCortexWithVec(
+  cortexName: string,
+  queryVec: Float32Array,
+  limit: number,
+  kind: string | undefined,
+  topic: string | undefined,
+  since: string | undefined,
+  decay: number,
+): Promise<RecallEntry[]> {
   // getCortexDb calls getIndexDbPath → sanitizeName, which rejects `/`, `\`, and
   // `..` sequences. Path-traversal attempts are caught here with a clear error.
-
   const db = getCortexDb(cortexName);
-
-  // ── discover optional columns (cached per DB instance) ─────────────────────
-
   const { hasKind, hasTopics, hasActivitySeq } = getColumnInfo(db);
 
-  // Fail fast if the caller requested a filter against a column that doesn't
-  // exist yet. Silent pass-through is worse than an explicit error.
+  // Fail fast if the caller requested a filter against a column that doesn't exist.
   if (kind !== undefined && !hasKind) {
     throw new Error(
       `recall: 'kind' filter requested but the memories table in cortex "${cortexName}" does not have a 'kind' column`,
@@ -215,25 +352,10 @@ export async function handleRecall(
     );
   }
 
-  // ── embed query ────────────────────────────────────────────────────────────
-
-  const queryVec = await embed(query);
-
-  // ── recency decay config ───────────────────────────────────────────────────
-  // score = cosine × exp(-decay × (max_seq - entry_seq))
-  // Default 0.05 → ~50% weight at seq_distance=14, ~25% at seq_distance=28.
-  // Set recencyDecay=0 in config to disable recency weighting (exp(0)=1 for all
-  // rows, so score reduces to cosine — useful for deterministic testing or
-  // cosine-only recall behavior).
-  const cfg = getConfig();
-  const decay = cfg.recall?.recencyDecay ?? DEFAULT_DECAY;
-
-  // ── max_seq (one query on memories.activity_seq) ──────────────────────────
-  // Served by the descending idx_entries_activity_seq index on memories (see
-  // migration 13 in db/engrams.ts). Used as the "current" anchor for recency
-  // distance. When the column is absent (pre-migration DBs) or all rows have NULL
-  // activity_seq (not yet backfilled via AGT-292), falls back to null and recency
-  // weighting is skipped (score = cosine, matching the pre-AGT-291 behavior).
+  // ── max_seq — each cortex uses its own max for recency normalization ────────
+  // This preserves per-corpus recency semantics: a cortex with 10 entries
+  // and one with 10K entries each have their own "recent" anchor. Flattening
+  // to a global max_seq would distort recency for smaller or older cortexes.
   let maxSeq: number | null = null;
   if (hasActivitySeq) {
     const seqRow = db.prepare(
@@ -242,13 +364,12 @@ export async function handleRecall(
     maxSeq = seqRow.max_seq;
   }
 
-  // ── vector search ──────────────────────────────────────────────────────────
-  // For the sqlite-vec engine, ANN search has no per-row metadata hook inside the
-  // KNN scan, so we over-fetch by RECENCY_OVERFETCH_FACTOR and rerank in JS.
+  // For the sqlite-vec engine, ANN search has no per-row metadata hook inside
+  // the KNN scan, so we over-fetch by RECENCY_OVERFETCH_FACTOR and rerank in JS.
   // For brute-force, searchVectors ignores the `limit` parameter entirely and
   // returns all live candidates (see searchBruteForce in lib/search-vectors.ts),
   // so the inflated fetchLimit is also safe there — brute-force ignores it anyway.
-  // After reranking, results are sliced to `limit`.
+  // After reranking, results are sliced to `limit` by the caller.
   const fetchLimit = (hasActivitySeq && maxSeq !== null)
     ? limit * RECENCY_OVERFETCH_FACTOR
     : limit;
@@ -257,8 +378,6 @@ export async function handleRecall(
   if (vectorResults.length === 0) {
     return [];
   }
-
-  // ── build single batched hydration query ───────────────────────────────────
 
   const vectorIds = vectorResults.map((r) => r.id);
   const placeholders = vectorIds.map(() => '?').join(', ');
@@ -270,17 +389,11 @@ export async function handleRecall(
     conditions.push('ts >= ?');
     binds.push(since);
   }
-
   if (kind) {
-    // hasKind is guaranteed true above.
     conditions.push('kind = ?');
     binds.push(kind);
   }
-
   if (topic) {
-    // hasTopics is guaranteed true above.
-    // JSON1 is required; if the extension is absent we throw so the caller
-    // knows the filter was not applied rather than silently getting wrong results.
     conditions.push(
       `EXISTS (SELECT 1 FROM json_each(topics) jt WHERE jt.value = ?)`,
     );
@@ -306,13 +419,11 @@ export async function handleRecall(
     throw new Error(`recall: DB query failed for cortex "${cortexName}": ${msg}`);
   }
 
-  // ── build result set ───────────────────────────────────────────────────────
-
   const simMap = new Map<string, number>(
     vectorResults.map((r) => [r.id, r.similarity]),
   );
 
-  const entries: RecallEntry[] = rows.map((row) => {
+  return rows.map((row) => {
     let topicsValue: string[] = [];
     try {
       topicsValue = JSON.parse(row.topics ?? '[]') as string[];
@@ -320,13 +431,10 @@ export async function handleRecall(
       topicsValue = [];
     }
 
-    // `simMap` contains every id in `vectorIds`; each `row.id` was fetched via
-    // `WHERE id IN (vectorIds)`, so the map lookup is always present.
     const similarity = simMap.get(row.id)!;
 
     // Recency weight: exp(-decay × (max_seq - entry_seq)) ∈ (0, 1].
-    // Falls back to score=cosine when activity_seq is unavailable (column absent
-    // or all values NULL), preserving pre-AGT-291 ranking for un-backfilled DBs.
+    // Falls back to score=cosine when activity_seq is unavailable.
     //
     // TODO(#55): For negative cosine similarities, multiplying by a weight in
     // (0,1] moves the score toward zero, so old-but-negative entries are promoted
@@ -353,10 +461,115 @@ export async function handleRecall(
       cortex: cortexName,
     };
   });
+}
 
-  // Sort descending by recency-weighted score, then slice to `limit`.
-  // The over-fetched window (for sqlite-vec) may contain more than `limit` rows
-  // after hydration; slicing after sort ensures the caller gets exactly `limit`.
+// ---------------------------------------------------------------------------
+// recallSingleCortex — full-pipeline single-cortex entry point
+// ---------------------------------------------------------------------------
+
+/**
+ * Full pipeline for recalling from one named cortex: parses params, embeds
+ * query, queries the cortex, reranks, truncates. Used when `cortex` is
+ * explicitly provided or scope="active".
+ */
+async function recallSingleCortex(
+  cortexName: string,
+  params: Record<string, unknown>,
+): Promise<RecallEntry[]> {
+  const { query, limit, kind, topic, since, decay } = parseRecallParams(params);
+  const queryVec = await embed(query);
+  const entries = await recallOneCortexWithVec(
+    cortexName, queryVec, limit, kind, topic, since, decay,
+  );
   entries.sort((a, b) => b.score - a.score);
   return entries.slice(0, limit);
+}
+
+// ---------------------------------------------------------------------------
+// recallFederated — fan-out across all accessible cortexes
+// ---------------------------------------------------------------------------
+
+/**
+ * Fan out the query to all accessible cortexes in parallel, merge
+ * results, rerank globally, and truncate to `limit`.
+ *
+ * Cortex enumeration: `listLocalBranches()` reads `refs/heads/*` from the
+ * local `~/.think/repo` clone via `git for-each-ref`. This is a fast,
+ * local-only call that does NOT block on network I/O — safe to use inside
+ * the async daemon handler. Only branches that have been fetched locally
+ * appear in the list; a cortex that exists on the remote but has never been
+ * fetched locally will not be queried. That is the intended semantics for
+ * the "accessible" scope level.
+ *
+ * Per-cortex queries run concurrently via Promise.all. Each cortex's
+ * recency normalization uses its own max_seq — cortex A's "most recent"
+ * entry is not penalised because cortex B has a larger seq space.
+ *
+ * Per-cortex failures are caught individually. A missing or corrupt L2 DB
+ * contributes zero results rather than aborting the whole federated query
+ * (partial degradation > total failure). Failures are emitted to stderr
+ * so they are visible in daemon logs.
+ */
+async function recallFederated(
+  params: Record<string, unknown>,
+): Promise<RecallEntry[]> {
+  const { query, limit, kind, topic, since, decay } = parseRecallParams(params);
+
+  // Embed once; the vector is shared across all cortex legs so the model is
+  // only invoked once regardless of how many cortexes are queried.
+  const queryVec = await embed(query);
+
+  // Enumerate locally-known cortexes via local git refs (no network call).
+  // listLocalBranches() uses `git for-each-ref refs/heads/` — sync but does
+  // not block on I/O. Branch names map 1:1 to cortex names. Throws on git
+  // failure (repo not initialised, git not found, etc.).
+  let cortexNames: string[];
+  try {
+    cortexNames = listLocalBranches();
+  } catch (err) {
+    // Enumeration failure — fall back to the active cortex from config if set.
+    const msg = err instanceof Error ? err.message : String(err);
+    process.stderr.write(`think recall: cortex enumeration failed (${msg}); falling back to active cortex\n`);
+    const activeCortex = getConfig().cortex?.active;
+    cortexNames = activeCortex ? [activeCortex] : [];
+  }
+
+  if (cortexNames.length === 0) {
+    // Throw rather than silently returning [] — an agent receiving an empty
+    // result cannot distinguish "no matching entries" from "recall was unable
+    // to query any cortex," and the latter is a misconfiguration that should
+    // surface as an error, not silence.
+    throw new Error(
+      'recall: no cortexes available to query. The git repo may not be initialised and no active cortex is configured. ' +
+      'Run "think cortex setup" or set cortex.active in config.',
+    );
+  }
+
+  // Fan out to all cortexes in parallel. Per-cortex failures are caught
+  // individually so one unavailable/corrupt cortex doesn't abort the query.
+  //
+  // Pass `limit` (not a pre-inflated value) to recallOneCortexWithVec — that
+  // function owns the RECENCY_OVERFETCH_FACTOR calculation internally. Passing
+  // an already-inflated value would apply the factor twice (limit × factor²),
+  // contradicting the <100ms latency target.
+  const perCortexResults = await Promise.all(
+    cortexNames.map(async (name) => {
+      try {
+        return await recallOneCortexWithVec(
+          name, queryVec, limit, kind, topic, since, decay,
+        );
+      } catch (err) {
+        // Partial failure: cortex is unavailable or corrupt; contribute zero
+        // results. Emit to stderr so the failure is visible in daemon logs.
+        const msg = err instanceof Error ? err.message : String(err);
+        process.stderr.write(`think recall: cortex "${name}" failed — ${msg}\n`);
+        return [] as RecallEntry[];
+      }
+    }),
+  );
+
+  // Pool all candidates, sort globally by recency-weighted score, truncate.
+  const allEntries = perCortexResults.flat();
+  allEntries.sort((a, b) => b.score - a.score);
+  return allEntries.slice(0, limit);
 }

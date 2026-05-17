@@ -236,6 +236,28 @@ export function listRemoteBranches(): string[] {
     .filter(Boolean) as string[];
 }
 
+/**
+ * Enumerate cortex names from the local git refs without a network call.
+ *
+ * Uses `git for-each-ref refs/heads/` on the local clone, so it reads
+ * whatever branches are locally known (fetched or created locally). This
+ * is appropriate for the daemon federated-recall path: it is sync but
+ * does NOT block on network I/O, unlike `listRemoteBranches()` which runs
+ * `git ls-remote --heads origin`. Returns branch names (= cortex names).
+ *
+ * Note: returns only branches that have been fetched locally. A cortex that
+ * exists on the remote but has never been fetched will not appear here.
+ * That is acceptable for alpha: locally-cloned cortexes are the intended
+ * scope of the "accessible" federation level.
+ *
+ * Throws if git is unavailable or the repo is not initialised — callers
+ * are responsible for handling the failure case.
+ */
+export function listLocalBranches(): string[] {
+  const output = runGit(['for-each-ref', '--format=%(refname:short)', 'refs/heads/']);
+  return output.trim().split('\n').filter(Boolean);
+}
+
 export function listBranchFiles(branchName: string, extension?: string): string[] {
   assertSafePositional(branchName, 'branch name');
   try {
