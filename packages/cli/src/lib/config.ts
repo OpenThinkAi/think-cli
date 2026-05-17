@@ -111,6 +111,23 @@ export interface RecallConfig {
   recencyDecay?: number;
 }
 
+export interface CompactionConfig {
+  /**
+   * Cosine similarity threshold for the compaction triage gate (AGT-300).
+   *
+   * Before calling the LLM, the worker searches L2 for the top-K most
+   * similar entries in the same cortex. If max(candidate.cosine) is below
+   * this threshold, the LLM call is skipped — the new entry is net-new on
+   * its topic and there is nothing to fold.
+   *
+   * Range: [−1, 1]. Higher = stricter (more entries skip LLM). The default
+   * 0.6 is a rough heuristic; tune after observing your corpus in alpha.
+   *
+   * Default: 0.6
+   */
+  triageThreshold?: number;
+}
+
 export interface Config {
   peerId: string;
   syncPort: number;
@@ -120,6 +137,7 @@ export interface Config {
   search?: SearchConfig;
   daemon?: DaemonConfig;
   recall?: RecallConfig;
+  compaction?: CompactionConfig;
 }
 
 export function getConfigDir(): string {

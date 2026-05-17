@@ -1,5 +1,5 @@
 /**
- * Tests for the CompactionQueue — AGT-299
+ * Tests for the CompactionQueue — AGT-299 + AGT-300
  *
  * Coverage:
  * 1. Enqueue: three memories → getDepth reflects 3 for that cortex.
@@ -10,6 +10,10 @@
  * 4. Worker skip: entry not found in L2 — depth drops to 0 without retry.
  * 5. Backfill: scanAndEnqueueUncompacted enqueues raw kind=memory entries that
  *    have no compaction_links row, skipping compactions and capping at 100.
+ * 6. Triage gate (AGT-300): entry with high similarity to existing → gate passes
+ *    (verified via compactions_passed_triage counter and getStats()).
+ * 7. Triage gate (AGT-300): entry orthogonal to all existing → LLM skipped
+ *    (verified via compactions_skipped_triage counter and getStats()).
  *
  * No real network calls are made — DRY_RUN=true in the module means the SDK is
  * never loaded. The @huggingface/transformers mock keeps the DB layer hermetic.
@@ -172,6 +176,106 @@ describe('CompactionQueue', () => {
     }
 
     expect(queue.getDepth(cortex)).toBe(0);
+  });
+
+  // ── AGT-300 triage gate tests ──────────────────────────────────────────────
+
+  it('triage gate: entry with high similarity to existing → gate passes (compactions_passed_triage incremented)', async () => {
+    // Two entries share nearly identical embeddings — cosine similarity will
+    // be close to 1.0, well above the default threshold of 0.6.
+    // The triage gate should pass through and the compactions_passed_triage
+    // counter should be incremented (DRY_RUN=true so no actual LLM call is made).
+    const { CompactionQueue } = await import('../../../src/daemon/compaction/queue.js');
+    const { getCortexDb } = await import('../../../src/db/engrams.js');
+
+    const cortex = 'triage-similar-test';
+    const db = getCortexDb(cortex);
+    const ts = new Date().toISOString();
+
+    // Both entries use the same unit direction (cosine ≈ 1.0, well above 0.6).
+    const dim = 384;
+    const unitA = new Float32Array(dim).fill(1 / Math.sqrt(dim));
+    const unitB = new Float32Array(dim).fill(1 / Math.sqrt(dim));
+
+    const existingId = 'triage-existing-1';
+    db.prepare(`
+      INSERT OR IGNORE INTO memories
+        (id, ts, author, content, source_ids, created_at, deleted_at,
+         sync_version, origin_peer_id, embedding)
+      VALUES (?, ?, 'tester', 'existing content about topics', '[]', ?, NULL, 1, 'peer', ?)
+    `).run(existingId, ts, ts, Buffer.from(unitA.buffer));
+
+    const newId = 'triage-new-similar-1';
+    db.prepare(`
+      INSERT OR IGNORE INTO memories
+        (id, ts, author, content, source_ids, created_at, deleted_at,
+         sync_version, origin_peer_id, embedding)
+      VALUES (?, ?, 'tester', 'new content about same topics', '[]', ?, NULL, 1, 'peer', ?)
+    `).run(newId, ts, ts, Buffer.from(unitB.buffer));
+
+    const queue = new CompactionQueue();
+    queue.enqueue(newId, cortex);
+    queue.start();
+
+    const deadline = Date.now() + 5000;
+    while (queue.getDepth(cortex) > 0 && Date.now() < deadline) {
+      await new Promise(r => setTimeout(r, 50));
+    }
+
+    expect(queue.getDepth(cortex)).toBe(0);
+    const stats = queue.getStats();
+    expect(stats.compactions_passed_triage).toBe(1);
+    expect(stats.compactions_skipped_triage).toBe(0);
+  });
+
+  it('triage gate: entry orthogonal to existing → gate skips, LLM not reached (compactions_skipped_triage incremented)', async () => {
+    // The new entry's embedding is orthogonal (cosine ≈ 0) to all existing
+    // entries. With default threshold 0.6 the triage gate should skip the LLM.
+    const { CompactionQueue } = await import('../../../src/daemon/compaction/queue.js');
+    const { getCortexDb } = await import('../../../src/db/engrams.js');
+
+    const cortex = 'triage-orthogonal-test';
+    const db = getCortexDb(cortex);
+    const ts = new Date().toISOString();
+
+    const dim = 384;
+    // Existing entry: all weight in dimension 0.
+    const vecExisting = new Float32Array(dim);
+    vecExisting[0] = 1.0;
+
+    // New entry: all weight in dimension 1 (orthogonal to existing).
+    const vecNew = new Float32Array(dim);
+    vecNew[1] = 1.0;
+
+    const existingId = 'triage-orth-existing-1';
+    db.prepare(`
+      INSERT OR IGNORE INTO memories
+        (id, ts, author, content, source_ids, created_at, deleted_at,
+         sync_version, origin_peer_id, embedding)
+      VALUES (?, ?, 'tester', 'existing entry about topic A', '[]', ?, NULL, 1, 'peer', ?)
+    `).run(existingId, ts, ts, Buffer.from(vecExisting.buffer));
+
+    const newId = 'triage-orth-new-1';
+    db.prepare(`
+      INSERT OR IGNORE INTO memories
+        (id, ts, author, content, source_ids, created_at, deleted_at,
+         sync_version, origin_peer_id, embedding)
+      VALUES (?, ?, 'tester', 'new entry about completely different topic', '[]', ?, NULL, 1, 'peer', ?)
+    `).run(newId, ts, ts, Buffer.from(vecNew.buffer));
+
+    const queue = new CompactionQueue();
+    queue.enqueue(newId, cortex);
+    queue.start();
+
+    const deadline = Date.now() + 5000;
+    while (queue.getDepth(cortex) > 0 && Date.now() < deadline) {
+      await new Promise(r => setTimeout(r, 50));
+    }
+
+    expect(queue.getDepth(cortex)).toBe(0);
+    const stats = queue.getStats();
+    expect(stats.compactions_skipped_triage).toBe(1);
+    expect(stats.compactions_passed_triage).toBe(0);
   });
 });
 
