@@ -285,6 +285,29 @@ class DaemonConnection implements DaemonClient {
 }
 
 // ---------------------------------------------------------------------------
+// DaemonUnavailableError — AGT-289
+// ---------------------------------------------------------------------------
+
+/**
+ * Thrown by `connectDaemon()` when the daemon could not be spawned or did not
+ * become reachable within the 5-second timeout.
+ *
+ * Callers should catch this and fall back to degraded-mode direct DB access
+ * rather than aborting. The `logPath` field points to the daemon log file for
+ * diagnostics.
+ */
+export class DaemonUnavailableError extends Error {
+  /** Absolute path to the daemon log file (always ~/{THINK_HOME}/daemon.log). */
+  readonly logPath: string;
+
+  constructor(message: string, logPath: string) {
+    super(message);
+    this.name = 'DaemonUnavailableError';
+    this.logPath = logPath;
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Helpers: connect attempt
 // ---------------------------------------------------------------------------
 
@@ -344,8 +367,9 @@ function tryConnect(): Promise<net.Socket> {
 function spawnDaemon(): void {
   const entry = getDaemonEntryPath();
   if (!fs.existsSync(entry)) {
-    throw new Error(
+    throw new DaemonUnavailableError(
       `daemon binary not found at ${entry} — run \`npm run build\` first`,
+      getDaemonLogPath(),
     );
   }
   const child = spawn(process.execPath, [entry], {
@@ -423,9 +447,63 @@ export async function connectDaemon(
     }
   }
 
-  throw new Error(
+  throw new DaemonUnavailableError(
     `daemon failed to start; check ${getDaemonLogPath()}`,
+    getDaemonLogPath(),
   );
+}
+
+// ---------------------------------------------------------------------------
+// probeDaemon — non-spawning availability check (AGT-289)
+// ---------------------------------------------------------------------------
+
+/**
+ * Probe whether the daemon socket is currently accepting connections WITHOUT
+ * spawning the daemon if it isn't running.
+ *
+ * Returns `true` if a connection is established (daemon is up).
+ * Returns `false` if the socket is absent, refuses connections, or doesn't
+ * respond within `timeoutMs` (default: 500 ms).
+ *
+ * Use this for any "check if daemon is available" path (status command,
+ * degraded-mode detection) to avoid the implicit side-effect of starting the
+ * daemon. Use `connectDaemon()` only when you intend to actually use the
+ * daemon for real work.
+ *
+ * @remarks Used by CLI commands and tests only; not part of the daemon wire protocol API.
+ */
+export async function probeDaemon(timeoutMs: number = 500): Promise<boolean> {
+  return new Promise<boolean>((resolve) => {
+    const target = getConnectTarget();
+    const socket = net.createConnection(target);
+    let settled = false;
+
+    const timer = setTimeout(() => {
+      if (!settled) {
+        settled = true;
+        socket.destroy();
+        resolve(false);
+      }
+    }, timeoutMs);
+
+    socket.once('connect', () => {
+      if (!settled) {
+        settled = true;
+        clearTimeout(timer);
+        socket.destroy();
+        resolve(true);
+      }
+    });
+
+    socket.once('error', () => {
+      if (!settled) {
+        settled = true;
+        clearTimeout(timer);
+        socket.destroy();
+        resolve(false);
+      }
+    });
+  });
 }
 
 // ---------------------------------------------------------------------------

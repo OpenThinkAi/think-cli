@@ -28,6 +28,11 @@ function parseKindOpt(kindStr: string | undefined): RetroKind | null | false {
 }
 
 async function emitRetro(cortex: string, message: string, kind: RetroKind | null, skipSync = false): Promise<void> {
+  // AGT-289: Hook point for daemon write routing. When the daemon write RPC
+  // is wired (later phase), call probeDaemon(100) here (guarded by !skipSync)
+  // for degraded-mode detection and print the note; direct write below is
+  // the current path.
+
   const validated = validateEngramContent(message);
   if (validated.warnings.length > 0) {
     for (const w of validated.warnings) {
