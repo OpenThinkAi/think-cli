@@ -254,6 +254,15 @@ export const recallCommand = new Command('recall')
     // is wired (later phase), call probeDaemon(100) here — if daemon is up,
     // route to daemon for vector recall; if not, print the degraded note and
     // fall through to runFtsRecall. Currently FTS is the only path.
+    //
+    // AGT-307 / AGT-318 rendering note: when daemon results are wired here,
+    // every RecallEntry carries a non-empty `cortex` field. Rendering must:
+    //   - Multi-cortex results: show `[cortex-name]` tag per entry.
+    //   - Single-cortex results: omit per-entry tag; state cortex in header.
+    //
+    // AGT-307 / AGT-319 JSON invariant: when --json lands, always include
+    // `cortex` per entry in the serialised output — the field is load-bearing
+    // for agent consumers and must never be omitted from machine-readable output.
     runFtsRecall(cortex, query, { engrams: opts.engrams, limit });
     closeCortexDb(cortex);
   });
