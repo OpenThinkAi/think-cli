@@ -27,7 +27,17 @@
  * credentials, secrets, or data from other users. Content is passed verbatim
  * — no sanitization is applied beyond what `think recall` already enforces.
  *
- * Performance target: <500ms warm (daemon already running).
+ * Performance target: <500ms warm (daemon already running). The RPC timeout
+ * is set to 400ms so that even accounting for stdin read and serialization the
+ * total hook latency stays below the warm target. Cold-start (daemon not yet
+ * running) will exceed 500ms due to daemon spawn time; in that case the hook
+ * falls back to the DaemonUnavailableError path and returns empty output rather
+ * than waiting up to the full spawn timeout.
+ *
+ * Note on `cwd` and `session_id`: these fields are parsed from stdin but not
+ * forwarded to the recall RPC. The daemon recall endpoint does not currently
+ * support workspace-scoped filtering, so both fields are intentionally unused.
+ * When workspace-scoped recall lands (future AGT), wire `cwd` through here.
  */
 
 import { connectDaemon, DaemonUnavailableError } from '../lib/daemon-client.js';
@@ -38,22 +48,38 @@ import type { RecallEntry } from '../daemon/recall.js';
 // ---------------------------------------------------------------------------
 
 /** Maximum number of recall entries to inject. */
-const RECALL_LIMIT = 5;
+export const RECALL_LIMIT = 5;
 
-/** Per-RPC timeout — keep short so the hook doesn't delay the prompt. */
-const RECALL_TIMEOUT_MS = 3_000;
+/**
+ * Per-RPC timeout in milliseconds.
+ *
+ * 400ms keeps warm hook latency well under the 500ms target even after
+ * accounting for stdin read and JSON serialization overhead. Slow or
+ * overloaded daemon calls are dropped (fail open) rather than delaying
+ * the user's prompt.
+ */
+export const RECALL_TIMEOUT_MS = 400;
+
+/**
+ * Minimum prompt length (trimmed characters) before a recall RPC is issued.
+ *
+ * One-word follow-ups ("ok", "yes", "k") produce low-quality recall results
+ * and waste a daemon round-trip. Skip recall for trivially short prompts.
+ */
+export const MIN_PROMPT_LENGTH = 10;
 
 // ---------------------------------------------------------------------------
 // Stdin reader
 // ---------------------------------------------------------------------------
 
-/** Read all of stdin and return as a string. */
-async function readStdin(): Promise<string> {
+/** Read all of stdin and return as a string. Accepts an optional stream for testing. */
+export async function readStdin(stream?: NodeJS.ReadableStream): Promise<string> {
+  const src = stream ?? process.stdin;
   return new Promise<string>((resolve, reject) => {
     const chunks: Buffer[] = [];
-    process.stdin.on('data', (chunk: Buffer) => chunks.push(chunk));
-    process.stdin.on('end', () => resolve(Buffer.concat(chunks).toString('utf8')));
-    process.stdin.on('error', reject);
+    src.on('data', (chunk: Buffer) => chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk as string)));
+    src.on('end', () => resolve(Buffer.concat(chunks).toString('utf8')));
+    src.on('error', reject);
   });
 }
 
@@ -62,19 +88,19 @@ async function readStdin(): Promise<string> {
 // ---------------------------------------------------------------------------
 
 /** Emit the hook response with additionalContext to stdout. */
-function writeWithContext(additionalContext: string): void {
+export function writeWithContext(additionalContext: string, out?: NodeJS.WritableStream): void {
   const output = {
     hookSpecificOutput: {
       hookEventName: 'UserPromptSubmit',
       additionalContext,
     },
   };
-  process.stdout.write(JSON.stringify(output) + '\n');
+  (out ?? process.stdout).write(JSON.stringify(output) + '\n');
 }
 
 /** Emit an empty hook response (daemon unavailable or no entries). */
-function writeEmpty(): void {
-  process.stdout.write(JSON.stringify({}) + '\n');
+export function writeEmpty(out?: NodeJS.WritableStream): void {
+  (out ?? process.stdout).write(JSON.stringify({}) + '\n');
 }
 
 // ---------------------------------------------------------------------------
@@ -85,7 +111,7 @@ function writeEmpty(): void {
  * Format recall entries into a compact markdown block suitable for injection
  * into the agent's context window.
  */
-function buildAdditionalContext(entries: RecallEntry[]): string {
+export function buildAdditionalContext(entries: RecallEntry[]): string {
   if (entries.length === 0) return '';
 
   const lines = entries.map((e) => {
@@ -100,22 +126,39 @@ function buildAdditionalContext(entries: RecallEntry[]): string {
 // Main
 // ---------------------------------------------------------------------------
 
-async function main(): Promise<void> {
+/**
+ * Hook entrypoint. Accepts optional I/O streams for unit-testing without
+ * spawning a subprocess. Production callers omit both arguments.
+ */
+export async function main(
+  stdin?: NodeJS.ReadableStream,
+  stdout?: NodeJS.WritableStream,
+): Promise<void> {
+  const emit = (fn: (out?: NodeJS.WritableStream) => void) => fn(stdout);
+
   // ── 1. Read + parse stdin ─────────────────────────────────────────────────
   let userPrompt: string;
   try {
-    const raw = await readStdin();
+    const raw = await readStdin(stdin);
     const parsed = JSON.parse(raw) as Record<string, unknown>;
     const prompt = parsed['user_prompt'];
     if (typeof prompt !== 'string' || prompt.trim().length === 0) {
       // No usable prompt — exit cleanly with no context.
-      writeEmpty();
+      emit(writeEmpty);
       return;
     }
     userPrompt = prompt.trim();
   } catch {
     // Malformed stdin — fail open, don't block the prompt.
-    writeEmpty();
+    emit(writeEmpty);
+    return;
+  }
+
+  // ── 1a. Skip trivially short prompts ─────────────────────────────────────
+  if (userPrompt.length < MIN_PROMPT_LENGTH) {
+    // One-word follow-ups ("ok", "yes", "continue") produce low-quality recall.
+    // Skip the daemon RPC to avoid noise and unnecessary latency.
+    emit(writeEmpty);
     return;
   }
 
@@ -126,11 +169,11 @@ async function main(): Promise<void> {
   } catch (err) {
     if (err instanceof DaemonUnavailableError) {
       // Daemon not running — fail open silently.
-      writeEmpty();
+      emit(writeEmpty);
       return;
     }
     // Unexpected connect error — still fail open.
-    writeEmpty();
+    emit(writeEmpty);
     return;
   }
 
@@ -146,7 +189,7 @@ async function main(): Promise<void> {
   } catch {
     // Recall failed (timeout, daemon error, etc.) — fail open.
     client.close();
-    writeEmpty();
+    emit(writeEmpty);
     return;
   }
 
@@ -154,19 +197,21 @@ async function main(): Promise<void> {
 
   // ── 4. Build + emit output ────────────────────────────────────────────────
   if (!Array.isArray(entries) || entries.length === 0) {
-    writeEmpty();
+    emit(writeEmpty);
     return;
   }
 
   const additionalContext = buildAdditionalContext(entries);
   if (additionalContext.length === 0) {
-    writeEmpty();
+    emit(writeEmpty);
     return;
   }
 
-  writeWithContext(additionalContext);
+  writeWithContext(additionalContext, stdout);
 }
 
+// Script entrypoint — only runs when this file is the main module.
+// Exporting `main` allows tests to invoke hook logic directly with injected I/O.
 main().catch(() => {
   // Catch-all: any unhandled rejection — fail open, don't crash Claude Code.
   writeEmpty();
