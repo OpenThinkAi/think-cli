@@ -1,4 +1,3 @@
-#!/usr/bin/env node
 /**
  * think daemon entry point — AGT-278 scaffold
  *
@@ -178,13 +177,15 @@ export async function runDaemon(options?: Partial<DaemonOptions>): Promise<void>
     process.stdin.on('end', () => shutdown('stdin-close'));
     logger.log('think daemon ready');
   } else {
-    // Non-foreground: socket server not yet wired (AGT-279); the process will
-    // exit immediately after this block because nothing holds the event loop open.
-    // Emit an honest message rather than a false "started" confirmation.
+    // Non-foreground: socket server not yet wired; the process will exit
+    // immediately after this block because nothing holds the event loop open.
+    // Emit an honest message and exit non-zero so callers can detect the failure.
     process.stdout.write(
-      `think daemon: socket not yet bound — use --foreground to run in development mode (socket binding lands in AGT-279).\n`,
+      `think daemon: socket not yet bound — use --foreground to run in development mode.\n`,
     );
-    logger.log('think daemon ready (no socket — exiting)');
+    logger.log('think daemon: exiting (no socket to hold event loop)');
+    logger.close();
+    process.exit(1);
   }
 }
 

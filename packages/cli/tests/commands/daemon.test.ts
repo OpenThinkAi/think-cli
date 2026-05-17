@@ -56,21 +56,28 @@ describe('daemon module', () => {
     expect(stderrOutput).toMatch(/pid=\d+/);
   });
 
-  it('runDaemon does not attach stdin in non-foreground mode', async () => {
+  it('runDaemon does not attach stdin and exits 1 in non-foreground mode', async () => {
     const { runDaemon } = await import('../../src/daemon/index.js');
 
     vi.spyOn(process, 'on').mockImplementation(() => process);
     const stdinResumeSpy = vi.spyOn(process.stdin, 'resume').mockImplementation(() => process.stdin);
     const stdoutSpy = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+    // Intercept process.exit so the test process itself doesn't terminate.
+    const exitSpy = vi.spyOn(process, 'exit').mockImplementation((_code?: number) => {
+      throw new Error(`process.exit(${_code})`);
+    });
 
-    await expect(runDaemon({ foreground: false })).resolves.toBeUndefined();
+    // Non-foreground mode calls process.exit(1) because no socket holds the event loop.
+    await expect(runDaemon({ foreground: false })).rejects.toThrow('process.exit(1)');
 
     // stdin must NOT be resumed in non-foreground mode (stdin may be /dev/null).
     expect(stdinResumeSpy).not.toHaveBeenCalled();
 
-    // An honest "not yet" message should appear on stdout (no false "started" claim).
+    // Confirm the honest "not yet" message appeared on stdout.
     const stdoutOutput = stdoutSpy.mock.calls.map(([msg]) => msg as string).join('');
     expect(stdoutOutput).toMatch(/think daemon/);
     expect(stdoutOutput).toMatch(/--foreground/);
+
+    expect(exitSpy).toHaveBeenCalledWith(1);
   });
 });

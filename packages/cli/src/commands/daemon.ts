@@ -12,10 +12,8 @@ const startSubcommand = new Command('start')
     'Run the think daemon. Use --foreground to keep the process attached to the terminal ' +
       'and write logs to stderr (useful for development and debugging).',
   )
-  .option(
-    '--foreground',
-    'Write logs to stderr and keep the process in the foreground (default: log to ~/.think/daemon.log)',
-  )
+  .option('--foreground', 'Write logs to stderr and keep the process in the foreground')
+  .default('foreground', false)
   .option('--socket-path <path>', 'Override the Unix socket path (default: ~/.think/daemon.sock)')
   .action(async (opts: { foreground: boolean; socketPath?: string }) => {
     // Lazy-import keeps cold-start cost for other commands minimal.
@@ -27,5 +25,5 @@ const startSubcommand = new Command('start')
   });
 
 export const daemonCommand = new Command('daemon')
-  .description('Start the think resident daemon process (stop/status land in AGT-279+)')
+  .description('Start and manage the think resident daemon process')
   .addCommand(startSubcommand);
