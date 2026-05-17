@@ -21,7 +21,6 @@ describe('daemon module', () => {
   });
 
   it('imports without throwing', async () => {
-    // The module must load cleanly regardless of environment.
     await expect(import('../../src/daemon/index.js')).resolves.toBeDefined();
   });
 
@@ -29,33 +28,49 @@ describe('daemon module', () => {
     const { runDaemon } = await import('../../src/daemon/index.js');
 
     // Mock process.on so signal handlers are captured but not actually registered
-    // for the test process (avoids leaking SIGINT/SIGTERM handlers).
+    // for the test process (avoids leaking SIGINT/SIGTERM handlers between tests).
     const onSpy = vi.spyOn(process, 'on').mockImplementation(() => process);
 
-    // Mock process.stdin to prevent a persistent 'end' listener from surviving
-    // the test and triggering process.exit in a later test (e.g. when CI stdin closes).
+    // Mock process.stdin to prevent the persistent 'end' listener that foreground
+    // mode installs from surviving the test and calling process.exit in a later test.
     const stdinResumeSpy = vi.spyOn(process.stdin, 'resume').mockImplementation(() => process.stdin);
     const stdinOnSpy = vi.spyOn(process.stdin, 'on').mockImplementation(() => process.stdin);
 
     // Capture stderr (foreground mode logs go to stderr).
     const stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
 
-    await expect(
-      runDaemon({ foreground: true }),
-    ).resolves.toBeUndefined();
+    await expect(runDaemon({ foreground: true })).resolves.toBeUndefined();
 
     // Confirm SIGTERM and SIGINT handlers were registered.
     const registeredEvents = onSpy.mock.calls.map(([event]) => event);
     expect(registeredEvents).toContain('SIGTERM');
     expect(registeredEvents).toContain('SIGINT');
 
-    // Confirm stdin.resume() was called (keeps event loop alive).
+    // Confirm stdin resume + end-listener were wired up in foreground mode.
     expect(stdinResumeSpy).toHaveBeenCalled();
     expect(stdinOnSpy).toHaveBeenCalledWith('end', expect.any(Function));
 
-    // Confirm startup log was written to stderr (foreground mode).
+    // Confirm startup log was written to stderr.
     const stderrOutput = stderrSpy.mock.calls.map(([msg]) => msg as string).join('');
     expect(stderrOutput).toMatch(/think daemon starting/);
     expect(stderrOutput).toMatch(/pid=\d+/);
+  });
+
+  it('runDaemon does not attach stdin in non-foreground mode', async () => {
+    const { runDaemon } = await import('../../src/daemon/index.js');
+
+    vi.spyOn(process, 'on').mockImplementation(() => process);
+    const stdinResumeSpy = vi.spyOn(process.stdin, 'resume').mockImplementation(() => process.stdin);
+    const stdoutSpy = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+
+    await expect(runDaemon({ foreground: false })).resolves.toBeUndefined();
+
+    // stdin must NOT be resumed in non-foreground mode (stdin may be /dev/null).
+    expect(stdinResumeSpy).not.toHaveBeenCalled();
+
+    // A confirmation message should appear on stdout.
+    const stdoutOutput = stdoutSpy.mock.calls.map(([msg]) => msg as string).join('');
+    expect(stdoutOutput).toMatch(/think daemon started/);
+    expect(stdoutOutput).toMatch(/pid=\d+/);
   });
 });

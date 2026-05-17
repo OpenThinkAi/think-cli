@@ -25,7 +25,7 @@ import { readPackageVersion } from '../lib/version.js';
 
 function getThinkDir(): string {
   const override = process.env.THINK_HOME;
-  if (override && override !== '') return override;
+  if (override) return override;
   return path.join(os.homedir(), '.think');
 }
 
@@ -79,7 +79,10 @@ function makeLogger(foreground: boolean, logPath: string): Logger {
       rotateLogs(logPath);
       fd = fs.openSync(logPath, 'a');
     } catch {
-      // If we can't open the log file fall back to stderr
+      // File open failed; all output falls through to stderr below
+      process.stderr.write(
+        `[think daemon] could not open log file ${logPath}, falling back to stderr\n`,
+      );
     }
   }
 
@@ -147,7 +150,14 @@ export async function runDaemon(options?: Partial<DaemonOptions>): Promise<void>
     foreground: options?.foreground ?? false,
   };
 
-  const version = readPackageVersion();
+  // Resolve version before opening the log so failures are visible.
+  let version: string;
+  try {
+    version = readPackageVersion();
+  } catch {
+    version = '0.0.0';
+  }
+
   const logger = makeLogger(opts.foreground, getDaemonLogPath());
 
   logger.log(`think daemon starting (pid=${process.pid}, version=${version})`);
@@ -162,18 +172,16 @@ export async function runDaemon(options?: Partial<DaemonOptions>): Promise<void>
   process.on('SIGTERM', () => shutdown('SIGTERM'));
   process.on('SIGINT', () => shutdown('SIGINT'));
 
-  // Keep the event loop alive (stdin) so the process does not exit immediately.
-  // In foreground mode: user-visible stdin handle in the terminal.
-  // In non-foreground mode: same mechanism; socket binding (AGT-279) will
-  //   replace this with the server handle once it lands.
-  process.stdin.resume();
-  process.stdin.on('end', () => shutdown('stdin-close'));
-
   if (opts.foreground) {
-    // Foreground: log banner goes to stderr (via makeLogger); nothing extra needed.
+    // Foreground: attach to stdin so Ctrl-C / EOF work naturally in a terminal.
+    process.stdin.resume();
+    process.stdin.on('end', () => shutdown('stdin-close'));
     logger.log('think daemon ready');
   } else {
-    // Non-foreground: confirm to the calling shell that the daemon started.
+    // Non-foreground: DO NOT attach stdin or register an 'end' handler — stdin
+    // may be /dev/null (backgrounded shell) which fires 'end' immediately and
+    // would cause the daemon to exit right after printing its startup line.
+    // The event loop will be kept alive by the socket server (AGT-279).
     process.stdout.write(
       `think daemon started (pid=${process.pid}). Logs: ${getDaemonLogPath()}\n`,
     );
