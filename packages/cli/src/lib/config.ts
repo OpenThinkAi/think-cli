@@ -69,12 +69,24 @@ export interface SubscriptionsConfig {
   redact?: Record<string, string[]>;
 }
 
+export interface SearchConfig {
+  /**
+   * Vector search engine. `"brute-force"` runs cosine over all L2 BLOBs
+   * in-process — fast enough for <50K vectors. `"sqlite-vec"` loads the
+   * sqlite-vec extension for ANN-style search; falls back to brute-force if
+   * the extension cannot be loaded (e.g. unsupported OS / Node build).
+   * Default: `"brute-force"`.
+   */
+  engine?: 'brute-force' | 'sqlite-vec';
+}
+
 export interface Config {
   peerId: string;
   syncPort: number;
   cortex?: CortexConfig;
   paused?: boolean;
   subscriptions?: SubscriptionsConfig;
+  search?: SearchConfig;
 }
 
 export function getConfigDir(): string {
