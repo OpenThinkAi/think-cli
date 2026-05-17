@@ -9,11 +9,14 @@ import { Command } from 'commander';
 
 const startSubcommand = new Command('start')
   .description(
-    'Run the think daemon in the current shell (for development / debugging). ' +
-      'Use --foreground to keep the process attached to the terminal and log to stderr.',
+    'Run the think daemon. Use --foreground to keep the process attached to the terminal ' +
+      'and write logs to stderr (useful for development and debugging).',
   )
-  .option('--foreground', 'Stay attached to the terminal; log to stderr instead of daemon.log')
-  .option('--socket-path <path>', 'Override the default Unix socket path')
+  .option(
+    '--foreground',
+    'Write logs to stderr and keep the process in the foreground (default: log to ~/.think/daemon.log)',
+  )
+  .option('--socket-path <path>', 'Override the Unix socket path (default: ~/.think/daemon.sock)')
   .action(async (opts: { foreground: boolean; socketPath?: string }) => {
     // Lazy-import keeps cold-start cost for other commands minimal.
     const { runDaemon } = await import('../daemon/index.js');

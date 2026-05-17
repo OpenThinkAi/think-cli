@@ -33,6 +33,11 @@ function getDaemonLogPath(): string {
   return path.join(getThinkDir(), 'daemon.log');
 }
 
+/** Default Unix socket path. Shared between parseArgv and runDaemon. */
+function getDefaultSocketPath(): string {
+  return path.join(getThinkDir(), 'daemon.sock');
+}
+
 // ---------------------------------------------------------------------------
 // Minimal log rotation (keep ≤ 3 files, rotate when file exceeds 10 MB)
 // ---------------------------------------------------------------------------
@@ -115,8 +120,8 @@ interface DaemonOptions {
 }
 
 function parseArgv(argv: string[]): DaemonOptions {
-  const defaults: DaemonOptions = {
-    socketPath: path.join(getThinkDir(), 'daemon.sock'),
+  const parsed: DaemonOptions = {
+    socketPath: getDefaultSocketPath(),
     foreground: false,
   };
 
@@ -124,12 +129,12 @@ function parseArgv(argv: string[]): DaemonOptions {
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
     if (arg === '--foreground') {
-      defaults.foreground = true;
+      parsed.foreground = true;
     } else if (arg === '--socket-path' && args[i + 1]) {
-      defaults.socketPath = args[++i];
+      parsed.socketPath = args[++i];
     }
   }
-  return defaults;
+  return parsed;
 }
 
 // ---------------------------------------------------------------------------
@@ -138,7 +143,7 @@ function parseArgv(argv: string[]): DaemonOptions {
 
 export async function runDaemon(options?: Partial<DaemonOptions>): Promise<void> {
   const opts: DaemonOptions = {
-    socketPath: options?.socketPath ?? path.join(getThinkDir(), 'daemon.sock'),
+    socketPath: options?.socketPath ?? getDefaultSocketPath(),
     foreground: options?.foreground ?? false,
   };
 
@@ -157,22 +162,23 @@ export async function runDaemon(options?: Partial<DaemonOptions>): Promise<void>
   process.on('SIGTERM', () => shutdown('SIGTERM'));
   process.on('SIGINT', () => shutdown('SIGINT'));
 
-  // When running in foreground mode also exit cleanly on stdin close (EOF),
-  // which is the normal case when a shell pipe or test runner closes stdin.
-  if (opts.foreground) {
-    process.stdin.resume();
-    process.stdin.on('end', () => shutdown('stdin-close'));
-  }
+  // Keep the event loop alive (stdin) so the process does not exit immediately.
+  // In foreground mode: user-visible stdin handle in the terminal.
+  // In non-foreground mode: same mechanism; socket binding (AGT-279) will
+  //   replace this with the server handle once it lands.
+  process.stdin.resume();
+  process.stdin.on('end', () => shutdown('stdin-close'));
 
-  // Emit one stdout line so non-foreground callers know the daemon started
-  // and where logs are written. Foreground callers already see stderr output.
-  if (!opts.foreground) {
+  if (opts.foreground) {
+    // Foreground: log banner goes to stderr (via makeLogger); nothing extra needed.
+    logger.log('think daemon ready');
+  } else {
+    // Non-foreground: confirm to the calling shell that the daemon started.
     process.stdout.write(
       `think daemon started (pid=${process.pid}). Logs: ${getDaemonLogPath()}\n`,
     );
+    logger.log('think daemon ready');
   }
-
-  logger.log('think daemon ready');
 }
 
 // ---------------------------------------------------------------------------
