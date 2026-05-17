@@ -18,6 +18,7 @@
 
 import net from 'node:net';
 import { handleRecall } from './recall.js';
+import { handleExpand } from './expand.js';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -264,6 +265,7 @@ export type MethodHandler = (
 const builtinMethods: Map<string, MethodHandler> = new Map([
   ['ping', () => 'pong'],
   ['recall', handleRecall],
+  ['expand', handleExpand],
 ]);
 
 /**
