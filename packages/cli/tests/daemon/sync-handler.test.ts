@@ -1,0 +1,255 @@
+/**
+ * Tests for the daemon `sync` endpoint — AGT-286
+ *
+ * Verifies:
+ *   1. A synced memory appears in L1 (JSONL page file) AND in L2 (memories table).
+ *   2. L2 row has a non-null embedding.
+ *   3. Validation: content non-empty, byte-limit, kind in allowed set, cortex exists,
+ *      topics bounds.
+ *   4. Warning emitted when kind or topics are not yet L2-queryable.
+ *
+ * Uses THINK_HOME isolation (same pattern as peer-pair fixtures) so tests
+ * never touch ~/.think. The @huggingface/transformers dep is mocked so these
+ * tests run without downloading the 150MB model.
+ */
+
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import fs from 'node:fs';
+
+// ---------------------------------------------------------------------------
+// Mock @huggingface/transformers before the module under test loads it.
+// Returns a deterministic 384-dim Float32Array so embed() is synchronous and
+// hermetic.
+// ---------------------------------------------------------------------------
+
+const MOCK_EMBEDDING = Float32Array.from({ length: 384 }, (_, i) => i / 384);
+
+vi.mock('@huggingface/transformers', () => ({
+  pipeline: vi.fn().mockResolvedValue(
+    vi.fn().mockResolvedValue({ data: MOCK_EMBEDDING }),
+  ),
+}));
+
+// ---------------------------------------------------------------------------
+// Test setup
+// ---------------------------------------------------------------------------
+
+let thinkHome: string;
+const cortexName = 'test-sync-cortex';
+
+beforeEach(async () => {
+  thinkHome = mkdtempSync(join(tmpdir(), 'think-sync-test-'));
+  process.env.THINK_HOME = thinkHome;
+
+  // Set up a minimal config so getConfig() and getPeerId() work.
+  const configDir = join(thinkHome, 'config');
+  fs.mkdirSync(configDir, { recursive: true, mode: 0o700 });
+  const config = {
+    peerId: 'test-peer-id-agt-286',
+    syncPort: 9999,
+    cortex: { author: 'test-author' },
+  };
+  fs.writeFileSync(join(configDir, 'config.json'), JSON.stringify(config) + '\n', { mode: 0o600 });
+
+  // Dynamically import modules AFTER setting THINK_HOME so they pick up the
+  // isolated home directory.
+  const { getCortexDb, closeAllCortexDbs } = await import('../../src/db/engrams.js');
+
+  // Close any stale DB handles from a previous test.
+  closeAllCortexDbs();
+
+  // Touch the L2 database so cortexExists() returns true.
+  getCortexDb(cortexName);
+  closeAllCortexDbs();
+});
+
+afterEach(async () => {
+  // Always close DB handles — even if a test assertion threw — to avoid leaks.
+  const { closeAllCortexDbs } = await import('../../src/db/engrams.js');
+  closeAllCortexDbs();
+
+  vi.resetModules();
+  rmSync(thinkHome, { recursive: true, force: true });
+  delete process.env.THINK_HOME;
+});
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+/** Read all non-blank JSONL lines from all page files in the L1 cortex dir. */
+function readL1Lines(home: string, cortex: string): Record<string, unknown>[] {
+  const cortexDir = join(home, 'repo', cortex);
+  if (!fs.existsSync(cortexDir)) return [];
+
+  const lines: Record<string, unknown>[] = [];
+  for (const file of fs.readdirSync(cortexDir).filter(f => /^\d{6}\.jsonl$/.test(f)).sort()) {
+    const raw = fs.readFileSync(join(cortexDir, file), 'utf-8');
+    for (const line of raw.split('\n')) {
+      if (line.trim().length === 0) continue;
+      lines.push(JSON.parse(line) as Record<string, unknown>);
+    }
+  }
+  return lines;
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+describe('sync handler (AGT-286)', () => {
+  it('stores a memory in L1 and L2 with embedding non-null', async () => {
+    const { handleSync } = await import('../../src/daemon/sync-handler.js');
+    const { getCortexDb } = await import('../../src/db/engrams.js');
+
+    const result = await handleSync({
+      cortex: cortexName,
+      content: 'Test memory for AGT-286',
+      kind: 'memory',
+    });
+
+    expect(result.status).toBe('stored');
+    expect(typeof result.entry_id).toBe('string');
+    expect(result.entry_id.length).toBeGreaterThan(0);
+    // No warnings for kind=memory with no topics
+    expect(result.warnings).toBeUndefined();
+
+    // Verify L1: entry appears in the JSONL page.
+    const l1Lines = readL1Lines(thinkHome, cortexName);
+    expect(l1Lines.length).toBe(1);
+    const l1Entry = l1Lines[0];
+    expect(l1Entry['id']).toBe(result.entry_id);
+    expect(l1Entry['content']).toBe('Test memory for AGT-286');
+    expect(l1Entry['kind']).toBe('memory');
+    expect(l1Entry['topics']).toEqual([]);
+    expect(l1Entry['supersedes']).toEqual([]);
+    expect(l1Entry['compacted_from']).toBeNull();
+
+    // Verify L2: row exists with embedding non-null.
+    const db = getCortexDb(cortexName);
+    const row = db.prepare('SELECT * FROM memories WHERE id = ?').get(result.entry_id) as {
+      id: string;
+      content: string;
+      embedding: Uint8Array | null;
+      activity_seq: number | null;
+    } | undefined;
+
+    expect(row).toBeDefined();
+    expect(row!.content).toBe('Test memory for AGT-286');
+    expect(row!.embedding).not.toBeNull();
+    expect(row!.activity_seq).toBeGreaterThan(0);
+  });
+
+  it('stores a retro with topics in L1 and returns warnings', async () => {
+    const { handleSync } = await import('../../src/daemon/sync-handler.js');
+
+    const result = await handleSync({
+      cortex: cortexName,
+      content: 'Always validate inputs at the boundary',
+      kind: 'retro',
+      topics: ['testing', 'validation'],
+    });
+
+    expect(result.status).toBe('stored');
+
+    // Warnings should be present: kind != memory and topics provided
+    expect(result.warnings).toBeDefined();
+    expect(result.warnings!.some(w => w.includes('retro'))).toBe(true);
+    expect(result.warnings!.some(w => w.includes('topics'))).toBe(true);
+
+    const l1Lines = readL1Lines(thinkHome, cortexName);
+    expect(l1Lines.length).toBe(1);
+    expect(l1Lines[0]['kind']).toBe('retro');
+    expect(l1Lines[0]['topics']).toEqual(['testing', 'validation']);
+  });
+
+  it('rejects empty content', async () => {
+    const { handleSync } = await import('../../src/daemon/sync-handler.js');
+
+    await expect(
+      handleSync({ cortex: cortexName, content: '   ', kind: 'memory' }),
+    ).rejects.toThrow(/content/);
+  });
+
+  it('rejects content that exceeds 64 KB', async () => {
+    const { handleSync } = await import('../../src/daemon/sync-handler.js');
+    const bigContent = 'x'.repeat(65 * 1024);
+
+    await expect(
+      handleSync({ cortex: cortexName, content: bigContent, kind: 'memory' }),
+    ).rejects.toThrow(/64 KB/);
+  });
+
+  it('rejects an invalid kind with the required error message format', async () => {
+    const { handleSync } = await import('../../src/daemon/sync-handler.js');
+
+    await expect(
+      handleSync({ cortex: cortexName, content: 'hello', kind: 'bogus' }),
+    ).rejects.toThrow(/invalid kind 'bogus'; expected memory\|retro\|event/);
+  });
+
+  it('rejects empty cortex name', async () => {
+    const { handleSync } = await import('../../src/daemon/sync-handler.js');
+
+    await expect(
+      handleSync({ cortex: '', content: 'hello', kind: 'memory' }),
+    ).rejects.toThrow(/cortex/);
+  });
+
+  it('rejects a missing cortex', async () => {
+    const { handleSync } = await import('../../src/daemon/sync-handler.js');
+
+    await expect(
+      handleSync({ cortex: 'nonexistent-cortex', content: 'hello', kind: 'memory' }),
+    ).rejects.toThrow(/cortex 'nonexistent-cortex' not found/);
+  });
+
+  it('rejects topics array exceeding MAX_TOPICS', async () => {
+    const { handleSync } = await import('../../src/daemon/sync-handler.js');
+    const tooManyTopics = Array.from({ length: 21 }, (_, i) => `topic-${i}`);
+
+    await expect(
+      handleSync({ cortex: cortexName, content: 'hello', kind: 'memory', topics: tooManyTopics }),
+    ).rejects.toThrow(/topics/);
+  });
+
+  it('rejects topics with an element exceeding MAX_TOPIC_LENGTH', async () => {
+    const { handleSync } = await import('../../src/daemon/sync-handler.js');
+    const longTopic = 'x'.repeat(129);
+
+    await expect(
+      handleSync({ cortex: cortexName, content: 'hello', kind: 'memory', topics: [longTopic] }),
+    ).rejects.toThrow(/topics/);
+  });
+
+  it('rotates to a new L1 page after L1_PAGE_SIZE lines', async () => {
+    const { handleSync } = await import('../../src/daemon/sync-handler.js');
+
+    const cortexDir = join(thinkHome, 'repo', cortexName);
+    fs.mkdirSync(cortexDir, { recursive: true, mode: 0o700 });
+
+    // Fill 000001.jsonl with 1000 lines (the rotation threshold).
+    const dummyLines = Array.from({ length: 1000 }, (_, i) =>
+      JSON.stringify({ id: `dummy-${i}`, ts: new Date().toISOString(), content: `line ${i}` })
+    ).join('\n') + '\n';
+    fs.writeFileSync(join(cortexDir, '000001.jsonl'), dummyLines, 'utf-8');
+
+    const result = await handleSync({
+      cortex: cortexName,
+      content: 'This should land in page 2',
+      kind: 'event',
+    });
+
+    expect(result.status).toBe('stored');
+
+    const files = fs.readdirSync(cortexDir).filter(f => /^\d{6}\.jsonl$/.test(f)).sort();
+    expect(files).toContain('000002.jsonl');
+
+    const page2 = fs.readFileSync(join(cortexDir, '000002.jsonl'), 'utf-8');
+    const parsed = JSON.parse(page2.trim()) as { id: string };
+    expect(parsed.id).toBe(result.entry_id);
+  });
+});

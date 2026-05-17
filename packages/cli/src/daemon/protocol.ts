@@ -256,7 +256,7 @@ export async function* parseLineFraming(
 // Built-in method registry
 // ---------------------------------------------------------------------------
 
-type MethodHandler = (
+export type MethodHandler = (
   params: Record<string, unknown>,
 ) => Promise<unknown> | unknown;
 
