@@ -39,6 +39,12 @@ export interface MemoryRow {
   embedding: Uint8Array | null;
   /** Model name that produced the embedding (e.g. "bge-small-en-v1.5"). Null until populated. */
   embedding_model: string | null;
+  /**
+   * Stable integer position within this cortex, computed by ORDER BY ts ASC, id ASC.
+   * Null until the reindex backfill runs (AGT-292). Used by v3 recency-weighted recall
+   * to rank cosine × recency_weight without relying on wall-clock time.
+   */
+  activity_seq: number | null;
 }
 
 export interface InsertMemoryParams {
