@@ -328,11 +328,11 @@ export async function handleRecall(
     // Falls back to score=cosine when activity_seq is unavailable (column absent
     // or all values NULL), preserving pre-AGT-291 ranking for un-backfilled DBs.
     //
-    // TODO(AGT-291): For negative cosine similarities, multiplying by a weight in
+    // TODO(#55): For negative cosine similarities, multiplying by a weight in
     // (0,1] moves the score toward zero, so old-but-negative entries are promoted
     // relative to newer-but-negative ones. In practice this is low-impact since
     // vector search rarely surfaces negative cosines, but the formula is not
-    // monotonic for the negative range.
+    // monotonic for the negative range. See GitHub issue #55 for fix direction.
     let score: number;
     if (maxSeq !== null && row.activity_seq !== null) {
       const seqDistance = maxSeq - row.activity_seq;
