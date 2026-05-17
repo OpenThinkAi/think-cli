@@ -24,13 +24,18 @@ import {
 // ---------------------------------------------------------------------------
 
 export interface SupersessionResult {
-  /** IDs of candidates that the new retro replaces (may be empty). */
+  /**
+   * IDs of candidates that the new retro replaces (may be empty).
+   * Always empty when `is_duplicate` is true — enforced in the parser.
+   */
   supersedes: string[];
-  /** 1–4 short lowercase topic strings. */
+  /** 1–4 short lowercase topic strings (capped at 4 in the parser). */
   topics: string[];
   /**
    * True when the new retro is essentially a duplicate of an existing one.
-   * The daemon should skip storing when this is true.
+   * When true the daemon MUST skip storing the new retro.
+   * `supersedes` will be empty in this case — callers MUST NOT delete
+   * any candidate when `is_duplicate` is true.
    */
   is_duplicate: boolean;
 }
@@ -67,15 +72,23 @@ function parseSupersessionResponse(text: string): SupersessionResult {
   }
   const obj = raw as Record<string, unknown>;
 
-  const supersedes = Array.isArray(obj.supersedes)
-    ? obj.supersedes.filter((id): id is string => typeof id === 'string' && id.length > 0)
-    : [];
-
-  const topics = Array.isArray(obj.topics)
-    ? obj.topics.filter((t): t is string => typeof t === 'string' && t.length > 0)
-    : [];
-
   const is_duplicate = typeof obj.is_duplicate === 'boolean' ? obj.is_duplicate : false;
+
+  // When is_duplicate is true, callers must NOT delete any candidate —
+  // treat it as a skip-storage-only result.  Enforce here rather than
+  // relying on callers to read the JSDoc.
+  const supersedes = is_duplicate
+    ? []
+    : Array.isArray(obj.supersedes)
+      ? obj.supersedes.filter((id): id is string => typeof id === 'string' && id.length > 0)
+      : [];
+
+  // Cap at 4 to match the system prompt contract ("1–4 short lowercase strings").
+  const topics = (
+    Array.isArray(obj.topics)
+      ? obj.topics.filter((t): t is string => typeof t === 'string' && t.length > 0)
+      : []
+  ).slice(0, 4);
 
   return { supersedes, topics, is_duplicate };
 }
@@ -139,10 +152,14 @@ export async function runSupersession(
 
   try {
     return parseSupersessionResponse(rawText);
-  } catch {
+  } catch (firstErr) {
     // Retry once on transient parse failure (non-deterministic model output).
     // Fence stripping handles systematic wrapping; this retry is a last resort
     // for genuinely transient failures.
+    console.warn(
+      `[supersession] parse failed on attempt 1, retrying — raw (${rawText.length} chars): "${rawText.slice(0, 200)}"`,
+      firstErr,
+    );
     const retryResponse = await callClaude();
     const retryText = extractText(retryResponse);
     return parseSupersessionResponse(retryText);
