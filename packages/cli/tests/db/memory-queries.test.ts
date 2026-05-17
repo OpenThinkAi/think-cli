@@ -61,6 +61,70 @@ describe('insertMemory origin_peer_id', () => {
   });
 });
 
+describe('migration v11 — embedding columns (AGT-269)', () => {
+  it('adds embedding and embedding_model columns to memories', () => {
+    const db = new DatabaseSync(':memory:');
+    runMigrations(db, migrations);
+
+    const cols = db.prepare('PRAGMA table_info(memories)').all() as { name: string }[];
+    expect(cols.some(c => c.name === 'embedding')).toBe(true);
+    expect(cols.some(c => c.name === 'embedding_model')).toBe(true);
+
+    db.close();
+  });
+
+  it('migration is idempotent — re-running does not throw', () => {
+    const db = new DatabaseSync(':memory:');
+    runMigrations(db, migrations);
+    expect(() => runMigrations(db, migrations)).not.toThrow();
+    db.close();
+  });
+
+  it('inserts a row without embedding (null) and reads both columns back as null', () => {
+    const db = new DatabaseSync(':memory:');
+    runMigrations(db, migrations);
+
+    db.prepare(
+      `INSERT INTO memories (id, ts, author, content, source_ids, created_at, sync_version)
+       VALUES ('no-emb', '2026-05-17T00:00:00Z', 'test', 'no embedding', '[]', '2026-05-17T00:00:00Z', 1)`,
+    ).run();
+
+    const row = db.prepare('SELECT embedding, embedding_model FROM memories WHERE id = ?').get('no-emb') as {
+      embedding: Uint8Array | null;
+      embedding_model: string | null;
+    };
+    expect(row.embedding).toBeNull();
+    expect(row.embedding_model).toBeNull();
+
+    db.close();
+  });
+
+  it('inserts a 384-dim Float32Array blob with model name and round-trips correctly', () => {
+    const db = new DatabaseSync(':memory:');
+    runMigrations(db, migrations);
+
+    // 384-dim Float32Array = 1536 bytes
+    const floats = new Float32Array(384).fill(0.5);
+    const blob = Buffer.from(floats.buffer);
+
+    db.prepare(
+      `INSERT INTO memories (id, ts, author, content, source_ids, created_at, sync_version, embedding, embedding_model)
+       VALUES ('with-emb', '2026-05-17T00:00:00Z', 'test', 'with embedding', '[]', '2026-05-17T00:00:00Z', 1, ?, ?)`,
+    ).run(blob, 'bge-small-en-v1.5');
+
+    const row = db.prepare('SELECT embedding, embedding_model FROM memories WHERE id = ?').get('with-emb') as {
+      embedding: Uint8Array | null;
+      embedding_model: string | null;
+    };
+    expect(row.embedding).not.toBeNull();
+    expect(row.embedding).toBeInstanceOf(Uint8Array);
+    expect(row.embedding!.byteLength).toBe(1536);
+    expect(row.embedding_model).toBe('bge-small-en-v1.5');
+
+    db.close();
+  });
+});
+
 describe('migration v7 backfill', () => {
   // Exercises the actual migration runner: open a fresh DB pinned at v6,
   // write a row (no origin_peer_id column exists yet), then run the full

@@ -35,6 +35,10 @@ export interface MemoryRow {
    * than being mis-attributed to the puller.
    */
   origin_peer_id: string | null;
+  /** Float32Array byte buffer (384-dim = 1536 bytes). Null until the embedding pipeline runs (AGT-278). node:sqlite returns BLOBs as Uint8Array. */
+  embedding: Uint8Array | null;
+  /** Model name that produced the embedding (e.g. "bge-small-en-v1.5"). Null until populated. */
+  embedding_model: string | null;
 }
 
 export interface InsertMemoryParams {
