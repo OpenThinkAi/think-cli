@@ -2,7 +2,6 @@
  * think daemon entry point — AGT-278 scaffold
  *
  * Responsibilities (this ticket — scaffold only):
- *  - Parse --socket-path and --foreground argv
  *  - Write startup log to ~/.think/daemon.log (or stderr when --foreground)
  *  - Install SIGTERM / SIGINT handlers that log and exit cleanly
  *
@@ -32,8 +31,8 @@ function getDaemonLogPath(): string {
   return path.join(getThinkDir(), 'daemon.log');
 }
 
-/** Default Unix socket path. Shared between parseArgv and runDaemon. */
-function getDefaultSocketPath(): string {
+/** Default Unix socket path. */
+export function getDefaultSocketPath(): string {
   return path.join(getThinkDir(), 'daemon.sock');
 }
 
@@ -113,42 +112,19 @@ function makeLogger(foreground: boolean, logPath: string): Logger {
 }
 
 // ---------------------------------------------------------------------------
-// Argv parsing (minimal; full flag parsing lives in the CLI command)
+// Options
 // ---------------------------------------------------------------------------
 
-interface DaemonOptions {
+export interface DaemonOptions {
   socketPath: string;
   foreground: boolean;
-}
-
-function parseArgv(argv: string[]): DaemonOptions {
-  const parsed: DaemonOptions = {
-    socketPath: getDefaultSocketPath(),
-    foreground: false,
-  };
-
-  const args = argv.slice(2); // strip 'node' + script path
-  for (let i = 0; i < args.length; i++) {
-    const arg = args[i];
-    if (arg === '--foreground') {
-      parsed.foreground = true;
-    } else if (arg === '--socket-path' && args[i + 1]) {
-      parsed.socketPath = args[++i];
-    }
-  }
-  return parsed;
 }
 
 // ---------------------------------------------------------------------------
 // Main
 // ---------------------------------------------------------------------------
 
-export async function runDaemon(options?: Partial<DaemonOptions>): Promise<void> {
-  const opts: DaemonOptions = {
-    socketPath: options?.socketPath ?? getDefaultSocketPath(),
-    foreground: options?.foreground ?? false,
-  };
-
+export async function runDaemon(options: DaemonOptions): Promise<void> {
   // Resolve version before opening the log so failures are visible.
   let version: string;
   try {
@@ -157,10 +133,10 @@ export async function runDaemon(options?: Partial<DaemonOptions>): Promise<void>
     version = '0.0.0';
   }
 
-  const logger = makeLogger(opts.foreground, getDaemonLogPath());
+  const logger = makeLogger(options.foreground, getDaemonLogPath());
 
   logger.log(`think daemon starting (pid=${process.pid}, version=${version})`);
-  logger.log(`socket-path=${opts.socketPath}`);
+  logger.log(`socket-path=${options.socketPath}`);
 
   function shutdown(signal: string): void {
     logger.log(`shutting down… (signal=${signal})`);
@@ -171,37 +147,20 @@ export async function runDaemon(options?: Partial<DaemonOptions>): Promise<void>
   process.on('SIGTERM', () => shutdown('SIGTERM'));
   process.on('SIGINT', () => shutdown('SIGINT'));
 
-  if (opts.foreground) {
+  if (options.foreground) {
     // Foreground: attach to stdin so Ctrl-C / EOF work naturally in a terminal.
     process.stdin.resume();
     process.stdin.on('end', () => shutdown('stdin-close'));
     logger.log('think daemon ready');
   } else {
     // Non-foreground: socket server not yet wired; the process will exit
-    // immediately after this block because nothing holds the event loop open.
-    // Emit an honest message and exit non-zero so callers can detect the failure.
-    process.stdout.write(
-      `think daemon: socket not yet bound — use --foreground to run in development mode.\n`,
+    // immediately because nothing holds the event loop open.
+    // Exit non-zero so callers can detect the failure.
+    process.stderr.write(
+      `think daemon: socket not yet bound — pass --foreground to run in the foreground.\n`,
     );
     logger.log('think daemon: exiting (no socket to hold event loop)');
     logger.close();
     process.exit(1);
   }
-}
-
-// ---------------------------------------------------------------------------
-// Direct invocation  (node dist/daemon/index.js)
-// ---------------------------------------------------------------------------
-
-const isDirect =
-  process.argv[1] !== undefined &&
-  (process.argv[1].endsWith('daemon/index.js') ||
-    process.argv[1].endsWith('daemon/index.ts'));
-
-if (isDirect) {
-  const opts = parseArgv(process.argv);
-  runDaemon(opts).catch((err: unknown) => {
-    process.stderr.write(`think daemon: fatal error: ${String(err)}\n`);
-    process.exit(1);
-  });
 }

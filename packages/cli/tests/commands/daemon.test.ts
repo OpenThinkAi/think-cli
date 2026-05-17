@@ -25,7 +25,7 @@ describe('daemon module', () => {
   });
 
   it('runDaemon resolves without throwing in foreground mode', async () => {
-    const { runDaemon } = await import('../../src/daemon/index.js');
+    const { runDaemon, getDefaultSocketPath } = await import('../../src/daemon/index.js');
 
     // Mock process.on so signal handlers are captured but not actually registered
     // for the test process (avoids leaking SIGINT/SIGTERM handlers between tests).
@@ -39,7 +39,9 @@ describe('daemon module', () => {
     // Capture stderr (foreground mode logs go to stderr).
     const stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
 
-    await expect(runDaemon({ foreground: true })).resolves.toBeUndefined();
+    await expect(
+      runDaemon({ foreground: true, socketPath: getDefaultSocketPath() }),
+    ).resolves.toBeUndefined();
 
     // Confirm SIGTERM and SIGINT handlers were registered.
     const registeredEvents = onSpy.mock.calls.map(([event]) => event);
@@ -57,26 +59,28 @@ describe('daemon module', () => {
   });
 
   it('runDaemon does not attach stdin and exits 1 in non-foreground mode', async () => {
-    const { runDaemon } = await import('../../src/daemon/index.js');
+    const { runDaemon, getDefaultSocketPath } = await import('../../src/daemon/index.js');
 
     vi.spyOn(process, 'on').mockImplementation(() => process);
     const stdinResumeSpy = vi.spyOn(process.stdin, 'resume').mockImplementation(() => process.stdin);
-    const stdoutSpy = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+    const stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
     // Intercept process.exit so the test process itself doesn't terminate.
     const exitSpy = vi.spyOn(process, 'exit').mockImplementation((_code?: number) => {
       throw new Error(`process.exit(${_code})`);
     });
 
     // Non-foreground mode calls process.exit(1) because no socket holds the event loop.
-    await expect(runDaemon({ foreground: false })).rejects.toThrow('process.exit(1)');
+    await expect(
+      runDaemon({ foreground: false, socketPath: getDefaultSocketPath() }),
+    ).rejects.toThrow('process.exit(1)');
 
     // stdin must NOT be resumed in non-foreground mode (stdin may be /dev/null).
     expect(stdinResumeSpy).not.toHaveBeenCalled();
 
-    // Confirm the honest "not yet" message appeared on stdout.
-    const stdoutOutput = stdoutSpy.mock.calls.map(([msg]) => msg as string).join('');
-    expect(stdoutOutput).toMatch(/think daemon/);
-    expect(stdoutOutput).toMatch(/--foreground/);
+    // An honest "not yet" message should appear on stderr (errors go to stderr).
+    const stderrOutput = stderrSpy.mock.calls.map(([msg]) => msg as string).join('');
+    expect(stderrOutput).toMatch(/think daemon/);
+    expect(stderrOutput).toMatch(/--foreground/);
 
     expect(exitSpy).toHaveBeenCalledWith(1);
   });

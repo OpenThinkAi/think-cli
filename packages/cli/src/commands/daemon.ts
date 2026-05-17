@@ -1,4 +1,5 @@
 import { Command } from 'commander';
+import { getDefaultSocketPath } from '../daemon/index.js';
 
 /**
  * `think daemon` — lifecycle commands for the resident think daemon.
@@ -9,23 +10,23 @@ import { Command } from 'commander';
 
 const startSubcommand = new Command('start')
   .description(
-    'Run the think daemon in the foreground. ' +
-      '(Socket-based background mode is not yet wired; --foreground is the only working mode.)',
+    'Run the think daemon. Pass --foreground to keep the process attached to the terminal ' +
+      '(the only functional mode until socket binding lands).',
   )
   .option('--foreground', 'Write logs to stderr and keep the process in the foreground')
   .option(
     '--socket-path <path>',
-    'Override the Unix socket path (default: ~/.think/daemon.sock; respects $THINK_HOME)',
+    'Override the Unix socket path (respects $THINK_HOME)',
   )
   .action(async (opts: { foreground: boolean | undefined; socketPath?: string }) => {
     // Lazy-import keeps cold-start cost for other commands minimal.
     const { runDaemon } = await import('../daemon/index.js');
     await runDaemon({
       foreground: opts.foreground ?? false,
-      socketPath: opts.socketPath,
+      socketPath: opts.socketPath ?? getDefaultSocketPath(),
     });
   });
 
 export const daemonCommand = new Command('daemon')
-  .description('Start the think resident daemon process')
+  .description('Manage the think resident daemon process')
   .addCommand(startSubcommand);
