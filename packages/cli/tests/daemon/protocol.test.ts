@@ -2,7 +2,7 @@
  * Tests for AGT-280 JSON-line protocol framing.
  *
  * Uses a real in-process socket pair (net.createServer + net.createConnection)
- * backed by a tmp THINK_HOME so the tests never touch ~/.think.
+ * backed by a tmp dir so the tests never touch ~/.think.
  */
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
@@ -113,11 +113,33 @@ function sendAndCollect(
   });
 }
 
+/** Parse a response line and return the parsed object. */
+function parseLine(line: string): Record<string, unknown> {
+  return JSON.parse(line) as Record<string, unknown>;
+}
+
+/** Predicate: line is a response for the given request_id. */
+function matchesId(id: string): (line: string) => boolean {
+  return (line) => {
+    try { return parseLine(line)['request_id'] === id; } catch { return false; }
+  };
+}
+
+/** Predicate: line is an error response with the given code. */
+function matchesError(code: string): (line: string) => boolean {
+  return (line) => {
+    try {
+      const obj = parseLine(line);
+      return (obj['error'] as { code?: string } | undefined)?.code === code;
+    } catch { return false; }
+  };
+}
+
 // ---------------------------------------------------------------------------
-// Tests
+// Shared socket-pair scaffold
 // ---------------------------------------------------------------------------
 
-describe.skipIf(process.platform === 'win32')('JSON-line protocol — ping smoke test', () => {
+describe.skipIf(process.platform === 'win32')('JSON-line protocol', () => {
   let dir: string;
   let socketPath: string;
   let pair: Awaited<ReturnType<typeof createProtocolPair>>;
@@ -133,124 +155,63 @@ describe.skipIf(process.platform === 'win32')('JSON-line protocol — ping smoke
     rmSync(dir, { recursive: true, force: true });
   });
 
-  it('ping request returns { result: "pong" }', async () => {
-    const requestId = 'test-ping-001';
-    const request = JSON.stringify({ request_id: requestId, method: 'ping', params: {} });
+  // -------------------------------------------------------------------------
+  // ping smoke test
+  // -------------------------------------------------------------------------
 
+  it('ping request returns { result: "pong" }', async () => {
+    const id = 'test-ping-001';
     const lines = await sendAndCollect(
       pair.client,
-      request,
-      (line) => {
-        try {
-          const parsed = JSON.parse(line) as Record<string, unknown>;
-          return parsed['request_id'] === requestId;
-        } catch {
-          return false;
-        }
-      },
+      JSON.stringify({ request_id: id, method: 'ping', params: {} }),
+      matchesId(id),
     );
 
-    expect(lines.length).toBeGreaterThanOrEqual(1);
-    const response = JSON.parse(lines[lines.length - 1]) as Record<string, unknown>;
-    expect(response['request_id']).toBe(requestId);
+    const response = parseLine(lines[lines.length - 1]);
+    expect(response['request_id']).toBe(id);
     expect(response['result']).toBe('pong');
     expect(response).not.toHaveProperty('error');
   });
-});
 
-describe.skipIf(process.platform === 'win32')('JSON-line protocol — malformed JSON', () => {
-  let dir: string;
-  let socketPath: string;
-  let pair: Awaited<ReturnType<typeof createProtocolPair>>;
-
-  beforeEach(async () => {
-    dir = tmpDir();
-    socketPath = join(dir, 'test.sock');
-    pair = await createProtocolPair(socketPath);
-  });
-
-  afterEach(async () => {
-    await pair.close();
-    rmSync(dir, { recursive: true, force: true });
-  });
+  // -------------------------------------------------------------------------
+  // malformed JSON
+  // -------------------------------------------------------------------------
 
   it('malformed JSON returns parse_error without closing the connection', async () => {
-    const malformed = '{ this is not valid json ';
-
     const lines = await sendAndCollect(
       pair.client,
-      malformed,
-      (line) => {
-        try {
-          const parsed = JSON.parse(line) as Record<string, unknown>;
-          const err = parsed['error'] as { code?: string } | undefined;
-          return err?.code === 'parse_error';
-        } catch {
-          return false;
-        }
-      },
+      '{ this is not valid json ',
+      matchesError('parse_error'),
     );
 
-    expect(lines.length).toBeGreaterThanOrEqual(1);
-    const response = JSON.parse(lines[lines.length - 1]) as Record<string, unknown>;
+    const response = parseLine(lines[lines.length - 1]);
     expect((response['error'] as { code?: string })['code']).toBe('parse_error');
 
-    // Verify the connection is still alive by sending a valid ping afterwards.
+    // Verify the connection is still alive.
     const pingId = 'post-error-ping';
     const pingLines = await sendAndCollect(
       pair.client,
       JSON.stringify({ request_id: pingId, method: 'ping', params: {} }),
-      (line) => {
-        try {
-          return (JSON.parse(line) as Record<string, unknown>)['request_id'] === pingId;
-        } catch {
-          return false;
-        }
-      },
+      matchesId(pingId),
     );
-
-    const pingResponse = JSON.parse(pingLines[pingLines.length - 1]) as Record<string, unknown>;
-    expect(pingResponse['result']).toBe('pong');
-  });
-});
-
-describe.skipIf(process.platform === 'win32')('JSON-line protocol — payload_too_large', () => {
-  let dir: string;
-  let socketPath: string;
-  let pair: Awaited<ReturnType<typeof createProtocolPair>>;
-
-  beforeEach(async () => {
-    dir = tmpDir();
-    socketPath = join(dir, 'test.sock');
-    pair = await createProtocolPair(socketPath);
+    expect(parseLine(pingLines[pingLines.length - 1])['result']).toBe('pong');
   });
 
-  afterEach(async () => {
-    await pair.close();
-    rmSync(dir, { recursive: true, force: true });
-  });
+  // -------------------------------------------------------------------------
+  // payload_too_large
+  // -------------------------------------------------------------------------
 
   it('payload > 1MB returns payload_too_large without closing the connection', async () => {
-    // Build a line that exceeds 1 MiB (1,048,576 bytes).
     const oversized = 'x'.repeat(1 * 1024 * 1024 + 1);
 
     const lines = await sendAndCollect(
       pair.client,
       oversized,
-      (line) => {
-        try {
-          const parsed = JSON.parse(line) as Record<string, unknown>;
-          const err = parsed['error'] as { code?: string } | undefined;
-          return err?.code === 'payload_too_large';
-        } catch {
-          return false;
-        }
-      },
+      matchesError('payload_too_large'),
       5000,
     );
 
-    expect(lines.length).toBeGreaterThanOrEqual(1);
-    const response = JSON.parse(lines[lines.length - 1]) as Record<string, unknown>;
+    const response = parseLine(lines[lines.length - 1]);
     expect((response['error'] as { code?: string })['code']).toBe('payload_too_large');
 
     // Connection must still be alive.
@@ -258,19 +219,15 @@ describe.skipIf(process.platform === 'win32')('JSON-line protocol — payload_to
     const pingLines = await sendAndCollect(
       pair.client,
       JSON.stringify({ request_id: pingId, method: 'ping', params: {} }),
-      (line) => {
-        try {
-          return (JSON.parse(line) as Record<string, unknown>)['request_id'] === pingId;
-        } catch {
-          return false;
-        }
-      },
+      matchesId(pingId),
     );
-
-    const pingResponse = JSON.parse(pingLines[pingLines.length - 1]) as Record<string, unknown>;
-    expect(pingResponse['result']).toBe('pong');
+    expect(parseLine(pingLines[pingLines.length - 1])['result']).toBe('pong');
   });
 });
+
+// ---------------------------------------------------------------------------
+// sendResponse unit test (lighter setup — no createProtocolPair needed)
+// ---------------------------------------------------------------------------
 
 describe.skipIf(process.platform === 'win32')('sendResponse', () => {
   let dir: string;

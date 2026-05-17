@@ -14,7 +14,7 @@
  */
 
 import net from 'node:net';
-import { v4 as uuidv4 } from 'uuid';
+import { randomUUID } from 'node:crypto';
 import { getDaemonSocketPath } from './paths.js';
 
 // ---------------------------------------------------------------------------
@@ -55,7 +55,7 @@ export async function daemonRpc(
 ): Promise<unknown> {
   const socketPath = opts.socketPath ?? getDaemonSocketPath();
   const timeoutMs = opts.timeoutMs ?? 5000;
-  const requestId = uuidv4();
+  const requestId = randomUUID();
 
   return new Promise<unknown>((resolve, reject) => {
     const socket = net.createConnection({ path: socketPath });

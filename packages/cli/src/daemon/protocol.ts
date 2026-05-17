@@ -259,20 +259,17 @@ const builtinMethods: Map<string, MethodHandler> = new Map([
   ['ping', async () => 'pong'],
 ]);
 
-/** Sentinel empty map — reused across calls so no allocation per dispatch. */
-const EMPTY_METHODS = new Map<string, MethodHandler>();
-
 /**
  * Dispatch one parsed request to the appropriate handler and write the
  * response back on `socket`.
  *
  * Callers (daemon/index.ts) can pass an additional `methods` map to
- * supplement the built-ins.
+ * supplement the built-ins as more API methods land.
  */
 export async function dispatchRequest(
   socket: net.Socket,
   request: DaemonRequest,
-  methods: Map<string, MethodHandler> = EMPTY_METHODS,
+  methods: Map<string, MethodHandler> = new Map(),
 ): Promise<void> {
   const handler = methods.get(request.method) ?? builtinMethods.get(request.method);
 
