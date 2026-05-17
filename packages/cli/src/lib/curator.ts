@@ -4,11 +4,18 @@ import { getCuratorMdPath } from './paths.js';
 import { wrapData } from './sanitize.js';
 import type { Engram } from '../db/engram-queries.js';
 
+// L1 entry kind discriminator (think-v3). v2 entries omit `kind` on the wire;
+// the parser defaults missing values to 'memory' so legacy JSONL keeps loading.
+export type EntryKind = 'memory' | 'retro' | 'event';
+
+const ENTRY_KINDS: ReadonlySet<EntryKind> = new Set(['memory', 'retro', 'event']);
+
 export interface MemoryEntry {
   ts: string;
   author: string;
   content: string;
   source_ids: string[];
+  kind: EntryKind;
   episode_key?: string;
   deleted_at?: string;
   decisions?: string[];
@@ -360,11 +367,15 @@ export function parseMemoriesJsonl(content: string): MemoryEntry[] {
         const decisions = Array.isArray(parsed.decisions)
           ? parsed.decisions.filter((d: unknown): d is string => typeof d === 'string' && d.length > 0)
           : [];
+        const kind: EntryKind = ENTRY_KINDS.has(parsed.kind as EntryKind)
+          ? (parsed.kind as EntryKind)
+          : 'memory';
         entries.push({
           ts: parsed.ts ?? '',
           author: parsed.author ?? 'unknown',
           content: parsed.content,
           source_ids: Array.isArray(parsed.source_ids) ? parsed.source_ids : [],
+          kind,
           ...(parsed.episode_key ? { episode_key: parsed.episode_key } : {}),
           ...(parsed.deleted_at ? { deleted_at: parsed.deleted_at } : {}),
           ...(decisions.length > 0 ? { decisions } : {}),
@@ -468,6 +479,7 @@ export async function runCuration(curationPrompt: StructuredPrompt): Promise<Cur
       author: typeof obj.author === 'string' ? obj.author : 'unknown',
       content: obj.content,
       source_ids: Array.isArray(obj.source_ids) ? obj.source_ids.filter((id): id is string => typeof id === 'string') : [],
+      kind: 'memory',
       ...(decisions.length > 0 ? { decisions } : {}),
     };
   });

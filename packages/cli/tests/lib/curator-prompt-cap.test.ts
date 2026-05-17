@@ -12,7 +12,7 @@ import type { Engram } from '../../src/db/engram-queries.js';
 // for the curator's evaluation.
 describe('assembleCurationPrompt — curator prompt cap (AGT-065 AC #3)', () => {
   function makeMemory(ts: string, content: string): MemoryEntry {
-    return { ts, author: 'test', content, source_ids: [] };
+    return { ts, author: 'test', content, source_ids: [], kind: 'memory' };
   }
 
   const noEngrams: Engram[] = [];
