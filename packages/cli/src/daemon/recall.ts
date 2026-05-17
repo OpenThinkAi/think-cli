@@ -245,12 +245,11 @@ export async function handleRecall(
   // ── vector search ──────────────────────────────────────────────────────────
   // For the sqlite-vec engine, ANN search has no per-row metadata hook inside the
   // KNN scan, so we over-fetch by RECENCY_OVERFETCH_FACTOR and rerank in JS.
-  // For brute-force, searchVectors ignores the `limit` parameter and returns all
-  // live candidates (see searchBruteForce in lib/search-vectors.ts) — no overfetch
-  // needed and the full rerank window is always available. After reranking, results
-  // are sliced to `limit`.
-  const engine = cfg.search?.engine ?? 'brute-force';
-  const fetchLimit = (hasActivitySeq && maxSeq !== null && engine === 'sqlite-vec')
+  // For brute-force, searchVectors ignores the `limit` parameter entirely and
+  // returns all live candidates (see searchBruteForce in lib/search-vectors.ts),
+  // so the inflated fetchLimit is also safe there — brute-force ignores it anyway.
+  // After reranking, results are sliced to `limit`.
+  const fetchLimit = (hasActivitySeq && maxSeq !== null)
     ? limit * RECENCY_OVERFETCH_FACTOR
     : limit;
 
