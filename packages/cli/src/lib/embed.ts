@@ -19,6 +19,9 @@
  * optional dep is missing.
  */
 
+/** The HuggingFace model identifier used for all embeddings in this project. */
+export const EMBEDDING_MODEL_NAME = 'Xenova/bge-small-en-v1.5';
+
 type FeatureExtractionPipeline = (
   input: string,
   opts: { pooling: 'mean'; normalize: boolean }
@@ -44,7 +47,7 @@ function onProgress(info: ProgressInfo): void {
     const last = lastProgressPctByFile.get(file) ?? -1;
     if (pct >= last + 10) {
       lastProgressPctByFile.set(file, pct);
-      process.stderr.write(`think: embedding model Xenova/bge-small-en-v1.5 (${file}) ${pct}%…\n`);
+      process.stderr.write(`think: embedding model ${EMBEDDING_MODEL_NAME} (${file}) ${pct}%…\n`);
     }
   }
 }
@@ -63,14 +66,14 @@ async function loadTransformersModule(): Promise<typeof import('@huggingface/tra
 async function getPipeline(): Promise<FeatureExtractionPipeline> {
   if (pipelinePromise === null) {
     process.stderr.write(
-      'think: loading embedding model Xenova/bge-small-en-v1.5 (~150MB download on first use, cached in ~/.cache/huggingface/)…\n'
+      `think: loading embedding model ${EMBEDDING_MODEL_NAME} (~150MB download on first use, cached in ~/.cache/huggingface/)…\n`
     );
 
     const loadPromise = (async (): Promise<FeatureExtractionPipeline> => {
       const transformers = await loadTransformersModule();
       const pipe = await transformers.pipeline(
         'feature-extraction',
-        'Xenova/bge-small-en-v1.5',
+        EMBEDDING_MODEL_NAME,
         { progress_callback: onProgress }
       );
       return pipe as unknown as FeatureExtractionPipeline;
@@ -97,7 +100,7 @@ async function getPipeline(): Promise<FeatureExtractionPipeline> {
         pipelinePromise = null;
         lastProgressPctByFile.clear();
         const msg = err instanceof Error ? err.message : String(err);
-        throw new Error(`think: failed to load embedding model Xenova/bge-small-en-v1.5: ${msg} — re-run to retry`, {
+        throw new Error(`think: failed to load embedding model ${EMBEDDING_MODEL_NAME}: ${msg} — re-run to retry`, {
           cause: err,
         });
       });
@@ -113,7 +116,7 @@ const MAX_EMBED_CHARS = 32_000;
 
 /**
  * Embed a text string into a 384-dim normalized Float32Array using
- * bge-small-en-v1.5 (pooling: mean, normalize: true).
+ * {@link EMBEDDING_MODEL_NAME} (pooling: mean, normalize: true).
  *
  * Throws with a clear "install @huggingface/transformers" message when
  * the optional dep is not installed.
