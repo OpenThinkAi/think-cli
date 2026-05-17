@@ -37,6 +37,10 @@ export interface SupersessionResult {
    * When true the daemon MUST skip storing the new retro.
    * `supersedes` will be empty in this case — callers MUST NOT delete
    * any candidate when `is_duplicate` is true.
+   *
+   * Named `is_duplicate` (snake_case) to mirror the LLM JSON schema key
+   * verbatim, making the parse-to-return path unambiguous.  TypeScript
+   * callers may alias it locally: `const isDuplicate = result.is_duplicate`.
    */
   is_duplicate: boolean;
 }
@@ -167,6 +171,11 @@ export async function runSupersession(
       firstErr,
     );
     const retryResponse = await callClaude();
+    if (retryResponse.stop_reason === 'max_tokens') {
+      throw new Error(
+        'Supersession response truncated at max_tokens=300 — increase budget or reduce candidate count',
+      );
+    }
     const retryText = extractText(retryResponse);
     return parseSupersessionResponse(retryText);
   }

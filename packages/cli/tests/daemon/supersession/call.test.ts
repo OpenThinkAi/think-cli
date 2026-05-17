@@ -230,7 +230,7 @@ describe('runSupersession — max_tokens truncation', () => {
     vi.restoreAllMocks();
   });
 
-  it('throws a clear error when stop_reason is max_tokens', async () => {
+  it('throws a clear error when stop_reason is max_tokens on first attempt', async () => {
     const mockCreate = vi.fn().mockResolvedValue({
       content: [{ type: 'text', text: '{"supersedes":["retro_2a1"],"topics":["strategy"]' }],
       stop_reason: 'max_tokens',
@@ -243,6 +243,29 @@ describe('runSupersession — max_tokens truncation', () => {
     );
     // Should NOT retry — truncation is not a transient error
     expect(mockCreate).toHaveBeenCalledTimes(1);
+  });
+
+  it('throws the truncation error (not a parse error) when retry also hits max_tokens', async () => {
+    const mockCreate = vi
+      .fn()
+      // First attempt: invalid JSON (triggers retry)
+      .mockResolvedValueOnce({
+        content: [{ type: 'text', text: 'not-valid-json' }],
+        stop_reason: 'end_turn',
+      })
+      // Retry: truncated response
+      .mockResolvedValueOnce({
+        content: [{ type: 'text', text: '{"supersedes":["retro_2a1"],"topics":["strategy"]' }],
+        stop_reason: 'max_tokens',
+      });
+
+    vi.doMock('@anthropic-ai/sdk', () => buildAnthropicMock(mockCreate));
+
+    const { runSupersession } = await import('../../../src/daemon/supersession/call.js');
+    await expect(runSupersession(NEW_RETRO, CANDIDATES)).rejects.toThrow(
+      'Supersession response truncated at max_tokens=300',
+    );
+    expect(mockCreate).toHaveBeenCalledTimes(2);
   });
 });
 
