@@ -100,9 +100,7 @@ describe('runSupersession — happy path', () => {
     const { runSupersession } = await import('../../../src/daemon/supersession/call.js');
     const result = await runSupersession(NEW_RETRO, CANDIDATES);
 
-    expect(result.supersedes).toEqual(['retro_2a1']);
-    expect(result.topics).toEqual(['strategy', 'schema', 'v2']);
-    expect(result.isDuplicate).toBe(false);
+    expect(result).toEqual(VALID_RESPONSE);
   });
 
   it('parses a duplicate response', async () => {
@@ -114,8 +112,7 @@ describe('runSupersession — happy path', () => {
     const { runSupersession } = await import('../../../src/daemon/supersession/call.js');
     const result = await runSupersession(NEW_RETRO, CANDIDATES);
 
-    expect(result.isDuplicate).toBe(true);
-    expect(result.supersedes).toEqual([]);
+    expect(result).toEqual(DUPLICATE_RESPONSE);
   });
 
   it('calls the SDK with correct model and temperature', async () => {
