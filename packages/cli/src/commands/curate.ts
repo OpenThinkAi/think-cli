@@ -113,6 +113,7 @@ export const curateCommand = new Command('curate')
         author: existingMemoryRow.author,
         content: existingMemoryRow.content,
         source_ids: JSON.parse(existingMemoryRow.source_ids),
+        kind: 'memory',
       } : null;
 
       console.log(chalk.cyan(`Curating episode: ${opts.episode} (${episodeEngrams.length} engrams${existingMemory ? ', updating existing narrative' : ''})...`));
@@ -203,6 +204,7 @@ export const curateCommand = new Command('curate')
       author: m.author,
       content: m.content,
       source_ids: JSON.parse(m.source_ids),
+      kind: 'memory',
     }));
     const { recent, older } = filterRecentMemories(memoryEntries);
 

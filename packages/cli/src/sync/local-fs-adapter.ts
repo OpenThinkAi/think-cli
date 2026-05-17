@@ -178,6 +178,7 @@ export class LocalFsSyncAdapter implements SyncAdapter {
         author: m.author,
         content: m.content,
         source_ids: JSON.parse(m.source_ids),
+        kind: 'memory',
         ...(m.episode_key ? { episode_key: m.episode_key } : {}),
         ...(decisions.length > 0 ? { decisions } : {}),
         ...(m.origin_peer_id ? { origin_peer_id: m.origin_peer_id } : {}),
