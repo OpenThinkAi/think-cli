@@ -87,9 +87,11 @@ describe('SUPERSESSION_SYSTEM_PROMPT', () => {
 // ---------------------------------------------------------------------------
 
 describe('buildSupersessionMessages — return shape', () => {
-  it('returns system equal to SUPERSESSION_SYSTEM_PROMPT', () => {
+  it('does NOT include a system field (callers must use SUPERSESSION_SYSTEM_PROMPT directly)', () => {
     const result = buildSupersessionMessages(NEW_RETRO, CANDIDATES);
-    expect(result.system).toBe(SUPERSESSION_SYSTEM_PROMPT);
+    // system is intentionally absent — forwarding result.system to client.messages.create
+    // would silently bypass the cache_control: { type: 'ephemeral' } wrapper in call.ts.
+    expect('system' in result).toBe(false);
   });
 
   it('returns a single user message', () => {

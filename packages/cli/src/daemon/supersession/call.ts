@@ -8,6 +8,8 @@
  * builds the prompt and calls the Anthropic SDK.
  */
 
+// @anthropic-ai/sdk is a direct dep (not just a transitive dep via claude-agent-sdk)
+// because the agent SDK does not re-export the Anthropic class or Message types.
 import Anthropic from '@anthropic-ai/sdk';
 import { requireLlmConsent } from '../../lib/llm-consent.js';
 import {
@@ -112,7 +114,10 @@ export async function runSupersession(
   try {
     return parseSupersessionResponse(rawText);
   } catch {
-    // Retry once on parse failure (e.g. model wrapped response in code fences)
+    // Retry once on transient parse failure (non-deterministic model output).
+    // This does not help when the model consistently wraps output in fences —
+    // the retry is byte-for-byte identical.  Only transient non-determinism
+    // can be recovered here.
     const retryResponse = await callClaude();
     const retryText = extractText(retryResponse);
     return parseSupersessionResponse(retryText);

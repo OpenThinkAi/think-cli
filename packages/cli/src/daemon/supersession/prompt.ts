@@ -71,7 +71,14 @@ export interface RetroCandidate {
 }
 
 export interface SupersessionMessages {
-  system: string;
+  /**
+   * NOTE: `system` is intentionally omitted from this interface.
+   * Callers that need to make an Anthropic SDK call should import
+   * `SUPERSESSION_SYSTEM_PROMPT` directly and construct the system array
+   * with `cache_control: { type: 'ephemeral' }` themselves.  Forwarding
+   * a plain `system: string` to `client.messages.create` silently loses
+   * prompt caching.  See `call.ts` for the canonical construction.
+   */
   messages: [{ role: 'user'; content: string }];
 }
 
@@ -109,9 +116,14 @@ function sanitizeContent(content: string): string {
  * ...
  * ```
  *
+ * The system prompt (`SUPERSESSION_SYSTEM_PROMPT`) is NOT included in the
+ * return value.  Callers must import it directly and construct the SDK
+ * `system` array with `cache_control: { type: 'ephemeral' }` to preserve
+ * prompt caching.  See `call.ts` for the canonical construction.
+ *
  * @param newRetro    The new retro entry to check for supersession.
  * @param candidates  Same-cortex, same-kind retro candidates (order preserved).
- * @returns           `{ system, messages }` ready for `client.messages.create`.
+ * @returns           `{ messages }` ready for `client.messages.create`.
  */
 export function buildSupersessionMessages(
   newRetro: RetroEntry,
@@ -133,7 +145,6 @@ export function buildSupersessionMessages(
   ].join('\n');
 
   return {
-    system: SUPERSESSION_SYSTEM_PROMPT,
     messages: [{ role: 'user', content: userMsg }],
   };
 }
