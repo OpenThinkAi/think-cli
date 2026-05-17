@@ -9,7 +9,7 @@
  * - `score` is exposed on every RecallEntry
  * - When all activity_seqs are equal (most-recent anchor), recency weight is 1
  *   and `score === similarity`
- * - When activity_seq column is absent, score falls back to cosine similarity
+ * - When all activity_seq values are NULL (pre-backfill), score falls back to cosine similarity
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
@@ -132,18 +132,18 @@ describe('handleRecall — recency-weighted ranking (AGT-291)', () => {
     // entries after newRank that are old-high-sim = how many old it beat
     const oldBeaten = results.filter((r, i) => i > newRank && oldIds.includes(r.id)).length;
     expect(oldBeaten).toBeGreaterThanOrEqual(40);
-    expect(newScoreEntry.score).toBeGreaterThan(newScoreEntry.similarity * 0.99); // score ≈ cosine × 1 at max_seq
 
     // The new entry's score should equal its cosine (it's at max_seq, weight=1).
     expect(newScoreEntry.score).toBeCloseTo(newScoreEntry.similarity, 5);
   });
 
-  // ── score === similarity when activity_seq column is absent ─────────────
+  // ── score === similarity when all activity_seq values are NULL ──────────
 
-  it('score equals similarity when activity_seq column is absent (fallback behavior)', async () => {
-    // Use a fresh DB without the activity_seq column by overriding migrations
-    // for this test — simplest way is to insert into a cortex where we
-    // manually drop the column after migration.
+  it('score equals similarity when all activity_seq values are NULL (not-yet-backfilled fallback)', async () => {
+    // getCortexDb runs all migrations so the activity_seq column exists, but rows
+    // can still have NULL activity_seq if the reindex backfill (AGT-292) hasn't
+    // run yet. When MAX(activity_seq) returns NULL, the handler falls back to
+    // score = cosine for every entry.
     const db = getCortexDb(CORTEX);
 
     // Insert a few entries with embeddings but no activity_seq populated.
@@ -155,7 +155,7 @@ describe('handleRecall — recency-weighted ranking (AGT-291)', () => {
       });
       db.prepare('UPDATE memories SET embedding = ? WHERE id = ?')
         .run(toBlob(axis(i)), row.id);
-      // activity_seq intentionally left NULL
+      // activity_seq intentionally left NULL — simulates pre-backfill state
     }
 
     vi.spyOn(embedModule, 'default').mockResolvedValue(axis(0));

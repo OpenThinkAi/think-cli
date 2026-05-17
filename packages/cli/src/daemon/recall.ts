@@ -221,12 +221,17 @@ export async function handleRecall(
   // ── recency decay config ───────────────────────────────────────────────────
   // score = cosine × exp(-decay × (max_seq - entry_seq))
   // Default 0.05 → ~50% weight at seq_distance=14, ~25% at seq_distance=28.
-  const decay = getConfig().recall?.recency_decay ?? DEFAULT_DECAY;
+  // Set recencyDecay=0 in config to disable recency weighting (exp(0)=1 for all
+  // rows, so score reduces to cosine — useful for deterministic testing or
+  // cosine-only recall behavior).
+  const cfg = getConfig();
+  const decay = cfg.recall?.recencyDecay ?? DEFAULT_DECAY;
 
   // ── max_seq (one query, served by descending idx_entries_activity_seq) ─────
   // Used as the "current" anchor for recency distance. When the column is absent
-  // (pre-migration DBs) or no rows have been backfilled, falls back to null and
-  // recency weighting is skipped (score = cosine, matching the pre-AGT-291 behavior).
+  // (pre-migration DBs) or all rows have NULL activity_seq (not yet backfilled),
+  // falls back to null and recency weighting is skipped (score = cosine, matching
+  // the pre-AGT-291 behavior).
   let maxSeq: number | null = null;
   if (hasActivitySeq) {
     const seqRow = db.prepare(
@@ -236,12 +241,13 @@ export async function handleRecall(
   }
 
   // ── vector search ──────────────────────────────────────────────────────────
-  // For the sqlite-vec engine, ANN search has no per-row metadata hook inside
-  // the KNN scan, so we over-fetch by RECENCY_OVERFETCH_FACTOR and rerank in JS.
-  // The brute-force engine already returns all candidates; we still pass the
-  // larger fetch window so the hydration query brings back enough rows for rerank.
-  // After reranking, results are sliced to `limit`.
-  const engine = getConfig().search?.engine ?? 'brute-force';
+  // For the sqlite-vec engine, ANN search has no per-row metadata hook inside the
+  // KNN scan, so we over-fetch by RECENCY_OVERFETCH_FACTOR and rerank in JS.
+  // For brute-force, searchVectors ignores the `limit` parameter and returns all
+  // live candidates (see searchBruteForce in lib/search-vectors.ts) — no overfetch
+  // needed and the full rerank window is always available. After reranking, results
+  // are sliced to `limit`.
+  const engine = cfg.search?.engine ?? 'brute-force';
   const fetchLimit = (hasActivitySeq && maxSeq !== null && engine === 'sqlite-vec')
     ? limit * RECENCY_OVERFETCH_FACTOR
     : limit;
@@ -317,9 +323,15 @@ export async function handleRecall(
     // `WHERE id IN (vectorIds)`, so the map lookup is always present.
     const similarity = simMap.get(row.id)!;
 
-    // Recency weight: exp(-decay × (max_seq - entry_seq)).
-    // Falls back to weight=1 when activity_seq is unavailable — preserves
-    // pre-AGT-291 ranking for DBs that haven't been reindexed yet.
+    // Recency weight: exp(-decay × (max_seq - entry_seq)) ∈ (0, 1].
+    // Falls back to score=cosine when activity_seq is unavailable (column absent
+    // or all values NULL), preserving pre-AGT-291 ranking for un-backfilled DBs.
+    //
+    // TODO(AGT-291): For negative cosine similarities, multiplying by a weight in
+    // (0,1] moves the score toward zero, so old-but-negative entries are promoted
+    // relative to newer-but-negative ones. In practice this is low-impact since
+    // vector search rarely surfaces negative cosines, but the formula is not
+    // monotonic for the negative range.
     let score: number;
     if (maxSeq !== null && row.activity_seq !== null) {
       const seqDistance = maxSeq - row.activity_seq;

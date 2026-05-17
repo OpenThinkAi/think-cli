@@ -93,9 +93,9 @@ export interface RecallConfig {
   /**
    * Exponential decay constant for recency-weighted ranking.
    *
-   * score = cosine × exp(-recency_decay × (max_seq - entry_seq))
+   * score = cosine × exp(-recencyDecay × (max_seq - entry_seq))
    *
-   * At decay=0.05:
+   * At recencyDecay=0.05:
    *   seq_distance=0  → weight=1.00 (most recent entry, full weight)
    *   seq_distance=14 → weight≈0.50 (~half weight)
    *   seq_distance=28 → weight≈0.25 (~quarter weight)
@@ -104,9 +104,11 @@ export interface RecallConfig {
    * corpus age or absolute timestamp spread — recency is corpus-relative,
    * not wall-clock-relative.
    *
+   * Set to `0` to disable recency weighting and return pure cosine ranking.
+   *
    * Default: 0.05
    */
-  recency_decay?: number;
+  recencyDecay?: number;
 }
 
 export interface Config {
