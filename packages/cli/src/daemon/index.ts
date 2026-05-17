@@ -26,6 +26,7 @@ import { readPackageVersion } from '../lib/version.js';
 import { getConfig } from '../lib/config.js';
 import { getThinkDir } from '../lib/paths.js';
 import { getDaemonPidPath, isDaemonRunning, removePidFile } from '../lib/daemon-status.js';
+import { DEFAULT_DAEMON_TCP_PORT } from '../lib/daemon-constants.js';
 import { parseLineFraming, dispatchRequest } from './protocol.js';
 
 // ---------------------------------------------------------------------------
@@ -44,7 +45,7 @@ export interface DaemonOptions {
   /**
    * Unix domain socket path. Used on macOS/Linux. Ignored on Windows, which
    * binds localhost TCP instead (port from `config.daemon.tcpPort`, default
-   * 47821). Callers should still pass a sensible path so the field carries
+   * DEFAULT_DAEMON_TCP_PORT). Callers should still pass a sensible path so the field carries
    * one consistent value across platforms.
    */
   socketPath: string;
@@ -92,8 +93,12 @@ function writePidFile(pidPath: string): void {
  * and returns true so the caller can overwrite it. This should be unreachable
  * because the socket-bind check (AGT-279) fires first, but we defend here
  * for race conditions.
+ *
+ * Derives the PID file path via getDaemonPidPath() — matching isDaemonRunning()
+ * so both functions always operate on the same file.
  */
-function checkExistingPidFile(pidPath: string, writeLine: (msg: string) => void): boolean {
+function checkExistingPidFile(writeLine: (msg: string) => void): boolean {
+  const pidPath = getDaemonPidPath();
   const status = isDaemonRunning();
 
   if (!status.running && !status.stale) {
@@ -200,7 +205,7 @@ export async function runDaemon(options: DaemonOptions): Promise<void> {
 
   const pidPath = getDaemonPidPath();
 
-  const pidCheckOk = checkExistingPidFile(pidPath, writeLine);
+  const pidCheckOk = checkExistingPidFile(writeLine);
   if (!pidCheckOk) {
     closeLog();
     process.exit(1);
@@ -216,7 +221,7 @@ export async function runDaemon(options: DaemonOptions): Promise<void> {
 
   if (isWindows) {
     const config = getConfig();
-    tcpPort = config.daemon?.tcpPort ?? 47821;
+    tcpPort = config.daemon?.tcpPort ?? DEFAULT_DAEMON_TCP_PORT;
     writeLine(`windows platform: binding TCP localhost:${tcpPort} (socket-path ignored)`);
   } else {
     socketPath = options.socketPath;
