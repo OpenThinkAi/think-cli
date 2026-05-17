@@ -255,6 +255,10 @@ export async function handleRecall(
       `recall: 'scope' must be one of "active", "accessible", or "all", got ${JSON.stringify(scopeRaw)}`,
     );
   }
+  // Track whether scope was explicitly provided by the caller vs. defaulted.
+  // Used below to avoid noisy warnings for legacy callers that pass `cortex`
+  // without knowing about the new `scope` parameter.
+  const scopeExplicit = scopeRaw !== undefined;
   const scope: RecallScope = (scopeRaw as RecallScope | undefined) ?? 'accessible';
 
   // ── route by scope + cortex ────────────────────────────────────────────────
@@ -282,11 +286,14 @@ export async function handleRecall(
   // scope is "accessible" or "all"
   if (typeof cortexNameRaw === 'string' && cortexNameRaw.trim().length > 0) {
     // Explicit cortex overrides federation — only that cortex is queried.
-    // Emit a warning so callers who set scope="accessible" and expect
-    // fan-out behavior can discover the short-circuit.
-    process.stderr.write(
-      `think recall: scope="${scope}" with explicit cortex="${cortexNameRaw.trim()}" — federation overridden, querying only that cortex. Use scope="active" for clarity.\n`,
-    );
+    // Warn only when the caller explicitly set scope (not when they omitted
+    // it and got the "accessible" default), so legacy callers that pass
+    // `cortex` without the new scope param are not noisy.
+    if (scopeExplicit) {
+      process.stderr.write(
+        `think recall: scope="${scope}" with explicit cortex="${cortexNameRaw.trim()}" — federation overridden, querying only that cortex. Use scope="active" for clarity.\n`,
+      );
+    }
     return recallSingleCortex(cortexNameRaw.trim(), params);
   }
 
