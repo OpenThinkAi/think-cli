@@ -46,8 +46,15 @@ function searchBruteForce(
 
 // ─── sqlite-vec backend ───────────────────────────────────────────────────────
 
-/** Module-level cache: true = loaded OK, false = load failed (use brute-force). */
+/** Per-db load result: true = loaded OK, false = load failed (use brute-force). */
 const sqliteVecLoadCache = new Map<DatabaseSync, boolean>();
+
+/**
+ * Per-db backfill flag. Once the one-time backfill runs for a DB instance we
+ * never re-scan the memories table. This avoids an O(n) full-table scan on
+ * every subsequent query.
+ */
+const backfilledDbs = new Set<DatabaseSync>();
 
 /**
  * Attempts to load sqlite-vec into `db`. Returns true on success, false on
@@ -75,24 +82,27 @@ function tryLoadSqliteVec(db: DatabaseSync): boolean {
 }
 
 /**
- * Ensures the vec0 virtual table exists for embedding search.
- * Creates it if missing; no-ops on subsequent calls (IF NOT EXISTS).
- * Dimension is derived from the query vector length.
+ * Ensures the vec0 virtual table exists and is backfilled from the memories
+ * table. The backfill runs exactly once per DB instance per process — tracked
+ * via `backfilledDbs` so subsequent calls are no-ops (no repeated O(n) scan).
+ * Dimension is an integer derived from the query vector length.
  */
 function ensureVecTable(db: DatabaseSync, dim: number): void {
   db.exec(
-    `CREATE VIRTUAL TABLE IF NOT EXISTS memories_vec USING vec0(embedding float[${dim}])`,
+    `CREATE VIRTUAL TABLE IF NOT EXISTS memories_vec USING vec0(embedding float[${Math.trunc(dim)}])`,
   );
 
-  // Backfill any rows not yet in the virtual table. This is a best-effort
-  // sync — rows inserted before the table was created are caught here.
-  // The vec0 rowid corresponds to the memories.rowid.
+  if (backfilledDbs.has(db)) return;
+
+  // One-time backfill: catch any rows that existed before the virtual table
+  // was created. The vec0 rowid corresponds to memories.rowid.
   db.exec(`
     INSERT OR IGNORE INTO memories_vec(rowid, embedding)
     SELECT rowid, embedding
     FROM memories
     WHERE embedding IS NOT NULL AND deleted_at IS NULL
   `);
+  backfilledDbs.add(db);
 }
 
 function searchSqliteVec(
@@ -107,8 +117,12 @@ function searchSqliteVec(
 
   ensureVecTable(db, queryVec.length);
 
-  // KNN query via sqlite-vec's distance operator. sqlite-vec stores
-  // cosine distance (1 - cosine_similarity), so similarity = 1 - distance.
+  // Over-fetch by 2× to absorb soft-deleted rows that the KNN returns before
+  // the JOIN filter. The `k` limit inside sqlite-vec is applied before the
+  // `deleted_at IS NULL` condition, so without over-fetching the result set
+  // can be smaller than `limit` when deleted rows dominate the top candidates.
+  const fetchK = limit * 2;
+
   const rows = db.prepare(`
     SELECT m.id, mv.distance
     FROM memories_vec mv
@@ -119,10 +133,12 @@ function searchSqliteVec(
     ORDER BY mv.distance
   `).all(
     Buffer.from(queryVec.buffer, queryVec.byteOffset, queryVec.byteLength),
-    limit,
+    fetchK,
   ) as { id: string; distance: number }[];
 
-  return rows.map((r) => ({ id: r.id, similarity: 1 - r.distance }));
+  return rows
+    .slice(0, limit)
+    .map((r) => ({ id: r.id, similarity: 1 - r.distance }));
 }
 
 // ─── public API ───────────────────────────────────────────────────────────────
@@ -135,7 +151,7 @@ function searchSqliteVec(
  * effect on the next query with no daemon restart required.
  *
  * @param cortexName  Cortex whose L2 DB to search.
- * @param queryVec    L2-normalized 384-dim query vector.
+ * @param queryVec    L2-normalized query vector (same dimension as stored embeddings).
  * @param limit       Maximum number of results to return.
  */
 export function searchVectors(

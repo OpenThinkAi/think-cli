@@ -78,9 +78,8 @@ describe('searchVectors (AGT-275)', () => {
   });
 
   it('brute-force: returns top-1 with highest cosine similarity', () => {
-    // Reset to default engine.
     const cfg = getConfig();
-    if (cfg.search) cfg.search.engine = 'brute-force';
+    cfg.search = { engine: 'brute-force' };
     saveConfig(cfg);
 
     // Query with [1, 0, 0] — should match fixture-a (id[0]) with sim=1.0.
@@ -92,7 +91,7 @@ describe('searchVectors (AGT-275)', () => {
 
   it('brute-force: top-1 for y-axis query is fixture-b', () => {
     const cfg = getConfig();
-    if (cfg.search) cfg.search.engine = 'brute-force';
+    cfg.search = { engine: 'brute-force' };
     saveConfig(cfg);
 
     const results = searchVectors(cortex, axis(1), 1);
