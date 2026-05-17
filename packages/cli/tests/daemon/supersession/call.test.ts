@@ -1,8 +1,9 @@
 /**
  * Tests for the supersession LLM call module (AGT-303).
  *
- * Mocks the Anthropic SDK to test JSON parsing, retry-once-on-parse-error,
- * and LLM consent gating without making real network calls.
+ * Mocks the Anthropic SDK to test JSON parsing, fence stripping,
+ * retry-once-on-parse-error, and LLM consent gating without making real
+ * network calls.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import type { SupersessionResult } from '../../../src/daemon/supersession/call.js';
@@ -74,7 +75,6 @@ describe('runSupersession — happy path', () => {
       process.env['THINK_LLM_CONSENT'] = originalEnv;
     }
     vi.restoreAllMocks();
-    vi.resetModules();
   });
 
   it('parses a valid supersession response', async () => {
@@ -149,6 +149,34 @@ describe('runSupersession — happy path', () => {
     expect(result.topics).toEqual([]);
     expect(result.is_duplicate).toBe(false);
   });
+
+  it('strips markdown code fences (```json) from the response', async () => {
+    const fenced = '```json\n' + JSON.stringify(VALID_RESPONSE) + '\n```';
+    const mockCreate = vi.fn().mockResolvedValue({
+      content: [{ type: 'text', text: fenced }],
+    });
+    vi.doMock('@anthropic-ai/sdk', () => buildAnthropicMock(mockCreate));
+
+    const { runSupersession } = await import('../../../src/daemon/supersession/call.js');
+    const result = await runSupersession(NEW_RETRO, CANDIDATES);
+
+    expect(result.supersedes).toEqual(['retro_2a1']);
+    expect(result.is_duplicate).toBe(false);
+  });
+
+  it('strips plain code fences (```) from the response', async () => {
+    const fenced = '```\n' + JSON.stringify(VALID_RESPONSE) + '\n```';
+    const mockCreate = vi.fn().mockResolvedValue({
+      content: [{ type: 'text', text: fenced }],
+    });
+    vi.doMock('@anthropic-ai/sdk', () => buildAnthropicMock(mockCreate));
+
+    const { runSupersession } = await import('../../../src/daemon/supersession/call.js');
+    const result = await runSupersession(NEW_RETRO, CANDIDATES);
+
+    expect(result.is_duplicate).toBe(false);
+    expect(result.topics).toEqual(['strategy', 'schema', 'v2']);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -171,7 +199,6 @@ describe('runSupersession — retry on parse error', () => {
       process.env['THINK_LLM_CONSENT'] = originalEnv;
     }
     vi.restoreAllMocks();
-    vi.resetModules();
   });
 
   it('retries once when first response is invalid JSON and succeeds on second', async () => {
@@ -197,8 +224,20 @@ describe('runSupersession — retry on parse error', () => {
     vi.doMock('@anthropic-ai/sdk', () => buildAnthropicMock(mockCreate));
 
     const { runSupersession } = await import('../../../src/daemon/supersession/call.js');
-    await expect(runSupersession(NEW_RETRO, CANDIDATES)).rejects.toThrow();
+    await expect(runSupersession(NEW_RETRO, CANDIDATES)).rejects.toThrow('Supersession JSON parse failed');
     expect(mockCreate).toHaveBeenCalledTimes(2);
+  });
+
+  it('error message includes the raw text on failure', async () => {
+    const badText = 'this is definitely not json';
+    const mockCreate = vi
+      .fn()
+      .mockResolvedValue({ content: [{ type: 'text', text: badText }] });
+
+    vi.doMock('@anthropic-ai/sdk', () => buildAnthropicMock(mockCreate));
+
+    const { runSupersession } = await import('../../../src/daemon/supersession/call.js');
+    await expect(runSupersession(NEW_RETRO, CANDIDATES)).rejects.toThrow(badText);
   });
 });
 
@@ -213,7 +252,6 @@ describe('runSupersession — LLM consent gate', () => {
 
   afterEach(() => {
     vi.restoreAllMocks();
-    vi.resetModules();
   });
 
   it('throws LlmConsentError when THINK_LLM_CONSENT is not set', async () => {

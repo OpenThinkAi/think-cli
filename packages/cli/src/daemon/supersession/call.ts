@@ -39,8 +39,29 @@ export interface SupersessionResult {
 // Internal helpers
 // ---------------------------------------------------------------------------
 
+/**
+ * Strip optional markdown code fences (```json or ```) from a string.
+ * Applied before JSON.parse so that models that occasionally wrap their
+ * output still produce valid results.
+ */
+function stripFences(text: string): string {
+  return text
+    .replace(/^```(?:json)?\s*\n?/, '')
+    .replace(/\n?```\s*$/, '')
+    .trim();
+}
+
 function parseSupersessionResponse(text: string): SupersessionResult {
-  const raw = JSON.parse(text) as unknown;
+  const cleaned = stripFences(text);
+  let raw: unknown;
+  try {
+    raw = JSON.parse(cleaned) as unknown;
+  } catch (err) {
+    throw new Error(
+      `Supersession JSON parse failed. Raw (${text.length} chars): "${text.slice(0, 300)}"`,
+      { cause: err },
+    );
+  }
   if (!raw || typeof raw !== 'object') {
     throw new Error('Supersession response is not a JSON object');
   }
@@ -74,8 +95,13 @@ function extractText(response: Anthropic.Message): string {
  * Run the supersession check for a new retro against a set of candidates.
  *
  * Uses `claude-sonnet-4-6` with `temperature: 0.1` (classification task) and
- * a cached system prompt (`cache_control: { type: "ephemeral" }`).  Retries
- * once on JSON parse failure before re-throwing.
+ * a cached system prompt (`cache_control: { type: "ephemeral" }`).  Strips
+ * markdown code fences before JSON.parse to handle models that wrap output.
+ * Retries once on parse failure (recovers from transient non-determinism;
+ * systematic failures will still fail on the second attempt).
+ *
+ * `max_tokens: 300` is sized for compact JSON output. If the candidate count
+ * is ever raised significantly (> ~20 long IDs), revisit this limit.
  *
  * The caller is responsible for fetching the candidate list (filter by
  * `kind = 'retro'` AND same cortex via vector search) before calling this.
@@ -115,9 +141,8 @@ export async function runSupersession(
     return parseSupersessionResponse(rawText);
   } catch {
     // Retry once on transient parse failure (non-deterministic model output).
-    // This does not help when the model consistently wraps output in fences —
-    // the retry is byte-for-byte identical.  Only transient non-determinism
-    // can be recovered here.
+    // Fence stripping handles systematic wrapping; this retry is a last resort
+    // for genuinely transient failures.
     const retryResponse = await callClaude();
     const retryText = extractText(retryResponse);
     return parseSupersessionResponse(retryText);
