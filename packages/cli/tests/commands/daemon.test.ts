@@ -25,7 +25,7 @@ describe('daemon module', () => {
   });
 
   it('runDaemon resolves without throwing in foreground mode', async () => {
-    const { runDaemon, getDefaultSocketPath } = await import('../../src/daemon/index.js');
+    const { runDaemon } = await import('../../src/daemon/index.js');
 
     // Mock process.on so signal handlers are captured but not actually registered
     // for the test process (avoids leaking SIGINT/SIGTERM handlers between tests).
@@ -40,7 +40,7 @@ describe('daemon module', () => {
     const stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
 
     await expect(
-      runDaemon({ foreground: true, socketPath: getDefaultSocketPath() }),
+      runDaemon({ foreground: true, socketPath: `${tmpHome}/daemon.sock` }),
     ).resolves.toBeUndefined();
 
     // Confirm SIGTERM and SIGINT handlers were registered.
@@ -59,7 +59,7 @@ describe('daemon module', () => {
   });
 
   it('runDaemon does not attach stdin and exits 1 in non-foreground mode', async () => {
-    const { runDaemon, getDefaultSocketPath } = await import('../../src/daemon/index.js');
+    const { runDaemon } = await import('../../src/daemon/index.js');
 
     vi.spyOn(process, 'on').mockImplementation(() => process);
     const stdinResumeSpy = vi.spyOn(process.stdin, 'resume').mockImplementation(() => process.stdin);
@@ -71,13 +71,13 @@ describe('daemon module', () => {
 
     // Non-foreground mode calls process.exit(1) because no socket holds the event loop.
     await expect(
-      runDaemon({ foreground: false, socketPath: getDefaultSocketPath() }),
+      runDaemon({ foreground: false, socketPath: `${tmpHome}/daemon.sock` }),
     ).rejects.toThrow('process.exit(1)');
 
     // stdin must NOT be resumed in non-foreground mode (stdin may be /dev/null).
     expect(stdinResumeSpy).not.toHaveBeenCalled();
 
-    // An honest "not yet" message should appear on stderr (errors go to stderr).
+    // Confirm the error message appeared on stderr.
     const stderrOutput = stderrSpy.mock.calls.map(([msg]) => msg as string).join('');
     expect(stderrOutput).toMatch(/think daemon/);
     expect(stderrOutput).toMatch(/--foreground/);

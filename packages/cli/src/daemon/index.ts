@@ -31,86 +31,6 @@ function getDaemonLogPath(): string {
   return path.join(getThinkDir(), 'daemon.log');
 }
 
-/** Default Unix socket path. */
-export function getDefaultSocketPath(): string {
-  return path.join(getThinkDir(), 'daemon.sock');
-}
-
-// ---------------------------------------------------------------------------
-// Minimal log rotation (keep ≤ 3 files, rotate when file exceeds 10 MB)
-// ---------------------------------------------------------------------------
-
-const LOG_MAX_BYTES = 10 * 1024 * 1024; // 10 MB
-
-function rotateLogs(logPath: string): void {
-  try {
-    if (!fs.existsSync(logPath)) return;
-    const stat = fs.statSync(logPath);
-    if (stat.size < LOG_MAX_BYTES) return;
-
-    // Shift existing rotated files: .2 → drop, .1 → .2, base → .1
-    const rotate2 = `${logPath}.2`;
-    const rotate1 = `${logPath}.1`;
-    if (fs.existsSync(rotate2)) fs.unlinkSync(rotate2);
-    if (fs.existsSync(rotate1)) fs.renameSync(rotate1, rotate2);
-    fs.renameSync(logPath, rotate1);
-  } catch {
-    // Rotation is best-effort; startup should not fail due to log rotation
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Logger
-// ---------------------------------------------------------------------------
-
-interface Logger {
-  log(msg: string): void;
-  close(): void;
-}
-
-function makeLogger(foreground: boolean, logPath: string): Logger {
-  let fd: number | null = null;
-
-  if (!foreground) {
-    try {
-      fs.mkdirSync(path.dirname(logPath), { recursive: true });
-      rotateLogs(logPath);
-      fd = fs.openSync(logPath, 'a');
-    } catch {
-      // File open failed; all output falls through to stderr below
-      process.stderr.write(
-        `[think daemon] could not open log file ${logPath}, falling back to stderr\n`,
-      );
-    }
-  }
-
-  return {
-    log(msg: string): void {
-      const line = `[${new Date().toISOString()}] ${msg}\n`;
-      if (foreground || fd === null) {
-        process.stderr.write(line);
-      }
-      if (fd !== null) {
-        try {
-          fs.writeSync(fd, line);
-        } catch {
-          // Best-effort
-        }
-      }
-    },
-    close(): void {
-      if (fd !== null) {
-        try {
-          fs.closeSync(fd);
-        } catch {
-          // Ignore
-        }
-        fd = null;
-      }
-    },
-  };
-}
-
 // ---------------------------------------------------------------------------
 // Options
 // ---------------------------------------------------------------------------
@@ -133,34 +53,53 @@ export async function runDaemon(options: DaemonOptions): Promise<void> {
     version = '0.0.0';
   }
 
-  const logger = makeLogger(options.foreground, getDaemonLogPath());
+  const logPath = getDaemonLogPath();
+  let logFd: number | null = null;
 
-  logger.log(`think daemon starting (pid=${process.pid}, version=${version})`);
-  logger.log(`socket-path=${options.socketPath}`);
-
-  function shutdown(signal: string): void {
-    logger.log(`shutting down… (signal=${signal})`);
-    logger.close();
-    process.exit(0);
+  if (!options.foreground) {
+    try {
+      fs.mkdirSync(path.dirname(logPath), { recursive: true });
+      logFd = fs.openSync(logPath, 'a');
+    } catch {
+      process.stderr.write(`[think daemon] could not open log file ${logPath}, falling back to stderr\n`);
+    }
   }
 
-  process.on('SIGTERM', () => shutdown('SIGTERM'));
-  process.on('SIGINT', () => shutdown('SIGINT'));
+  function writeLine(msg: string): void {
+    const line = `[${new Date().toISOString()}] ${msg}\n`;
+    if (options.foreground || logFd === null) {
+      process.stderr.write(line);
+    }
+    if (logFd !== null) {
+      try { fs.writeSync(logFd, line); } catch { /* best-effort */ }
+    }
+  }
+
+  function closeLog(): void {
+    if (logFd !== null) {
+      try { fs.closeSync(logFd); } catch { /* ignore */ }
+      logFd = null;
+    }
+  }
+
+  writeLine(`think daemon starting (pid=${process.pid}, version=${version})`);
+  writeLine(`socket-path=${options.socketPath}`);
+
+  process.on('SIGTERM', () => { writeLine('shutting down… (signal=SIGTERM)'); closeLog(); process.exit(0); });
+  process.on('SIGINT',  () => { writeLine('shutting down… (signal=SIGINT)');  closeLog(); process.exit(0); });
 
   if (options.foreground) {
     // Foreground: attach to stdin so Ctrl-C / EOF work naturally in a terminal.
     process.stdin.resume();
-    process.stdin.on('end', () => shutdown('stdin-close'));
-    logger.log('think daemon ready');
+    process.stdin.on('end', () => { writeLine('shutting down… (signal=stdin-close)'); closeLog(); process.exit(0); });
+    writeLine('think daemon ready');
   } else {
-    // Non-foreground: socket server not yet wired; the process will exit
-    // immediately because nothing holds the event loop open.
-    // Exit non-zero so callers can detect the failure.
+    // Non-foreground: socket server not yet wired; exit non-zero so callers detect the gap.
     process.stderr.write(
       `think daemon: socket not yet bound — pass --foreground to run in the foreground.\n`,
     );
-    logger.log('think daemon: exiting (no socket to hold event loop)');
-    logger.close();
+    writeLine('think daemon: exiting (no socket to hold event loop)');
+    closeLog();
     process.exit(1);
   }
 }

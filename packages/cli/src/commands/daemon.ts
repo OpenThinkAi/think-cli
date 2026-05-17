@@ -9,29 +9,22 @@ import { Command } from 'commander';
  * `stop` and `status` land in downstream tickets.
  */
 
-/** Compute the default socket path here to avoid a static import of daemon/index.ts
- * (which would defeat the lazy `await import(...)` in the action handler). */
+/** Compute the default socket path without importing daemon/index.ts so the
+ * lazy `await import(...)` in the action handler is not defeated. */
 function defaultSocketPath(): string {
   const override = process.env.THINK_HOME;
   return path.join(override || path.join(os.homedir(), '.think'), 'daemon.sock');
 }
 
 const startSubcommand = new Command('start')
-  .description(
-    'Run the think daemon. Background mode is coming soon; the default is foreground.',
-  )
-  .option(
-    '--foreground',
-    'Write logs to stderr and keep the process in the foreground (current default)',
-  )
+  .description('Start the think daemon in the foreground.')
   .option('--socket-path <path>', 'Unix socket path (default: $THINK_HOME/daemon.sock or ~/.think/daemon.sock)')
-  .action(async (opts: { foreground: boolean | undefined; socketPath?: string }) => {
+  .action(async (opts: { socketPath?: string }) => {
     // Lazy-import keeps daemon/index.ts out of the startup parse path for all
     // other `think` commands. No static import of daemon/index.ts in this file.
     const { runDaemon } = await import('../daemon/index.js');
     await runDaemon({
-      // Default to foreground until socket binding lands.
-      foreground: opts.foreground ?? true,
+      foreground: true, // only supported mode until socket binding lands (AGT-279)
       socketPath: opts.socketPath ?? defaultSocketPath(),
     });
   });
