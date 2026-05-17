@@ -21,6 +21,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { getCortexDb } from '../../db/engrams.js';
 import { getRepoPath, sanitizeName } from '../../lib/paths.js';
+import { getConfig } from '../../lib/config.js';
+import { searchVectors } from '../../lib/search-vectors.js';
 import type { NewEntry } from './call.js';
 
 /**
@@ -40,6 +42,10 @@ const BACKOFF_BASE_MS = 1000;
 const MAX_RETRIES = 4;
 /** Maximum number of entries re-enqueued per cortex on daemon startup. */
 const BACKFILL_CAP = 100;
+/** Top-K candidates to retrieve for the triage gate similarity check. */
+const TRIAGE_TOP_K = 10;
+/** Default cosine similarity threshold below which LLM call is skipped. */
+const TRIAGE_THRESHOLD_DEFAULT = 0.6;
 
 // ---------------------------------------------------------------------------
 // Types
@@ -80,6 +86,19 @@ export class CompactionQueue {
    * multi-worker wakeup if parallelism is added in the future.
    */
   private wakeWorker?: () => void;
+
+  /**
+   * Number of compaction jobs that were skipped by the triage gate because
+   * max cosine similarity was below the threshold. Resets on process restart.
+   * Exposed via `getStats()` for the daemon log and status endpoint.
+   */
+  private _compactionsSkippedTriage = 0;
+
+  /**
+   * Number of compaction jobs that passed the triage gate and triggered an
+   * LLM call. Resets on process restart.
+   */
+  private _compactionsRun = 0;
 
   /**
    * Optional pipeline override for testing. When set, `runCompactionPipeline`
@@ -136,6 +155,20 @@ export class CompactionQueue {
    */
   getDepth(cortex: string): number {
     return this.depthByCortex.get(cortex) ?? 0;
+  }
+
+  /**
+   * Returns process-lifetime metrics counters for the compaction triage gate.
+   * Values reset on daemon restart.
+   *
+   * - `compactions_skipped_triage`: jobs where max cosine < threshold → LLM skipped.
+   * - `compactions_run`: jobs that passed the triage gate → LLM was called.
+   */
+  getStats(): { compactions_skipped_triage: number; compactions_run: number } {
+    return {
+      compactions_skipped_triage: this._compactionsSkippedTriage,
+      compactions_run: this._compactionsRun,
+    };
   }
 
   /**
@@ -225,13 +258,17 @@ export class CompactionQueue {
   /**
    * Run the compaction pipeline for one job.
    *
-   * Current scope (AGT-299):
-   *   - Read entry content from L2.
-   *   - While DRY_RUN=true: log what would be compacted and return without
-   *     making any LLM call or writing any output. No API tokens are consumed.
-   *   - AGT-300 will add the triage vector-search (top-K candidates).
-   *   - AGT-301 will clear DRY_RUN and add the L1+L2 write for the compacted
-   *     entry.
+   * AGT-300 triage gate:
+   *   1. Read entry content + embedding from L2.
+   *   2. If the embedding is present, vector-search L2 for the top-K most
+   *      similar entries in the same cortex (excluding the entry itself).
+   *   3. If max(candidate.cosine) < triage_threshold, skip the LLM call and
+   *      return { status: "no_compaction_needed" } — the raw entry IS the
+   *      current entry (no compacted entry is written).
+   *   4. If above threshold (or no embedding yet), fall through to the LLM
+   *      path (DRY_RUN while AGT-301 is pending).
+   *
+   * AGT-301 will clear DRY_RUN and add the L1+L2 write for the compacted entry.
    *
    * Throws on any error so the retry loop can back off.
    *
@@ -241,18 +278,51 @@ export class CompactionQueue {
     if (this._pipelineOverride !== undefined) {
       return this._pipelineOverride(job);
     }
-    // Read the entry content from L2 (inserted by the sync handler).
-    const newEntry = readEntryFromL2(job.entry_id, job.cortex);
-    if (newEntry === null) {
+
+    // Read the entry content + embedding from L2 (inserted by the sync handler).
+    const entryWithEmbedding = readEntryWithEmbeddingFromL2(job.entry_id, job.cortex);
+    if (entryWithEmbedding === null) {
       // Entry not found in L2 — skip (may have been deleted or L2 insert
       // failed; backfill on next startup handles the reconciliation case).
       log(`compaction skipped: entry ${job.entry_id} not found in L2 (cortex=${job.cortex})`);
       return;
     }
 
+    const { newEntry, embedding } = entryWithEmbedding;
+
+    // ── Triage gate (AGT-300) ─────────────────────────────────────────────────
+    //
+    // If the embedding is available, check whether any existing entry in the
+    // same cortex is similar enough to warrant compaction. If not, the new
+    // entry is net-new on its topic and the LLM call is unnecessary.
+    if (embedding !== null) {
+      const threshold = getConfig().compaction?.triage_threshold ?? TRIAGE_THRESHOLD_DEFAULT;
+      const candidates = searchVectors(job.cortex, embedding, TRIAGE_TOP_K + 1);
+
+      // Exclude the entry itself from the candidate list (it may appear in the
+      // results if its embedding was indexed before the triage check ran).
+      const others = candidates.filter(c => c.id !== job.entry_id);
+
+      const maxSimilarity = others.length > 0
+        ? Math.max(...others.map(c => c.similarity))
+        : -1;
+
+      if (maxSimilarity < threshold) {
+        this._compactionsSkippedTriage++;
+        log(
+          `compaction triage: skipped LLM (entry=${job.entry_id}, cortex=${job.cortex}, ` +
+          `max_cosine=${maxSimilarity.toFixed(4)}, threshold=${threshold}) — no_compaction_needed`,
+        );
+        return;
+      }
+    }
+    // ── End triage gate ───────────────────────────────────────────────────────
+
+    this._compactionsRun++;
+
     if (DRY_RUN) {
       // Dry-run: log intent without calling the LLM or writing any output.
-      // AGT-301 will replace this branch with the real triage + apply path.
+      // AGT-301 will replace this branch with the real apply path.
       log(
         `[dry-run] would compact entry=${job.entry_id} cortex=${job.cortex} ` +
         `content="${newEntry.content.slice(0, 60)}${newEntry.content.length > 60 ? '…' : ''}"`,
@@ -261,9 +331,9 @@ export class CompactionQueue {
     }
 
     // --- live path (wired by AGT-301) ---
-    // The import of runCompaction is intentionally inside this unreachable
-    // branch so the SDK is not loaded (and consent is not checked) until
-    // AGT-301 activates the live path by setting DRY_RUN=false.
+    // The import of runCompaction is intentionally inside this branch so the
+    // SDK is not loaded (and consent is not checked) until AGT-301 activates
+    // the live path by setting DRY_RUN=false.
     const { runCompaction } = await import('./call.js');
     const result = await runCompaction(newEntry, []);
 
@@ -412,18 +482,35 @@ function makeCompactionExistsChecker(cortexName: string): ((id: string) => boole
 }
 
 /**
- * Read an entry's content and timestamp from the L2 memories table.
- * Returns null when the entry is not found.
+ * Read an entry's content, timestamp, and embedding from the L2 memories
+ * table. Returns null when the entry is not found.
+ *
+ * The embedding column was added in AGT-278 and is nullable — rows without
+ * an embedding return `embedding: null`, which causes the triage gate to
+ * skip the similarity check and proceed directly to the LLM path.
  */
-function readEntryFromL2(entryId: string, cortexName: string): NewEntry | null {
+function readEntryWithEmbeddingFromL2(
+  entryId: string,
+  cortexName: string,
+): { newEntry: NewEntry; embedding: Float32Array | null } | null {
   try {
     const db = getCortexDb(cortexName);
     const row = db.prepare(
-      'SELECT ts, content FROM memories WHERE id = ? AND deleted_at IS NULL',
-    ).get(entryId) as { ts: string; content: string } | undefined;
+      'SELECT ts, content, embedding FROM memories WHERE id = ? AND deleted_at IS NULL',
+    ).get(entryId) as { ts: string; content: string; embedding: Uint8Array | null } | undefined;
 
     if (row === undefined) return null;
-    return { ts: row.ts, content: row.content };
+
+    let embedding: Float32Array | null = null;
+    if (row.embedding !== null && row.embedding.byteLength > 0) {
+      embedding = new Float32Array(
+        row.embedding.buffer,
+        row.embedding.byteOffset,
+        row.embedding.byteLength / 4,
+      );
+    }
+
+    return { newEntry: { ts: row.ts, content: row.content }, embedding };
   } catch {
     return null;
   }
