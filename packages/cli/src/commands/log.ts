@@ -66,6 +66,11 @@ export const syncCommand = new Command('sync')
 
     const cortex = globalOpts.cortex ?? config.cortex?.active;
 
+    // AGT-289: Hook point for daemon write routing. When the daemon write RPC
+    // is wired (later phase), the live path will be inserted here with
+    // probeDaemon(100) for degraded-mode detection; direct write below is
+    // the fallback.
+
     if (cortex) {
       // Validate and sanitize content before storage
       const validated = validateEngramContent(message);
