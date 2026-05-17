@@ -23,9 +23,13 @@
  *
  * Security note: `additionalContext` is injected into the agent's context
  * window. This hook surfaces only content the user themselves stored in think
- * (their own memories, engrams, and long-term entries). It never surfaces
- * credentials, secrets, or data from other users. Content is passed verbatim
- * — no sanitization is applied beyond what `think recall` already enforces.
+ * (their own memories, engrams, and long-term entries) — the `scope: "accessible"`
+ * recall scope is defined in `packages/cli/src/daemon/recall.ts` to enumerate only
+ * locally-cloned cortexes belonging to the authenticated user, never remote peers
+ * or shared stores. Each entry's content is truncated to MAX_ENTRY_CHARS to bound
+ * the injection blast radius. Content is otherwise passed verbatim — no HTML
+ * escaping or instruction-stripping is applied, because this is an intra-process
+ * trusted channel and such transforms would degrade recall utility.
  *
  * Performance target: <500ms warm (daemon already running). The RPC timeout
  * is set to 400ms so that even accounting for stdin read and serialization the
@@ -68,6 +72,15 @@ export const RECALL_TIMEOUT_MS = 400;
  * and waste a daemon round-trip. Skip recall for trivially short prompts.
  */
 export const MIN_PROMPT_LENGTH = 10;
+
+/**
+ * Maximum character length per injected recall entry's content field.
+ *
+ * Truncating at this limit bounds the blast radius of a poisoned or
+ * excessively-long memory entry — 2 000 chars is ample for any meaningful
+ * memory while preventing multi-KB entries from flooding the context window.
+ */
+export const MAX_ENTRY_CHARS = 2_000;
 
 // ---------------------------------------------------------------------------
 // Stdin reader
@@ -117,7 +130,8 @@ export function buildAdditionalContext(entries: RecallEntry[]): string {
 
   const lines = entries.map((e) => {
     const cortexTag = e.cortex ? `[${e.cortex}] ` : '';
-    return `- ${cortexTag}${e.content}`;
+    const body = (e.content ?? '').slice(0, MAX_ENTRY_CHARS);
+    return `- ${cortexTag}${body}`;
   });
 
   return `Relevant context from think (${entries.length} ${entries.length === 1 ? 'entry' : 'entries'}):\n${lines.join('\n')}`;
