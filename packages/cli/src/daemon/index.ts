@@ -1,7 +1,8 @@
 /**
  * think daemon entry point — AGT-278 scaffold + AGT-279 Unix socket server
+ *                            + AGT-281 PID file with stale-detection
  *
- * Responsibilities (this ticket):
+ * Responsibilities:
  *  - Write startup log to ~/.think/daemon.log (or stderr when --foreground)
  *  - Install SIGTERM / SIGINT handlers that log and exit cleanly
  *  - Bind a net.Server on ~/.think/daemon.sock (Unix) or localhost TCP (Windows)
@@ -10,10 +11,11 @@
  *  - chmod socket to 0600 immediately after bind, before accepting connections
  *  - Log each incoming connection at debug level; hand off to handleConnection()
  *  - On shutdown: close server, unlink socket file
+ *  - AGT-281: Write PID to ~/.think/daemon.pid (0600) after socket bind;
+ *    stale-PID detection on startup; remove PID file on clean shutdown
  *
  * NOT in this ticket:
  *  - JSON-line protocol (AGT-280)
- *  - PID file (AGT-281)
  *  - API endpoints (AGT-285+)
  */
 
@@ -23,6 +25,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { readPackageVersion } from '../lib/version.js';
 import { getConfig } from '../lib/config.js';
+import { getDaemonPidPath } from '../lib/daemon-status.js';
 
 // ---------------------------------------------------------------------------
 // Paths
@@ -61,6 +64,82 @@ function handleConnection(socket: net.Socket): void {
   // Protocol arrives in AGT-280. Until then, close immediately so a curious
   // client doesn't pin a file descriptor open indefinitely.
   socket.destroy();
+}
+
+// ---------------------------------------------------------------------------
+// PID file helpers (AGT-281)
+// ---------------------------------------------------------------------------
+
+/**
+ * Write `process.pid` to `~/.think/daemon.pid` with 0600 permissions.
+ * Creates the directory if needed. Throws on failure.
+ */
+function writePidFile(pidPath: string): void {
+  fs.mkdirSync(path.dirname(pidPath), { recursive: true });
+  fs.writeFileSync(pidPath, String(process.pid) + '\n', { encoding: 'utf8', mode: 0o600 });
+}
+
+/**
+ * Remove the PID file. Swallows ENOENT (already gone). Re-throws other errors.
+ */
+function removePidFile(pidPath: string): void {
+  try {
+    fs.unlinkSync(pidPath);
+  } catch (err: unknown) {
+    if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
+  }
+}
+
+/**
+ * On startup, check for an existing PID file. If a live daemon is already
+ * running, exits with an error message. If the recorded process is dead
+ * (stale), deletes the file so we can overwrite it. Returns `true` if the
+ * caller should proceed with startup, `false` if we already called
+ * `process.exit`.
+ */
+function checkExistingPidFile(pidPath: string, writeLine: (msg: string) => void): boolean {
+  let raw: string;
+  try {
+    raw = fs.readFileSync(pidPath, 'utf8').trim();
+  } catch (err: unknown) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return true; // no file — proceed
+    throw err;
+  }
+
+  const pid = parseInt(raw, 10);
+  if (!Number.isFinite(pid) || pid <= 0) {
+    writeLine(`warn: daemon.pid contains invalid value "${raw}" — overwriting`);
+    removePidFile(pidPath);
+    return true;
+  }
+
+  try {
+    process.kill(pid, 0);
+    // Process is alive — another daemon is running. This should be unreachable
+    // because the socket-bind check (AGT-279) fires first, but we defend here
+    // for race conditions.
+    process.stderr.write(
+      `error: another daemon is already running (pid=${pid}, detected via PID file). ` +
+      `Kill the existing process or remove ${pidPath}.\n`,
+    );
+    return false;
+  } catch (err: unknown) {
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code === 'ESRCH') {
+      writeLine(`stale PID file detected (pid=${pid} is dead) — overwriting`);
+      removePidFile(pidPath);
+      return true;
+    }
+    if (code === 'EPERM') {
+      // Process exists but we lack permission to signal it — treat as alive.
+      process.stderr.write(
+        `error: another daemon appears to be running (pid=${pid}, EPERM). ` +
+        `Kill the existing process or remove ${pidPath}.\n`,
+      );
+      return false;
+    }
+    throw err;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -136,6 +215,18 @@ export async function runDaemon(options: DaemonOptions): Promise<void> {
   }
 
   writeLine(`think daemon starting (pid=${process.pid}, version=${version})`);
+
+  // ---------------------------------------------------------------------------
+  // PID file — stale detection before bind (AGT-281)
+  // ---------------------------------------------------------------------------
+
+  const pidPath = getDaemonPidPath();
+
+  const pidCheckOk = checkExistingPidFile(pidPath, writeLine);
+  if (!pidCheckOk) {
+    closeLog();
+    process.exit(1);
+  }
 
   // ---------------------------------------------------------------------------
   // Resolve bind address
@@ -250,6 +341,22 @@ export async function runDaemon(options: DaemonOptions): Promise<void> {
 
   await bindServer();
 
+  // Write PID file after socket bind succeeds (AGT-281).
+  // If this fails, the daemon shuts down hard — better to die visibly than
+  // to run without a PID file that downstream tooling depends on.
+  try {
+    writePidFile(pidPath);
+    writeLine(`pid file written (pid=${process.pid}, path=${pidPath})`);
+  } catch (pidErr: unknown) {
+    process.stderr.write(`error: could not write PID file at ${pidPath}: ${String(pidErr)}\n`);
+    server.close();
+    if (socketPath !== null) {
+      try { fs.unlinkSync(socketPath); } catch { /* best-effort */ }
+    }
+    closeLog();
+    process.exit(1);
+  }
+
   if (isWindows && tcpPort !== null) {
     writeLine(`think daemon ready (tcp=127.0.0.1:${tcpPort})`);
   } else {
@@ -266,6 +373,8 @@ export async function runDaemon(options: DaemonOptions): Promise<void> {
       if (socketPath !== null) {
         try { fs.unlinkSync(socketPath); } catch { /* already gone */ }
       }
+      // Remove PID file on clean shutdown (AGT-281).
+      try { removePidFile(pidPath); } catch { /* best-effort */ }
       closeLog();
       process.exit(0);
     });
