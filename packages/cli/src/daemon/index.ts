@@ -38,7 +38,6 @@ function getDaemonLogPath(): string {
 // ---------------------------------------------------------------------------
 
 const LOG_MAX_BYTES = 10 * 1024 * 1024; // 10 MB
-const LOG_KEEP = 3;
 
 function rotateLogs(logPath: string): void {
   try {
@@ -50,7 +49,7 @@ function rotateLogs(logPath: string): void {
     const rotate2 = `${logPath}.2`;
     const rotate1 = `${logPath}.1`;
     if (fs.existsSync(rotate2)) fs.unlinkSync(rotate2);
-    if (LOG_KEEP > 2 && fs.existsSync(rotate1)) fs.renameSync(rotate1, rotate2);
+    if (fs.existsSync(rotate1)) fs.renameSync(rotate1, rotate2);
     fs.renameSync(logPath, rotate1);
   } catch {
     // Rotation is best-effort; startup should not fail due to log rotation
@@ -124,9 +123,9 @@ function parseArgv(argv: string[]): DaemonOptions {
   const args = argv.slice(2); // strip 'node' + script path
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
-    if (arg === '--foreground' || arg === '-f') {
+    if (arg === '--foreground') {
       defaults.foreground = true;
-    } else if ((arg === '--socket-path' || arg === '--socketPath') && args[i + 1]) {
+    } else if (arg === '--socket-path' && args[i + 1]) {
       defaults.socketPath = args[++i];
     }
   }
@@ -147,9 +146,7 @@ export async function runDaemon(options?: Partial<DaemonOptions>): Promise<void>
   const logger = makeLogger(opts.foreground, getDaemonLogPath());
 
   logger.log(`think daemon starting (pid=${process.pid}, version=${version})`);
-  if (opts.socketPath) {
-    logger.log(`socket-path=${opts.socketPath} (socket binding not yet implemented — AGT-279)`);
-  }
+  logger.log(`socket-path=${opts.socketPath}`);
 
   function shutdown(signal: string): void {
     logger.log(`shutting down… (signal=${signal})`);
@@ -167,10 +164,15 @@ export async function runDaemon(options?: Partial<DaemonOptions>): Promise<void>
     process.stdin.on('end', () => shutdown('stdin-close'));
   }
 
-  // Scaffold: daemon is now "running". Downstream tickets add socket binding.
-  // In foreground mode we keep the process alive so the caller can test signal
-  // delivery. In detached/daemon mode the process stays alive indefinitely.
-  logger.log('think daemon ready (scaffold — no socket yet)');
+  // Emit one stdout line so non-foreground callers know the daemon started
+  // and where logs are written. Foreground callers already see stderr output.
+  if (!opts.foreground) {
+    process.stdout.write(
+      `think daemon started (pid=${process.pid}). Logs: ${getDaemonLogPath()}\n`,
+    );
+  }
+
+  logger.log('think daemon ready');
 }
 
 // ---------------------------------------------------------------------------
