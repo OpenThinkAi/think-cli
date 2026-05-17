@@ -6,7 +6,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { getCortexDb, closeAllCortexDbs, migrations } from '../../src/db/engrams.js';
 import { runMigrations } from '../../src/db/migrate.js';
 import { getPeerId } from '../../src/lib/config.js';
-import { getEngramDbPath, ensureThinkDirs } from '../../src/lib/paths.js';
+import { getIndexDbPath, ensureThinkDirs } from '../../src/lib/paths.js';
 import {
   insertRetro,
   insertRetroIfNotExists,
@@ -703,7 +703,7 @@ describe('migration v10 backfill', () => {
 
   it('backfills pre-v10 retro rows to the local peer', () => {
     ensureThinkDirs();
-    const dbPath = getEngramDbPath(cortex);
+    const dbPath = getIndexDbPath(cortex);
     const db = new DatabaseSync(dbPath);
     db.exec('PRAGMA journal_mode = WAL');
     db.exec('PRAGMA synchronous = NORMAL');

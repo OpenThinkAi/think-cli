@@ -1,5 +1,10 @@
 import { Command } from 'commander';
 import { readPackageVersion } from './lib/version.js';
+import { maybeMigrateEngramsToIndex } from './lib/paths.js';
+
+// Run one-time path migration before any command handler checks for
+// the existence of ~/.think/index/ (formerly ~/.think/engrams/).
+maybeMigrateEngramsToIndex();
 import { logCommand, syncCommand } from './commands/log.js';
 import { listCommand } from './commands/list.js';
 import { summaryCommand } from './commands/summary.js';

@@ -8,7 +8,7 @@ import { getConfig, saveConfig, getPeerId } from '../lib/config.js';
 import { getCortexDb, closeCortexDb } from '../db/engrams.js';
 import { getMemoryCount, getSyncCursor } from '../db/memory-queries.js';
 import { getRetroCount } from '../db/retro-queries.js';
-import { getEngramDbPath, getEngramsDir } from '../lib/paths.js';
+import { getIndexDbPath, getIndexDir } from '../lib/paths.js';
 import { getSyncAdapter } from '../sync/registry.js';
 import { LocalFsSyncAdapter } from '../sync/local-fs-adapter.js';
 import { installAgent, uninstallAgent, getAgentStatus } from '../lib/auto-curate.js';
@@ -227,12 +227,12 @@ cortexCommand.addCommand(new Command('list')
   .description('Show all cortexes')
   .action(async () => {
     const config = getConfig();
-    const engramsDir = getEngramsDir();
+    const indexDir = getIndexDir();
 
     // List local cortex databases
     const localCortexes: string[] = [];
-    if (fs.existsSync(engramsDir)) {
-      for (const file of fs.readdirSync(engramsDir)) {
+    if (fs.existsSync(indexDir)) {
+      for (const file of fs.readdirSync(indexDir)) {
         if (file.endsWith('.db') && !file.endsWith('-shm') && !file.endsWith('-wal')) {
           localCortexes.push(file.replace('.db', ''));
         }
@@ -290,10 +290,10 @@ cortexCommand.addCommand(new Command('switch')
     }
 
     // Check if local DB exists. Route path construction through
-    // getEngramDbPath so `name` flows through sanitizeName (rejects '..',
+    // getIndexDbPath so `name` flows through sanitizeName (rejects '..',
     // path separators, and non-alphanumeric characters). Matches how every
-    // other engram-path site resolves.
-    const dbPath = getEngramDbPath(name);
+    // other index-path site resolves.
+    const dbPath = getIndexDbPath(name);
     if (!fs.existsSync(dbPath)) {
       // Check if it exists remotely
       const adapter = getSyncAdapter();
@@ -680,7 +680,7 @@ cortexCommand.addCommand(new Command('migrate')
   }));
 
 function listLocalCortexes(): string[] {
-  const dir = getEngramsDir();
+  const dir = getIndexDir();
   if (!fs.existsSync(dir)) return [];
   const out: string[] = [];
   for (const file of fs.readdirSync(dir)) {

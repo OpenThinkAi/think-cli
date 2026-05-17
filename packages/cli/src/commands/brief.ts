@@ -4,7 +4,7 @@ import chalk from 'chalk';
 import { getConfig } from '../lib/config.js';
 import { closeCortexDb } from '../db/engrams.js';
 import { searchRetros, bumpRecallStats } from '../db/retro-queries.js';
-import { getEngramDbPath } from '../lib/paths.js';
+import { getIndexDbPath } from '../lib/paths.js';
 import { renderPersonalAll } from './recall.js';
 import { pullForRead } from '../lib/auto-propagate.js';
 
@@ -60,7 +60,7 @@ Examples:
       return;
     }
 
-    if (!existsSync(getEngramDbPath(targetCortex))) {
+    if (!existsSync(getIndexDbPath(targetCortex))) {
       console.error(chalk.red(`think brief: no cortex named "${targetCortex}" exists. Cortexes are created on first retro emission.`));
       process.exitCode = 1;
       return;
