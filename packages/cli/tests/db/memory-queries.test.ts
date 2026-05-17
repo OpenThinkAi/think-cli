@@ -62,20 +62,8 @@ describe('insertMemory origin_peer_id', () => {
 });
 
 describe('migration v11 — embedding columns (AGT-269)', () => {
-  let originalHome: string | undefined;
-
-  beforeEach(() => {
-    originalHome = process.env.THINK_HOME;
-  });
-
-  afterEach(() => {
-    if (originalHome === undefined) delete process.env.THINK_HOME;
-    else process.env.THINK_HOME = originalHome;
-  });
-
   it('adds embedding and embedding_model columns to memories', () => {
     const db = new DatabaseSync(':memory:');
-    db.exec('PRAGMA journal_mode = WAL');
     runMigrations(db, migrations);
 
     const cols = db.prepare('PRAGMA table_info(memories)').all() as { name: string }[];
