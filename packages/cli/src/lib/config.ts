@@ -80,6 +80,15 @@ export interface SearchConfig {
   engine?: 'brute-force' | 'sqlite-vec';
 }
 
+export interface DaemonConfig {
+  /**
+   * Windows-only TCP fallback port. On macOS/Linux the daemon binds a Unix
+   * domain socket; this field is ignored on those platforms.
+   * Default: 47821.
+   */
+  tcpPort?: number;
+}
+
 export interface Config {
   peerId: string;
   syncPort: number;
@@ -87,6 +96,7 @@ export interface Config {
   paused?: boolean;
   subscriptions?: SubscriptionsConfig;
   search?: SearchConfig;
+  daemon?: DaemonConfig;
 }
 
 export function getConfigDir(): string {
