@@ -67,13 +67,10 @@ export async function runSupersessionWorker(
   // Step 1: embed the new entry's content
   const queryVec = await embed(content);
 
-  // Step 2: vector search for top-K candidates (all kinds; filtered in step 3)
+  // Step 2: vector search for top-K candidates (all kinds; kind filter in step 3)
   const searchResults = searchVectors(safeCortex, queryVec, CANDIDATE_K);
 
-  // Step 3: triage — filter by similarity threshold, excluding the new entry.
-  // Kind filtering (retro only) happens in the SQL query below. Entries written
-  // before migration 14 have kind = NULL; the SQL treats them as retro candidates
-  // conservatively so legacy data participates in supersession.
+  // Step 3: triage by similarity threshold, excluding the new entry itself.
   const aboveThreshold = searchResults.filter(
     (r) => r.id !== newEntryId && r.similarity >= SIMILARITY_THRESHOLD,
   );
@@ -83,8 +80,9 @@ export async function runSupersessionWorker(
     return;
   }
 
-  // Fetch full content + ts + kind for each candidate from L2; filter to
-  // retro-kind (kind = 'retro' OR kind IS NULL for pre-migration rows).
+  // Step 4: fetch full content + ts for each above-threshold candidate from L2,
+  // filtering to retro-kind only (kind = 'retro' OR kind IS NULL for rows written
+  // before migration 14 added the kind column).
   const db = getCortexDb(safeCortex);
   const candidateStmt = db.prepare(
     `SELECT id, ts, content, kind FROM memories
@@ -104,7 +102,7 @@ export async function runSupersessionWorker(
     return;
   }
 
-  // Step 4: LLM call
+  // Step 5: LLM call
   const newRetro: RetroEntry = {
     cortex: safeCortex,
     date: newEntryTs,
@@ -113,16 +111,22 @@ export async function runSupersessionWorker(
 
   const result = await runSupersession(newRetro, candidates);
 
-  // Step 5: filter LLM-returned supersedes IDs against the actual candidate
+  // Step 6: filter LLM-returned supersedes IDs against the actual candidate
   // set. This prevents prompt-injection in retro content from causing the LLM
   // to return IDs that were never presented as candidates, which would
   // incorrectly mark unrelated entries as superseded.
   const candidateIds = new Set(candidates.map((c) => c.id));
-  const safeResult = {
-    ...result,
-    supersedes: result.supersedes.filter((id) => candidateIds.has(id)),
-  };
+  const filteredSupersedes = result.supersedes.filter((id) => candidateIds.has(id));
+  const droppedIds = result.supersedes.filter((id) => !candidateIds.has(id));
+  if (droppedIds.length > 0) {
+    console.warn(
+      `[supersession] prompt-injection guard: dropped ${droppedIds.length} LLM-returned ` +
+      `supersedes ID(s) not in candidate set for entry ${newEntryId}: ` +
+      droppedIds.join(', '),
+    );
+  }
+  const safeResult = { ...result, supersedes: filteredSupersedes };
 
-  // Step 6: apply
+  // Step 7: apply
   applySupersession(newEntryId, safeResult, safeCortex);
 }

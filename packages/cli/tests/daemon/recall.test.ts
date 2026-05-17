@@ -8,7 +8,7 @@
  *
  * Five fixture entries cover the AC requirement of "5 entries with known content".
  */
-import { describe, it, expect, beforeEach, afterEach, vi, beforeAll } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -136,42 +136,26 @@ describe('handleRecall (AGT-285)', () => {
   });
 
   // ── kind/topic filter errors when columns absent ──────────────────────────
-  // NOTE (AGT-304): migration 14 adds `kind` and `topics_json` to every freshly
-  // migrated DB, making the "column absent" error paths in handleRecall
-  // unreachable in standard test environments. The tests below are gated via
-  // `it.skipIf` so the test runner shows them as explicitly skipped (rather
-  // than silently passing) when the columns are present.
+  // NOTE (AGT-304): migration 14 always adds `kind` and `topics_json` to freshly
+  // migrated DBs, making the "column absent" error paths in handleRecall permanently
+  // unreachable in any environment that has run through migration 14. Skipped
+  // explicitly so the test runner reports them as skipped (not silently passing).
 
-  let hasMigration14Columns = false;
-  beforeAll(() => {
-    const db = getCortexDb(CORTEX);
-    const cols = new Set(
-      (db.prepare('PRAGMA table_info(memories)').all() as { name: string }[]).map(c => c.name),
-    );
-    hasMigration14Columns = cols.has('kind') || cols.has('topics_json');
+  it.skip('throws when kind filter requested but kind column absent', async () => {
+    vi.spyOn(embedModule, 'default').mockResolvedValue(axis(0));
+
+    await expect(
+      handleRecall({ cortex: CORTEX, query: 'test', kind: 'decision' }),
+    ).rejects.toThrow(/kind.*column/i);
   });
 
-  it.skipIf(() => hasMigration14Columns)(
-    'throws when kind filter requested but kind column absent',
-    async () => {
-      vi.spyOn(embedModule, 'default').mockResolvedValue(axis(0));
+  it.skip('throws when topic filter requested but topics column absent', async () => {
+    vi.spyOn(embedModule, 'default').mockResolvedValue(axis(0));
 
-      await expect(
-        handleRecall({ cortex: CORTEX, query: 'test', kind: 'decision' }),
-      ).rejects.toThrow(/kind.*column/i);
-    },
-  );
-
-  it.skipIf(() => hasMigration14Columns)(
-    'throws when topic filter requested but topics column absent',
-    async () => {
-      vi.spyOn(embedModule, 'default').mockResolvedValue(axis(0));
-
-      await expect(
-        handleRecall({ cortex: CORTEX, query: 'test', topic: 'ai' }),
-      ).rejects.toThrow(/topic.*column/i);
-    },
-  );
+    await expect(
+      handleRecall({ cortex: CORTEX, query: 'test', topic: 'ai' }),
+    ).rejects.toThrow(/topic.*column/i);
+  });
 
   // ── kind/topic filter happy paths ─────────────────────────────────────────
 
