@@ -36,7 +36,8 @@ export function recomputeActivitySeq(cortexName: string): void {
   db.exec('BEGIN');
   try {
     // CTE ranks all live rows by (ts ASC, id ASC).
-    // ROW_NUMBER() is available in SQLite 3.25+ (Node 22 ships SQLite 3.46+).
+    // ROW_NUMBER() OVER requires SQLite 3.25+; UPDATE ... FROM requires 3.35+.
+    // Node 22 ships SQLite 3.46+, satisfying both floors.
     db.exec(`
       WITH ranked AS (
         SELECT

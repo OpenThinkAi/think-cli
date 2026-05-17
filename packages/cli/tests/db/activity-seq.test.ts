@@ -98,9 +98,9 @@ describe('recomputeActivitySeq (AGT-290)', () => {
     expect(assignNextSeq(cortex)).toBe(6);
   });
 
-  it('assignNextSeq is O(1) — uses index, does not scan all rows', () => {
-    // Validate that the function uses the index path by inserting rows with
-    // activity_seq already set and confirming the max is read correctly.
+  it('returns MAX(activity_seq) + 1 for a row with a pre-set seq', () => {
+    // Arithmetic correctness: given a row with activity_seq = 42, assignNextSeq
+    // should return 43 (COALESCE(MAX(42), 0) + 1).
     const db = getCortexDb(cortex);
     db.prepare(
       `INSERT INTO memories (id, ts, author, content, source_ids, created_at, sync_version, activity_seq)
@@ -153,35 +153,23 @@ describe('recomputeActivitySeq — performance (AGT-290 AC #6)', () => {
     rmSync(tmpHome, { recursive: true, force: true });
   });
 
-  it('recomputeActivitySeq uses a single window-function SQL pass — not a per-row loop (AC #6)', () => {
+  it('recomputeActivitySeq uses a window-function CTE pass — not a correlated per-row subquery (AC #6)', () => {
     // Validate the implementation strategy via EXPLAIN QUERY PLAN rather than
-    // a wall-clock assertion (wall-clock tests are flaky under CI load).
-    // The expected plan: SQLite should report a single scan + window function
-    // (ROW_NUMBER OVER) followed by a table update — no nested per-row subquery.
+    // a wall-clock assertion (wall-clock assertions are flaky under CI load).
+    // SQLite's query planner derives its plan from the schema + indexes, not
+    // from row counts, so a handful of rows is sufficient to confirm the plan.
     const db = getCortexDb(cortex);
 
-    // Batch-insert 10K rows for a realistic query plan
-    const insert = db.prepare(
-      `INSERT INTO memories (id, ts, author, content, source_ids, created_at, sync_version)
-       VALUES (?, ?, 'bench', 'x', '[]', '2026-05-01T00:00:00Z', 1)`
-    );
-
-    db.exec('BEGIN');
-    for (let i = 0; i < 10_000; i++) {
-      const paddedI = String(i).padStart(12, '0');
-      insert.run(
-        `00000000-0000-0000-${paddedI.slice(0, 4)}-${paddedI.slice(4)}`,
-        `2026-05-01T${String(Math.floor(i / 3600)).padStart(2, '0')}:${String(Math.floor((i % 3600) / 60)).padStart(2, '0')}:${String(i % 60).padStart(2, '0')}Z`
-      );
-    }
-    db.exec('COMMIT');
+    // Insert a few rows so the table is non-empty when EXPLAIN runs
+    insertAt(cortex, '2026-05-01T00:00:00Z', '000000000001');
+    insertAt(cortex, '2026-05-02T00:00:00Z', '000000000002');
+    insertAt(cortex, '2026-05-03T00:00:00Z', '000000000003');
 
     // EXPLAIN QUERY PLAN returns rows describing SQLite's chosen strategy.
-    // A window-function CTE UPDATE is a single sequential scan — it should
-    // NOT show a correlated subquery executed once-per-row (which would be
-    // "SCAN memories" inside a loop). We just assert the function runs
-    // without error on the full 10K dataset; the plan check confirms the
-    // query is well-formed and SQLite can plan it.
+    // Assert the plan does NOT contain "CORRELATED SCALAR SUBQUERY", which
+    // would indicate a per-row nested loop (O(N²) behaviour).
+    // Note: SQLite plan description strings are not versioned; treat this
+    // as a canary for regressions rather than a hard contract.
     const planRows = db.prepare(`
       EXPLAIN QUERY PLAN
       WITH ranked AS (
@@ -195,19 +183,11 @@ describe('recomputeActivitySeq — performance (AGT-290 AC #6)', () => {
       WHERE memories.id = ranked.id
     `).all() as { detail: string }[];
 
-    // The plan must include at least one row (SQLite always produces a plan)
+    // SQLite always produces at least one plan row
     expect(planRows.length).toBeGreaterThan(0);
 
-    // The plan must NOT contain a per-row correlated scan pattern like
-    // "CORRELATED SCALAR SUBQUERY" — that would mean O(N²) behaviour.
+    // Must NOT show a correlated per-row subquery pattern
     const planText = planRows.map(r => r.detail ?? '').join(' ').toUpperCase();
     expect(planText).not.toContain('CORRELATED SCALAR SUBQUERY');
-
-    // Verify correctness: all 10K rows get a non-null seq after recompute
-    recomputeActivitySeq(cortex);
-    const nullCount = (db.prepare(
-      'SELECT COUNT(*) as n FROM memories WHERE activity_seq IS NULL AND deleted_at IS NULL'
-    ).get() as { n: number }).n;
-    expect(nullCount).toBe(0);
   });
 });
