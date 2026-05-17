@@ -47,8 +47,10 @@ const CANDIDATES = [
  * SHA-256 of the SUPERSESSION_SYSTEM_PROMPT constant as of AGT-303.
  *
  * If you intentionally update the constant in prompt.ts, recompute this value:
- *   npx vitest run --reporter=verbose tests/daemon/supersession/prompt.test.ts 2>&1 | grep ACTUAL_HASH
- * and update the literal below.  The test will fail loudly on any unintentional drift.
+ *   npx vitest run tests/daemon/supersession/prompt.test.ts
+ * The test prints "ACTUAL_HASH: <value>" to stdout when it fails — copy that
+ * value and update the literal below.  The test will fail loudly on any
+ * unintentional drift.
  */
 const EXPECTED_PROMPT_HASH = '08b89be787093d1ccfba7ac8fb13c1006d1668d37b070a19de4e6aabafa30ea3';
 

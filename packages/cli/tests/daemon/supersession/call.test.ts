@@ -6,19 +6,19 @@
  * network calls.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import type { SupersessionResult } from '../../../src/daemon/supersession/call.js';
+import type { SupersessionResult, RetroEntry, RetroCandidate } from '../../../src/daemon/supersession/call.js';
 
 // ---------------------------------------------------------------------------
 // Fixtures
 // ---------------------------------------------------------------------------
 
-const NEW_RETRO = {
+const NEW_RETRO: RetroEntry = {
   cortex: 'fx-tracker',
   date: '2026-05-16',
   content: 'The strategy schema is V2 as of March.',
 };
 
-const CANDIDATES = [
+const CANDIDATES: RetroCandidate[] = [
   {
     id: 'retro_2a1',
     date: '2025-11-04',
@@ -205,6 +205,44 @@ describe('runSupersession — happy path', () => {
 
     expect(result.is_duplicate).toBe(false);
     expect(result.topics).toEqual(['strategy', 'schema', 'v2']);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// max_tokens truncation guard
+// ---------------------------------------------------------------------------
+
+describe('runSupersession — max_tokens truncation', () => {
+  let originalEnv: string | undefined;
+
+  beforeEach(() => {
+    originalEnv = process.env['THINK_LLM_CONSENT'];
+    process.env['THINK_LLM_CONSENT'] = '1';
+    vi.resetModules();
+  });
+
+  afterEach(() => {
+    if (originalEnv === undefined) {
+      delete process.env['THINK_LLM_CONSENT'];
+    } else {
+      process.env['THINK_LLM_CONSENT'] = originalEnv;
+    }
+    vi.restoreAllMocks();
+  });
+
+  it('throws a clear error when stop_reason is max_tokens', async () => {
+    const mockCreate = vi.fn().mockResolvedValue({
+      content: [{ type: 'text', text: '{"supersedes":["retro_2a1"],"topics":["strategy"]' }],
+      stop_reason: 'max_tokens',
+    });
+    vi.doMock('@anthropic-ai/sdk', () => buildAnthropicMock(mockCreate));
+
+    const { runSupersession } = await import('../../../src/daemon/supersession/call.js');
+    await expect(runSupersession(NEW_RETRO, CANDIDATES)).rejects.toThrow(
+      'Supersession response truncated at max_tokens=300',
+    );
+    // Should NOT retry — truncation is not a transient error
+    expect(mockCreate).toHaveBeenCalledTimes(1);
   });
 });
 

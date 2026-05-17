@@ -15,9 +15,10 @@ import { requireLlmConsent } from '../../lib/llm-consent.js';
 import {
   SUPERSESSION_SYSTEM_PROMPT,
   buildSupersessionMessages,
-  type RetroEntry,
-  type RetroCandidate,
 } from './prompt.js';
+
+// Re-export the input types so callers only need to import from call.ts.
+export type { RetroEntry, RetroCandidate } from './prompt.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -148,6 +149,11 @@ export async function runSupersession(
 
   // First attempt
   const response = await callClaude();
+  if (response.stop_reason === 'max_tokens') {
+    throw new Error(
+      'Supersession response truncated at max_tokens=300 — increase budget or reduce candidate count',
+    );
+  }
   const rawText = extractText(response);
 
   try {
