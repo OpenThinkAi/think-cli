@@ -11,7 +11,7 @@ import {
 } from '../db/retro-queries.js';
 import { getSyncCursor } from '../db/memory-queries.js';
 import { validateEngramContent } from '../lib/sanitize.js';
-import { getEngramDbPath } from '../lib/paths.js';
+import { getIndexDbPath } from '../lib/paths.js';
 import { pullForRead, pushForWriteBackground } from '../lib/auto-propagate.js';
 import { getSyncAdapter } from '../sync/registry.js';
 
@@ -35,7 +35,7 @@ async function emitRetro(cortex: string, message: string, kind: RetroKind | null
     }
   }
 
-  const isNewCortex = !existsSync(getEngramDbPath(cortex));
+  const isNewCortex = !existsSync(getIndexDbPath(cortex));
   getCortexDb(cortex);
 
   if (isNewCortex) {
@@ -183,7 +183,7 @@ Examples:
       return;
     }
 
-    if (!existsSync(getEngramDbPath(cortex))) {
+    if (!existsSync(getIndexDbPath(cortex))) {
       console.error(chalk.red(`think retro recall: no cortex named "${cortex}" exists. Cortexes are created on first retro emission.`));
       process.exitCode = 1;
       return;

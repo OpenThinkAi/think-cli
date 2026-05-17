@@ -1,5 +1,5 @@
 import { DatabaseSync } from 'node:sqlite';
-import { getEngramDbPath, ensureThinkDirs } from '../lib/paths.js';
+import { getIndexDbPath, ensureThinkDirs } from '../lib/paths.js';
 import { getPeerId } from '../lib/config.js';
 import { runMigrations } from './migrate.js';
 import type { Migration } from './migrate.js';
@@ -278,7 +278,7 @@ export function getCortexDb(cortexName: string): DatabaseSync {
 
   ensureThinkDirs();
 
-  const dbPath = getEngramDbPath(cortexName);
+  const dbPath = getIndexDbPath(cortexName);
   const db = new DatabaseSync(dbPath);
   db.exec('PRAGMA journal_mode = WAL');
   db.exec('PRAGMA synchronous = NORMAL');

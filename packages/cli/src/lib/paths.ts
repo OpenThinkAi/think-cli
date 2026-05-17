@@ -40,12 +40,12 @@ export function getThinkDataDir(): string {
   return path.join(xdgData, 'think');
 }
 
-export function getEngramsDir(): string {
-  return path.join(getThinkDir(), 'engrams');
+export function getIndexDir(): string {
+  return path.join(getThinkDir(), 'index');
 }
 
-export function getEngramDbPath(cortexName: string): string {
-  return path.join(getEngramsDir(), `${sanitizeName(cortexName)}.db`);
+export function getIndexDbPath(cortexName: string): string {
+  return path.join(getIndexDir(), `${sanitizeName(cortexName)}.db`);
 }
 
 export function getRepoPath(): string {
@@ -64,7 +64,37 @@ export function getCuratorMdPath(): string {
   return path.join(getThinkDir(), 'curator.md');
 }
 
+/** Module-level guard so the migration check runs at most once per process. */
+let _migrationChecked = false;
+
+/**
+ * One-time migration: rename ~/.think/engrams/ → ~/.think/index/ if needed.
+ * Safe to call multiple times — guarded by a module-level flag so the
+ * filesystem check only happens once per process.
+ */
+export function maybeMigrateEngramsToIndex(): void {
+  if (_migrationChecked) return;
+  _migrationChecked = true;
+
+  const oldDir = path.join(getThinkDir(), 'engrams');
+  const newDir = getIndexDir();
+  const oldExists = fs.existsSync(oldDir);
+  const newExists = fs.existsSync(newDir);
+  if (oldExists && !newExists) {
+    fs.renameSync(oldDir, newDir);
+    console.error(`Migrated ${oldDir} to ${newDir}`);
+  } else if (oldExists && newExists) {
+    console.error(
+      `Warning: both ${oldDir} and ${newDir} exist; ` +
+      `using ${newDir} and leaving ${oldDir} untouched. ` +
+      `To consolidate: inspect ${oldDir}, move any missing databases ` +
+      `into ${newDir}, then delete ${oldDir}.`,
+    );
+  }
+}
+
 export function ensureThinkDirs(): void {
-  fs.mkdirSync(getEngramsDir(), { recursive: true });
+  maybeMigrateEngramsToIndex();
+  fs.mkdirSync(getIndexDir(), { recursive: true });
   fs.mkdirSync(getLongtermDir(), { recursive: true });
 }
