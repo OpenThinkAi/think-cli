@@ -31,16 +31,30 @@ const CANDIDATES: RetroCandidate[] = [
   },
 ];
 
-const VALID_RESPONSE: SupersessionResult = {
+// LLM mock response bodies (snake_case is_duplicate, as returned by the model)
+const VALID_LLM_JSON = JSON.stringify({
   supersedes: ['retro_2a1'],
   topics: ['strategy', 'schema', 'v2'],
   is_duplicate: false,
+});
+
+const DUPLICATE_LLM_JSON = JSON.stringify({
+  supersedes: [],
+  topics: ['auth', 'jwt'],
+  is_duplicate: true,
+});
+
+// Expected parsed TypeScript results (camelCase isDuplicate)
+const VALID_RESPONSE: SupersessionResult = {
+  supersedes: ['retro_2a1'],
+  topics: ['strategy', 'schema', 'v2'],
+  isDuplicate: false,
 };
 
 const DUPLICATE_RESPONSE: SupersessionResult = {
   supersedes: [],
   topics: ['auth', 'jwt'],
-  is_duplicate: true,
+  isDuplicate: true,
 };
 
 // ---------------------------------------------------------------------------
@@ -79,7 +93,7 @@ describe('runSupersession — happy path', () => {
 
   it('parses a valid supersession response', async () => {
     const mockCreate = vi.fn().mockResolvedValue({
-      content: [{ type: 'text', text: JSON.stringify(VALID_RESPONSE) }],
+      content: [{ type: 'text', text: VALID_LLM_JSON }],
     });
     vi.doMock('@anthropic-ai/sdk', () => buildAnthropicMock(mockCreate));
 
@@ -88,25 +102,25 @@ describe('runSupersession — happy path', () => {
 
     expect(result.supersedes).toEqual(['retro_2a1']);
     expect(result.topics).toEqual(['strategy', 'schema', 'v2']);
-    expect(result.is_duplicate).toBe(false);
+    expect(result.isDuplicate).toBe(false);
   });
 
   it('parses a duplicate response', async () => {
     const mockCreate = vi.fn().mockResolvedValue({
-      content: [{ type: 'text', text: JSON.stringify(DUPLICATE_RESPONSE) }],
+      content: [{ type: 'text', text: DUPLICATE_LLM_JSON }],
     });
     vi.doMock('@anthropic-ai/sdk', () => buildAnthropicMock(mockCreate));
 
     const { runSupersession } = await import('../../../src/daemon/supersession/call.js');
     const result = await runSupersession(NEW_RETRO, CANDIDATES);
 
-    expect(result.is_duplicate).toBe(true);
+    expect(result.isDuplicate).toBe(true);
     expect(result.supersedes).toEqual([]);
   });
 
   it('calls the SDK with correct model and temperature', async () => {
     const mockCreate = vi.fn().mockResolvedValue({
-      content: [{ type: 'text', text: JSON.stringify(VALID_RESPONSE) }],
+      content: [{ type: 'text', text: VALID_LLM_JSON }],
     });
     vi.doMock('@anthropic-ai/sdk', () => buildAnthropicMock(mockCreate));
 
@@ -121,7 +135,7 @@ describe('runSupersession — happy path', () => {
 
   it('uses cached system prompt (cache_control: ephemeral)', async () => {
     const mockCreate = vi.fn().mockResolvedValue({
-      content: [{ type: 'text', text: JSON.stringify(VALID_RESPONSE) }],
+      content: [{ type: 'text', text: VALID_LLM_JSON }],
     });
     vi.doMock('@anthropic-ai/sdk', () => buildAnthropicMock(mockCreate));
 
@@ -147,11 +161,11 @@ describe('runSupersession — happy path', () => {
 
     expect(result.supersedes).toEqual([]);
     expect(result.topics).toEqual([]);
-    expect(result.is_duplicate).toBe(false);
+    expect(result.isDuplicate).toBe(false);
   });
 
-  it('clears supersedes when is_duplicate is true (enforced invariant)', async () => {
-    // Model incorrectly returns supersedes alongside is_duplicate: true
+  it('clears supersedes when isDuplicate is true (enforced invariant)', async () => {
+    // Model incorrectly returns supersedes alongside is_duplicate: true (LLM JSON schema key)
     const badModel = { supersedes: ['retro_2a1'], topics: ['strategy'], is_duplicate: true };
     const mockCreate = vi.fn().mockResolvedValue({
       content: [{ type: 'text', text: JSON.stringify(badModel) }],
@@ -161,7 +175,7 @@ describe('runSupersession — happy path', () => {
     const { runSupersession } = await import('../../../src/daemon/supersession/call.js');
     const result = await runSupersession(NEW_RETRO, CANDIDATES);
 
-    expect(result.is_duplicate).toBe(true);
+    expect(result.isDuplicate).toBe(true);
     expect(result.supersedes).toEqual([]); // enforced by parser despite model output
   });
 
@@ -180,7 +194,7 @@ describe('runSupersession — happy path', () => {
   });
 
   it('strips markdown code fences (```json) from the response', async () => {
-    const fenced = '```json\n' + JSON.stringify(VALID_RESPONSE) + '\n```';
+    const fenced = '```json\n' + VALID_LLM_JSON + '\n```';
     const mockCreate = vi.fn().mockResolvedValue({
       content: [{ type: 'text', text: fenced }],
     });
@@ -190,11 +204,11 @@ describe('runSupersession — happy path', () => {
     const result = await runSupersession(NEW_RETRO, CANDIDATES);
 
     expect(result.supersedes).toEqual(['retro_2a1']);
-    expect(result.is_duplicate).toBe(false);
+    expect(result.isDuplicate).toBe(false);
   });
 
   it('strips plain code fences (```) from the response', async () => {
-    const fenced = '```\n' + JSON.stringify(VALID_RESPONSE) + '\n```';
+    const fenced = '```\n' + VALID_LLM_JSON + '\n```';
     const mockCreate = vi.fn().mockResolvedValue({
       content: [{ type: 'text', text: fenced }],
     });
@@ -203,7 +217,7 @@ describe('runSupersession — happy path', () => {
     const { runSupersession } = await import('../../../src/daemon/supersession/call.js');
     const result = await runSupersession(NEW_RETRO, CANDIDATES);
 
-    expect(result.is_duplicate).toBe(false);
+    expect(result.isDuplicate).toBe(false);
     expect(result.topics).toEqual(['strategy', 'schema', 'v2']);
   });
 });
@@ -295,7 +309,7 @@ describe('runSupersession — retry on parse error', () => {
     const mockCreate = vi
       .fn()
       .mockResolvedValueOnce({ content: [{ type: 'text', text: 'not-valid-json' }] })
-      .mockResolvedValueOnce({ content: [{ type: 'text', text: JSON.stringify(VALID_RESPONSE) }] });
+      .mockResolvedValueOnce({ content: [{ type: 'text', text: VALID_LLM_JSON }] });
 
     vi.doMock('@anthropic-ai/sdk', () => buildAnthropicMock(mockCreate));
 

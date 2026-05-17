@@ -27,7 +27,7 @@ export type { RetroEntry, RetroCandidate } from './prompt.js';
 export interface SupersessionResult {
   /**
    * IDs of candidates that the new retro replaces (may be empty).
-   * Always empty when `is_duplicate` is true — enforced in the parser.
+   * Always empty when `isDuplicate` is true — enforced in the parser.
    */
   supersedes: string[];
   /** 1–4 short lowercase topic strings (capped at 4 in the parser). */
@@ -36,13 +36,12 @@ export interface SupersessionResult {
    * True when the new retro is essentially a duplicate of an existing one.
    * When true the daemon MUST skip storing the new retro.
    * `supersedes` will be empty in this case — callers MUST NOT delete
-   * any candidate when `is_duplicate` is true.
+   * any candidate when `isDuplicate` is true.
    *
-   * Named `is_duplicate` (snake_case) to mirror the LLM JSON schema key
-   * verbatim, making the parse-to-return path unambiguous.  TypeScript
-   * callers may alias it locally: `const isDuplicate = result.is_duplicate`.
+   * The LLM JSON schema uses `is_duplicate` (snake_case) — the parser
+   * maps it to this camelCase field on the way out.
    */
-  is_duplicate: boolean;
+  isDuplicate: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -77,12 +76,13 @@ function parseSupersessionResponse(text: string): SupersessionResult {
   }
   const obj = raw as Record<string, unknown>;
 
-  const is_duplicate = typeof obj.is_duplicate === 'boolean' ? obj.is_duplicate : false;
+  // LLM JSON key is snake_case; map to camelCase on the way out.
+  const isDuplicate = typeof obj.is_duplicate === 'boolean' ? obj.is_duplicate : false;
 
-  // When is_duplicate is true, callers must NOT delete any candidate —
+  // When isDuplicate is true, callers must NOT delete any candidate —
   // treat it as a skip-storage-only result.  Enforce here rather than
   // relying on callers to read the JSDoc.
-  const supersedes = is_duplicate
+  const supersedes = isDuplicate
     ? []
     : Array.isArray(obj.supersedes)
       ? obj.supersedes.filter((id): id is string => typeof id === 'string' && id.length > 0)
@@ -95,7 +95,7 @@ function parseSupersessionResponse(text: string): SupersessionResult {
       : []
   ).slice(0, 4);
 
-  return { supersedes, topics, is_duplicate };
+  return { supersedes, topics, isDuplicate };
 }
 
 function extractText(response: Anthropic.Message): string {
