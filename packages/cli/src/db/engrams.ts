@@ -254,6 +254,21 @@ export const migrations: Migration[] = [
       db.prepare('UPDATE retros SET origin_peer_id = ? WHERE origin_peer_id IS NULL').run(peerId);
     },
   },
+  {
+    version: 11,
+    up: (db) => {
+      // Add embedding columns for v3 vector recall. Both are nullable so
+      // existing rows and new writes before the embedding pipeline runs
+      // (AGT-278) continue to work unchanged.
+      const cols = db.prepare('PRAGMA table_info(memories)').all() as { name: string }[];
+      if (!cols.some(c => c.name === 'embedding')) {
+        db.exec('ALTER TABLE memories ADD COLUMN embedding BLOB;');
+      }
+      if (!cols.some(c => c.name === 'embedding_model')) {
+        db.exec('ALTER TABLE memories ADD COLUMN embedding_model TEXT;');
+      }
+    },
+  },
 ];
 
 /** Returns the per-cortex SQLite connection (holds engrams, memories, longterm_summary, and sync_cursors tables) */
