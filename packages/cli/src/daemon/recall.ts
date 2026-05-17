@@ -30,7 +30,7 @@
  * the descending idx_entries_activity_seq index (AGT-270). `decay` defaults to
  * 0.05, which gives ~50% weight at seq_distance=14 and ~25% at seq_distance=28,
  * so the most recent ~20 entries always dominate regardless of corpus age or
- * wall-clock spread. Tunable via config.recall.recency_decay.
+ * wall-clock spread. Tunable via config.recall.recencyDecay.
  *
  * For the sqlite-vec engine, ANN search returns candidates sorted by vector
  * distance only — there is no per-row metadata hook inside the KNN scan. We
