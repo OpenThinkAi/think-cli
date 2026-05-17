@@ -7,7 +7,7 @@
  *   - Populate cortex-b with 10 entries: 9 pointing at axis(1), 1 pointing at
  *     axis(0) (the "target" — the entry that should surface for an axis(0) query).
  *   - Mock embed() to return axis(0) (query closest to cortex-b's target entry).
- *   - Mock listRemoteBranches() to return ['cortex-a', 'cortex-b'].
+ *   - Mock listLocalBranches() to return ['cortex-a', 'cortex-b'].
  *   - Call handleRecall({ query: 'test' }) — default scope is "accessible".
  *   - Assert: results include at least one entry from cortex-b with cortex='cortex-b'.
  *
@@ -105,7 +105,7 @@ describe('handleRecall — federated recall (AGT-306)', () => {
     // Mock: embed() returns axis(1) — matches the target in cortex-b
     vi.spyOn(embedModule, 'default').mockResolvedValue(axis(1));
 
-    // Mock: listRemoteBranches() returns our two test cortexes
+    // Mock: listLocalBranches() returns our two test cortexes
     vi.spyOn(gitModule, 'listLocalBranches').mockReturnValue([CORTEX_A, CORTEX_B]);
 
     // Default scope is "accessible" — should fan out to both cortexes
@@ -241,7 +241,7 @@ describe('handleRecall — federated recall (AGT-306)', () => {
     dbB.prepare('UPDATE memories SET embedding = ? WHERE id = ?')
       .run(toBlob(axis(0)), rowB.id);
 
-    // listRemoteBranches should NOT be called for scope="active"
+    // listLocalBranches should NOT be called for scope="active"
     const branchSpy = vi.spyOn(gitModule, 'listLocalBranches');
     vi.spyOn(embedModule, 'default').mockResolvedValue(axis(0));
 
@@ -258,7 +258,7 @@ describe('handleRecall — federated recall (AGT-306)', () => {
     expect(results.some((r) => r.id === rowA.id)).toBe(true);
     expect(results.some((r) => r.id === rowB.id)).toBe(false);
 
-    // listRemoteBranches must not have been called
+    // listLocalBranches must not have been called
     expect(branchSpy).not.toHaveBeenCalled();
   });
 

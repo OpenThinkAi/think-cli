@@ -249,14 +249,13 @@ export function listRemoteBranches(): string[] {
  * exists on the remote but has never been fetched will not appear here.
  * That is acceptable for alpha: locally-cloned cortexes are the intended
  * scope of the "accessible" federation level.
+ *
+ * Throws if git is unavailable or the repo is not initialised — callers
+ * are responsible for handling the failure case.
  */
 export function listLocalBranches(): string[] {
-  try {
-    const output = runGit(['for-each-ref', '--format=%(refname:short)', 'refs/heads/']);
-    return output.trim().split('\n').filter(Boolean);
-  } catch {
-    return [];
-  }
+  const output = runGit(['for-each-ref', '--format=%(refname:short)', 'refs/heads/']);
+  return output.trim().split('\n').filter(Boolean);
 }
 
 export function listBranchFiles(branchName: string, extension?: string): string[] {

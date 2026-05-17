@@ -70,7 +70,8 @@ const DEFAULT_DECAY = 0.05;
  *                Throws if neither is set.
  *
  * "accessible" — (default) fan out to all accessible cortexes enumerated by
- *                `listRemoteBranches()`. If a `cortex` param is also provided
+ *                `listLocalBranches()` (local git refs, no network). If a `cortex`
+ *                param is also provided
  *                alongside this scope, the federation fan-out is **skipped**
  *                and only that one cortex is queried — the `scope` param is
  *                effectively treated as "active". Use `scope="active"` for
@@ -280,7 +281,12 @@ export async function handleRecall(
 
   // scope is "accessible" or "all"
   if (typeof cortexNameRaw === 'string' && cortexNameRaw.trim().length > 0) {
-    // Explicit cortex overrides federation — query only that cortex.
+    // Explicit cortex overrides federation — only that cortex is queried.
+    // Emit a warning so callers who set scope="accessible" and expect
+    // fan-out behavior can discover the short-circuit.
+    process.stderr.write(
+      `think recall: scope="${scope}" with explicit cortex="${cortexNameRaw.trim()}" — federation overridden, querying only that cortex. Use scope="active" for clarity.\n`,
+    );
     return recallSingleCortex(cortexNameRaw.trim(), params);
   }
 
@@ -508,17 +514,16 @@ async function recallFederated(
 
   // Enumerate locally-known cortexes via local git refs (no network call).
   // listLocalBranches() uses `git for-each-ref refs/heads/` — sync but does
-  // not block on I/O. Branch names map 1:1 to cortex names.
-  const cfg = getConfig();
+  // not block on I/O. Branch names map 1:1 to cortex names. Throws on git
+  // failure (repo not initialised, git not found, etc.).
   let cortexNames: string[];
   try {
     cortexNames = listLocalBranches();
   } catch (err) {
-    // Enumeration failure (repo not yet initialised, git not found, etc.).
-    // Fall back to the active cortex from config if set.
+    // Enumeration failure — fall back to the active cortex from config if set.
     const msg = err instanceof Error ? err.message : String(err);
     process.stderr.write(`think recall: cortex enumeration failed (${msg}); falling back to active cortex\n`);
-    const activeCortex = cfg.cortex?.active;
+    const activeCortex = getConfig().cortex?.active;
     cortexNames = activeCortex ? [activeCortex] : [];
   }
 
