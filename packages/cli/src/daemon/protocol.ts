@@ -17,6 +17,7 @@
  */
 
 import net from 'node:net';
+import { handleRecall } from './recall.js';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -262,6 +263,7 @@ type MethodHandler = (
 
 const builtinMethods: Map<string, MethodHandler> = new Map([
   ['ping', () => 'pong'],
+  ['recall', handleRecall],
 ]);
 
 /**
