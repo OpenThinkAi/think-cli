@@ -31,6 +31,7 @@ import { retroCommand } from './commands/retro.js';
 import { curateRetrosCommand } from './commands/curate-retros.js';
 import { briefCommand } from './commands/brief.js';
 import { daemonCommand } from './commands/daemon.js';
+import { reindexCommand } from './commands/reindex.js';
 
 const program = new Command();
 
@@ -68,5 +69,6 @@ program.addCommand(retroCommand);
 program.addCommand(curateRetrosCommand);
 program.addCommand(briefCommand);
 program.addCommand(daemonCommand);
+program.addCommand(reindexCommand);
 
 program.parse();
