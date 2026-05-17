@@ -1,107 +1,245 @@
-import path from 'node:path';
-import fs from 'node:fs';
-import os from 'node:os';
-import { Command } from 'commander';
-import { probeDaemon } from '../lib/daemon-client.js';
-import { isDaemonRunning } from '../lib/daemon-status.js';
-
 /**
  * `think daemon` — lifecycle commands for the resident think daemon.
  *
  * Subcommands:
- *   start   — start the daemon in the foreground (AGT-278)
- *   status  — report running state; surface last log lines on failure (AGT-289)
- *   stop    — stub; full implementation is in a follow-up ticket
+ *   start   Start the daemon (no-op if already running; --foreground to run in current shell)
+ *   stop    Send the shutdown RPC and wait up to 5s for the daemon to exit
+ *   status  Print running/stale state + pid + socket path
+ *
+ * Note: `--socket-path` is intentionally absent from all three subcommands.
+ * `stop` and `status` gate on `isDaemonRunning()`, which reads the default PID
+ * file. Until `isDaemonRunning()` accepts a custom PID-file path, a daemon
+ * started with a custom socket could not be stopped or checked — so the flag
+ * would create a half-working interface. Deferred to AGT-287+.
  */
 
-/** Compute the default socket path without importing daemon/index.ts so the
- * lazy `await import(...)` in the action handler is not defeated. */
+import path from 'node:path';
+import os from 'node:os';
+import { Command, Option } from 'commander';
+
+/** Compute the default socket path without importing daemon/index.ts. */
 function defaultSocketPath(): string {
   const override = process.env.THINK_HOME;
   return path.join(override || path.join(os.homedir(), '.think'), 'daemon.sock');
 }
 
-function defaultLogPath(): string {
-  const override = process.env.THINK_HOME;
-  return path.join(override || path.join(os.homedir(), '.think'), 'daemon.log');
-}
+// ---------------------------------------------------------------------------
+// `think daemon start`
+// ---------------------------------------------------------------------------
 
 const startSubcommand = new Command('start')
-  .description('Start the think daemon in the foreground.')
-  .option('--socket-path <path>', 'Unix socket path (default: $THINK_HOME/daemon.sock or ~/.think/daemon.sock)')
-  .action(async (opts: { socketPath?: string }) => {
-    // Lazy-import keeps daemon/index.ts out of the startup parse path for all
-    // other `think` commands. No static import of daemon/index.ts in this file.
-    const { runDaemon } = await import('../daemon/index.js');
-    await runDaemon({
-      foreground: true, // only supported mode until socket binding lands (AGT-279)
-      socketPath: opts.socketPath ?? defaultSocketPath(),
-    });
-  });
+  .description(
+    'Start the think daemon in the background; no-op if already running. ' +
+    'Pass --foreground to run in the current shell (required for process supervisors).',
+  )
+  .option(
+    '--foreground',
+    'Run the daemon in the current shell instead of spawning in the background.',
+  )
+  // --socket-path is deferred: stop/status gate on isDaemonRunning() which reads
+  // the default PID file; until that accepts a custom path, a custom-socket daemon
+  // cannot be stopped or checked. Keep the option as hidden+deprecated to give a
+  // clear message rather than Commander's generic "unknown option" error.
+  .addOption(
+    new Option('--socket-path <path>')
+      .hideHelp()
+      .default(undefined),
+  )
+  .action(async (opts: { foreground?: boolean; socketPath?: string }) => {
+    if (opts.socketPath) {
+      process.stderr.write(
+        `error: --socket-path is not yet supported; stop/status cannot locate a custom-socket daemon until pid-file path override is implemented\n`,
+      );
+      process.exit(1);
+      return;
+    }
+    const { isDaemonRunning } = await import('../lib/daemon-status.js');
+    const status = isDaemonRunning();
 
-/**
- * `think daemon status` — AGT-289
- *
- * Reports whether the daemon is running. On spawn failure, surfaces the last
- * 20 lines of daemon.log so the user can see the failure reason without
- * having to find the log file manually.
- *
- * Exit codes: 0 = running, 1 = stopped.
- * Primary status line always goes to stdout (scriptable).
- * Log tail (diagnostic detail) goes to stderr.
- */
-const statusSubcommand = new Command('status')
-  .description('Show whether the think daemon is running.')
-  .action(async () => {
-    const logPath = defaultLogPath();
-
-    // First: check PID file for a definitive "running" answer.
-    const pidStatus = isDaemonRunning();
-    if (pidStatus.running) {
-      console.log(`daemon running (pid ${pidStatus.pid})`);
+    if (status.running) {
+      // Already running — exit 0 per AC #2.
+      process.stdout.write(`daemon already running (pid=${status.pid})\n`);
       return;
     }
 
-    // PID file absent or stale — probe the socket without spawning.
-    const socketAlive = await probeDaemon(500);
-    if (socketAlive) {
-      console.log('daemon running (socket responding; no PID file)');
-      return;
-    }
-
-    // Daemon is not running. Primary status line on stdout; log tail on stderr.
-    console.log('daemon stopped');
-
-    // Show last 20 lines of daemon.log to help diagnose why it stopped.
-    let logTail: string;
-    try {
-      const content = fs.readFileSync(logPath, 'utf8');
-      const lines = content.split('\n');
-      logTail = lines.slice(-20).join('\n').trim();
-    } catch (err) {
-      if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
-      logTail = '';
-    }
-
-    if (logTail) {
-      console.error(`last log (${logPath}):`);
-      console.error(logTail);
+    if (opts.foreground) {
+      // Run in the current process (foreground mode).
+      const socketPath = defaultSocketPath();
+      const { runDaemon } = await import('../daemon/index.js');
+      await runDaemon({ foreground: true, socketPath });
     } else {
-      console.error(`no log output found (${logPath} is empty or missing)`);
+      // Background spawn via the connect-helper (handles spawn + retry).
+      const { connectDaemon } = await import('../lib/daemon-client.js');
+      const client = await connectDaemon().catch((err: unknown) => {
+        process.stderr.write(
+          `error: could not start daemon — ${err instanceof Error ? err.message : String(err)}\n`,
+        );
+        process.exit(1);
+        return undefined;
+      });
+      if (!client) return;
+      client.close();
+      process.stdout.write(`daemon started\n`);
     }
-    process.exitCode = 1;
   });
+
+// ---------------------------------------------------------------------------
+// `think daemon stop`
+// ---------------------------------------------------------------------------
 
 const stopSubcommand = new Command('stop')
-  .description('Stop the think daemon (not yet implemented)')
-  .action(() => {
-    console.error('think daemon stop: not yet implemented.');
-    console.error('  To stop the daemon, send SIGTERM to the process: kill $(cat ~/.think/daemon.pid)');
-    process.exitCode = 1;
+  .description('Send the shutdown RPC to the daemon and wait up to 5s for it to exit.')
+  .action(async () => {
+    const { isDaemonRunning } = await import('../lib/daemon-status.js');
+    const status = isDaemonRunning();
+
+    if (!status.running) {
+      // Idempotent: mirror `start`'s already-running exit 0 contract.
+      process.stdout.write(`daemon not running (no-op)\n`);
+      return;
+    }
+
+    // Connect and issue the shutdown RPC.
+    const { connectDaemon } = await import('../lib/daemon-client.js');
+    const client = await connectDaemon().catch((err: unknown) => {
+      process.stderr.write(
+        `error: could not connect to daemon — ${err instanceof Error ? err.message : String(err)}\n`,
+      );
+      process.exit(1);
+      return undefined;
+    });
+    if (!client) return;
+
+    try {
+      await client.call('shutdown', {}, 5000);
+    } catch (err: unknown) {
+      // The daemon often closes the socket before the response arrives — expected;
+      // these cases fall through to the poll loop because the shutdown likely landed.
+      //
+      // Unexpected errors (not socket-close/ECONNRESET/EPIPE) mean the shutdown RPC
+      // was not delivered. Exit immediately rather than polling: the daemon may still
+      // be running, and polling would give a confusing success message.
+      const msg = err instanceof Error ? err.message : String(err);
+      const isExpected =
+        msg.includes('socket closed') ||
+        msg.includes('connection closed') ||
+        msg.includes('ECONNRESET') ||
+        msg.includes('EPIPE');
+      if (!isExpected) {
+        client.close();
+        process.stderr.write(`error: shutdown RPC failed — ${msg}\n`);
+        process.exit(1);
+        return;
+      }
+    } finally {
+      client.close();
+    }
+
+    // Wait up to 5 s for the daemon process to exit (PID file disappears).
+    // Check first, then sleep, to avoid an unnecessary 100ms delay when the
+    // daemon exits quickly.
+    const deadline = Date.now() + 5000;
+    const POLL_MS = 100;
+
+    while (Date.now() < deadline) {
+      const after = isDaemonRunning();
+      if (!after.running) {
+        process.stdout.write(`daemon stopped\n`);
+        return;
+      }
+      await new Promise<void>((r) => setTimeout(r, POLL_MS));
+    }
+
+    process.stderr.write(`error: daemon did not exit cleanly within 5s\n`);
+    process.exit(1);
   });
+
+// ---------------------------------------------------------------------------
+// `think daemon status`
+// ---------------------------------------------------------------------------
+
+const statusSubcommand = new Command('status')
+  .description(
+    'Print the current running state, pid, socket path, and (when available) uptime and version. ' +
+    'Output is provisional key=value lines; machine-parseable --json support is planned.',
+  )
+  .action(async () => {
+    const { isDaemonRunning } = await import('../lib/daemon-status.js');
+    const status = isDaemonRunning();
+
+    if (!status.running) {
+      process.stderr.write(`error: daemon is not running — run 'think daemon start' to start it\n`);
+      process.exit(1);
+      return;
+    }
+
+    const socketPath = defaultSocketPath();
+
+    // These three lines are always emitted regardless of RPC outcome.
+    // Output format: provisional key=value lines (unstable until --json lands, AGT-287+).
+    // `status=running` is emitted on ALL paths so scripts can exact-match it.
+    process.stdout.write(`pid=${status.pid}\n`);
+    process.stdout.write(`socket=${socketPath}\n`);
+    process.stdout.write(`status=running\n`);
+
+    // Try the `status` RPC (AGT-287 may not be landed yet — degrade gracefully).
+    // `rpc=unavailable(...)` is added only when the RPC is unreachable.
+    try {
+      const { connectDaemon } = await import('../lib/daemon-client.js');
+      const client = await connectDaemon();
+      let rpcResult: unknown;
+      try {
+        rpcResult = await client.call('status', {}, 5000);
+      } finally {
+        client.close();
+      }
+
+      // AGT-287 result shape: { uptime_ms, version, queue_depths, ... }
+      const r = (typeof rpcResult === 'object' && rpcResult !== null)
+        ? rpcResult as Record<string, unknown>
+        : {};
+
+      if (r['uptime_ms'] !== undefined) {
+        const uptimeSec = Math.floor(Number(r['uptime_ms']) / 1000);
+        process.stdout.write(`uptime=${uptimeSec}s\n`);
+      }
+      if (r['version'] !== undefined) {
+        // Sanitize: strip newlines to preserve key=value output integrity.
+        const version = String(r['version']).split('\n')[0];
+        process.stdout.write(`version=${version}\n`);
+      }
+    } catch (err: unknown) {
+      // Graceful degradation: if the `status` method doesn't exist yet (METHOD_NOT_FOUND),
+      // or the RPC connection fails, emit rpc=unavailable and keep going.
+      //
+      // DaemonConnection.processLine (daemon-client.ts) throws a plain Error with the
+      // message format `daemon error [<CODE>]: <message>`. Until the client surfaces a
+      // typed DaemonRpcError with a `.code` property on this code path, we match the
+      // literal bracket-wrapped code in the message. The exact format is stable and
+      // unit-tested in tests/lib/daemon-client.test.ts.
+      //
+      // Strip newlines from the error message: multi-line Node errors (e.g. ECONNRESET
+      // with a stack trace) would corrupt the key=value output format.
+      const rawMsg = err instanceof Error ? err.message : String(err);
+      // Take the first line only: Node error messages can include multi-line
+      // stack traces that would corrupt the key=value output format.
+      const msg = rawMsg.split('\n')[0];
+      const isNoEndpoint = msg.includes('[METHOD_NOT_FOUND]');
+      const rpcDetail = isNoEndpoint ? 'no status endpoint' : msg;
+      // `rpc=unavailable` is a scalar anchor; rpc_detail carries the human-readable
+      // reason. Note: rpc_detail values may contain spaces (e.g. Node error messages);
+      // the format is provisional until --json lands.
+      process.stdout.write(`rpc=unavailable\n`);
+      process.stdout.write(`rpc_detail=${rpcDetail}\n`);
+    }
+  });
+
+// ---------------------------------------------------------------------------
+// Top-level `think daemon` group
+// ---------------------------------------------------------------------------
 
 export const daemonCommand = new Command('daemon')
   .description('Manage the think resident daemon process')
   .addCommand(startSubcommand)
-  .addCommand(statusSubcommand)
-  .addCommand(stopSubcommand);
+  .addCommand(stopSubcommand)
+  .addCommand(statusSubcommand);
