@@ -90,15 +90,21 @@ export interface CompactionMessages {
 
 /**
  * Strip prompt-injection patterns from content before embedding into the user
- * message.  Removes naked `<system>`, `<human>`, `<assistant>`, and `<prompt>`
- * open/close tags (case-insensitive, with optional attributes).  Preserves the
- * text content that follows the tag so the meaning is not lost.
+ * message.
+ *
+ * - Removes naked `<system>`, `<human>`, `<assistant>`, and `<prompt>`
+ *   open/close tags (case-insensitive, with optional attributes). Preserves
+ *   the text content inside the tags so meaning is not lost.
+ * - Collapses newlines to a single space so that crafted content cannot
+ *   inject a fake `NEW ENTRY` or `CONTEXT` header by inserting a line break.
  *
  * Applied to BOTH newEntry.content and candidate content — either path can
  * carry externally-sourced text.
  */
 function sanitizeContent(content: string): string {
-  return content.replace(/<\/?(system|human|assistant|prompt)(\s[^>]*)?\s*>/gi, '');
+  return content
+    .replace(/<\/?(system|human|assistant|prompt)(\s[^>]*)?\s*>/gi, '')
+    .replace(/[\r\n]+/g, ' ');
 }
 
 // ---------------------------------------------------------------------------
