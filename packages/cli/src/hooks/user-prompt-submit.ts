@@ -40,7 +40,8 @@
  * When workspace-scoped recall lands (future AGT), wire `cwd` through here.
  */
 
-import { connectDaemon, DaemonUnavailableError } from '../lib/daemon-client.js';
+import { fileURLToPath } from 'node:url';
+import { connectDaemon } from '../lib/daemon-client.js';
 import type { RecallEntry } from '../daemon/recall.js';
 
 // ---------------------------------------------------------------------------
@@ -87,7 +88,7 @@ export async function readStdin(stream?: NodeJS.ReadableStream): Promise<string>
 // Output helpers
 // ---------------------------------------------------------------------------
 
-/** Emit the hook response with additionalContext to stdout. */
+/** Emit the hook response with additionalContext to an output stream. */
 export function writeWithContext(additionalContext: string, out?: NodeJS.WritableStream): void {
   const output = {
     hookSpecificOutput: {
@@ -128,14 +129,13 @@ export function buildAdditionalContext(entries: RecallEntry[]): string {
 
 /**
  * Hook entrypoint. Accepts optional I/O streams for unit-testing without
- * spawning a subprocess. Production callers omit both arguments.
+ * spawning a subprocess. Production callers omit both arguments (fall back to
+ * `process.stdin` / `process.stdout`).
  */
 export async function main(
   stdin?: NodeJS.ReadableStream,
   stdout?: NodeJS.WritableStream,
 ): Promise<void> {
-  const emit = (fn: (out?: NodeJS.WritableStream) => void) => fn(stdout);
-
   // ── 1. Read + parse stdin ─────────────────────────────────────────────────
   let userPrompt: string;
   try {
@@ -143,14 +143,13 @@ export async function main(
     const parsed = JSON.parse(raw) as Record<string, unknown>;
     const prompt = parsed['user_prompt'];
     if (typeof prompt !== 'string' || prompt.trim().length === 0) {
-      // No usable prompt — exit cleanly with no context.
-      emit(writeEmpty);
+      writeEmpty(stdout);
       return;
     }
     userPrompt = prompt.trim();
   } catch {
     // Malformed stdin — fail open, don't block the prompt.
-    emit(writeEmpty);
+    writeEmpty(stdout);
     return;
   }
 
@@ -158,22 +157,17 @@ export async function main(
   if (userPrompt.length < MIN_PROMPT_LENGTH) {
     // One-word follow-ups ("ok", "yes", "continue") produce low-quality recall.
     // Skip the daemon RPC to avoid noise and unnecessary latency.
-    emit(writeEmpty);
+    writeEmpty(stdout);
     return;
   }
 
   // ── 2. Connect to daemon ──────────────────────────────────────────────────
-  let client;
+  let client: Awaited<ReturnType<typeof connectDaemon>>;
   try {
     client = await connectDaemon();
-  } catch (err) {
-    if (err instanceof DaemonUnavailableError) {
-      // Daemon not running — fail open silently.
-      emit(writeEmpty);
-      return;
-    }
-    // Unexpected connect error — still fail open.
-    emit(writeEmpty);
+  } catch {
+    // Daemon unavailable or unexpected connect error — fail open silently.
+    writeEmpty(stdout);
     return;
   }
 
@@ -189,7 +183,7 @@ export async function main(
   } catch {
     // Recall failed (timeout, daemon error, etc.) — fail open.
     client.close();
-    emit(writeEmpty);
+    writeEmpty(stdout);
     return;
   }
 
@@ -197,22 +191,29 @@ export async function main(
 
   // ── 4. Build + emit output ────────────────────────────────────────────────
   if (!Array.isArray(entries) || entries.length === 0) {
-    emit(writeEmpty);
+    writeEmpty(stdout);
     return;
   }
 
   const additionalContext = buildAdditionalContext(entries);
   if (additionalContext.length === 0) {
-    emit(writeEmpty);
+    writeEmpty(stdout);
     return;
   }
 
   writeWithContext(additionalContext, stdout);
 }
 
-// Script entrypoint — only runs when this file is the main module.
-// Exporting `main` allows tests to invoke hook logic directly with injected I/O.
-main().catch(() => {
-  // Catch-all: any unhandled rejection — fail open, don't crash Claude Code.
-  writeEmpty();
-});
+// ---------------------------------------------------------------------------
+// Script entrypoint — guarded so main() only runs when invoked directly by
+// Claude Code (or the shell), not on every module import (e.g. during tests).
+//
+// ESM has no `require.main === module` equivalent. The canonical guard is
+// comparing import.meta.url against the resolved path of process.argv[1].
+// ---------------------------------------------------------------------------
+if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
+  main().catch(() => {
+    // Catch-all: any unhandled rejection — fail open, don't crash Claude Code.
+    writeEmpty();
+  });
+}

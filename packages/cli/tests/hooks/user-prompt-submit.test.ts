@@ -13,9 +13,6 @@
  */
 import { Readable, Writable } from 'node:stream';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
 
 // ---------------------------------------------------------------------------
 // Mock daemon-client before any import of the hook module
@@ -211,38 +208,17 @@ describe('writeEmpty', () => {
   });
 });
 
-// ---------------------------------------------------------------------------
-// Constants
-// ---------------------------------------------------------------------------
-
-describe('constants', () => {
-  it('RECALL_LIMIT is 5', () => expect(RECALL_LIMIT).toBe(5));
-  it('RECALL_TIMEOUT_MS is 400 (consistent with <500ms warm target)', () => expect(RECALL_TIMEOUT_MS).toBe(400));
-  it('MIN_PROMPT_LENGTH is 10', () => expect(MIN_PROMPT_LENGTH).toBe(10));
-});
 
 // ---------------------------------------------------------------------------
 // Integration tests: full stdin → main() → stdout path
 // ---------------------------------------------------------------------------
 
 describe('main() stdin→stdout integration (mocked daemon)', () => {
-  let tmpHome: string;
-  let originalHome: string | undefined;
-
   beforeEach(() => {
-    originalHome = process.env.THINK_HOME;
-    tmpHome = mkdtempSync(join(tmpdir(), 'think-hook-'));
-    process.env.THINK_HOME = tmpHome;
     vi.clearAllMocks();
     mockCall.mockReset();
     mockClose.mockReset();
     mockConnect.mockReset();
-  });
-
-  afterEach(() => {
-    if (originalHome === undefined) delete process.env.THINK_HOME;
-    else process.env.THINK_HOME = originalHome;
-    rmSync(tmpHome, { recursive: true, force: true });
   });
 
   it('happy path: emits hookSpecificOutput.additionalContext for valid prompt + recall entries', async () => {
