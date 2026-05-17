@@ -36,6 +36,7 @@ import { getDaemonPidPath, isDaemonRunning, removePidFile } from '../lib/daemon-
 import { DEFAULT_DAEMON_TCP_PORT } from '../lib/daemon-constants.js';
 import { parseLineFraming, dispatchRequest } from './protocol.js';
 import { handleSync } from './sync-handler.js';
+import { handleStatus } from './status.js';
 
 // ---------------------------------------------------------------------------
 // Paths
@@ -418,6 +419,7 @@ export async function runDaemon(options: DaemonOptions): Promise<void> {
       },
     ],
     ['sync', handleSync],
+    ['status', handleStatus],
   ]);
 
   // Wire the connection handler now that daemonMethods and inFlight are in scope.
