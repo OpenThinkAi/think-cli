@@ -320,40 +320,38 @@ export async function runDaemon(options: DaemonOptions): Promise<void> {
     });
   }
 
-  await bindServer();
+  // ---------------------------------------------------------------------------
+  // Startup sequence ordering — bind the listening socket *after* embedding
+  // warmup completes. The PID file lands first so a second `think daemon
+  // start` racing during warmup can see the daemon process exists and wait
+  // for the socket instead of double-spawning.
+  //
+  // Why bind-after-warmup: if the socket is bound during warmup, any RPC
+  // (e.g. `think sync`) connects immediately and its handler awaits the
+  // same warmup promise — blowing through the CLI's 30s per-call timeout.
+  // Holding the bind until warmup completes routes that wait into the CLI's
+  // spawn-or-connect retry loop instead, which is bounded by SPAWN_TIMEOUT_MS
+  // (90s, comfortably above the ~30s warmup).
+  //
+  // v3 README §"Write path (kind=memory)" specifies embed+L2 insert is
+  // synchronous with a target of 10–30ms. That target assumes the model is
+  // already resident; this ordering is what makes that promise true.
+  //
+  // If warmup fails (optional dep missing, ONNX ABI break, network error on
+  // first download), we log a warning and bind anyway so the daemon comes up
+  // in FTS-only mode. The existing FTS fallback in sync-handler handles
+  // missing-embed gracefully; callers see a degraded but working daemon.
+  // ---------------------------------------------------------------------------
 
-  // Write PID file after socket bind succeeds (AGT-281).
-  // If this fails, the daemon shuts down hard — better to die visibly than
-  // to run without a PID file that downstream tooling depends on.
+  // PID file goes down first so anyone racing knows a daemon is starting.
   try {
     writePidFile(pidPath);
     writeLine(`pid file written (pid=${process.pid}, path=${pidPath})`);
   } catch (pidErr: unknown) {
     process.stderr.write(`error: could not write PID file at ${pidPath}: ${String(pidErr)}\n`);
-    server.close();
-    if (socketPath !== null) {
-      try { fs.unlinkSync(socketPath); } catch { /* best-effort */ }
-    }
     closeLog();
     process.exit(1);
   }
-
-  // ---------------------------------------------------------------------------
-  // Embedding model warmup — pre-load Xenova/bge-small-en-v1.5 BEFORE
-  // declaring "ready", so the first sync call never blocks on a cold model
-  // load (~34s even with files cached on disk).
-  //
-  // v3 README §"Write path (kind=memory)" specifies embed+L2 insert is
-  // synchronous with a target of 10–30ms. That target assumes the model is
-  // already resident. Blocking "ready" on warmup is the correct fix: the
-  // daemon is long-lived, so the one-time ~34s startup cost is amortised
-  // across all syncs in the daemon's lifetime.
-  //
-  // If warmup fails (optional dep missing, ONNX ABI break, network error on
-  // first download), we log a warning and proceed to "ready" in FTS-only mode
-  // rather than refusing to start. The existing FTS fallback in sync-handler
-  // handles missing-embed gracefully; callers see a degraded but working daemon.
-  // ---------------------------------------------------------------------------
 
   writeLine(`embed-model: loading ${EMBEDDING_MODEL_NAME}…`);
   try {
@@ -362,6 +360,16 @@ export async function runDaemon(options: DaemonOptions): Promise<void> {
   } catch (err: unknown) {
     const msg = (err instanceof Error ? err.message : String(err)).replace(/[\r\n]/g, ' ');
     writeLine(`embed-model: WARN warmup failed — starting in FTS-only mode: ${msg}`);
+  }
+
+  // Now safe to accept connections — model is resident (or fallback logged).
+  try {
+    await bindServer();
+  } catch (bindErr: unknown) {
+    process.stderr.write(`error: could not bind daemon socket: ${String(bindErr)}\n`);
+    try { removePidFile(pidPath); } catch { /* best-effort */ }
+    closeLog();
+    process.exit(1);
   }
 
   if (isWindows && tcpPort !== null) {

@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.0.0-alpha.7] — 2026-05-18
+
+### Fixed
+- **Daemon: bind socket *after* warmup, not before.** alpha.6 made the daemon log "ready" only after the model was loaded, but the listening socket was still bound at the top of startup. Clients connected during warmup and their RPC handlers awaited the same warmup promise, blowing through the CLI's 30s per-call timeout exactly as before. The real fix is to defer `bindServer()` until after warmup completes — then there is no socket for the CLI to connect to during the warmup window, and the CLI's spawn-or-connect retry loop (already bumped to 90s in alpha.6) naturally absorbs the wait. The PID file is still written *before* warmup so a second `think daemon start` racing during warmup sees the daemon process and waits instead of double-spawning. End-to-end: cold spawn sync ~4s on warm OS page cache (~38s on a fully-cold cache, once per OS lifetime), every subsequent sync ~400ms.
+
+---
+
 ## [1.0.0-alpha.6] — 2026-05-18
 
 ### Fixed
