@@ -369,7 +369,7 @@ export async function runDaemon(options: DaemonOptions): Promise<void> {
       backfillActivitySeqIfNeeded(activeCortex, writeLine);
     } catch (backfillErr: unknown) {
       const msg = backfillErr instanceof Error ? backfillErr.message : String(backfillErr);
-      writeLine(`warn: activity_seq backfill for cortex '${activeCortex}' failed — ${msg}`);
+      writeLine(`activity_seq backfill for cortex '${activeCortex}' failed (continuing without backfill): ${msg}`);
     }
     scanAndEnqueueUncompacted(compactionQueue, [activeCortex]);
   }

@@ -16,7 +16,9 @@ import {
  *   3. The logger is called when backfilling is needed.
  *   4. The logger is NOT called when no backfill is required.
  *   5. Deleted rows with NULL seq are excluded from the null-count check.
- *   6. Performance: 10K-row backfill completes in <1s (AC #5).
+ *   6. Mixed-state cortex: rows with existing seqs get correct ts-ordered positions
+ *      after recompute (recomputeActivitySeq is a full global rekey, not a fill).
+ *   7. Performance: 10K-row backfill completes in <1s (AC #5).
  */
 
 function insertRow(
@@ -119,6 +121,33 @@ describe('backfillActivitySeqIfNeeded (AGT-292)', () => {
 
     // No backfill needed -- deleted row with NULL seq is excluded from the count
     expect(logLines.length).toBe(0);
+  });
+
+  it('mixed-state cortex: full recompute assigns correct ts-ordered positions', () => {
+    // Simulate upgrade path: rows A and B were previously stamped by assignNextSeq
+    // (daemon live-writes), row C was never stamped (legacy/pre-upgrade row).
+    // recomputeActivitySeq is a *full global rekey* by (ts ASC, id ASC) -- it
+    // reassigns all live rows from scratch. After backfill, every row's seq
+    // reflects its position in the global ts-sort, not its original write-time seq.
+    insertRow(cortex, { id: 'row-a', ts: '2026-06-01T00:00:00Z', activitySeq: 1 });
+    insertRow(cortex, { id: 'row-b', ts: '2026-06-02T00:00:00Z', activitySeq: 2 });
+    // C was written to L1 before the daemon stamped it (ts older than B but between A and B)
+    insertRow(cortex, { id: 'row-c', ts: '2026-06-01T12:00:00Z', activitySeq: null });
+
+    backfillActivitySeqIfNeeded(cortex);
+
+    const db = getCortexDb(cortex);
+    const getSeq = (id: string) =>
+      (db.prepare('SELECT activity_seq FROM memories WHERE id = ?').get(id) as { activity_seq: number }).activity_seq;
+
+    // After full rekey: A=1 (oldest), C=2 (ts between A and B), B=3 (newest)
+    expect(getSeq('row-a')).toBe(1);
+    expect(getSeq('row-c')).toBe(2);
+    expect(getSeq('row-b')).toBe(3);
+
+    // No NULLs remain
+    const nullCount = (db.prepare('SELECT COUNT(*) AS n FROM memories WHERE activity_seq IS NULL').get() as { n: number }).n;
+    expect(nullCount).toBe(0);
   });
 });
 
