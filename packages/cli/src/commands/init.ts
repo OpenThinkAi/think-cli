@@ -134,8 +134,9 @@ function detectOteamWorkspace(home: string): boolean {
 // Accepts home so tests can override via process.env.HOME without re-deriving.
 function isV3DaemonReachable(home: string, timeoutMs = 300): Promise<boolean> {
   const socketPath = path.join(home, '.think', 'daemon.sock');
-  // Fast path: if the socket file doesn't exist the probe would fail immediately,
-  // but skip the net.createConnection call entirely to avoid even the ENOENT round-trip.
+  // Latency fast-path: skip the async connect machinery entirely when the socket
+  // file is absent. The error handler below already handles ENOENT correctly;
+  // this just avoids queuing a connect that will immediately error out.
   if (!fs.existsSync(socketPath)) return Promise.resolve(false);
   return new Promise((resolve) => {
     const socket = net.createConnection(socketPath);
@@ -373,7 +374,7 @@ export const initCommand = new Command('init')
   .option('--minimal', 'Write a conservative work-log template that logs only explicit shipped outcomes — no decision narration, no oteam adaptation, no retro pattern. Skips the disclosure prompt. Mutually exclusive with --retro.')
   .option('--retro', 'Upsert the iterative-learning (retro) block instead of the work-logging block. Requires --cortex. When no -d is given: writes silently to the git repo root if inside a repo; prompts with cwd as the default otherwise.')
   .option('--cortex <name>', 'Cortex name baked into the retro block commands (required with --retro).')
-  .option('--block-version <ver>', 'Force block version: v2 (standard, default) or v3 (hook + MCP server). When omitted, v3 is used if the daemon is reachable; otherwise v2.')
+  .option('--block-version <ver>', 'Force block version: v2 (fallback) or v3 (hook + MCP server). When omitted, v3 is used if the daemon is reachable; otherwise v2.')
   .addHelpText('after', `
 Modes:
   Default (no --retro):
@@ -551,6 +552,9 @@ Examples:
       console.log(chalk.dim('Writing the minimal work-log template — no oteam adaptation, no retro pattern, no decision narration.'));
     } else if (version === 'v3') {
       console.log(chalk.dim('Writing v3 block (implicit recall via hook + MCP server).'));
+      if (oteamPresent) {
+        console.log(chalk.dim('Detected oteam workspace — oteam segment included.'));
+      }
     } else {
       if (forcedVersion === undefined) {
         console.log(chalk.dim('Daemon not detected — writing v2 block.'));

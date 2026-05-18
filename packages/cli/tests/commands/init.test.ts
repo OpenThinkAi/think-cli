@@ -619,7 +619,7 @@ describe('think init — v3 block (AGT-321)', () => {
     return readFileSync(path.join(projectDir, 'CLAUDE.md'), 'utf-8');
   }
 
-  it('--version v3 writes v3 block even when daemon is unreachable', async () => {
+  it('--block-version v3 writes v3 block even when daemon is unreachable', async () => {
     // No daemon running in test env; --version v3 forces v3 regardless.
     await initCommand.parseAsync(['--dir', projectDir, '--yes', '--block-version', 'v3'], { from: 'user' });
     const content = readClaude();
@@ -634,7 +634,7 @@ describe('think init — v3 block (AGT-321)', () => {
     expect(content).not.toContain('# Work Logging\n');
   });
 
-  it('--version v3 block is idempotent (second run does not duplicate)', async () => {
+  it('--block-version v3 block is idempotent (second run does not duplicate)', async () => {
     await initCommand.parseAsync(['--dir', projectDir, '--yes', '--block-version', 'v3'], { from: 'user' });
     const first = readClaude();
     await initCommand.parseAsync(['--dir', projectDir, '--yes', '--block-version', 'v3'], { from: 'user' });
@@ -643,14 +643,14 @@ describe('think init — v3 block (AGT-321)', () => {
     expect((second.match(/# think v3/g) ?? []).length).toBe(1);
   });
 
-  it('--version v2 forces v2 block regardless of daemon state', async () => {
+  it('--block-version v2 forces v2 block regardless of daemon state', async () => {
     await initCommand.parseAsync(['--dir', projectDir, '--yes', '--block-version', 'v2'], { from: 'user' });
     const content = readClaude();
     expect(content).toContain('# Work Logging');
     expect(content).not.toContain('# think v3');
   });
 
-  it('daemon-unreachable falls back to v2 block (no --version flag)', async () => {
+  it('daemon-unreachable falls back to v2 block (no --block-version flag)', async () => {
     // No daemon running in CI/test — expect v2 fallback.
     await initCommand.parseAsync(['--dir', projectDir, '--yes'], { from: 'user' });
     const content = readClaude();
