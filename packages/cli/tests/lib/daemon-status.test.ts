@@ -19,7 +19,6 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { spawnSync } from 'node:child_process';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -30,16 +29,24 @@ function tmpThinkHome(): string {
 }
 
 /**
- * Spawn a short-lived child process and return its PID after it has exited.
- * This is more reliable than scanning a fixed PID range because the kernel
- * guarantees the PID is not recycled before we've had a chance to use it.
+ * Search the high PID range for an integer that does not correspond to any
+ * running process (kill(pid, 0) → ESRCH). Avoids spawnSync of node, which is
+ * slow under heavy parallel test load (≥15 s observed) and risks PID
+ * recycling — the kernel does not guarantee a freed PID stays unused.
  */
-function getRecentlyDeadPid(): number {
-  const result = spawnSync(process.execPath, ['-e', '']);
-  if (result.pid == null || result.pid <= 0) {
-    throw new Error('Could not spawn child process to obtain a dead PID');
+function getUnusedPid(): number {
+  for (let candidate = 99998; candidate > 1024; candidate--) {
+    if (candidate === process.pid) continue;
+    try {
+      process.kill(candidate, 0);
+      // No throw — process exists. Skip.
+    } catch (err: unknown) {
+      const code = (err as NodeJS.ErrnoException).code;
+      if (code === 'ESRCH') return candidate;
+      // EPERM means the PID is in use by a process we don't own — skip.
+    }
   }
-  return result.pid;
+  throw new Error('Could not find an unused PID in range (1024, 99998]');
 }
 
 // ---------------------------------------------------------------------------
@@ -71,8 +78,7 @@ describe('isDaemonRunning', () => {
   });
 
   it('returns { running: false, stale: true, pid } for a stale PID file (dead process)', async () => {
-    // Spawn a process and wait for it to exit so we have a PID we know is dead.
-    const deadPid = getRecentlyDeadPid();
+    const deadPid = getUnusedPid();
 
     const pidFile = join(thinkHome, 'daemon.pid');
     writeFileSync(pidFile, String(deadPid) + '\n', { encoding: 'utf8' });

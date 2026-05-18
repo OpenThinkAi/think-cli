@@ -53,3 +53,13 @@ export function wrapData(label: string, content: string): string {
   const escaped = content.replace(/<\/?data/gi, (match) => `&lt;${match.slice(1)}`);
   return `<data source="${label}">\n${escaped}\n</data>`;
 }
+
+/**
+ * Strip embedded newlines from a value before interpolating into a single-line
+ * output (log line, JSON warning string, user-facing message). Prevents log
+ * injection and CRLF-in-display via crafted cortex names, entry IDs, or error
+ * messages. Matches the pattern established by AGT-277 in embed-model-check.ts.
+ */
+export function sanitizeForLog(value: string): string {
+  return value.replace(/[\r\n]/g, ' ');
+}

@@ -1,5 +1,5 @@
 /**
- * Compaction queue + worker loop — AGT-299
+ * Compaction queue + worker loop — AGT-299, AGT-302
  *
  * In-memory FIFO queue that drains compaction jobs asynchronously after the
  * sync endpoint writes a new `kind=memory` entry to L1+L2. One or more worker
@@ -9,12 +9,12 @@
  * Queue state is NOT persisted across daemon restarts. On daemon startup,
  * `scanAndEnqueueUncompacted` scans L1 for raw `kind=memory` entries that have
  * no corresponding row in `compaction_links` and re-enqueues them (cap: 100
- * per cortex).
+ * per cortex), excluding entries with `compaction_status = 'permanently_skipped'`
+ * (AGT-302).
  *
- * Downstream slots (AGT-300 triage gate, AGT-301 apply) are not yet wired in.
- * The pipeline is currently a DRY_RUN stub (no real LLM calls, no writes) so
- * the queue plumbing is exercisable without burning API tokens or altering L1/L2.
- * AGT-301 will set DRY_RUN=false once the apply step ships.
+ * AGT-301 wired the live apply path. AGT-302 added per-entry `compaction_status`
+ * tracking and routes both retries-exhausted and content-fault failures to
+ * `permanently_skipped` so they don't re-enter the queue on every daemon restart.
  */
 
 import fs from 'node:fs';
@@ -23,6 +23,7 @@ import { getCortexDb } from '../../db/engrams.js';
 import { getRepoPath, sanitizeName } from '../../lib/paths.js';
 import { getConfig } from '../../lib/config.js';
 import { LlmConsentError } from '../../lib/llm-consent.js';
+import { sanitizeForLog } from '../../lib/sanitize.js';
 import { searchVectors } from '../../lib/search-vectors.js';
 import type { NewEntry, CandidateEntry } from './call.js';
 
@@ -55,6 +56,25 @@ const TRIAGE_THRESHOLD_DEFAULT = 0.6;
 export interface CompactionJob {
   entry_id: string;
   cortex: string;
+}
+
+/**
+ * Thrown by `runCompactionPipeline` to signal a content-level permanent failure
+ * (e.g., `response_invalid`). Unlike regular errors — which cause `processJobWithRetry`
+ * to retry with backoff — this class is caught at the call site and mapped directly to
+ * `permanently_skipped` without consuming retry budget.
+ *
+ * The distinction matters: transient/network errors should retry; a well-formed LLM
+ * response with unparseable content is a content fault that won't improve with retries.
+ *
+ * Exported so callers (and tests) can construct it when a content fault is
+ * detectable upstream of the LLM call.
+ */
+export class PermanentCompactionFailure extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'PermanentCompactionFailure';
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -117,11 +137,13 @@ export class CompactionQueue {
   // ---------------------------------------------------------------------------
 
   /**
-   * Push a new compaction job onto the FIFO queue and wake any sleeping worker.
+   * Push a new compaction job onto the FIFO queue, set the entry's
+   * `compaction_status` to `'queued'` in L2, and wake any sleeping worker.
    * Safe to call multiple times for the same entry_id — deduplication is NOT
    * performed here; callers are responsible for avoiding double-enqueue.
    */
   enqueue(entry_id: string, cortex: string): void {
+    setCompactionStatus(entry_id, cortex, 'queued');
     this.queue.push({ entry_id, cortex });
     this.depthByCortex.set(cortex, (this.depthByCortex.get(cortex) ?? 0) + 1);
 
@@ -194,8 +216,9 @@ export class CompactionQueue {
    * Single worker coroutine. Loops until the process exits:
    *   1. Pull the next job from the queue.
    *   2. If empty: wait for an event-driven wakeup from `enqueue()`.
-   *   3. Process the job with retry-with-backoff.
-   *   4. Decrement the per-cortex depth counter (queued + in-flight).
+   *   3. Set compaction_status to 'running' before processing.
+   *   4. Process the job with retry-with-backoff.
+   *   5. Decrement the per-cortex depth counter (queued + in-flight).
    */
   private async runWorker(): Promise<void> {
     while (true) {
@@ -209,6 +232,9 @@ export class CompactionQueue {
         });
         continue;
       }
+
+      // Mark the entry as actively being processed.
+      setCompactionStatus(job.entry_id, job.cortex, 'running');
 
       try {
         await this.processJobWithRetry(job);
@@ -231,36 +257,60 @@ export class CompactionQueue {
   /**
    * Attempt to run the compaction pipeline for one job. On network/transient
    * errors, retries up to MAX_RETRIES times with exponential backoff
-   * (1s → 4s → 16s → 64s). On permanent failure (exhausted retries or
-   * response_invalid), logs and drops the job.
+   * (1s → 4s → 16s → 64s). On exhausting retries OR on a content-level
+   * `PermanentCompactionFailure`, sets `compaction_status` to
+   * `'permanently_skipped'` and logs loudly (AGT-302).
    *
-   * NOTE: AGT-300 (triage gate) and AGT-301 (apply writes) are NOT yet wired
-   * in. While DRY_RUN=true (the default), no real LLM call is made — the
-   * pipeline logs what would be compacted and returns immediately.
+   * `LlmConsentError` is a user-recoverable condition (config flip): logs and
+   * returns without updating `compaction_status` so the entry stays eligible
+   * for re-enqueue on the next daemon-startup backfill.
    */
   private async processJobWithRetry(job: CompactionJob): Promise<void> {
+    // Hoist loop-invariant sanitized values — these don't change between retries.
+    const safeId = sanitizeForLog(job.entry_id);
+    const safeCortex = sanitizeForLog(job.cortex);
+
     for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
       try {
         await this.runCompactionPipeline(job);
-        return; // success — stop retrying
+        // Any clean return from pipeline — success, triage-skip, no-candidates,
+        // or L2 miss — is logically "done with this entry". Mark completed so
+        // backfill won't re-enqueue.
+        setCompactionStatus(job.entry_id, job.cortex, 'completed');
+        return;
       } catch (err: unknown) {
-        const msg = err instanceof Error ? err.message : String(err);
-
-        // LLM consent errors are not transient — retrying won't help. Drop
-        // immediately rather than burning backoff time and daemon log noise.
-        if (err instanceof LlmConsentError) {
-          log(`compaction skipped: LLM consent not granted (entry=${job.entry_id}, cortex=${job.cortex})`);
+        // PermanentCompactionFailure signals a content-level fault (e.g.,
+        // response_invalid) that won't improve with retries. Map directly to
+        // permanently_skipped without consuming retry budget.
+        if (err instanceof PermanentCompactionFailure) {
+          setCompactionStatus(job.entry_id, job.cortex, 'permanently_skipped');
+          const safeMsg = sanitizeForLog(err.message);
+          log(`[ERROR] compaction permanently skipped for entry ${safeId} (reason=content-fault): ${safeMsg} (cortex=${safeCortex})`);
           return;
         }
 
+        // LLM consent errors are not transient — retrying won't help. Drop
+        // immediately without updating compaction_status so a future consent
+        // grant + daemon restart re-picks up the entry via backfill.
+        if (err instanceof LlmConsentError) {
+          log(`compaction skipped: LLM consent not granted (entry=${safeId}, cortex=${safeCortex})`);
+          return;
+        }
+
+        const safeMsg = sanitizeForLog(err instanceof Error ? err.message : String(err));
+
         if (attempt === MAX_RETRIES) {
-          log(`compaction failed permanently after ${MAX_RETRIES} retries (entry=${job.entry_id}, cortex=${job.cortex}): ${msg}`);
+          // Exhausted all retries for a transient/network error. Mark
+          // permanently_skipped so the entry doesn't re-enter on next restart
+          // until explicitly re-queued via a future `think compaction retry`.
+          setCompactionStatus(job.entry_id, job.cortex, 'permanently_skipped');
+          log(`[ERROR] compaction permanently skipped for entry ${safeId} (reason=retries-exhausted): ${safeMsg} (cortex=${safeCortex})`);
           return;
         }
 
         // Exponential backoff: attempt 0→1s, 1→4s, 2→16s, 3→64s
         const delayMs = BACKOFF_BASE_MS * Math.pow(4, attempt);
-        log(`compaction attempt ${attempt + 1} failed (entry=${job.entry_id}, cortex=${job.cortex}): ${msg} — retrying in ${delayMs}ms`);
+        log(`compaction attempt ${attempt + 1} failed (entry=${safeId}, cortex=${safeCortex}): ${safeMsg} — retrying in ${delayMs}ms`);
         await sleep(delayMs);
       }
     }
@@ -290,10 +340,16 @@ export class CompactionQueue {
       return this._pipelineOverride(job);
     }
 
+    // Sanitize all externally-sourced values used in log lines once, up-front.
+    // entry_id comes from L1 JSONL (external data); cortex comes from config/API.
+    // Both must be sanitized before interpolation into log lines (AGT-277 pattern).
+    const safeId = sanitizeForLog(job.entry_id);
+    const safeCortex = sanitizeForLog(job.cortex);
+
     // Kill-switch: compaction.enabled = false in config disables LLM calls
     // without revoking general LLM consent. Jobs drain as no-op skips.
     if (getConfig().compaction?.enabled === false) {
-      log(`compaction disabled by config (entry=${job.entry_id}, cortex=${job.cortex})`);
+      log(`compaction disabled by config (entry=${safeId}, cortex=${safeCortex})`);
       return;
     }
 
@@ -302,7 +358,7 @@ export class CompactionQueue {
     if (entryWithEmbedding === null) {
       // Entry not found in L2 — skip (may have been deleted or L2 insert
       // failed; backfill on next startup handles the reconciliation case).
-      log(`compaction skipped: entry ${job.entry_id} not found in L2 (cortex=${job.cortex})`);
+      log(`compaction skipped: entry ${safeId} not found in L2 (cortex=${safeCortex})`);
       return;
     }
 
@@ -332,7 +388,7 @@ export class CompactionQueue {
       if (maxSimilarity < threshold) {
         this._compactionsSkippedTriage++;
         log(
-          `compaction triage: skipped LLM (entry=${job.entry_id}, cortex=${job.cortex}, ` +
+          `compaction triage: skipped LLM (entry=${safeId}, cortex=${safeCortex}, ` +
           `max_cosine=${maxSimilarity.toFixed(4)}, threshold=${threshold}) — no_compaction_needed`,
         );
         return;
@@ -346,7 +402,7 @@ export class CompactionQueue {
       // Dry-run: log intent without calling the LLM or writing any output.
       // AGT-301 will replace this branch with the real apply path.
       log(
-        `[dry-run] would compact entry=${job.entry_id} cortex=${job.cortex} ` +
+        `[dry-run] would compact entry=${safeId} cortex=${safeCortex} ` +
         `content="${newEntry.content.slice(0, 60)}${newEntry.content.length > 60 ? '…' : ''}"`,
       );
       return;
@@ -378,7 +434,7 @@ export class CompactionQueue {
 
     if (candidates.length === 0) {
       // No usable candidates — skip LLM call. Raw entry remains as current state.
-      log(`compaction skipped: no candidates for entry=${job.entry_id} cortex=${job.cortex}`);
+      log(`compaction skipped: no candidates for entry=${safeId} cortex=${safeCortex}`);
       return;
     }
 
@@ -386,8 +442,12 @@ export class CompactionQueue {
     const result = await runCompaction(newEntry, candidates);
 
     if (result.status === 'response_invalid') {
-      log(`compaction response_invalid after retry (entry=${job.entry_id}, cortex=${job.cortex}) — skipping`);
-      return;
+      // Content-level failure — the LLM responded but produced unparseable
+      // output. Throw PermanentCompactionFailure so processJobWithRetry maps
+      // this directly to permanently_skipped without consuming retry budget.
+      // Retrying the same prompt with the same entry content won't produce a
+      // valid response; this is a content fault, not a transient one.
+      throw new PermanentCompactionFailure('response_invalid');
     }
 
     // Prompt-injection guard: filter LLM-returned supersedes IDs against the
@@ -398,7 +458,7 @@ export class CompactionQueue {
     if (droppedIds.length > 0) {
       log(
         `prompt-injection guard: dropped ${droppedIds.length} supersedes ID(s) not in ` +
-        `candidate set for entry ${job.entry_id}: ${droppedIds.join(', ')}`,
+        `candidate set for entry ${safeId}: ${droppedIds.join(', ')}`,
       );
     }
     const safeResult = { ...result, supersedes: result.supersedes.filter(id => candidateIds.has(id)) };
@@ -425,6 +485,9 @@ export class CompactionQueue {
  * Reads L1 JSONL files directly (same directory layout as sync-handler.ts).
  * Skips entries whose `compacted_from` is non-null (they are compactions, not
  * raw entries). Skips entries already present in `compaction_links.raw_id`.
+ * Skips entries whose L2 `compaction_status = 'permanently_skipped'` (AGT-302) —
+ * these stay raw forever unless explicitly re-queued via a future `think
+ * compaction retry` command.
  *
  * @param queue     The CompactionQueue to enqueue jobs into.
  * @param cortexes  List of cortex names to scan (from config.cortex.active or
@@ -451,6 +514,9 @@ export function scanAndEnqueueUncompacted(
     // Per-id existence checker for compaction_links — O(1) per candidate.
     const isAlreadyCompacted = makeCompactionExistsChecker(safeCortex);
 
+    // Per-id checker for permanently-skipped status (AGT-302).
+    const isPermanentlySkipped = makePermanentlySkippedChecker(safeCortex);
+
     // Read all L1 JSONL pages for this cortex (sorted ascending = oldest first).
     let pages: string[] = [];
     try {
@@ -461,8 +527,8 @@ export function scanAndEnqueueUncompacted(
       continue;
     }
 
-    // Collect candidate entry_ids (kind=memory, compacted_from=null, not in compaction_links).
-    // We scan newest-first so the backfill cap favours the most recent entries.
+    // Collect candidate entry_ids (kind=memory, compacted_from=null, not in compaction_links,
+    // not permanently_skipped). We scan newest-first so the backfill cap favours recent entries.
     const candidates: string[] = [];
 
     outer:
@@ -498,6 +564,10 @@ export function scanAndEnqueueUncompacted(
         // Skip if already compacted (O(1) per-id existence check).
         if (isAlreadyCompacted !== null && isAlreadyCompacted(id)) continue;
 
+        // Skip permanently-skipped entries — they stay raw until explicitly
+        // re-queued via a future `think compaction retry` command.
+        if (isPermanentlySkipped !== null && isPermanentlySkipped(id)) continue;
+
         // Skip tombstoned entries.
         if (parsed.deleted_at !== null && parsed.deleted_at !== undefined) continue;
 
@@ -515,13 +585,55 @@ export function scanAndEnqueueUncompacted(
       const capMsg = candidates.length === BACKFILL_CAP
         ? ` (cap reached — run 'think reindex' for full backfill)`
         : '';
-      log(`backfill: enqueued ${candidates.length} uncompacted entries for cortex '${safeCortex}'${capMsg}`);
+      log(`backfill: enqueued ${candidates.length} uncompacted entries for cortex '${sanitizeForLog(safeCortex)}'${capMsg}`);
     }
   }
 }
 
 // ---------------------------------------------------------------------------
-// Helpers
+// DB helpers for compaction_status (AGT-302)
+// ---------------------------------------------------------------------------
+
+/**
+ * Set the `compaction_status` column on an L2 memories row.
+ * Silently no-ops if the DB or row is unavailable — L2 is derived and
+ * the queue continues regardless of whether this write succeeds.
+ */
+function setCompactionStatus(
+  entryId: string,
+  cortexName: string,
+  status: 'queued' | 'running' | 'completed' | 'permanently_skipped',
+): void {
+  try {
+    const db = getCortexDb(cortexName);
+    db.prepare('UPDATE memories SET compaction_status = ? WHERE id = ?').run(status, entryId);
+  } catch {
+    // Non-fatal — L2 status is advisory; the queue's in-memory state is authoritative.
+  }
+}
+
+/**
+ * Returns a prepared-statement checker that returns true when an entry's
+ * `compaction_status` is `'permanently_skipped'`. Used by
+ * `scanAndEnqueueUncompacted` to exclude dead entries from the backfill.
+ *
+ * Returns `null` when the DB is unavailable — callers should treat this as
+ * "no entries are permanently skipped" and proceed with backfill normally.
+ */
+function makePermanentlySkippedChecker(cortexName: string): ((id: string) => boolean) | null {
+  try {
+    const db = getCortexDb(cortexName);
+    const stmt = db.prepare(
+      "SELECT 1 FROM memories WHERE id = ? AND compaction_status = 'permanently_skipped' LIMIT 1",
+    );
+    return (id: string): boolean => stmt.get(id) !== undefined;
+  } catch {
+    return null;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// DB helpers for compaction_links
 // ---------------------------------------------------------------------------
 
 /**
@@ -577,6 +689,10 @@ function readEntryWithEmbeddingFromL2(
   }
 }
 
+// ---------------------------------------------------------------------------
+// Utilities
+// ---------------------------------------------------------------------------
+
 /** Millisecond sleep — used by the worker poll loop and backoff delays. */
 function sleep(ms: number): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, ms));
@@ -599,3 +715,24 @@ function log(msg: string): void {
  * `compactionQueue.start()` during startup (after socket bind).
  */
 export const compactionQueue = new CompactionQueue();
+
+// ---------------------------------------------------------------------------
+// DB query helpers for the status endpoint (AGT-302)
+// ---------------------------------------------------------------------------
+
+/**
+ * Count entries with `compaction_status = 'permanently_skipped'` for a given
+ * cortex. Returns 0 when the DB is unavailable or the column does not exist.
+ * Used by the daemon status endpoint to surface the count per cortex.
+ */
+export function getPermanentlySkippedCount(cortexName: string): number {
+  try {
+    const db = getCortexDb(cortexName);
+    const row = db.prepare(
+      "SELECT COUNT(*) AS cnt FROM memories WHERE compaction_status = 'permanently_skipped'",
+    ).get() as { cnt: number } | undefined;
+    return row?.cnt ?? 0;
+  } catch {
+    return 0;
+  }
+}
