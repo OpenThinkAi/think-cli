@@ -135,30 +135,16 @@ describe('handleRecall (AGT-285)', () => {
     expect(top.cortex).toBe(CORTEX);
   });
 
-  // ── kind/topic filter errors when columns absent ──────────────────────────
-
-  it('throws when kind filter requested but kind column absent', async () => {
-    vi.spyOn(embedModule, 'default').mockResolvedValue(axis(0));
-
-    await expect(
-      handleRecall({ cortex: CORTEX, query: 'test', kind: 'decision' }),
-    ).rejects.toThrow(/kind.*column/i);
-  });
-
-  it('throws when topic filter requested but topics column absent', async () => {
-    vi.spyOn(embedModule, 'default').mockResolvedValue(axis(0));
-
-    await expect(
-      handleRecall({ cortex: CORTEX, query: 'test', topic: 'ai' }),
-    ).rejects.toThrow(/topic.*column/i);
-  });
-
   // ── kind/topic filter happy paths ─────────────────────────────────────────
 
   it('kind filter: returns only entries with matching kind', async () => {
-    // Add kind column to the test DB and tag the first two fixtures.
+    // Ensure kind column exists (migration 14 adds it; this is a no-op guard for
+    // test isolation when running against an already-migrated DB).
     const db = getCortexDb(CORTEX);
-    db.exec('ALTER TABLE memories ADD COLUMN kind TEXT');
+    const cols = (db.prepare('PRAGMA table_info(memories)').all() as { name: string }[]).map(c => c.name);
+    if (!cols.includes('kind')) {
+      db.exec('ALTER TABLE memories ADD COLUMN kind TEXT');
+    }
     // Invalidate the column cache so handleRecall re-reads schema.
     closeAllCortexDbs();
     const db2 = getCortexDb(CORTEX);

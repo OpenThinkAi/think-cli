@@ -8,8 +8,9 @@
  *   cortex  string   (required) — target cortex name (validated via sanitizeName)
  *   query   string   (required) — semantic search query
  *   limit   number   (optional, default 20, max 500) — must be a positive integer
- *   kind    string   (optional) — filter by kind (error if column absent)
+ *   kind    string   (optional) — filter by kind
  *   topic   string   (optional) — filter entries whose topics array contains this value
+ *                                 (not yet implemented; see ColumnInfo.hasTopics)
  *   since   string   (optional) — ISO-8601 lower bound on ts (format check, inclusive)
  *
  * Returns: RecallEntry[]
@@ -18,10 +19,9 @@
  * which enforces alphanumeric + hyphens/underscores only and rejects `/`, `\`, and `..`.
  * Any path-traversal attempt surfaces as an Error before the DB is opened.
  *
- * Filter contract: If a requested filter cannot be applied (kind column absent,
- * JSON1 unavailable for topic), the handler throws rather than silently returning
- * unfiltered results. Callers that request a filter are asserting intent; silent
- * pass-through is worse than an explicit error.
+ * Filter contract: when a requested filter cannot be applied (e.g. topic, which
+ * is not yet wired through), the handler throws rather than silently returning
+ * unfiltered results. Callers that request a filter are asserting intent.
  *
  * Recency weighting (AGT-291):
  *   score = cosine × exp(-decay × (max_seq - entry_seq))
@@ -129,7 +129,13 @@ interface HydratedRow {
 // ---------------------------------------------------------------------------
 
 interface ColumnInfo {
-  hasKind: boolean;
+  /**
+   * True when the `topics` column exists. Migration 14 added `topics_json`
+   * (not `topics`), so this is always false today; the topic-filter throw
+   * below treats topic filtering as not-yet-implemented. A future ticket
+   * will either rename the column or wire `topics_json` through the SELECT
+   * and parser; until then, the SELECT emits `'[]' as topics`.
+   */
   hasTopics: boolean;
   hasActivitySeq: boolean;
 }
@@ -146,7 +152,6 @@ function getColumnInfo(db: DatabaseSync): ColumnInfo {
     ),
   );
   const info: ColumnInfo = {
-    hasKind: cols.has('kind'),
     hasTopics: cols.has('topics'),
     hasActivitySeq: cols.has('activity_seq'),
   };
@@ -348,17 +353,15 @@ async function recallOneCortexWithVec(
   // getCortexDb calls getIndexDbPath → sanitizeName, which rejects `/`, `\`, and
   // `..` sequences. Path-traversal attempts are caught here with a clear error.
   const db = getCortexDb(cortexName);
-  const { hasKind, hasTopics, hasActivitySeq } = getColumnInfo(db);
+  const { hasTopics, hasActivitySeq } = getColumnInfo(db);
 
-  // Fail fast if the caller requested a filter against a column that doesn't exist.
-  if (kind !== undefined && !hasKind) {
-    throw new Error(
-      `recall: 'kind' filter requested but the memories table in cortex "${cortexName}" does not have a 'kind' column`,
-    );
-  }
+  // Topic filtering is not yet implemented — migration 14 added `topics_json`
+  // rather than a `topics` column, so the SELECT below cannot match against a
+  // topics array. Fail loudly rather than silently returning unfiltered results.
   if (topic !== undefined && !hasTopics) {
     throw new Error(
-      `recall: 'topic' filter requested but the memories table in cortex "${cortexName}" does not have a 'topics' column`,
+      `recall: 'topic' filter is not yet implemented for cortex "${cortexName}" ` +
+      `(column is 'topics_json'; SELECT wiring pending)`,
     );
   }
 
@@ -414,7 +417,11 @@ async function recallOneCortexWithVec(
     'id',
     'ts',
     'content',
-    hasKind ? 'kind' : 'NULL as kind',
+    'kind',
+    // See ColumnInfo.hasTopics: until topic-array column wiring lands, recall
+    // always emits an empty topics array; the topic-filter throw above ensures
+    // callers asking for topic filtering get a clear error rather than silent
+    // unfiltered results.
     hasTopics ? 'topics' : "'[]' as topics",
     hasActivitySeq ? 'activity_seq' : 'NULL as activity_seq',
   ].join(', ');

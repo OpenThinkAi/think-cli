@@ -37,6 +37,7 @@ import { assignNextSeq } from '../db/activity-seq.js';
 import embed, { EMBEDDING_MODEL_NAME } from '../lib/embed.js';
 import { compactionQueue } from './compaction/queue.js';
 import { pushDebouncer } from './push-debouncer.js';
+import { runSupersessionWorker } from './supersession/worker.js';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -81,15 +82,37 @@ export interface SyncParams {
 /**
  * Response shape for the `sync` RPC.
  *
- * - `status: 'stored'` — entry written to L1 and L2 successfully.
+ * - `status: 'stored'` — entry written to L1 and L2 successfully. NOTE: when
+ *   `supersession_scheduled` is also true, this status reflects the initial
+ *   write only; the entry may be tombstoned shortly after by the async
+ *   duplicate check.
  * - `status: 'queued'` — reserved for AGT-299 (L1 written, L2 pending
  *   compaction replay); not yet returned by this implementation.
+ * - `supersession_scheduled` — present and `true` for every `kind=retro` entry.
+ *   An async check was scheduled regardless of whether there are candidates.
+ *   The entry MAY be tombstoned as a duplicate. There is no completion signal;
+ *   tombstone events appear only in the daemon log. Callers should surface this
+ *   to the user as an advisory, not as a definitive tombstone warning.
  * - `warnings` — advisory messages (e.g. fields accepted but not yet
  *   queryable via L2). Callers should surface these to the user.
  */
 export interface SyncResult {
   entry_id: string;
   status: 'stored' | 'queued';
+  /**
+   * True for every `kind=retro` entry. An async supersession check was scheduled
+   * and will run shortly after this response is returned. The check may tombstone
+   * the entry as a duplicate — there is no completion callback or follow-up signal.
+   * Tombstone events are recorded only in the daemon log at warn level
+   * (`[supersession] retro <id> detected as duplicate; tombstoned`).
+   * Verification path for users: tombstoned entries are L2-soft-deleted via
+   * `deleted_at` and an L1 tombstone line is appended — they will not appear
+   * in default recall results but remain inspectable via daemon log scraping
+   * or a future `--include-deleted` recall flag.
+   * Suggested caller copy: "duplicate check running; retro may be suppressed
+   * if it duplicates an existing one. Check daemon log for tombstone events."
+   */
+  supersession_scheduled?: boolean;
   warnings?: string[];
 }
 
@@ -359,6 +382,20 @@ export async function handleSync(params: Record<string, unknown>): Promise<SyncR
     compactionQueue.enqueue(id, safeCortex);
   }
 
+  // --- async supersession worker for retros (AGT-304) ---
+  // Fire-and-forget: vector search + LLM call happens after the sync response
+  // is returned to the caller. Errors are logged but do not fail the sync.
+  if (kind === 'retro') {
+    setImmediate(() => {
+      runSupersessionWorker(id, ts, content, safeCortex).catch((err: unknown) => {
+        console.warn(
+          `[supersession] worker error for entry ${id}: ` +
+          `${err instanceof Error ? err.message : String(err)}`,
+        );
+      });
+    });
+  }
+
   // Schedule a debounced git commit + push for this cortex (AGT-309).
   // `skipPush` suppresses the remote push when the caller is offline or
   // running integration tests that have no configured remote (AGT-293).
@@ -380,6 +417,7 @@ export async function handleSync(params: Record<string, unknown>): Promise<SyncR
   return {
     entry_id: id,
     status: 'stored',
+    ...(kind === 'retro' ? { supersession_scheduled: true } : {}),
     ...(warnings.length > 0 ? { warnings } : {}),
   };
 }
