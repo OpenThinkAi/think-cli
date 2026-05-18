@@ -2,6 +2,18 @@
 
 Local-first CLI that gives AI agents persistent, curated memory.
 
+## v3 — vector recall, write-time compaction, resident daemon
+
+v3 ships as `@openthink/think@1.0.0-alpha_001`. The core reframe: recall becomes cheap enough to call implicitly on every agent turn. Three properties earn the version bump: **vector recall** (semantic similarity search via a resident `bge-small-en-v1.5` embedding model — right entries even when vocabulary does not overlap), **write-time compaction** (daemon folds each new memory into a single self-contained line via an LLM call so read time stays sub-100ms), and a **resident daemon** (holds the model in memory; CLI calls go over a Unix socket — no cold-start per `recall`). A `UserPromptSubmit` hook and MCP server both talk to the same daemon, providing automatic per-prompt orientation and agent-initiated mid-turn recall. Full design: [think-v3 project README](https://github.com/OpenThinkAi/think-cli/blob/main/docs/think-v3.md).
+
+### Alpha install
+
+```bash
+npm install -g @openthink/think@alpha
+```
+
+**Migrating from v2?** v3 reads v2 storage; first launch reindexes. v2 commands are not removed — cleanup is a follow-up project.
+
 ## Install
 
 Requires **Node 22.5+** (uses `node:sqlite`).
