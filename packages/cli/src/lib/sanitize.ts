@@ -1,5 +1,20 @@
 export const MAX_ENGRAM_LENGTH = 4000;
 
+/**
+ * Strip ANSI/control characters from a daemon-sourced string before printing.
+ * The daemon socket is an IPC boundary -- a rogue responder could otherwise
+ * inject OSC/CSI sequences into the terminal. Covers both the C0 range
+ * (\x00-\x1f, DEL) and the 8-bit C1 range (\x80-\x9f), which includes the
+ * 8-bit CSI equivalent at \x9b.
+ *
+ * Apply to all strings sourced from daemon RPC results before writing to
+ * stdout/stderr. User-supplied strings echoed back to the same user do NOT
+ * need this treatment -- only daemon-sourced strings.
+ */
+export function stripControls(s: unknown): string {
+  return String(s ?? '').replace(/[\x00-\x1f\x7f-\x9f]/g, '');
+}
+
 const SUSPICIOUS_PATTERNS = [
   /ignore\s+(all\s+)?previous\s+instructions/i,
   /ignore\s+(all\s+)?above\s+instructions/i,

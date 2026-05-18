@@ -186,13 +186,14 @@ describe('think event -- daemon-routed path (AGT-295)', () => {
   });
 });
 
-describe('think event -- L1 entry shape (AC #3)', () => {
+describe('think event -- L1 entry shape via daemon params (AC #3)', () => {
   withFreshThinkHome('think-event-l1-test-');
 
-  it('daemon result entry has kind=event, compacted_from=null, supersedes=[] contract', async () => {
-    // This test verifies that the daemon call is made with kind="event",
-    // and the mock response represents the expected L1 entry shape:
-    // compacted_from: null, supersedes: [] (events are never compacted/superseded).
+  it('daemon receives kind="event"; sync-handler stores compacted_from:null, supersedes:[] for event kind', async () => {
+    // The L1 entry shape contract (compacted_from:null, supersedes:[]) is enforced
+    // by the sync-handler (tested in tests/daemon/sync-handler.test.ts).
+    // This test verifies the CLI end: that kind="event" is sent to the daemon so
+    // the handler can uphold that contract.
     const mockClient = makeMockClient({ entry_id: 'l1-shape-id' });
     vi.spyOn(daemonClientModule, 'connectDaemon').mockResolvedValue(mockClient);
 
@@ -200,14 +201,40 @@ describe('think event -- L1 entry shape (AC #3)', () => {
     const prog = makeProgram();
     await prog.parseAsync(['node', 'think', '-C', cortex, 'event', 'testing L1 entry shape']);
 
-    // Verify kind=event was sent (daemon stores compacted_from:null, supersedes:[] for events)
     const callArgs = mockClient.call.mock.calls[0][1] as Record<string, unknown>;
+    // kind="event" is the field that tells the sync-handler to set
+    // compacted_from:null (permanently) and skip the supersession check.
     expect(callArgs['kind']).toBe('event');
+    // The daemon never receives compacted_from or supersedes from the CLI --
+    // those are handler-internal fields set on the L1 entry, not RPC params.
+    expect(callArgs).not.toHaveProperty('compacted_from');
+    expect(callArgs).not.toHaveProperty('supersedes');
+  });
 
-    // The daemon sync-handler always sets compacted_from:null and supersedes:[]
-    // for all entries including kind=event (verified in sync-handler.test.ts).
-    // Here we confirm the CLI sends kind="event" so the daemon stores it correctly.
-    expect(callArgs['content']).toBe('testing L1 entry shape');
+  it('fallback path (no daemon) stores content in v2 engrams table (kind field not preserved -- v2 schema limitation)', async () => {
+    // The v2 engrams table predates the v3 kind system and has no kind column.
+    // The fallback path writes the content to prevent data loss, but kind="event"
+    // is not stored. This is documented behavior, not a bug.
+    vi.spyOn(daemonClientModule, 'connectDaemon').mockRejectedValue(
+      new DaemonUnavailableError('daemon failed to start; check ~/.think/daemon.log', '~/.think/daemon.log'),
+    );
+
+    const cortex = 'l1-fallback-cortex';
+    const prog = makeProgram();
+    await prog.parseAsync(['node', 'think', '-C', cortex, 'event', 'fallback event for L1 shape test']);
+
+    const db = getCortexDb(cortex);
+    const row = db.prepare('SELECT id, content FROM engrams LIMIT 1').get() as {
+      id: string;
+      content: string;
+    } | undefined;
+
+    expect(row).toBeDefined();
+    expect(row!.content).toBe('fallback event for L1 shape test');
+    // kind column does not exist on the v2 engrams table -- this expectation
+    // documents the known limitation of the fallback path.
+    const cols = (db.prepare("PRAGMA table_info(engrams)").all() as Array<{ name: string }>).map(c => c.name);
+    expect(cols).not.toContain('kind');
   });
 });
 

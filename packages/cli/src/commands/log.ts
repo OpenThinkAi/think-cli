@@ -7,8 +7,9 @@ import { getConfig } from '../lib/config.js';
 import { insertEngram, getPendingEngrams } from '../db/engram-queries.js';
 import { closeCortexDb } from '../db/engrams.js';
 import { checkForUpdate } from '../lib/update-check.js';
-import { validateEngramContent } from '../lib/sanitize.js';
+import { validateEngramContent, stripControls } from '../lib/sanitize.js';
 import { connectDaemon, DaemonUnavailableError } from '../lib/daemon-client.js';
+import type { SyncResult as DaemonSyncResult } from '../daemon/sync-handler.js';
 
 export const logCommand = new Command('log')
   .description('Log a note or entry')
@@ -46,28 +47,6 @@ export const logCommand = new Command('log')
 
     closeDb();
   });
-
-/**
- * Interface for the daemon `sync` RPC result.
- * Matches SyncResult in packages/cli/src/daemon/sync-handler.ts (AGT-286).
- * Kept local to avoid coupling the CLI command layer to the daemon entry point.
- */
-interface DaemonSyncResult {
-  entry_id: string;
-  status: 'stored' | 'queued';
-  warnings?: string[];
-}
-
-/**
- * Strip ANSI/control characters from a daemon-sourced string before printing.
- * The daemon socket is an IPC boundary — a rogue responder could otherwise
- * inject OSC/CSI sequences into the terminal. Covers both the C0 range
- * (\x00–\x1f, DEL) and the 8-bit C1 range (\x80–\x9f), which includes the
- * 8-bit CSI equivalent at \x9b.
- */
-function stripControls(s: unknown): string {
-  return String(s ?? '').replace(/[\x00-\x1f\x7f-\x9f]/g, '');
-}
 
 // Factory returns a fresh Command instance per call. Tests build a new program
 // per test and need an unparented sync command; production calls it once at

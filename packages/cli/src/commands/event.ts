@@ -17,27 +17,9 @@ import { closeDb } from '../db/client.js';
 import { getConfig } from '../lib/config.js';
 import { insertEngram } from '../db/engram-queries.js';
 import { closeCortexDb } from '../db/engrams.js';
-import { validateEngramContent } from '../lib/sanitize.js';
+import { validateEngramContent, stripControls } from '../lib/sanitize.js';
 import { connectDaemon, DaemonUnavailableError } from '../lib/daemon-client.js';
-
-/**
- * Interface for the daemon `sync` RPC result when used for event entries.
- * Matches SyncResult in packages/cli/src/daemon/sync-handler.ts (AGT-286).
- */
-interface DaemonSyncResult {
-  entry_id: string;
-  status: 'stored' | 'queued';
-  warnings?: string[];
-}
-
-/**
- * Strip ANSI/control characters from a daemon-sourced string before printing.
- * The daemon socket is an IPC boundary -- a rogue responder could otherwise
- * inject OSC/CSI sequences into the terminal.
- */
-function stripControls(s: unknown): string {
-  return String(s ?? '').replace(/[\x00-\x1f\x7f-\x9f]/g, '');
-}
+import type { SyncResult as DaemonSyncResult } from '../daemon/sync-handler.js';
 
 // Factory returns a fresh Command instance per call. Tests build a new program
 // per test and need an unparented event command; production calls it once at
@@ -135,6 +117,14 @@ Examples:
           // Entered when:
           //  (a) daemon is unavailable (DaemonUnavailableError) -- silent degrade, or
           //  (b) unexpected daemon fault -- surface on stderr before degrading.
+          //
+          // NOTE: The v2 `engrams` table has no `kind` column, so kind="event" is
+          // NOT preserved on this path. The entry is stored as a plain engram.
+          // This is an acknowledged limitation of the degraded fallback: the v2
+          // schema predates the v3 kind system. The daemon is the canonical write
+          // path; the fallback exists only to prevent data loss when the daemon is
+          // unavailable. A future schema migration (out of scope here) will align
+          // the v2 table with the v3 entry model.
           if (daemonErr && !(daemonErr instanceof DaemonUnavailableError) && !opts.silent) {
             const msg = daemonErr instanceof Error ? daemonErr.message : String(daemonErr);
             const cleaned = stripControls(msg);
