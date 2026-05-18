@@ -22,15 +22,15 @@ import path from 'node:path';
 import { getCortexDb } from '../../db/engrams.js';
 import { getRepoPath, sanitizeName } from '../../lib/paths.js';
 import { getConfig } from '../../lib/config.js';
+import { LlmConsentError } from '../../lib/llm-consent.js';
 import { searchVectors } from '../../lib/search-vectors.js';
-import type { NewEntry } from './call.js';
+import type { NewEntry, CandidateEntry } from './call.js';
 
 /**
- * When true (default until AGT-301 ships), the worker reads entry content from
- * L2 and logs what would be compacted, but does NOT call the LLM. Set to false
- * by AGT-301 once the apply write step is implemented.
+ * When true, the worker logs what would be compacted but does NOT call the LLM
+ * or write any output. Set to false — AGT-301 wired the live apply path.
  */
-const DRY_RUN = true;
+const DRY_RUN = false;
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -246,6 +246,13 @@ export class CompactionQueue {
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : String(err);
 
+        // LLM consent errors are not transient — retrying won't help. Drop
+        // immediately rather than burning backoff time and daemon log noise.
+        if (err instanceof LlmConsentError) {
+          log(`compaction skipped: LLM consent not granted (entry=${job.entry_id}, cortex=${job.cortex})`);
+          return;
+        }
+
         if (attempt === MAX_RETRIES) {
           log(`compaction failed permanently after ${MAX_RETRIES} retries (entry=${job.entry_id}, cortex=${job.cortex}): ${msg}`);
           return;
@@ -283,6 +290,13 @@ export class CompactionQueue {
       return this._pipelineOverride(job);
     }
 
+    // Kill-switch: compaction.enabled = false in config disables LLM calls
+    // without revoking general LLM consent. Jobs drain as no-op skips.
+    if (getConfig().compaction?.enabled === false) {
+      log(`compaction disabled by config (entry=${job.entry_id}, cortex=${job.cortex})`);
+      return;
+    }
+
     // Read the entry content + embedding from L2 (inserted by the sync handler).
     const entryWithEmbedding = readEntryWithEmbeddingFromL2(job.entry_id, job.cortex);
     if (entryWithEmbedding === null) {
@@ -299,16 +313,20 @@ export class CompactionQueue {
     // If the embedding is available, check whether any existing entry in the
     // same cortex is similar enough to warrant compaction. If not, the new
     // entry is net-new on its topic and the LLM call is unnecessary.
+    //
+    // `triageOthers` is hoisted to the outer scope so the live path can use
+    // these IDs to build the L2 candidate rows for the compaction prompt.
+    let triageOthers: Array<{ id: string; similarity: number }> = [];
     if (embedding !== null) {
       const threshold = getConfig().compaction?.triageThreshold ?? TRIAGE_THRESHOLD_DEFAULT;
-      const candidates = searchVectors(job.cortex, embedding, TRIAGE_TOP_K + 1);
+      const triageResults = searchVectors(job.cortex, embedding, TRIAGE_TOP_K + 1);
 
       // Exclude the entry itself from the candidate list (it may appear in the
       // results if its embedding was indexed before the triage check ran).
-      const others = candidates.filter(c => c.id !== job.entry_id);
+      triageOthers = triageResults.filter(c => c.id !== job.entry_id);
 
-      const maxSimilarity = others.length > 0
-        ? Math.max(...others.map(c => c.similarity))
+      const maxSimilarity = triageOthers.length > 0
+        ? Math.max(...triageOthers.map(c => c.similarity))
         : -1;
 
       if (maxSimilarity < threshold) {
@@ -334,23 +352,62 @@ export class CompactionQueue {
       return;
     }
 
-    // --- live path (wired by AGT-301) ---
-    // The import of runCompaction is intentionally inside this branch so the
-    // SDK is not loaded (and consent is not checked) until AGT-301 activates
-    // the live path by setting DRY_RUN=false.
+    // --- live path (AGT-301) ---
+    // Fetch full candidate content + topics from L2 for the compaction prompt.
+    // This also handles the no-embedding case: when triageOthers is empty (because
+    // the embedding was null and the triage gate was skipped), candidates will be
+    // empty. With no context to compact against, there is nothing to do — skip.
+    const db = getCortexDb(job.cortex);
+    const candidateStmt = db.prepare(
+      `SELECT id, ts, content, topics_json FROM memories
+       WHERE id = ? AND deleted_at IS NULL AND superseded_at IS NULL`,
+    );
+    const candidates: CandidateEntry[] = [];
+    for (const c of triageOthers) {
+      const row = candidateStmt.get(c.id) as
+        { id: string; ts: string; content: string; topics_json: string | null } | undefined;
+      if (row) {
+        candidates.push({
+          id: row.id,
+          ts: row.ts,
+          content: row.content,
+          topics: row.topics_json ? (JSON.parse(row.topics_json) as string[]) : [],
+        });
+      }
+    }
+
+    if (candidates.length === 0) {
+      // No usable candidates — skip LLM call. Raw entry remains as current state.
+      log(`compaction skipped: no candidates for entry=${job.entry_id} cortex=${job.cortex}`);
+      return;
+    }
+
     const { runCompaction } = await import('./call.js');
-    const result = await runCompaction(newEntry, []);
+    const result = await runCompaction(newEntry, candidates);
 
     if (result.status === 'response_invalid') {
       log(`compaction response_invalid after retry (entry=${job.entry_id}, cortex=${job.cortex}) — skipping`);
       return;
     }
 
-    // AGT-301 will write the compacted entry to L1+L2 here.
-    log(
-      `compaction ok (entry=${job.entry_id}, cortex=${job.cortex}): ` +
-      `supersedes=[${result.supersedes.join(', ')}] topics=[${result.topics.join(', ')}] ` +
-      `text="${result.compacted_text.slice(0, 80)}${result.compacted_text.length > 80 ? '…' : ''}"`,
+    // Prompt-injection guard: filter LLM-returned supersedes IDs against the
+    // actual candidate set. Prevents injected content from marking unrelated
+    // entries as superseded.
+    const candidateIds = new Set(candidates.map(c => c.id));
+    const droppedIds = result.supersedes.filter(id => !candidateIds.has(id));
+    if (droppedIds.length > 0) {
+      log(
+        `prompt-injection guard: dropped ${droppedIds.length} supersedes ID(s) not in ` +
+        `candidate set for entry ${job.entry_id}: ${droppedIds.join(', ')}`,
+      );
+    }
+    const safeResult = { ...result, supersedes: result.supersedes.filter(id => candidateIds.has(id)) };
+
+    const { applyCompaction } = await import('./apply.js');
+    await applyCompaction(
+      { id: job.entry_id, ts: newEntry.ts, content: newEntry.content },
+      safeResult,
+      job.cortex,
     );
   }
 }
