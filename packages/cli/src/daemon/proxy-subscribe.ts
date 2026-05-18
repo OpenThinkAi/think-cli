@@ -2,7 +2,7 @@
  * Proxy-subscribe WS client — AGT-311
  *
  * If `config.proxy.url` is set, opens a WebSocket connection to the proxy
- * and subscribes to push notifications for all accessible cortexes.
+ * and listens for push notifications from accessible cortexes.
  *
  * Wire protocol (incoming message from proxy):
  *   { "type": "push", "cortex": "<name>", "commit_sha": "<sha>" }
@@ -14,11 +14,14 @@
  * unreachable from startup, logs a warning and falls back to polling.
  *
  * Security properties:
- * - URL validated to ws:// or wss:// before use.
+ * - URL validated to ws:// or wss:// before use; userinfo stripped from logs.
  * - Incoming messages capped at MAX_MESSAGE_BYTES (1 KB) to prevent DoS.
  * - JSON is parsed only after the size check.
  * - All external-origin strings (cortex, commit_sha, close reason) are
  *   stripped of CR/LF before log interpolation to prevent log injection.
+ * - The onPush consumer is responsible for validating `cortex` against a
+ *   known-good allowlist before using it in any path or command construction
+ *   (a compromised proxy can supply arbitrary cortex strings).
  */
 
 import { getConfig } from '../lib/config.js';
@@ -66,6 +69,24 @@ function stripNewlines(s: string): string {
   return s.replace(/[\r\n]/g, ' ');
 }
 
+/**
+ * Return a log-safe representation of a WS URL with any embedded
+ * username/password replaced by '***'. Prevents credential leakage when
+ * users set `ws://token:x@host/` style URLs.
+ */
+export function redactUrl(raw: string): string {
+  try {
+    const u = new URL(raw);
+    if (u.username || u.password) {
+      u.username = '***';
+      u.password = '***';
+    }
+    return u.toString();
+  } catch {
+    return '(invalid url)';
+  }
+}
+
 // ---------------------------------------------------------------------------
 // URL validation
 // ---------------------------------------------------------------------------
@@ -91,17 +112,24 @@ export function isValidProxyUrl(url: string): boolean {
 /**
  * Starts the proxy-subscribe WS client.
  *
- * If `config.proxy.url` is not set, returns immediately with a no-op handle.
+ * If `config.proxy.url` is not set (or blank), returns immediately with a
+ * no-op handle (polling-only fallback).
  * If the URL is invalid or the connection fails from startup, logs a WARN
  * and returns a polling-only fallback (no-op handle).
+ *
+ * Note: `getConfig()` is called once at invocation time. Changes to
+ * `proxy.url` in the config file require a daemon restart to take effect.
  *
  * @param onPush  Called on each `{ type: "push", cortex, commit_sha }` message.
  *                Wire to `triggerImmediatePull(cortex)` from AGT-310 when that
  *                export lands; defaults to no-op until then.
+ *                IMPORTANT: validate `cortex` against a known-good allowlist
+ *                before passing it to any path or git operation — the value
+ *                comes from the proxy (external network party).
  */
 export function startProxySubscribe(onPush: OnPushCallback): ProxySubscribeHandle {
   const config = getConfig();
-  const proxyUrl = config.proxy?.url;
+  const proxyUrl = config.proxy?.url?.trim();
 
   if (!proxyUrl) {
     log('DEBUG', 'proxy.url not configured — proxy-subscribe disabled (polling only)');
@@ -113,6 +141,8 @@ export function startProxySubscribe(onPush: OnPushCallback): ProxySubscribeHandl
     return { stop() {} };
   }
 
+  const logUrl = redactUrl(proxyUrl);
+
   let stopped = false;
   let ws: WebSocket | null = null;
   let reconnectDelayMs = RECONNECT_INITIAL_MS;
@@ -121,14 +151,14 @@ export function startProxySubscribe(onPush: OnPushCallback): ProxySubscribeHandl
   function connect(): void {
     if (stopped) return;
 
-    log('DEBUG', `connecting to proxy at ${proxyUrl}`);
+    log('DEBUG', `connecting to proxy at ${logUrl}`);
 
     let socket: WebSocket;
     try {
       socket = new WebSocket(proxyUrl);
     } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      log('WARN', `failed to construct WebSocket (url=${proxyUrl}): ${msg} — will retry`);
+      const errMsg = err instanceof Error ? err.message : String(err);
+      log('WARN', `failed to construct WebSocket (url=${logUrl}): ${errMsg} — will retry`);
       scheduleReconnect();
       return;
     }
@@ -136,7 +166,7 @@ export function startProxySubscribe(onPush: OnPushCallback): ProxySubscribeHandl
     ws = socket;
 
     socket.addEventListener('open', () => {
-      log('INFO', `connected to proxy at ${proxyUrl}`);
+      log('INFO', `connected to proxy at ${logUrl}`);
       // Reset backoff on successful connection.
       reconnectDelayMs = RECONNECT_INITIAL_MS;
     });
@@ -208,9 +238,9 @@ export function startProxySubscribe(onPush: OnPushCallback): ProxySubscribeHandl
     log('DEBUG', `push notification: cortex=${stripNewlines(cortex)} commit=${stripNewlines(commitSha)}`);
     try {
       onPush(cortex, commitSha);
-    } catch (err) {
-      const msg2 = err instanceof Error ? err.message : String(err);
-      log('WARN', `onPush callback threw: ${msg2}`);
+    } catch (errCaught) {
+      const errMsg = errCaught instanceof Error ? errCaught.message : String(errCaught);
+      log('WARN', `onPush callback threw: ${errMsg}`);
     }
   }
 

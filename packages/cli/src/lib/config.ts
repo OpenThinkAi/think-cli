@@ -131,10 +131,11 @@ export interface CompactionConfig {
 export interface ProxyConfig {
   /**
    * WebSocket URL of the think-v3 proxy server (ws:// or wss:// only).
-   * When set, the daemon subscribes to near-realtime push notifications for
-   * all accessible cortexes and fetches immediately on push instead of
-   * waiting for the next poll interval.
+   * When set, the daemon connects and listens for near-realtime push
+   * notifications; on push it fetches immediately instead of waiting for
+   * the next poll interval.
    * Set via `think config set proxy.url <url>`.
+   * Requires daemon restart for changes to take effect.
    */
   url?: string;
 }
