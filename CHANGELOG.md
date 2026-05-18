@@ -1,5 +1,15 @@
 # Changelog
 
+## [1.0.0-alpha.9] — 2026-05-18
+
+### Fixed
+- **`think hook install` now writes the correct Claude Code hook schema** — the previous shape (`{ type: 'command', command: '/abs/path/user-prompt-submit.js' }` at the top level of `UserPromptSubmit`) is a flat structure that Claude Code's `/doctor` rejects. The correct shape is a matcher-group wrapper: `{ matcher: '', hooks: [{ type: 'command', command: 'node "…"' }] }`. An empty-string `matcher` means "always fire", which is correct for `UserPromptSubmit` context injection. This was a silent bug — the hook was written to settings but never executed by Claude Code.
+- **`think hook install` now prefixes the hook command with `node`** — Claude Code executes `command` via shell. A bare `.js` path (no interpreter) silently failed; the command is now `node "/abs/path/user-prompt-submit.js"` with the path quoted to handle spaces in install prefixes.
+- **Migration: `think hook install` self-heals existing broken entries** — users on alpha.4–alpha.8 already have the flat shape on disk. Re-running `think hook install` on alpha.9 detects any existing entries referencing `user-prompt-submit.js` (in either the old flat shape or the new matcher-group shape), removes them all, and writes exactly one correct entry. Unrelated `UserPromptSubmit` hooks are preserved. The operation is idempotent: running install multiple times produces exactly one entry.
+- **`think hook uninstall` also clears old flat-shape entries** — the removal path now recognises both the old flat shape and the new matcher-group shape, so `uninstall` is a reliable cleanup regardless of which alpha version originally wrote the entry.
+
+---
+
 ## [1.0.0-alpha.8] — 2026-05-18
 
 ### Fixed

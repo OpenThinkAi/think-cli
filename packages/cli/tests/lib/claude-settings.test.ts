@@ -4,7 +4,8 @@
  * Covers:
  *  - readSettings: missing file, valid JSON, malformed JSON
  *  - addHookEntry: new entry, idempotent (no duplicate), multiple entries coexist
- *  - removeHookEntry: found, not found, cleans up empty structures
+ *  - addHookEntry: migration from old flat shape and from correct shape
+ *  - removeHookEntry: found (new shape), found (old flat shape), not found, cleans up empty structures
  *  - writeSettings + readSettings round-trip via a real temp directory
  *  - validateSettingsPath: rejects paths outside home/cwd
  */
@@ -20,6 +21,7 @@ import {
   removeHookEntry,
   validateSettingsPath,
   type ClaudeSettings,
+  type HookMatcherGroup,
 } from '../../src/lib/claude-settings.js';
 
 // ---------------------------------------------------------------------------
@@ -69,48 +71,130 @@ describe('readSettings', () => {
 });
 
 // ---------------------------------------------------------------------------
-// addHookEntry
+// addHookEntry — new shape
 // ---------------------------------------------------------------------------
 
 describe('addHookEntry', () => {
-  it('adds a new entry to an empty settings object', () => {
+  it('adds a new matcher-group entry to an empty settings object', () => {
     const settings: ClaudeSettings = {};
-    const result = addHookEntry(settings, '/usr/local/bin/hook.js');
+    const scriptPath = '/usr/local/lib/node_modules/@openthink/think/dist/hooks/user-prompt-submit.js';
+    const result = addHookEntry(settings, scriptPath);
     expect(result).toBe('installed');
-    expect(settings.hooks?.UserPromptSubmit).toEqual([
-      { type: 'command', command: '/usr/local/bin/hook.js' },
-    ]);
+
+    const ups = settings.hooks?.UserPromptSubmit as HookMatcherGroup[];
+    expect(ups).toHaveLength(1);
+    expect(ups[0]).toEqual({
+      matcher: '',
+      hooks: [{ type: 'command', command: `node "${scriptPath}"` }],
+    });
   });
 
-  it('returns already_installed and does not duplicate when the same command is added twice', () => {
+  it('returns already_installed and does not duplicate when run twice', () => {
     const settings: ClaudeSettings = {};
-    addHookEntry(settings, '/usr/local/bin/hook.js');
-    const result = addHookEntry(settings, '/usr/local/bin/hook.js');
+    const scriptPath = '/usr/local/lib/node_modules/@openthink/think/dist/hooks/user-prompt-submit.js';
+    addHookEntry(settings, scriptPath);
+    const result = addHookEntry(settings, scriptPath);
     expect(result).toBe('already_installed');
-    expect(settings.hooks?.UserPromptSubmit?.length).toBe(1);
+
+    const ups = settings.hooks?.UserPromptSubmit as HookMatcherGroup[];
+    expect(ups).toHaveLength(1);
   });
 
-  it('appends a new entry when other entries already exist', () => {
+  it('preserves unrelated UserPromptSubmit entries alongside ours', () => {
+    const unrelated: HookMatcherGroup = { matcher: 'some-tool', hooks: [{ type: 'command', command: 'node /other/hook.js' }] };
     const settings: ClaudeSettings = {
       hooks: {
-        UserPromptSubmit: [{ type: 'command', command: '/other/hook.js' }],
+        UserPromptSubmit: [unrelated],
       },
     };
-    addHookEntry(settings, '/usr/local/bin/hook.js');
-    expect(settings.hooks?.UserPromptSubmit?.length).toBe(2);
-    expect(settings.hooks?.UserPromptSubmit?.[1]).toEqual({
-      type: 'command',
-      command: '/usr/local/bin/hook.js',
-    });
+    const scriptPath = '/usr/local/lib/node_modules/@openthink/think/dist/hooks/user-prompt-submit.js';
+    addHookEntry(settings, scriptPath);
+
+    const ups = settings.hooks?.UserPromptSubmit as HookMatcherGroup[];
+    expect(ups).toHaveLength(2);
+    expect(ups[0]).toEqual(unrelated);
+    expect(ups[1].matcher).toBe('');
+    expect(ups[1].hooks[0].command).toBe(`node "${scriptPath}"`);
   });
 
   it('preserves other hooks keys when adding UserPromptSubmit', () => {
     const settings: ClaudeSettings = {
       hooks: { OtherEvent: [{ type: 'command', command: '/other.js' }] },
     };
-    addHookEntry(settings, '/usr/local/bin/hook.js');
+    const scriptPath = '/usr/local/lib/node_modules/@openthink/think/dist/hooks/user-prompt-submit.js';
+    addHookEntry(settings, scriptPath);
     expect(settings.hooks?.OtherEvent).toBeDefined();
-    expect(settings.hooks?.UserPromptSubmit?.length).toBe(1);
+
+    const ups = settings.hooks?.UserPromptSubmit as HookMatcherGroup[];
+    expect(ups).toHaveLength(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// addHookEntry — migration from old flat shape (alpha.4–alpha.8)
+// ---------------------------------------------------------------------------
+
+describe('addHookEntry — migration from old flat shape', () => {
+  const scriptPath = '/usr/local/lib/node_modules/@openthink/think/dist/hooks/user-prompt-submit.js';
+
+  it('replaces an old flat-shape entry with the correct matcher-group shape', () => {
+    // Seed with the broken shape that alpha.4–alpha.8 produced
+    const settings: ClaudeSettings = {
+      hooks: {
+        UserPromptSubmit: [
+          // Cast: old shape does not satisfy HookMatcherGroup but is valid JSON
+          { type: 'command', command: scriptPath } as unknown as HookMatcherGroup,
+        ],
+      },
+    };
+
+    const result = addHookEntry(settings, scriptPath);
+    expect(result).toBe('installed');
+
+    const ups = settings.hooks?.UserPromptSubmit as HookMatcherGroup[];
+    expect(ups).toHaveLength(1);
+    expect(ups[0]).toEqual({
+      matcher: '',
+      hooks: [{ type: 'command', command: `node "${scriptPath}"` }],
+    });
+  });
+
+  it('removes old flat entry but preserves unrelated entries during migration', () => {
+    const unrelated: HookMatcherGroup = { matcher: 'some-tool', hooks: [{ type: 'command', command: 'node /other/hook.js' }] };
+    const settings: ClaudeSettings = {
+      hooks: {
+        UserPromptSubmit: [
+          unrelated,
+          { type: 'command', command: scriptPath } as unknown as HookMatcherGroup,
+        ],
+      },
+    };
+
+    addHookEntry(settings, scriptPath);
+
+    const ups = settings.hooks?.UserPromptSubmit as HookMatcherGroup[];
+    expect(ups).toHaveLength(2);
+    expect(ups[0]).toEqual(unrelated);
+    expect(ups[1]).toEqual({
+      matcher: '',
+      hooks: [{ type: 'command', command: `node "${scriptPath}"` }],
+    });
+  });
+
+  it('is idempotent: running install twice on an old-shape settings produces exactly one entry', () => {
+    const settings: ClaudeSettings = {
+      hooks: {
+        UserPromptSubmit: [
+          { type: 'command', command: scriptPath } as unknown as HookMatcherGroup,
+        ],
+      },
+    };
+
+    addHookEntry(settings, scriptPath);
+    addHookEntry(settings, scriptPath);
+
+    const ups = settings.hooks?.UserPromptSubmit as HookMatcherGroup[];
+    expect(ups).toHaveLength(1);
   });
 });
 
@@ -119,66 +203,93 @@ describe('addHookEntry', () => {
 // ---------------------------------------------------------------------------
 
 describe('removeHookEntry', () => {
+  const scriptPath = '/usr/local/lib/node_modules/@openthink/think/dist/hooks/user-prompt-submit.js';
+
   it('returns not_found when settings has no hooks', () => {
     const settings: ClaudeSettings = {};
-    const result = removeHookEntry(settings, '/usr/local/bin/hook.js');
+    const result = removeHookEntry(settings, scriptPath);
     expect(result).toBe('not_found');
   });
 
   it('returns not_found when hook is not in the list', () => {
     const settings: ClaudeSettings = {
       hooks: {
-        UserPromptSubmit: [{ type: 'command', command: '/other/hook.js' }],
+        UserPromptSubmit: [
+          { matcher: 'other', hooks: [{ type: 'command', command: 'node /other/hook.js' }] },
+        ],
       },
     };
-    const result = removeHookEntry(settings, '/usr/local/bin/hook.js');
+    const result = removeHookEntry(settings, scriptPath);
     expect(result).toBe('not_found');
   });
 
-  it('removes the matching entry and returns removed', () => {
+  it('removes a new matcher-group entry and returns removed', () => {
     const settings: ClaudeSettings = {
       hooks: {
-        UserPromptSubmit: [{ type: 'command', command: '/usr/local/bin/hook.js' }],
+        UserPromptSubmit: [
+          {
+            matcher: '',
+            hooks: [{ type: 'command', command: `node "${scriptPath}"` }],
+          },
+        ],
       },
     };
-    const result = removeHookEntry(settings, '/usr/local/bin/hook.js');
+    const result = removeHookEntry(settings, scriptPath);
+    expect(result).toBe('removed');
+    expect(settings.hooks?.UserPromptSubmit).toBeUndefined();
+  });
+
+  it('removes an old flat-shape entry and returns removed (migration)', () => {
+    const settings: ClaudeSettings = {
+      hooks: {
+        UserPromptSubmit: [
+          // old broken flat shape
+          { type: 'command', command: scriptPath } as unknown as HookMatcherGroup,
+        ],
+      },
+    };
+    const result = removeHookEntry(settings, scriptPath);
     expect(result).toBe('removed');
     expect(settings.hooks?.UserPromptSubmit).toBeUndefined();
   });
 
   it('removes only the matching entry when multiple entries exist', () => {
+    const unrelated: HookMatcherGroup = { matcher: 'other', hooks: [{ type: 'command', command: 'node /other/hook.js' }] };
     const settings: ClaudeSettings = {
       hooks: {
         UserPromptSubmit: [
-          { type: 'command', command: '/other/hook.js' },
-          { type: 'command', command: '/usr/local/bin/hook.js' },
+          unrelated,
+          { matcher: '', hooks: [{ type: 'command', command: `node "${scriptPath}"` }] },
         ],
       },
     };
-    removeHookEntry(settings, '/usr/local/bin/hook.js');
-    expect(settings.hooks?.UserPromptSubmit).toEqual([
-      { type: 'command', command: '/other/hook.js' },
-    ]);
+    removeHookEntry(settings, scriptPath);
+    const ups = settings.hooks?.UserPromptSubmit as HookMatcherGroup[];
+    expect(ups).toEqual([unrelated]);
   });
 
   it('cleans up empty hooks object after removing the last entry', () => {
     const settings: ClaudeSettings = {
       hooks: {
-        UserPromptSubmit: [{ type: 'command', command: '/usr/local/bin/hook.js' }],
+        UserPromptSubmit: [
+          { matcher: '', hooks: [{ type: 'command', command: `node "${scriptPath}"` }] },
+        ],
       },
     };
-    removeHookEntry(settings, '/usr/local/bin/hook.js');
+    removeHookEntry(settings, scriptPath);
     expect(settings.hooks).toBeUndefined();
   });
 
   it('preserves hooks object when other event types remain', () => {
     const settings: ClaudeSettings = {
       hooks: {
-        UserPromptSubmit: [{ type: 'command', command: '/usr/local/bin/hook.js' }],
+        UserPromptSubmit: [
+          { matcher: '', hooks: [{ type: 'command', command: `node "${scriptPath}"` }] },
+        ],
         OtherEvent: [{ type: 'command', command: '/other.js' }],
       },
     };
-    removeHookEntry(settings, '/usr/local/bin/hook.js');
+    removeHookEntry(settings, scriptPath);
     expect(settings.hooks?.OtherEvent).toBeDefined();
   });
 });
@@ -188,11 +299,15 @@ describe('removeHookEntry', () => {
 // ---------------------------------------------------------------------------
 
 describe('writeSettings + readSettings round-trip', () => {
-  it('persists and reloads settings correctly', () => {
+  const scriptPath = '/usr/local/lib/node_modules/@openthink/think/dist/hooks/user-prompt-submit.js';
+
+  it('persists and reloads the matcher-group shape correctly', () => {
     const file = path.join(tmpDir, 'settings.json');
     const settings: ClaudeSettings = {
       hooks: {
-        UserPromptSubmit: [{ type: 'command', command: '/usr/local/bin/hook.js' }],
+        UserPromptSubmit: [
+          { matcher: '', hooks: [{ type: 'command', command: `node "${scriptPath}"` }] },
+        ],
       },
     };
     writeSettings(file, settings);
@@ -236,37 +351,71 @@ describe('validateSettingsPath', () => {
 });
 
 // ---------------------------------------------------------------------------
-// Full install/uninstall flow via real temp file
+// Full install/uninstall lifecycle flow via real temp file
 // ---------------------------------------------------------------------------
 
 describe('install → verify → re-install (no-op) → uninstall → verify flow', () => {
-  it('correctly manages lifecycle of a hook entry in a file', () => {
+  it('correctly manages lifecycle with the new matcher-group shape', () => {
     const file = path.join(tmpDir, 'settings.json');
-    const hookPath = '/usr/local/lib/node_modules/@openthink/think/dist/hooks/user-prompt-submit.js';
+    const scriptPath = '/usr/local/lib/node_modules/@openthink/think/dist/hooks/user-prompt-submit.js';
+    const expectedCommand = `node "${scriptPath}"`;
 
     // 1. Install into an empty file
     const s1 = readSettings(file);
-    expect(addHookEntry(s1, hookPath)).toBe('installed');
+    expect(addHookEntry(s1, scriptPath)).toBe('installed');
     writeSettings(file, s1);
 
-    // 2. Verify entry is present
+    // 2. Verify entry is present in the correct matcher-group shape
     const s2 = readSettings(file);
-    expect(s2.hooks?.UserPromptSubmit).toEqual([{ type: 'command', command: hookPath }]);
+    const ups2 = s2.hooks?.UserPromptSubmit as HookMatcherGroup[];
+    expect(ups2).toHaveLength(1);
+    expect(ups2[0]).toEqual({
+      matcher: '',
+      hooks: [{ type: 'command', command: expectedCommand }],
+    });
 
     // 3. Install again — no-op
-    expect(addHookEntry(s2, hookPath)).toBe('already_installed');
+    expect(addHookEntry(s2, scriptPath)).toBe('already_installed');
     writeSettings(file, s2);
 
     // 4. Verify still exactly one entry (no duplicate)
     const s3 = readSettings(file);
-    expect(s3.hooks?.UserPromptSubmit?.length).toBe(1);
+    expect((s3.hooks?.UserPromptSubmit as HookMatcherGroup[])?.length).toBe(1);
 
     // 5. Uninstall
-    expect(removeHookEntry(s3, hookPath)).toBe('removed');
+    expect(removeHookEntry(s3, scriptPath)).toBe('removed');
     writeSettings(file, s3);
 
     // 6. Verify entry is gone
     const s4 = readSettings(file);
     expect(s4.hooks?.UserPromptSubmit).toBeUndefined();
+  });
+
+  it('migrates old flat-shape entries to the correct matcher-group shape on re-install', () => {
+    const file = path.join(tmpDir, 'settings.json');
+    const scriptPath = '/usr/local/lib/node_modules/@openthink/think/dist/hooks/user-prompt-submit.js';
+
+    // Simulate a user who has the old broken alpha.4–alpha.8 shape on disk
+    const oldSettings = {
+      hooks: {
+        UserPromptSubmit: [{ type: 'command', command: scriptPath }],
+      },
+    };
+    fs.writeFileSync(file, JSON.stringify(oldSettings, null, 2));
+
+    // Running think hook install should detect + replace the old entry
+    const s1 = readSettings(file);
+    const result = addHookEntry(s1, scriptPath);
+    expect(result).toBe('installed');
+    writeSettings(file, s1);
+
+    // Verify the new shape is in place and the old shape is gone
+    const s2 = readSettings(file);
+    const ups = s2.hooks?.UserPromptSubmit as HookMatcherGroup[];
+    expect(ups).toHaveLength(1);
+    expect(ups[0]).toEqual({
+      matcher: '',
+      hooks: [{ type: 'command', command: `node "${scriptPath}"` }],
+    });
   });
 });
