@@ -1,17 +1,18 @@
 /**
- * Daemon `recall` endpoint — AGT-285 / AGT-291
+ * Daemon `recall` endpoint — AGT-285 / AGT-291 / AGT-324
  *
  * Embed query → brute-force or sqlite-vec cosine search → recency-weighted
  * rerank → return ranked entries.
  *
  * Params:
- *   cortex  string   (required) — target cortex name (validated via sanitizeName)
- *   query   string   (required) — semantic search query
- *   limit   number   (optional, default 20, max 500) — must be a positive integer
- *   kind    string   (optional) — filter by kind
- *   topic   string   (optional) — filter entries whose topics array contains this value
- *                                 (not yet implemented; see ColumnInfo.hasTopics)
- *   since   string   (optional) — ISO-8601 lower bound on ts (format check, inclusive)
+ *   cortex   string   (required) — target cortex name (validated via sanitizeName)
+ *   query    string   (required) — semantic search query
+ *   limit    number   (optional, default 20, max 500) — must be a positive integer
+ *   kind     string   (optional) — filter by kind
+ *   topic    string   (optional) — filter entries whose topics array contains this value
+ *                                  (not yet implemented; see ColumnInfo.hasTopics)
+ *   since    string   (optional) — ISO-8601 lower bound on ts (format check, inclusive)
+ *   no_embed boolean  (optional) — skip embedding model entirely; fall back to FTS ranking
  *
  * Returns: RecallEntry[]
  *
@@ -38,15 +39,52 @@
  * compensate by over-fetching (RECENCY_OVERFETCH_FACTOR × limit) and reranking
  * in JS. This is the only pluggable-engine-safe path; the overfetch is bounded
  * and cheap because sqlite-vec KNN is sub-10ms even at 3–5× the final limit.
+ *
+ * FTS fallback (AGT-324):
+ *   When `no_embed` is true or when the embedding model fails to load (network
+ *   error, timeout, missing optional dep), recall falls back to FTS5 keyword
+ *   ranking via `searchMemories`. The `fts_fallback` field on each result entry
+ *   is true in this mode so callers can detect degraded operation. The note
+ *   string NOTE_FTS_FALLBACK is exported for callers to surface to the user.
  */
 
 import type { DatabaseSync } from 'node:sqlite';
 import embed from '../lib/embed.js';
 import { getCortexDb } from '../db/engrams.js';
 import { searchVectors } from '../lib/search-vectors.js';
+import { searchMemories } from '../db/memory-queries.js';
 import { getConfig } from '../lib/config.js';
 import { listLocalBranches } from '../lib/git.js';
 import { reindexingCortexes, reindexFailedCortexes } from './embed-model-check.js';
+
+/**
+ * User-facing note printed when recall falls back to FTS ranking due to
+ * an automatic embedding model failure (network, timeout, missing dep).
+ * Lowercase `note:` prefix follows product prose conventions.
+ */
+export const NOTE_FTS_FALLBACK =
+  'note: semantic recall unavailable, using FTS ranking (rerun with model cached for semantic ranking)';
+
+/**
+ * User-facing note printed when recall uses FTS ranking due to an explicit
+ * --no-embed / THINK_NO_EMBED=1 opt-out (not a failure).
+ */
+export const NOTE_FTS_EXPLICIT =
+  'note: using FTS keyword search (--no-embed)';
+
+/**
+ * Returns true when an embed() error indicates the model is unavailable
+ * (network failure, download timeout, or missing optional dep) rather than
+ * a programming error. Both cases trigger FTS fallback; this helper is
+ * used to decide the log message.
+ */
+function isEmbedModelUnavailable(msg: string): boolean {
+  return (
+    msg.includes('failed to load embedding model') ||
+    msg.includes('@huggingface/transformers') ||
+    msg.includes('timed out')
+  );
+}
 
 // How many extra candidates to fetch from sqlite-vec before JS rerank.
 // 5× ensures the reranked window is wide enough that a very recent entry
@@ -95,11 +133,12 @@ export interface RecallEntry {
   content: string;
   /** Parsed topics array; empty array if column absent or value unparseable. */
   topics: string[];
-  /** Raw cosine similarity in [−1, 1] before recency weighting. */
+  /** Raw cosine similarity in [−1, 1] before recency weighting. 0 in FTS fallback mode. */
   similarity: number;
   /**
    * Final ranking score: cosine × exp(-decay × (max_seq - entry_seq)).
    * Equals `similarity` when activity_seq is unavailable (pre-AGT-291 rows).
+   * 0 in FTS fallback mode (rank is determined by FTS5 engine, not this field).
    */
   score: number;
   /**
@@ -113,6 +152,12 @@ export interface RecallEntry {
    * tool response — AGT-315).
    */
   cortex: string;
+  /**
+   * True when this entry was retrieved via FTS ranking rather than vector
+   * similarity search (AGT-324). Set when the embedding model is unavailable
+   * or `no_embed` was requested.
+   */
+  fts_fallback?: true;
 }
 
 interface HydratedRow {
@@ -214,6 +259,11 @@ interface ParsedRecallParams {
    * Set by the `--include-superseded` CLI flag (AGT-305).
    */
   includeSuperseded: boolean;
+  /**
+   * When true, skip the embedding model entirely and use FTS5 ranking (AGT-324).
+   * Set by the `--no-embed` CLI flag or `THINK_NO_EMBED=1` env var.
+   */
+  noEmbed: boolean;
 }
 
 /**
@@ -265,8 +315,9 @@ function parseRecallParams(params: Record<string, unknown>): ParsedRecallParams 
 
   const full = params['full'] === true;
   const includeSuperseded = params['includeSuperseded'] === true;
+  const noEmbed = params['no_embed'] === true;
 
-  return { query, limit, kind, topic, since, decay, full, includeSuperseded };
+  return { query, limit, kind, topic, since, decay, full, includeSuperseded, noEmbed };
 }
 
 // ---------------------------------------------------------------------------
@@ -274,6 +325,38 @@ function parseRecallParams(params: Record<string, unknown>): ParsedRecallParams 
 // ---------------------------------------------------------------------------
 
 const VALID_SCOPES: ReadonlySet<string> = new Set(['active', 'accessible', 'all']);
+
+// ---------------------------------------------------------------------------
+// FTS fallback — per-cortex (AGT-324)
+// ---------------------------------------------------------------------------
+
+/**
+ * Query a single cortex via FTS5 keyword ranking when the embedding model is
+ * unavailable or bypassed by `no_embed`. Returns RecallEntry[] with
+ * `fts_fallback: true` and `similarity: 0, score: 0` so callers can detect
+ * degraded mode. The FTS5 engine itself orders results by relevance rank.
+ *
+ * This is a thin wrapper around `searchMemories` (the existing v2 FTS path)
+ * that maps MemoryRow → RecallEntry and attaches the cortex name.
+ */
+function recallOneCortexWithFts(
+  cortexName: string,
+  query: string,
+  limit: number,
+): RecallEntry[] {
+  const rows = searchMemories(cortexName, query, limit);
+  return rows.map((row) => ({
+    id: row.id,
+    ts: row.ts,
+    kind: row.kind ?? null,
+    content: row.content,
+    topics: [],
+    similarity: 0,
+    score: 0,
+    cortex: cortexName,
+    fts_fallback: true as const,
+  }));
+}
 
 // ---------------------------------------------------------------------------
 // Handler
@@ -582,15 +665,42 @@ async function recallOneCortexWithVec(
 
 /**
  * Full pipeline for recalling from one named cortex: parses params, embeds
- * query, queries the cortex, reranks, truncates. Used when `cortex` is
- * explicitly provided or scope="active".
+ * query (or falls back to FTS), queries the cortex, reranks, truncates.
+ * Used when `cortex` is explicitly provided or scope="active".
+ *
+ * When `no_embed` is true, or when the embedding model fails to load (network
+ * error, timeout, missing optional dep), falls back to FTS5 ranking (AGT-324).
+ * Embedding load failures are distinguished from other errors:
+ *   - Network/timeout: embed() throws with a "failed to load embedding model" message.
+ *   - Missing dep:     embed() throws with a "@huggingface/transformers" message.
+ * Both are treated as "unavailable" and trigger the FTS fallback. Other errors
+ * (e.g., DB corruption) are re-thrown so callers see them as real errors.
  */
 async function recallSingleCortex(
   cortexName: string,
   params: Record<string, unknown>,
 ): Promise<RecallEntry[]> {
-  const { query, limit, kind, topic, since, decay, full, includeSuperseded } = parseRecallParams(params);
-  const queryVec = await embed(query);
+  const { query, limit, kind, topic, since, decay, full, includeSuperseded, noEmbed } = parseRecallParams(params);
+
+  if (noEmbed) {
+    return recallOneCortexWithFts(cortexName, query, limit);
+  }
+
+  let queryVec: Float32Array;
+  try {
+    queryVec = await embed(query);
+  } catch (err) {
+    // Distinguish embedding model unavailability (network, timeout, missing dep)
+    // from other failures. Both trigger FTS fallback; different log messages.
+    const msg = err instanceof Error ? err.message : String(err);
+    if (isEmbedModelUnavailable(msg)) {
+      process.stderr.write(`think recall: embedding model unavailable (${msg}); falling back to FTS ranking\n`);
+    } else {
+      process.stderr.write(`think recall: embedding error (${msg}); falling back to FTS ranking\n`);
+    }
+    return recallOneCortexWithFts(cortexName, query, limit);
+  }
+
   const entries = await recallOneCortexWithVec(
     cortexName, queryVec, limit, kind, topic, since, decay, full, includeSuperseded,
   );
@@ -622,15 +732,14 @@ async function recallSingleCortex(
  * contributes zero results rather than aborting the whole federated query
  * (partial degradation > total failure). Failures are emitted to stderr
  * so they are visible in daemon logs.
+ *
+ * When `no_embed` is true or the embedding model is unavailable, all
+ * cortexes fall back to FTS5 ranking (AGT-324).
  */
 async function recallFederated(
   params: Record<string, unknown>,
 ): Promise<RecallEntry[]> {
-  const { query, limit, kind, topic, since, decay, full, includeSuperseded } = parseRecallParams(params);
-
-  // Embed once; the vector is shared across all cortex legs so the model is
-  // only invoked once regardless of how many cortexes are queried.
-  const queryVec = await embed(query);
+  const { query, limit, kind, topic, since, decay, full, includeSuperseded, noEmbed } = parseRecallParams(params);
 
   // Enumerate locally-known cortexes via local git refs (no network call).
   // listLocalBranches() uses `git for-each-ref refs/heads/` — sync but does
@@ -658,6 +767,41 @@ async function recallFederated(
     );
   }
 
+  // noEmbed fast-path: skip embed() and fan out FTS across all cortexes.
+  if (noEmbed) {
+    const noEmbedFts = await Promise.all(
+      cortexNames.map(async (name) => {
+        try { return recallOneCortexWithFts(name, query, limit); }
+        catch (err) {
+          process.stderr.write(`think recall: cortex "${name}" failed — ${err instanceof Error ? err.message : String(err)}
+`);
+          return [] as RecallEntry[];
+        }
+      }),
+    );
+    return noEmbedFts.flat().slice(0, limit);
+  }
+
+  // Embed once; shared across all cortex legs so the model is only invoked once.
+  let queryVec: Float32Array;
+  try {
+    queryVec = await embed(query);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    const logKind = isEmbedModelUnavailable(msg) ? 'embedding model unavailable' : 'embedding error';
+    process.stderr.write(`think recall: ${logKind} (${msg}); falling back to FTS ranking\n`);
+    const fallbackFts = await Promise.all(
+      cortexNames.map(async (name) => {
+        try { return recallOneCortexWithFts(name, query, limit); }
+        catch (ftsErr) {
+          process.stderr.write(`think recall: cortex "${name}" FTS failed — ${ftsErr instanceof Error ? ftsErr.message : String(ftsErr)}
+`);
+          return [] as RecallEntry[];
+        }
+      }),
+    );
+    return fallbackFts.flat().slice(0, limit);
+  }
   // Fan out to all cortexes in parallel. Per-cortex failures are caught
   // individually so one unavailable/corrupt cortex doesn't abort the query.
   //
