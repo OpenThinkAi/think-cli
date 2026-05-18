@@ -157,51 +157,37 @@ export function readMcpConfig(filePath: string): McpConfig {
 }
 
 /**
- * Atomically write `settings` to `filePath`.
- *
- * Writes to a sibling `.tmp-<random>` file first, then `rename()`s into
- * place. The rename is atomic on POSIX systems — a crash between the two
- * steps leaves either the old file untouched or the new file fully in place.
+ * Internal: atomically write JSON data to filePath with mode 0o600.
+ * Writes to a sibling .tmp-<random> file first, then renames into place.
+ * A crash leaves either the old file untouched or the new file fully in place.
  */
-export function writeSettings(filePath: string, settings: ClaudeSettings): void {
+function writeJsonFile(filePath: string, data: object): void {
   validateSettingsPath(filePath);
 
   const dir = path.dirname(filePath);
   fs.mkdirSync(dir, { recursive: true });
 
-  const tmp = `${filePath}.tmp-${Math.random().toString(36).slice(2)}`;
-  const serialized = JSON.stringify(settings, null, 2) + '\n';
+  const rand = Math.random().toString(36).slice(2);
+  const tmp = filePath + ".tmp-" + rand;
+  const serialized = JSON.stringify(data, null, 2) + '\n';
 
   try {
     fs.writeFileSync(tmp, serialized, { mode: 0o600 });
     fs.renameSync(tmp, filePath);
   } catch (err) {
-    // Clean up the temp file if it exists.
     try { fs.unlinkSync(tmp); } catch { /* ignore */ }
     throw err;
   }
 }
 
-/**
- * Atomically write `config` to `filePath` (MCP config variant).
- * Same write-safety guarantees as `writeSettings`.
- */
+/** Atomically write settings to filePath (write safety: see writeJsonFile). */
+export function writeSettings(filePath: string, settings: ClaudeSettings): void {
+  writeJsonFile(filePath, settings);
+}
+
+/** Atomically write MCP config to filePath (write safety: see writeJsonFile). */
 export function writeMcpConfig(filePath: string, config: McpConfig): void {
-  validateSettingsPath(filePath);
-
-  const dir = path.dirname(filePath);
-  fs.mkdirSync(dir, { recursive: true });
-
-  const tmp = `${filePath}.tmp-${Math.random().toString(36).slice(2)}`;
-  const serialized = JSON.stringify(config, null, 2) + '\n';
-
-  try {
-    fs.writeFileSync(tmp, serialized, { mode: 0o600 });
-    fs.renameSync(tmp, filePath);
-  } catch (err) {
-    try { fs.unlinkSync(tmp); } catch { /* ignore */ }
-    throw err;
-  }
+  writeJsonFile(filePath, config);
 }
 
 /**
@@ -219,7 +205,7 @@ export function addMcpEntry(
   }
 
   const existing = config.mcpServers['think'];
-  if (existing && existing.args[0] === serverScriptPath) {
+  if (existing && existing.args?.[0] === serverScriptPath) {
     return 'already_installed';
   }
 

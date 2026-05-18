@@ -19,9 +19,7 @@ import {
 let tmpDir: string;
 
 beforeEach(() => {
-  const base = path.join(os.homedir(), '.think-test-tmp');
-  fs.mkdirSync(base, { recursive: true });
-  tmpDir = fs.mkdtempSync(path.join(base, 'mcp-config-test-'));
+  tmpDir = fs.mkdtempSync(path.join(os.homedir(), '.think-test-mcp-'));
 });
 
 afterEach(() => {
