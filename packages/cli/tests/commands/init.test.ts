@@ -739,4 +739,24 @@ describe('think init — v3 block (AGT-321)', () => {
       process.exit = prevExit;
     }
   });
+
+  it('--retro and --block-version are mutually exclusive', async () => {
+    const prevExit = process.exit;
+    const errors: string[] = [];
+    vi.mocked(console.error).mockImplementation((...args: unknown[]) => {
+      errors.push(args.map(String).join(' '));
+    });
+    process.exit = ((code?: number) => {
+      throw new Error(`process.exit:${code ?? 0}`);
+    }) as typeof process.exit;
+
+    try {
+      await expect(
+        initCommand.parseAsync(['--dir', projectDir, '--yes', '--retro', '--cortex', 'my-repo', '--block-version', 'v3'], { from: 'user' }),
+      ).rejects.toThrow('process.exit:1');
+      expect(errors.join('\n')).toContain('--block-version has no effect with --retro');
+    } finally {
+      process.exit = prevExit;
+    }
+  });
 });

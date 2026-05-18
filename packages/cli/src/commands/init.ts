@@ -2,7 +2,6 @@ import { execSync } from 'node:child_process';
 import { Command } from 'commander';
 import fs from 'node:fs';
 import net from 'node:net';
-import os from 'node:os';
 import path from 'node:path';
 import readline from 'node:readline';
 import chalk from 'chalk';
@@ -427,6 +426,12 @@ Examples:
       process.exit(1);
     }
 
+    // --retro and --block-version are mutually exclusive: the retro block has no version variant.
+    if (opts.retro && forcedVersion !== undefined) {
+      console.error(chalk.red('think init: --block-version has no effect with --retro (retro block has no version variant).'));
+      process.exit(1);
+    }
+
     if (opts.minimal && opts.retro) {
       console.error(chalk.red('think init: --minimal and --retro are mutually exclusive (one writes the work-log block, the other writes the retro block).'));
       process.exit(1);
@@ -528,8 +533,8 @@ Examples:
     }
 
     // Determine which block version to write:
-    //   1. --version v3 → always v3
-    //   2. --version v2 → always v2
+    //   1. --block-version v3 → always v3
+    //   2. --block-version v2 → always v2
     //   3. No flag → probe daemon; v3 if reachable, v2 otherwise
     let version: 'v2' | 'v3';
     if (forcedVersion !== undefined) {
@@ -546,8 +551,13 @@ Examples:
       console.log(chalk.dim('Writing the minimal work-log template — no oteam adaptation, no retro pattern, no decision narration.'));
     } else if (version === 'v3') {
       console.log(chalk.dim('Writing v3 block (implicit recall via hook + MCP server).'));
-    } else if (oteamPresent) {
-      console.log(chalk.dim('Detected oteam workspace — block tuned for role-pipeline cadence.'));
+    } else {
+      if (forcedVersion === undefined) {
+        console.log(chalk.dim('Daemon not detected — writing v2 block.'));
+      }
+      if (oteamPresent) {
+        console.log(chalk.dim('Detected oteam workspace — block tuned for role-pipeline cadence.'));
+      }
     }
 
     const claudePath = path.join(targetDir, 'CLAUDE.md');
