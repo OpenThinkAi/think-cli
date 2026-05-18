@@ -1,6 +1,7 @@
 import { Command } from 'commander';
 import chalk from 'chalk';
 import { getConfig, saveConfig } from '../lib/config.js';
+import { isValidProxyUrl } from '../daemon/proxy-subscribe.js';
 
 const ALLOWED_KEYS = new Set([
   'cortex.curateEveryN',
@@ -24,6 +25,12 @@ const ALLOWED_KEYS = new Set([
 const ENUM_KEYS: Record<string, string[]> = {
   'search.engine': ['brute-force', 'sqlite-vec'],
 };
+
+/**
+ * Keys that require a daemon restart to take effect. A note is printed
+ * after a successful write.
+ */
+const DAEMON_RESTART_KEYS = new Set(['proxy.url']);
 
 export const configCommand = new Command('config')
   .description('View or update think configuration');
@@ -53,6 +60,12 @@ configCommand.addCommand(new Command('set')
       process.exit(1);
     }
 
+    // proxy.url must be ws:// or wss://.
+    if (key === 'proxy.url' && value.trim() !== '' && !isValidProxyUrl(value)) {
+      console.error(chalk.red(`proxy.url must be a ws:// or wss:// URL (got: ${JSON.stringify(value)})`));
+      process.exit(1);
+    }
+
     const config = getConfig();
 
     // Parse value
@@ -76,4 +89,7 @@ configCommand.addCommand(new Command('set')
     saveConfig(config);
 
     console.log(chalk.green('✓') + ` ${key} = ${JSON.stringify(parsed)}`);
+    if (DAEMON_RESTART_KEYS.has(key)) {
+      console.log(chalk.dim('  Restart the daemon for this change to take effect (`think daemon restart`).'));
+    }
   }));

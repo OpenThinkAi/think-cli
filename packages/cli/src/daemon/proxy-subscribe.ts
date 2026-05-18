@@ -234,6 +234,18 @@ export function startProxySubscribe(onPush: OnPushCallback): ProxySubscribeHandl
       return;
     }
 
+    // Format guards at the trust boundary — values come from an external
+    // network party and must not be forwarded raw to path/git operations.
+    if (!/^[a-zA-Z0-9_-]{1,128}$/.test(cortex)) {
+      log('WARN', 'push message "cortex" field failed format check — ignoring');
+      return;
+    }
+    // Accept SHA-1 (40 hex) or SHA-256 (64 hex).
+    if (!/^[0-9a-f]{40}$|^[0-9a-f]{64}$/i.test(commitSha)) {
+      log('WARN', 'push message "commit_sha" field failed format check — ignoring');
+      return;
+    }
+
     if (stopped) return;
     log('DEBUG', `push notification: cortex=${stripNewlines(cortex)} commit=${stripNewlines(commitSha)}`);
     try {

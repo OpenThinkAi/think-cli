@@ -148,15 +148,17 @@ describe('startProxySubscribe', () => {
 
   // ---- push message handling ----
 
+  const SHA1 = 'a'.repeat(40); // valid 40-char hex SHA-1
+
   it('fires onPush for a valid push message', () => {
     _mockProxyUrl = 'ws://localhost:9999';
     const received: Array<{ cortex: string; commitSha: string }> = [];
     const handle = startProxySubscribe((cortex, commitSha) => received.push({ cortex, commitSha }));
 
     expect(wsConstructed).toBe(true);
-    sendMessage(JSON.stringify({ type: 'push', cortex: 'think-cli', commit_sha: 'abc123' }));
+    sendMessage(JSON.stringify({ type: 'push', cortex: 'think-cli', commit_sha: SHA1 }));
     expect(received).toHaveLength(1);
-    expect(received[0]).toEqual({ cortex: 'think-cli', commitSha: 'abc123' });
+    expect(received[0]).toEqual({ cortex: 'think-cli', commitSha: SHA1 });
     handle.stop();
   });
 
@@ -165,9 +167,9 @@ describe('startProxySubscribe', () => {
     const received: Array<{ cortex: string; commitSha: string }> = [];
     const handle = startProxySubscribe((c, s) => received.push({ cortex: c, commitSha: s }));
 
-    sendMessage(JSON.stringify({ type: 'push', cortex: 'my-cortex', commit_sha: 'def456' }));
+    sendMessage(JSON.stringify({ type: 'push', cortex: 'my-cortex', commit_sha: SHA1 }));
     expect(received).toHaveLength(1);
-    expect(received[0]).toEqual({ cortex: 'my-cortex', commitSha: 'def456' });
+    expect(received[0]).toEqual({ cortex: 'my-cortex', commitSha: SHA1 });
     handle.stop();
   });
 
@@ -225,6 +227,33 @@ describe('startProxySubscribe', () => {
     handle.stop();
   });
 
+  it('ignores push messages with cortex containing path-traversal characters', () => {
+    _mockProxyUrl = 'ws://localhost:9999';
+    const received: unknown[] = [];
+    const handle = startProxySubscribe(() => received.push(null));
+    sendMessage(JSON.stringify({ type: 'push', cortex: '../../../etc', commit_sha: 'a'.repeat(40) }));
+    expect(received).toHaveLength(0);
+    handle.stop();
+  });
+
+  it('ignores push messages with commit_sha that is not a valid hex SHA', () => {
+    _mockProxyUrl = 'ws://localhost:9999';
+    const received: unknown[] = [];
+    const handle = startProxySubscribe(() => received.push(null));
+    sendMessage(JSON.stringify({ type: 'push', cortex: 'think-cli', commit_sha: '--upload-pack=evil' }));
+    expect(received).toHaveLength(0);
+    handle.stop();
+  });
+
+  it('accepts a valid 40-char hex SHA-1 commit_sha', () => {
+    _mockProxyUrl = 'ws://localhost:9999';
+    const received: Array<{ cortex: string; commitSha: string }> = [];
+    const handle = startProxySubscribe((c, s) => received.push({ cortex: c, commitSha: s }));
+    sendMessage(JSON.stringify({ type: 'push', cortex: 'my-repo', commit_sha: 'a'.repeat(40) }));
+    expect(received).toHaveLength(1);
+    handle.stop();
+  });
+
   // ---- no-op handle cases ----
 
   it('returns no-op handle when proxy.url is not set', () => {
@@ -256,13 +285,13 @@ describe('startProxySubscribe', () => {
     const handle = startProxySubscribe(() => received.push(null));
 
     // Before stop: callback fires.
-    sendMessage(JSON.stringify({ type: 'push', cortex: 'before', commit_sha: 'sha1' }));
+    sendMessage(JSON.stringify({ type: 'push', cortex: 'before', commit_sha: SHA1 }));
     expect(received).toHaveLength(1);
 
     handle.stop();
 
     // After stop: callback is suppressed.
-    sendMessage(JSON.stringify({ type: 'push', cortex: 'after', commit_sha: 'sha2' }));
+    sendMessage(JSON.stringify({ type: 'push', cortex: 'after', commit_sha: SHA1 }));
     expect(received).toHaveLength(1);
 
     // Idempotent.
@@ -276,7 +305,6 @@ describe('startProxySubscribe', () => {
     const handle = startProxySubscribe(() => {});
 
     expect(wsConstructed).toBe(true);
-    const firstWsCount = 1;
 
     // Simulate the proxy closing the connection.
     wsConstructed = false; // reset so we can detect the second connect
@@ -289,7 +317,6 @@ describe('startProxySubscribe', () => {
     expect(wsConstructed).toBe(true); // reconnect fired
 
     handle.stop();
-    void firstWsCount; // satisfy unused-var lint
   });
 
   it('doubles reconnectDelayMs on each close, capped at RECONNECT_MAX_MS', () => {

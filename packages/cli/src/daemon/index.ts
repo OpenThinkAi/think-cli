@@ -40,6 +40,7 @@ import { handleStatus } from './status.js';
 import { compactionQueue, scanAndEnqueueUncompacted } from './compaction/queue.js';
 import { backfillActivitySeqIfNeeded } from '../db/activity-seq.js';
 import { runEmbedModelChecks } from './embed-model-check.js';
+import { startProxySubscribe } from './proxy-subscribe.js';
 
 // ---------------------------------------------------------------------------
 // Paths
@@ -398,6 +399,19 @@ export async function runDaemon(options: DaemonOptions): Promise<void> {
   }
 
   // ---------------------------------------------------------------------------
+  // Proxy-subscribe WS client (AGT-311)
+  //
+  // If config.proxy.url is set, connect to the proxy and listen for push
+  // notifications. On push, call triggerImmediatePull once AGT-310 exports it;
+  // for now the callback is a no-op (polling-only fallback is unaffected).
+  // Falls back silently to polling if the proxy is unreachable.
+  // ---------------------------------------------------------------------------
+
+  const proxySubscribeHandle = startProxySubscribe((_cortex, _commitSha) => {
+    // TODO: AGT-310 export pending — wire triggerImmediatePull(cortex) here.
+  });
+
+  // ---------------------------------------------------------------------------
   // Graceful shutdown (AGT-283)
   //
   // Sequence:
@@ -421,6 +435,9 @@ export async function runDaemon(options: DaemonOptions): Promise<void> {
     shutdownInitiated = true;
 
     writeLine(`shutting down (reason=${reason}, inFlightRequests=${inFlight})`);
+
+    // Stop proxy-subscribe WS client (no-op if proxy not configured).
+    proxySubscribeHandle.stop();
 
     // Step 1: stop accepting new connections.
     server.close();
