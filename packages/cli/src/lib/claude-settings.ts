@@ -167,8 +167,7 @@ function writeJsonFile(filePath: string, data: object): void {
   const dir = path.dirname(filePath);
   fs.mkdirSync(dir, { recursive: true });
 
-  const rand = Math.random().toString(36).slice(2);
-  const tmp = filePath + ".tmp-" + rand;
+  const tmp = `${filePath}.tmp-${Math.random().toString(36).slice(2)}`;
   const serialized = JSON.stringify(data, null, 2) + '\n';
 
   try {
