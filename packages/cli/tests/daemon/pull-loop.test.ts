@@ -192,7 +192,7 @@ describe('PullLoop — no new commits', () => {
 
     const { impl } = buildGitMock({ remoteHead: sha });
     const loop = new PullLoop('mycortex', writeLine);
-    loop._gitOverride = impl;
+    (loop as unknown as { _gitOverride: typeof impl })._gitOverride = impl;
 
     await runOneCycle(loop);
 
@@ -235,7 +235,7 @@ describe('PullLoop — new commits ingested', () => {
     });
 
     const loop = new PullLoop('testcortex', writeLine);
-    loop._gitOverride = impl;
+    (loop as unknown as { _gitOverride: typeof impl })._gitOverride = impl;
 
     await runOneCycle(loop);
 
@@ -280,7 +280,7 @@ describe('PullLoop — new commits ingested', () => {
     });
 
     const loop = new PullLoop('dedupcortex', writeLine);
-    loop._gitOverride = impl;
+    (loop as unknown as { _gitOverride: typeof impl })._gitOverride = impl;
 
     // Ensure no cursor is set (fresh start).
     cursors.delete('dedupcortex:git:pull');
@@ -302,7 +302,7 @@ describe('PullLoop — fetch failure', () => {
 
     const { impl } = buildGitMock({ fetchError: 'network unreachable' });
     const loop = new PullLoop('errcortex', writeLine);
-    loop._gitOverride = impl;
+    (loop as unknown as { _gitOverride: typeof impl })._gitOverride = impl;
 
     await runOneCycle(loop);
 

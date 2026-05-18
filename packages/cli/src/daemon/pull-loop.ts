@@ -365,7 +365,18 @@ export class PullLoop {
   private async cycle(): Promise<void> {
     if (this.stopped) return;
 
-    await this.fetchAndIngest();
+    // Catch ANY throw from the ingest path: DB failure, embed bomb,
+    // assignNextSeq error, etc. Without this catch the rejection
+    // propagates out of `void this.cycle()` as an unhandled rejection,
+    // which crashes the daemon under recent Node.js. The next poll
+    // retries naturally.
+    try {
+      await this.fetchAndIngest();
+    } catch (err: unknown) {
+      const msg = (err instanceof Error ? err.message : String(err))
+        .replace(/[\r\n]/g, ' ');
+      this.log(`WARN: unexpected error during cycle: ${msg} — retrying on next poll`);
+    }
 
     if (this.stopped) return;
 
@@ -409,6 +420,17 @@ export class PullLoop {
 
     // --- find new commits ---
     const newCommits = await getNewCommits(lastSeenSha, newSha, repoPath, git);
+
+    // First-sync truncation notice: when there was no prior cursor and we hit
+    // the FIRST_SYNC_MAX_COMMITS cap, older history is intentionally skipped.
+    // Tell the user where to look for it.
+    if (lastSeenSha === null && newCommits.length === FIRST_SYNC_MAX_COMMITS) {
+      this.log(
+        `first-sync truncated at ${FIRST_SYNC_MAX_COMMITS} commits for cortex '${safeCortex}' — ` +
+        `older history is not ingested by the pull loop. Run \`think reindex ${safeCortex}\` ` +
+        `to backfill from the canonical L1 JSONL.`,
+      );
+    }
 
     if (newCommits.length === 0) {
       // No new commits to process; still update cursor to avoid re-checking.
@@ -502,7 +524,10 @@ export class PullLoop {
     } catch (embedErr: unknown) {
       const msg = (embedErr instanceof Error ? embedErr.message : String(embedErr))
         .replace(/[\r\n]/g, ' ');
-      this.log(`WARN: embed failed for entry ${entryId} in cortex '${safeCortex}': ${msg} — inserting without embedding`);
+      // entryId is parsed from a JSONL line in the remote git tree —
+      // attacker-controlled content. Strip CRLF before logging to prevent
+      // log-line injection. (safeCortex is sanitizeName()-clean already.)
+      this.log(`WARN: embed failed for entry ${entryId.replace(/[\r\n]/g, '')} in cortex '${safeCortex}': ${msg} — inserting without embedding`);
     }
 
     const activitySeq = assignNextSeq(safeCortex);
