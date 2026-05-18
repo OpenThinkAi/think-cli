@@ -375,16 +375,17 @@ describe('recall returns transient error when cortex is reindexing (AGT-277)', (
     reindexingCortexes.delete(cortex);
   });
 
-  it('recall throws a degraded warning when the last reindex for that cortex failed', async () => {
+  it('recall returns results (not an error) when the last reindex for that cortex failed', async () => {
+    // reindexFailedCortexes → warn via stderr, proceed with recall rather than throwing.
     const { handleRecall } = await import('../../src/daemon/recall.js');
     const cortex = 'failed-reindex-cortex';
     getCortexDb(cortex);
 
     reindexFailedCortexes.add(cortex);
 
-    await expect(
-      handleRecall({ cortex, query: 'test', scope: 'active' })
-    ).rejects.toThrow(/degraded|older model/);
+    // Must resolve (not reject) — stale results are better than no results.
+    const result = await handleRecall({ cortex, query: 'test', scope: 'active' });
+    expect(Array.isArray(result)).toBe(true);
 
     reindexFailedCortexes.delete(cortex);
   });

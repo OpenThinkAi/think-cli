@@ -358,15 +358,13 @@ async function recallOneCortexWithVec(
   }
 
   // Per-cortex stale-vector warning (AGT-277).
-  // If the last model-mismatch reindex for this cortex failed, results may
-  // reflect an older embedding model. We do not block recall — stale results
-  // are better than no results — but we surface the degraded quality via a
-  // thrown warning. The error is intentionally the same throw path as the
-  // busy check; callers should treat it as a recoverable warning, not a hard
-  // failure (e.g., display the message to the user and proceed with recall).
+  // If the last model-mismatch reindex for this cortex failed, log a daemon-level
+  // warning and proceed with recall. Stale results are better than no results;
+  // we do not block. The warning surfaces in the daemon log so operators can see
+  // the degraded state without silently returning bad vectors.
   if (reindexFailedCortexes.has(cortexName)) {
-    throw new Error(
-      `cortex "${cortexName}" recall may be degraded: the last embedding model reindex failed — results may reflect an older model. Check the daemon log for details.`
+    process.stderr.write(
+      `think recall: cortex "${cortexName}" results may be degraded — the last embedding model reindex failed; results may reflect an older model. Check the daemon log for details.\n`
     );
   }
 

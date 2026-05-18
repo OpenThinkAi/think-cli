@@ -1,7 +1,7 @@
 /**
  * Daemon startup embedding-model version check — AGT-277
  *
- * On daemon startup, for each known cortex, this module:
+ * On daemon startup, for each cortex in `cortexNames`, this module:
  *   1. Queries one row's `embedding_model` from L2 to detect the model version
  *      that produced the stored embeddings.
  *   2. If the stored model differs from the current EMBEDDING_MODEL_NAME, marks
@@ -12,9 +12,9 @@
  *      busy error for that cortex. Other cortexes continue serving normally.
  *      Per-cortex isolation is the design; there is no global lock.
  *   5. If a reindex fails, the cortex is added to `reindexFailedCortexes`.
- *      Subsequent recalls for that cortex include a warning that results may
- *      reflect an older embedding model. The busy flag is always cleared so
- *      recall is not permanently blocked.
+ *      Subsequent recalls for that cortex log a daemon-level warning and proceed
+ *      with the query — stale results are better than no results. The busy flag
+ *      is always cleared so recall is never permanently blocked.
  *
  * Race-condition semantics:
  *   - `reindexingCortexes` is checked synchronously in the recall handler before
@@ -131,7 +131,7 @@ export async function runEmbedModelChecks(
       storedModel = sampleEmbeddingModel(cortexName);
     } catch (err) {
       // DB not accessible (e.g., brand-new cortex with no L2 file yet) — skip.
-      const msg = err instanceof Error ? err.message : String(err);
+      const msg = sanitizeForLog(err instanceof Error ? err.message : String(err));
       writeLine(`embed-model-check: could not sample embedding_model for cortex "${safeCortex}": ${msg} — skipping`);
       continue;
     }
