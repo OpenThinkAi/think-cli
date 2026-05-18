@@ -26,7 +26,6 @@
 
 import { getConfig } from '../lib/config.js';
 import { isValidProxyUrl, redactUrl } from '../lib/proxy-url.js';
-export { isValidProxyUrl, redactUrl };
 
 // ---------------------------------------------------------------------------
 // Constants

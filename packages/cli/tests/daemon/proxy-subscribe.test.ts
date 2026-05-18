@@ -17,9 +17,8 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { isValidProxyUrl, redactUrl } from '../../src/lib/proxy-url.js';
 import {
-  isValidProxyUrl,
-  redactUrl,
   startProxySubscribe,
   RECONNECT_INITIAL_MS,
   RECONNECT_MULTIPLIER,
