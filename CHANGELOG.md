@@ -32,6 +32,30 @@ v3 is a major architectural redesign. Full design: [think-v3 project README](htt
 
 **Phase 12 (AGT-323):** Version bump to 1.0.0-alpha.1, README v3 overview, workflow alpha-tag fix, release/v1.0.0-alpha branch cut.
 
+
+### Upgrading from v0.6
+
+**Install:** `npm install -g @openthink/think@alpha`
+
+The alpha label is deliberate — v3 ML features (vector recall via
+`@huggingface/transformers`, daemon-resident embedding model) are
+opt-in and experimental. v2 storage is read-compatible; first launch
+reindexes automatically and all existing JSONL entries are preserved.
+
+**Removed flags:** `--no-sync` is deprecated (replaced by `--no-push`).
+A deprecation warning is emitted on use; `--no-push` is the forward path.
+
+**Optional ML dependency:** semantic recall requires
+`@huggingface/transformers@4.2.0` (bundled as an optional peer dep).
+Without it, `think recall` falls back to full-text search with no data
+loss. The daemon startup message tells you if the model is unavailable.
+
+**Two Anthropic SDKs in the dependency tree:** `@anthropic-ai/claude-agent-sdk`
+drives all interactive LLM calls (recall curator, retro extraction), gated
+behind the `THINK_LLM_CONSENT` guard. `@anthropic-ai/sdk` is used directly
+for background daemon operations (compaction, supersession) that run without
+a live Claude session. Both are intentional; neither is being phased out.
+
 ---
 
 ## [0.6.12] and earlier
