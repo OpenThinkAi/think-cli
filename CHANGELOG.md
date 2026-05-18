@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.0.0-alpha.8] — 2026-05-18
+
+### Fixed
+- **`think recall` now actually uses the daemon's vector search.** The headline v3 feature — semantic similarity recall via `bge-small-en-v1.5` — was unreachable from the CLI: every `think recall <query>` call went straight to local FTS5 keyword search regardless of whether the daemon was running, because the AGT-289 daemon-routing hook in `commands/recall.ts` was left as a placeholder comment ("Currently FTS is the only path"). Vector search worked correctly when invoked through the `think_recall` MCP tool, but not from the CLI. The fix wires `commands/recall.ts` to `connectDaemon()` and the daemon's `recall` RPC, with the existing FTS5 path retained as a fallback when (a) the user passes `--no-embed`/`THINK_NO_EMBED=1`, (b) the daemon spawn/connect fails, or (c) the daemon itself auto-falls-back to FTS (embedding model unavailable, surfaced as `note: semantic recall unavailable …`). All daemon-only flags (`--kind`, `--topic`, `--since`, `--include-superseded`, `--scope`) now apply on the primary path; the FTS fallback continues to warn that they are no-ops in degraded mode. The `--full` flag, `--json` output, and the AGT-318 kind-grouped formatter all route through the daemon path. End-to-end: a query like "experimental prototype status" against a corpus containing "experimental, non-production prototype" now returns semantic matches under default mode and zero matches under `--no-embed`, confirming the two paths are doing what their names say.
+
+---
+
 ## [1.0.0-alpha.7] — 2026-05-18
 
 ### Fixed
