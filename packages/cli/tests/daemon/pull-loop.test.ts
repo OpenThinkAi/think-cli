@@ -101,8 +101,6 @@ function buildGitMock(cfg: GitMockConfig): { impl: (args: string[], cwd: string)
   const impl = async (args: string[], cwd: string): Promise<string> => {
     calls.push({ args, cwd });
 
-    const cmd = args.find(a => !a.startsWith('-c') && a !== '-c') ?? args[0];
-
     // Determine actual command (skip -c flags)
     let cmdIdx = 0;
     while (cmdIdx < args.length && (args[cmdIdx] === '-c' || (cmdIdx > 0 && args[cmdIdx - 1] === '-c'))) {
@@ -140,7 +138,6 @@ function buildGitMock(cfg: GitMockConfig): { impl: (args: string[], cwd: string)
       return content;
     }
 
-    void cmd; // suppress unused-variable warning
     return '';
   };
 

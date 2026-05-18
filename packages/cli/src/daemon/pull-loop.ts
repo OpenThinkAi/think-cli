@@ -188,8 +188,22 @@ async function getOriginHeadSha(
 }
 
 /**
+ * Maximum commits to ingest in a single poll cycle when there is no prior
+ * cursor (i.e., first-ever poll for a cortex). Bounds the embed() work for
+ * established cortexes with deep history. Subsequent polls work backwards
+ * in batches until history is fully caught up.
+ */
+const FIRST_SYNC_MAX_COMMITS = 100;
+
+/**
  * Get commit SHAs reachable from `newSha` but NOT from `oldSha`.
  * Returns in chronological order (oldest first).
+ *
+ * When `oldSha` is null (first-ever sync) the range is an unbounded walk of
+ * the remote branch's full history, which can be expensive. We cap it at
+ * {@link FIRST_SYNC_MAX_COMMITS} to bound the embed() work per cycle; the
+ * pull loop revisits the same range on the next poll and advances the cursor
+ * incrementally until history is fully ingested.
  */
 async function getNewCommits(
   oldSha: string | null,
@@ -198,8 +212,17 @@ async function getNewCommits(
   git: GitRunner,
 ): Promise<string[]> {
   try {
-    const revRange = oldSha ? `${oldSha}..${newSha}` : newSha;
-    const out = await git(['rev-list', '--ancestry-path', '--reverse', revRange], repoPath);
+    let args: string[];
+    if (oldSha) {
+      args = ['rev-list', '--ancestry-path', '--reverse', `${oldSha}..${newSha}`];
+    } else {
+      // First sync: cap at FIRST_SYNC_MAX_COMMITS to avoid walking unlimited
+      // history in one shot. `--max-count N` returns the N newest commits;
+      // `--reverse` then gives oldest-first order. The cursor is only updated
+      // after ingest so on subsequent polls we pick up where we left off.
+      args = ['rev-list', '--reverse', `--max-count=${FIRST_SYNC_MAX_COMMITS}`, newSha];
+    }
+    const out = await git(args, repoPath);
     return out.split('\n').map(s => s.trim()).filter(Boolean);
   } catch {
     return [];
@@ -413,14 +436,20 @@ export class PullLoop {
           const entryId = typeof entry.id === 'string' ? entry.id : null;
           if (!entryId) continue;
 
-          await this.ingestEntry(entry, entryId, safeCortex);
+          await this.ingestEntry(entry, entryId);
           totalIngested++;
         }
       }
     }
 
     // --- update cursor ---
-    setSyncCursor(safeCortex, CURSOR_BACKEND, CURSOR_DIRECTION, newSha);
+    // Only advance the cursor when ingest completed fully. If the loop was
+    // stopped mid-ingest (daemon shutdown), the tail of newCommits was never
+    // processed. Skipping the cursor update ensures those commits are
+    // revisited on the next daemon start rather than being silently dropped.
+    if (!this.stopped) {
+      setSyncCursor(safeCortex, CURSOR_BACKEND, CURSOR_DIRECTION, newSha);
+    }
 
     if (totalIngested > 0) {
       this.log(`ingested ${totalIngested} ${totalIngested === 1 ? 'entry' : 'entries'} from ${newCommits.length} commit(s) for cortex '${safeCortex.replace(/[\r\n]/g, '')}'`);
@@ -430,12 +459,13 @@ export class PullLoop {
   /**
    * Insert a single entry into L2 (memories table) using INSERT OR IGNORE
    * for deduplication (v2 pattern). Unknown or malformed entries are skipped.
+   * Uses `this.safeCortex` directly; no need to pass it as a parameter.
    */
   private async ingestEntry(
     entry: Record<string, unknown>,
     entryId: string,
-    safeCortex: string,
   ): Promise<void> {
+    const safeCortex = this.safeCortex;
     const ts = typeof entry.ts === 'string' ? entry.ts : new Date().toISOString();
     const author = typeof entry.author === 'string' ? entry.author : 'unknown';
     const content = typeof entry.content === 'string' ? entry.content : null;
