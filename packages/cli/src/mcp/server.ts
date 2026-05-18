@@ -80,7 +80,7 @@ export function createMcpServer(): Server {
   // -- tools/call -----------------------------------------------------------
   server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const { name, arguments: rawArgs } = request.params;
-    const params = (rawArgs as Record<string, unknown>) ?? {};
+    const params = rawArgs ?? {};
 
     const entry = registeredTools.find((e) => e.tool.name === name);
     if (!entry) {
@@ -153,9 +153,15 @@ export async function runMcpServer(): Promise<void> {
   process.stderr.write('[think mcp] server ready\n');
 
   // Graceful shutdown on signals.
+  //
+  // `connectDaemon()` returns a module-level singleton with an open Unix-socket
+  // connection that's ref'd into the event loop, so `await server.close()` alone
+  // is not enough to terminate — the process will hang. Explicitly call
+  // `process.exit(0)` after the transport has shut down to guarantee termination.
   async function shutdown(reason: string): Promise<void> {
     process.stderr.write(`[think mcp] shutting down (reason=${reason})\n`);
     await server.close();
+    process.exit(0);
   }
 
   process.on('SIGTERM', () => { shutdown('SIGTERM').catch(() => { process.exit(0); }); });
