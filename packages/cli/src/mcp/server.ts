@@ -140,9 +140,14 @@ export async function runMcpServer(): Promise<void> {
       : String(err);
     // Write error to stderr (stdout must remain JSON-RPC only) then exit so
     // the MCP client receives a clean process failure rather than a hung server.
+    //
+    // Use `process.exit(1)` (not `process.exitCode = 1; return`) because
+    // `connectDaemon()` may have succeeded before the `status` call failed,
+    // in which case the daemon-client module holds an open Unix-socket
+    // singleton that's ref'd into the event loop. Letting the event loop
+    // drain would hang the process; same reasoning as the shutdown handler.
     process.stderr.write(`[think mcp] error: daemon unavailable — ${msg}\n`);
-    process.exitCode = 1;
-    return;
+    process.exit(1);
   }
 
   const server = createMcpServer();
