@@ -30,7 +30,9 @@ function defaultSocketPath(): string {
 const startSubcommand = new Command('start')
   .description(
     'Start the think daemon in the background; no-op if already running. ' +
-    'Pass --foreground to run in the current shell (required for process supervisors).',
+    'Pass --foreground to run in the current shell (required for process supervisors). ' +
+    'BEHAVIORAL NOTE: prior versions ran in the foreground by default; v3 defaults to ' +
+    'background. Scripts that relied on `think daemon start` blocking must pass --foreground.',
   )
   .option(
     '--foreground',
@@ -91,16 +93,28 @@ const stopSubcommand = new Command('stop')
   .description('Send the shutdown RPC to the daemon and wait up to 5s for it to exit.')
   .action(async () => {
     const { isDaemonRunning } = await import('../lib/daemon-status.js');
+    const { connectDaemon, probeDaemon } = await import('../lib/daemon-client.js');
     const status = isDaemonRunning();
 
+    // PID file is the primary signal, but a daemon running without a PID file
+    // (e.g. crash-restart with no rewrite, supervisor edge case, manual rm of
+    // the pid file) is still reachable on the socket. If we declared no-op
+    // here, the user would see success while the daemon kept running — which
+    // is worse than a delayed shutdown. Probe the socket as a fallback.
+    // `enteredViaProbe` toggles the poll-loop exit signal: when entry was via
+    // probe, we must also confirm via probe (PID file never existed).
+    let enteredViaProbe = false;
     if (!status.running) {
-      // Idempotent: mirror `start`'s already-running exit 0 contract.
-      process.stdout.write(`daemon not running (no-op)\n`);
-      return;
+      const socketAlive = await probeDaemon(500);
+      if (!socketAlive) {
+        // Idempotent: mirror `start`'s already-running exit 0 contract.
+        process.stdout.write(`daemon not running (no-op)\n`);
+        return;
+      }
+      enteredViaProbe = true;
     }
 
     // Connect and issue the shutdown RPC.
-    const { connectDaemon } = await import('../lib/daemon-client.js');
     const client = await connectDaemon().catch((err: unknown) => {
       process.stderr.write(
         `error: could not connect to daemon — ${err instanceof Error ? err.message : String(err)}\n`,
@@ -135,22 +149,32 @@ const stopSubcommand = new Command('stop')
       client.close();
     }
 
-    // Wait up to 5 s for the daemon process to exit (PID file disappears).
-    // Check first, then sleep, to avoid an unnecessary 100ms delay when the
-    // daemon exits quickly.
+    // Wait up to 5 s for the daemon process to exit. Exit signal depends on
+    // how we entered: PID-file disappearance is authoritative when we started
+    // from a PID-file-running daemon; socket-probe failure is the only signal
+    // available when we entered via probe (no PID file at any point).
     const deadline = Date.now() + 5000;
     const POLL_MS = 100;
 
     while (Date.now() < deadline) {
       const after = isDaemonRunning();
       if (!after.running) {
-        process.stdout.write(`daemon stopped\n`);
-        return;
+        if (!enteredViaProbe) {
+          process.stdout.write(`daemon stopped\n`);
+          return;
+        }
+        const stillAlive = await probeDaemon(200);
+        if (!stillAlive) {
+          process.stdout.write(`daemon stopped\n`);
+          return;
+        }
       }
       await new Promise<void>((r) => setTimeout(r, POLL_MS));
     }
 
-    process.stderr.write(`error: daemon did not exit cleanly within 5s\n`);
+    process.stderr.write(
+      `error: daemon did not exit cleanly within 5s — use \`kill <pid>\` to force-terminate\n`,
+    );
     process.exit(1);
   });
 
@@ -161,16 +185,30 @@ const stopSubcommand = new Command('stop')
 const statusSubcommand = new Command('status')
   .description(
     'Print the current running state, pid, socket path, and (when available) uptime and version. ' +
-    'Output is provisional key=value lines; machine-parseable --json support is planned.',
+    'Output is provisional key=value lines; machine-parseable --json support is planned. ' +
+    'FORMAT NOTE: prior versions printed prose (`daemon running (pid N)`). v3 emits ' +
+    'key=value lines (`pid=N`, `socket=…`, `status=running`); existing parsers must update.',
   )
   .action(async () => {
     const { isDaemonRunning } = await import('../lib/daemon-status.js');
+    const { connectDaemon, probeDaemon } = await import('../lib/daemon-client.js');
     const status = isDaemonRunning();
 
-    if (!status.running) {
-      process.stderr.write(`error: daemon is not running — run 'think daemon start' to start it\n`);
-      process.exit(1);
-      return;
+    // PID file is the primary signal, with a socket-probe fallback so a daemon
+    // running without a PID file is still visible. `pid=unknown` is emitted in
+    // that case to signal the partial state without breaking the key=value
+    // contract.
+    let pidLine: string;
+    if (status.running) {
+      pidLine = `pid=${status.pid}`;
+    } else {
+      const socketAlive = await probeDaemon(500);
+      if (!socketAlive) {
+        process.stderr.write(`error: daemon is not running — run 'think daemon start' to start it\n`);
+        process.exit(1);
+        return;
+      }
+      pidLine = `pid=unknown`;
     }
 
     const socketPath = defaultSocketPath();
@@ -178,14 +216,13 @@ const statusSubcommand = new Command('status')
     // These three lines are always emitted regardless of RPC outcome.
     // Output format: provisional key=value lines (unstable until --json lands, AGT-287+).
     // `status=running` is emitted on ALL paths so scripts can exact-match it.
-    process.stdout.write(`pid=${status.pid}\n`);
+    process.stdout.write(`${pidLine}\n`);
     process.stdout.write(`socket=${socketPath}\n`);
     process.stdout.write(`status=running\n`);
 
     // Try the `status` RPC (AGT-287 may not be landed yet — degrade gracefully).
     // `rpc=unavailable(...)` is added only when the RPC is unreachable.
     try {
-      const { connectDaemon } = await import('../lib/daemon-client.js');
       const client = await connectDaemon();
       let rpcResult: unknown;
       try {
