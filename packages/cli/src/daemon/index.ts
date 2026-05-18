@@ -39,6 +39,7 @@ import { handleSync } from './sync-handler.js';
 import { handleStatus } from './status.js';
 import { compactionQueue, scanAndEnqueueUncompacted } from './compaction/queue.js';
 import { backfillActivitySeqIfNeeded } from '../db/activity-seq.js';
+import { runEmbedModelChecks } from './embed-model-check.js';
 
 // ---------------------------------------------------------------------------
 // Paths
@@ -372,6 +373,28 @@ export async function runDaemon(options: DaemonOptions): Promise<void> {
       writeLine(`activity_seq backfill for cortex '${activeCortex}' failed (continuing without backfill): ${msg}`);
     }
     scanAndEnqueueUncompacted(compactionQueue, [activeCortex]);
+  }
+
+  // ---------------------------------------------------------------------------
+  // Embedding model version check — AGT-277
+  //
+  // For each known cortex, check whether the stored embedding_model matches the
+  // current EMBEDDING_MODEL_NAME. If it differs (or if no embeddings exist yet),
+  // trigger a full reindex. While reindexing, the recall endpoint returns a
+  // transient "reindexing" error for that cortex; other cortexes continue serving.
+  //
+  // This runs as a fire-and-forget Promise after the server is ready so the
+  // daemon can accept connections immediately. The reindex itself is awaited
+  // per-cortex inside runEmbedModelChecks so that cortexes are processed
+  // serially and the per-cortex busy flag is cleared before the next cortex
+  // starts. Failures are logged but do not crash the daemon.
+  // ---------------------------------------------------------------------------
+
+  if (activeCortex) {
+    runEmbedModelChecks([activeCortex], writeLine).catch((err: unknown) => {
+      const msg = err instanceof Error ? err.message : String(err);
+      writeLine(`embed-model-check: unexpected error: ${msg}`);
+    });
   }
 
   // ---------------------------------------------------------------------------

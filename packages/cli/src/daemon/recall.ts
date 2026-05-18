@@ -46,6 +46,7 @@ import { getCortexDb } from '../db/engrams.js';
 import { searchVectors } from '../lib/search-vectors.js';
 import { getConfig } from '../lib/config.js';
 import { listLocalBranches } from '../lib/git.js';
+import { reindexingCortexes } from './embed-model-check.js';
 
 // How many extra candidates to fetch from sqlite-vec before JS rerank.
 // 5× ensures the reranked window is wide enough that a very recent entry
@@ -345,6 +346,17 @@ async function recallOneCortexWithVec(
   since: string | undefined,
   decay: number,
 ): Promise<RecallEntry[]> {
+  // Per-cortex reindex busy check (AGT-277).
+  // If the daemon is currently reindexing this cortex due to an embedding model
+  // version change, return a transient error rather than querying stale or
+  // partially-rebuilt vectors. Other cortexes are unaffected — the busy set is
+  // per-cortex; there is no global lock.
+  if (reindexingCortexes.has(cortexName)) {
+    throw new Error(
+      `cortex "${cortexName}" is currently being reindexed due to an embedding model version change — retry in a moment`
+    );
+  }
+
   // getCortexDb calls getIndexDbPath → sanitizeName, which rejects `/`, `\`, and
   // `..` sequences. Path-traversal attempts are caught here with a clear error.
   const db = getCortexDb(cortexName);
