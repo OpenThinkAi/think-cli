@@ -33,6 +33,20 @@ export interface ClaudeSettings {
   [key: string]: unknown;
 }
 
+/** The shape of a single MCP server entry. */
+export interface McpServerEntry {
+  command: string;
+  args: string[];
+}
+
+/** Minimal subset of the ~/.claude.json / .mcp.json shape we care about. */
+export interface McpConfig {
+  mcpServers?: {
+    [name: string]: McpServerEntry;
+  };
+  [key: string]: unknown;
+}
+
 /**
  * Resolve the absolute path of the global Claude Code settings file.
  * Respects CLAUDE_CONFIG_DIR for non-standard setups.
@@ -48,6 +62,21 @@ export function globalSettingsPath(): string {
  */
 export function projectSettingsPath(): string {
   return path.join(process.cwd(), '.claude', 'settings.local.json');
+}
+
+/**
+ * Resolve the absolute path of the global MCP config file (`~/.claude.json`).
+ */
+export function globalMcpConfigPath(): string {
+  return path.join(os.homedir(), '.claude.json');
+}
+
+/**
+ * Resolve the absolute path of the project-local MCP config file
+ * (`<cwd>/.mcp.json`).
+ */
+export function projectMcpConfigPath(): string {
+  return path.join(process.cwd(), '.mcp.json');
 }
 
 /**
@@ -101,29 +130,105 @@ export function readSettings(filePath: string): ClaudeSettings {
 }
 
 /**
- * Atomically write `settings` to `filePath`.
- *
- * Writes to a sibling `.tmp-<random>` file first, then `rename()`s into
- * place. The rename is atomic on POSIX systems — a crash between the two
- * steps leaves either the old file untouched or the new file fully in place.
+ * Read and parse an MCP config file (`~/.claude.json` or `.mcp.json`).
+ * Returns an empty object if the file does not exist.
+ * Throws with a clear message on malformed JSON.
  */
-export function writeSettings(filePath: string, settings: ClaudeSettings): void {
+export function readMcpConfig(filePath: string): McpConfig {
+  if (!fs.existsSync(filePath)) {
+    return {};
+  }
+
+  let raw: string;
+  try {
+    raw = fs.readFileSync(filePath, 'utf8');
+  } catch (err) {
+    throw new Error(`Failed to read ${filePath}: ${(err as NodeJS.ErrnoException).message}`);
+  }
+
+  try {
+    return JSON.parse(raw) as McpConfig;
+  } catch (err) {
+    throw new Error(
+      `Failed to parse ${filePath}: ${(err as Error).message}. ` +
+        `MCP config files must be strict JSON (no comments, no trailing commas).`,
+    );
+  }
+}
+
+/**
+ * Internal: atomically write JSON data to filePath with mode 0o600.
+ * Writes to a sibling .tmp-<random> file first, then renames into place.
+ * A crash leaves either the old file untouched or the new file fully in place.
+ */
+function writeJsonFile(filePath: string, data: object): void {
   validateSettingsPath(filePath);
 
   const dir = path.dirname(filePath);
   fs.mkdirSync(dir, { recursive: true });
 
   const tmp = `${filePath}.tmp-${Math.random().toString(36).slice(2)}`;
-  const serialized = JSON.stringify(settings, null, 2) + '\n';
+  const serialized = JSON.stringify(data, null, 2) + '\n';
 
   try {
     fs.writeFileSync(tmp, serialized, { mode: 0o600 });
     fs.renameSync(tmp, filePath);
   } catch (err) {
-    // Clean up the temp file if it exists.
     try { fs.unlinkSync(tmp); } catch { /* ignore */ }
     throw err;
   }
+}
+
+/** Atomically write settings to filePath (write safety: see writeJsonFile). */
+export function writeSettings(filePath: string, settings: ClaudeSettings): void {
+  writeJsonFile(filePath, settings);
+}
+
+/** Atomically write MCP config to filePath (write safety: see writeJsonFile). */
+export function writeMcpConfig(filePath: string, config: McpConfig): void {
+  writeJsonFile(filePath, config);
+}
+
+/**
+ * Add a `think` MCP server entry to the given config.
+ *
+ * - If the entry already exists with the same `args[0]` path, returns 'already_installed'.
+ * - Otherwise adds/replaces the entry and returns 'installed'.
+ */
+export function addMcpEntry(
+  config: McpConfig,
+  serverScriptPath: string,
+): 'installed' | 'already_installed' {
+  if (!config.mcpServers) {
+    config.mcpServers = {};
+  }
+
+  const existing = config.mcpServers['think'];
+  if (existing && existing.args?.[0] === serverScriptPath) {
+    return 'already_installed';
+  }
+
+  config.mcpServers['think'] = { command: 'node', args: [serverScriptPath] };
+  return 'installed';
+}
+
+/**
+ * Remove the `think` MCP server entry from the given config.
+ *
+ * Returns 'removed' if found and removed, 'not_found' otherwise.
+ * Cleans up empty `mcpServers` objects.
+ */
+export function removeMcpEntry(config: McpConfig): 'removed' | 'not_found' {
+  if (!config.mcpServers || !('think' in config.mcpServers)) {
+    return 'not_found';
+  }
+
+  delete config.mcpServers['think'];
+  if (Object.keys(config.mcpServers).length === 0) {
+    delete config.mcpServers;
+  }
+
+  return 'removed';
 }
 
 /**
@@ -197,4 +302,21 @@ export function resolveHookScriptPath(): string {
     throw new Error('Cannot resolve hook script path: process.argv[1] is not set.');
   }
   return path.join(path.dirname(thinkBin), 'hooks', 'user-prompt-submit.js');
+}
+
+/**
+ * Resolve the absolute path to the installed `mcp/server.js` script.
+ * The MCP server ships alongside the `think` binary at:
+ *
+ *   <dir-of-think-binary>/mcp/server.js
+ *
+ * `process.argv[1]` is the path to the running `think` binary (e.g.
+ * `/usr/local/lib/node_modules/@openthink/think/dist/index.js`).
+ */
+export function resolveMcpServerPath(): string {
+  const thinkBin = process.argv[1];
+  if (!thinkBin) {
+    throw new Error('Cannot resolve MCP server path: process.argv[1] is not set.');
+  }
+  return path.join(path.dirname(thinkBin), 'mcp', 'server.js');
 }
