@@ -187,13 +187,15 @@ const stopSubcommand = new Command('stop')
       await new Promise<void>((r) => setTimeout(r, POLL_MS));
     }
 
-    // Surface the PID when we know it (PID-file entry path); fall back to
-    // <unknown> on the probe-only entry path where no PID file ever existed.
-    const pidHint = !enteredViaProbe && status.pid !== undefined
-      ? String(status.pid)
-      : '<unknown>';
+    // Tailor the recovery hint to the entry path: when we have the PID
+    // (PID-file entry), suggest a direct `kill`. When entered via probe
+    // (no PID file ever existed), the PID is unknown; suggest tooling
+    // that can find it from the socket instead of emitting `kill <unknown>`.
+    const hint = !enteredViaProbe && status.pid !== undefined
+      ? `use \`kill ${status.pid}\` to force-terminate`
+      : `no PID file present — locate the process with \`lsof -U ${defaultSocketPath()}\` or \`ps\`, then \`kill\` it`;
     process.stderr.write(
-      `error: daemon did not exit cleanly within 5s — use \`kill ${pidHint}\` to force-terminate\n`,
+      `error: daemon did not exit cleanly within 5s — ${hint}\n`,
     );
     process.exit(1);
   });
