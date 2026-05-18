@@ -59,21 +59,49 @@ function getDaemonLogPath(): string {
 }
 
 /**
- * Absolute path to the daemon entry point in the compiled `dist/` tree.
- * Resolves relative to this file's location:
- *   packages/cli/dist/lib/daemon-client.js  →  ../../daemon/index.js
+ * Resolve the daemon entry path given the directory of the calling module.
  *
- * At source level (tsx/ts-node), __dirname is packages/cli/src/lib, so the
- * same relative path still works because both source and dist trees share the
- * same packages/cli/<root>/<subdir> shape.
+ * Walks candidate directories outward from `thisDir` looking for the
+ * `@openthink/think` `package.json` sentinel, then returns
+ * `<pkg-root>/dist/daemon/index.js`. Name-pinning is required because the
+ * monorepo workspace root has its own `package.json` that we must NOT match.
+ *
+ * Layouts handled:
+ *   - bundled (`dist/daemon-client-HASH.js`):  thisDir=dist/   → ../package.json
+ *   - dev source (`src/lib/daemon-client.ts`): thisDir=src/lib → ../../package.json
+ *
+ * Exported for testing; runtime callers use `getDaemonEntryPath()` below.
+ * Mirrors the pattern in `version.ts`'s `readPackageVersion`.
  */
-function getDaemonEntryPath(): string {
+export function resolveDaemonEntryFromDir(thisDir: string): string {
+  const candidates = [
+    path.join(thisDir, '..'),             // dist/<file>.js, src/<file>.ts
+    path.join(thisDir, '..', '..'),       // dist/<dir>/<file>.js, src/<dir>/<file>.ts
+    path.join(thisDir, '..', '..', '..'), // src/<dir>/<dir>/<file>.ts
+  ];
+  for (const root of candidates) {
+    const manifest = path.join(root, 'package.json');
+    if (!fs.existsSync(manifest)) continue;
+    try {
+      const parsed = JSON.parse(fs.readFileSync(manifest, 'utf-8')) as { name?: string };
+      if (parsed.name === '@openthink/think') {
+        return path.join(root, 'dist', 'daemon', 'index.js');
+      }
+    } catch {
+      // unreadable / not JSON — try next candidate
+    }
+  }
+  throw new Error(
+    `could not locate @openthink/think package root from ${thisDir} — install may be corrupted`,
+  );
+}
+
+/** Absolute path to the daemon entry point in the compiled `dist/` tree. */
+export function getDaemonEntryPath(): string {
   // fileURLToPath is the correct ESM replacement for __dirname — it strips
   // the Windows drive-letter slash that `.pathname` leaves behind.
   const thisFile = fileURLToPath(import.meta.url);
-  // Go up two levels: lib/ → src_or_dist/ → packages/cli/
-  const pkgRoot = path.resolve(path.dirname(thisFile), '..', '..');
-  return path.join(pkgRoot, 'dist', 'daemon', 'index.js');
+  return resolveDaemonEntryFromDir(path.dirname(thisFile));
 }
 
 // ---------------------------------------------------------------------------
