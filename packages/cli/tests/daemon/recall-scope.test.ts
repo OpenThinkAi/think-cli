@@ -4,6 +4,7 @@
  * AC #1: --scope <value> accepted; allowed: active, accessible, all; default accessible.
  * AC #2: Invalid value exits with: error: invalid --scope value 'foo'; expected one of: active, accessible, all
  * AC #3: scope forwarded to daemon recall RPC's scope field.
+ * AC #4: Help text gives one-line guidance (covered by Commander .option() string in recall.ts; no separate test needed).
  * AC #5: scope="active" queries only one cortex; scope="accessible" queries federated.
  *
  * Note: AC #5 daemon-layer behaviour (scope wiring in handleRecall) is covered by

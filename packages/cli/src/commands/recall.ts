@@ -303,12 +303,15 @@ export const recallCommand = new Command('recall')
       console.warn(chalk.yellow(`Note: ${flag} requires the daemon (vector recall); the FTS fallback does not apply supersession or compaction filters.`));
     }
 
-    // AGT-308: --scope is validated above and will be forwarded to the daemon
-    // RPC when that path is wired. In FTS (degraded) mode, scope affects which
-    // cortex is queried: "active" constrains to the active cortex (current
-    // behaviour); "accessible"/"all" would fan out to all cortexes. Until the
-    // daemon path is wired, this falls through to single-cortex FTS.
-    void scope; // consumed by daemon path (AGT-289 hook point above)
+    // AGT-308: Warn when --scope is non-default in FTS (degraded) mode — the
+    // flag has no effect until the daemon path is wired (AGT-289). This mirrors
+    // the existing warning for --full / --include-superseded.
+    if (scope !== 'active') {
+      const scopeNote = scope === 'all'
+        ? '--scope all is ALPHA and not yet active; behaves like accessible once the daemon path is wired'
+        : `--scope ${scope} requires the daemon (vector recall); the FTS fallback queries the active cortex only`;
+      console.warn(chalk.yellow(`Note: ${scopeNote}.`));
+    }
 
     runFtsRecall(cortex, query, { engrams: opts.engrams, limit });
     closeCortexDb(cortex);
