@@ -12,6 +12,21 @@ import {
 import type { MemoryRow } from '../db/memory-queries.js';
 import type { LongTermEventRow } from '../db/long-term-queries.js';
 import { closeCortexDb } from '../db/engrams.js';
+import type { RecallScope } from '../daemon/recall.js';
+
+// ---------------------------------------------------------------------------
+// Scope validation (AGT-308)
+// ---------------------------------------------------------------------------
+
+const VALID_SCOPES = ['active', 'accessible', 'all'] as const;
+
+function parseScope(raw: string): RecallScope {
+  if ((VALID_SCOPES as readonly string[]).includes(raw)) {
+    return raw as RecallScope;
+  }
+  console.error(`error: invalid --scope value '${raw}'; expected one of: active, accessible, all`);
+  process.exit(1);
+}
 
 export function printDecisions(m: MemoryRow): void {
   if (!m.decisions) return;
@@ -234,7 +249,12 @@ export const recallCommand = new Command('recall')
   .option('--limit <n>', 'Max results to return', '20')
   .option('--full', 'Return all entries including superseded and compacted-raw (overrides --include-superseded)')
   .option('--include-superseded', 'Include superseded entries but still hide compacted-raw memories')
-  .action((query: string, opts: { engrams?: boolean; all?: boolean; days: string; limit: string; full?: boolean; includeSuperseded?: boolean }) => {
+  .option(
+    '--scope <value>',
+    'Federation scope: active = single cortex; accessible = all your cortexes (default); all = future remote peers',
+    'accessible',
+  )
+  .action((query: string, opts: { engrams?: boolean; all?: boolean; days: string; limit: string; full?: boolean; includeSuperseded?: boolean; scope: string }) => {
     const config = getConfig();
     const cortex = config.cortex?.active;
 
@@ -242,6 +262,9 @@ export const recallCommand = new Command('recall')
       console.error(chalk.red('No active cortex. Run: think cortex switch <name>'));
       process.exit(1);
     }
+
+    // AGT-308: validate --scope before any other processing.
+    const scope: RecallScope = parseScope(opts.scope);
 
     const limit = parseInt(opts.limit, 10);
 
@@ -261,6 +284,9 @@ export const recallCommand = new Command('recall')
     // through to the RPC params so the daemon applies the right filters:
     //   { ..., full: opts.full ?? false, includeSuperseded: opts.includeSuperseded ?? false }
     //
+    // AGT-308: Pass scope through to the daemon recall RPC params:
+    //   { ..., scope }
+    //
     // AGT-307 / AGT-318 rendering note: when daemon results are wired here,
     // every RecallEntry carries a non-empty `cortex` field. Rendering must:
     //   - Multi-cortex results: show `[cortex-name]` tag per entry.
@@ -276,6 +302,13 @@ export const recallCommand = new Command('recall')
       const flag = opts.full ? '--full' : '--include-superseded';
       console.warn(chalk.yellow(`Note: ${flag} requires the daemon (vector recall); the FTS fallback does not apply supersession or compaction filters.`));
     }
+
+    // AGT-308: --scope is validated above and will be forwarded to the daemon
+    // RPC when that path is wired. In FTS (degraded) mode, scope affects which
+    // cortex is queried: "active" constrains to the active cortex (current
+    // behaviour); "accessible"/"all" would fan out to all cortexes. Until the
+    // daemon path is wired, this falls through to single-cortex FTS.
+    void scope; // consumed by daemon path (AGT-289 hook point above)
 
     runFtsRecall(cortex, query, { engrams: opts.engrams, limit });
     closeCortexDb(cortex);
