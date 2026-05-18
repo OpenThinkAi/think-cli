@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.0.0-alpha.4] — 2026-05-18
+
+### Fixed
+- `think hook install` and `think mcp install` now resolve the correct dist paths on a global npm install (`npm install -g @openthink/think`). Both commands were using `process.argv[1]`-based path math which resolves to the `bin/` symlink directory instead of the `dist/` directory, producing errors like `hook script not found at …/bin/hooks/user-prompt-submit.js`. Both resolvers now use the same package-root sentinel-walk pattern as `daemon-client.ts` (`fileURLToPath(import.meta.url)` + walking outward to find the `@openthink/think` `package.json`). The shared helper is extracted into `lib/pkg-paths.ts` to avoid duplication across the three callers.
+- `think mcp install` (and `think mcp` stdio mode) now work on the published alpha. The MCP server entry point (`src/mcp/server.ts`) was missing from the tsup build configuration, so `dist/mcp/server.js` did not exist in the published package. It is now included as a first-class tsup entry alongside the daemon and hook entries.
+
+---
+
 ## [1.0.0-alpha.3] — 2026-05-18
 
 ### Fixed

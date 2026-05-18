@@ -1,7 +1,7 @@
 import { defineConfig } from 'tsup';
 
 export default defineConfig({
-  entry: ['src/index.ts', 'src/daemon/index.ts', 'src/hooks/user-prompt-submit.ts'],
+  entry: ['src/index.ts', 'src/daemon/index.ts', 'src/hooks/user-prompt-submit.ts', 'src/mcp/server.ts'],
   format: ['esm'],
   target: 'node22',
   platform: 'node',

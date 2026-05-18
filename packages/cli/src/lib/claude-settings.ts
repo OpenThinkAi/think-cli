@@ -17,6 +17,8 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+import { fileURLToPath } from 'node:url';
+import { resolvePackageEntry } from './pkg-paths.js';
 
 /** The shape of a single hook command entry in Claude Code's settings. */
 export interface HookCommandEntry {
@@ -289,34 +291,30 @@ export function removeHookEntry(
 
 /**
  * Resolve the absolute path to the installed `user-prompt-submit.js` hook
- * script. The hook ships alongside the `think` binary at:
+ * script.
  *
- *   <dir-of-think-binary>/hooks/user-prompt-submit.js
- *
- * `process.argv[1]` is the path to the running `think` binary (e.g.
- * `/usr/local/lib/node_modules/@openthink/think/dist/index.js`).
+ * Uses the same package-root sentinel-walk as `daemon-client.ts` so the path
+ * is correct regardless of how Node resolves the `think` binary — global npm
+ * install, `npm link`, nvm-shim, or direct invocation. The previous
+ * `process.argv[1]`-based approach broke on globally-installed npm packages
+ * because `process.argv[1]` resolves to the `bin/` symlink directory, not the
+ * `dist/` directory where the hook script lives.
  */
 export function resolveHookScriptPath(): string {
-  const thinkBin = process.argv[1];
-  if (!thinkBin) {
-    throw new Error('Cannot resolve hook script path: process.argv[1] is not set.');
-  }
-  return path.join(path.dirname(thinkBin), 'hooks', 'user-prompt-submit.js');
+  const thisFile = fileURLToPath(import.meta.url);
+  return resolvePackageEntry(path.dirname(thisFile), 'dist', 'hooks', 'user-prompt-submit.js');
 }
 
 /**
  * Resolve the absolute path to the installed `mcp/server.js` script.
- * The MCP server ships alongside the `think` binary at:
  *
- *   <dir-of-think-binary>/mcp/server.js
- *
- * `process.argv[1]` is the path to the running `think` binary (e.g.
- * `/usr/local/lib/node_modules/@openthink/think/dist/index.js`).
+ * Uses the same package-root sentinel-walk as `daemon-client.ts` so the path
+ * is correct regardless of how Node resolves the `think` binary. The previous
+ * `process.argv[1]`-based approach broke on globally-installed npm packages
+ * because `process.argv[1]` resolves to the `bin/` symlink directory, not the
+ * `dist/` directory where the MCP server script lives.
  */
 export function resolveMcpServerPath(): string {
-  const thinkBin = process.argv[1];
-  if (!thinkBin) {
-    throw new Error('Cannot resolve MCP server path: process.argv[1] is not set.');
-  }
-  return path.join(path.dirname(thinkBin), 'mcp', 'server.js');
+  const thisFile = fileURLToPath(import.meta.url);
+  return resolvePackageEntry(path.dirname(thisFile), 'dist', 'mcp', 'server.js');
 }
