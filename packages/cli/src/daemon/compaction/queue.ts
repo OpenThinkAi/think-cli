@@ -23,6 +23,7 @@ import { getCortexDb } from '../../db/engrams.js';
 import { getRepoPath, sanitizeName } from '../../lib/paths.js';
 import { getConfig } from '../../lib/config.js';
 import { LlmConsentError } from '../../lib/llm-consent.js';
+import { sanitizeForLog } from '../../lib/sanitize.js';
 import { searchVectors } from '../../lib/search-vectors.js';
 import type { NewEntry, CandidateEntry } from './call.js';
 
@@ -65,8 +66,11 @@ export interface CompactionJob {
  *
  * The distinction matters: transient/network errors should retry; a well-formed LLM
  * response with unparseable content is a content fault that won't improve with retries.
+ *
+ * Exported so callers (and tests) can construct it when a content fault is
+ * detectable upstream of the LLM call.
  */
-class PermanentCompactionFailure extends Error {
+export class PermanentCompactionFailure extends Error {
   constructor(message: string) {
     super(message);
     this.name = 'PermanentCompactionFailure';
@@ -697,15 +701,6 @@ function sleep(ms: number): Promise<void> {
 /** Write a timestamped line to stderr (daemon log). */
 function log(msg: string): void {
   process.stderr.write(`[${new Date().toISOString()}] [compaction-queue] ${msg}\n`);
-}
-
-/**
- * Strip embedded newlines from a value before interpolating into a log line.
- * Prevents log-injection attacks via crafted cortex names or error messages.
- * Matches the pattern used in embed-model-check.ts (AGT-277).
- */
-function sanitizeForLog(value: string): string {
-  return value.replace(/[\r\n]/g, ' ');
 }
 
 // ---------------------------------------------------------------------------

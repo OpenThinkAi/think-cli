@@ -441,42 +441,63 @@ describe('AGT-302: compaction_status lifecycle', () => {
       VALUES (?, ?, 'tester', 'will fail', '[]', ?, NULL, 1, 'peer')
     `).run(id, ts, ts);
 
-    // Inject a pipeline that always throws a transient error so all 5 attempts (1 + 4 retries) fail.
     const queue = new CompactionQueue();
     queue._setPipelineForTest(async () => {
       throw new Error('transient network failure');
     });
 
-    // Patch backoff sleep by using fake timers? Simpler: leave retries running and wait.
-    // Backoff sequence is 1s → 4s → 16s → 64s = 85s. Too slow for a unit test.
-    // Instead, override the private retry constants by exercising via the pipeline override
-    // and a manual rejection chain: rely on the fact that `Error` (not PermanentCompactionFailure)
-    // hits the retry path. We override MAX_RETRIES through a quick chain by simply waiting.
-    //
-    // Since we can't tweak MAX_RETRIES from outside, use a faster path: throw
-    // PermanentCompactionFailure-shaped error via dynamic class to take the
-    // immediate-skip branch. But that class is internal. Workaround: use the
-    // public 'response_invalid' route by injecting a pipeline that throws an
-    // Error with name='PermanentCompactionFailure' — the catch uses instanceof
-    // so this won't match. So instead, prove the retries-exhausted path via
-    // its observable effect under fake timers.
+    // Backoff sequence is 1s → 4s → 16s → 64s = 85s total wall time. Fake
+    // timers drive the worker through every retry without real sleep.
     vi.useFakeTimers();
     queue.enqueue(id, cortex);
     queue.start();
-
-    // Advance through all backoffs: 1s + 4s + 16s + 64s = 85s.
     for (let i = 0; i < 100; i++) {
       await vi.advanceTimersByTimeAsync(1000);
     }
     vi.useRealTimers();
-
-    // Allow any queued microtasks to settle.
     await new Promise(r => setTimeout(r, 50));
 
     const row = db.prepare('SELECT compaction_status FROM memories WHERE id = ?').get(id) as { compaction_status: string };
     expect(row.compaction_status).toBe('permanently_skipped');
     expect(getPermanentlySkippedCount(cortex)).toBe(1);
   }, 15000);
+
+  it('PermanentCompactionFailure thrown by pipeline → compaction_status = permanently_skipped (no retries)', async () => {
+    const { CompactionQueue, PermanentCompactionFailure, getPermanentlySkippedCount } =
+      await import('../../../src/daemon/compaction/queue.js');
+    const { getCortexDb } = await import('../../../src/db/engrams.js');
+
+    const cortex = 'content-fault-test';
+    const id = 'content-fault-id-1';
+    const ts = new Date().toISOString();
+    const db = getCortexDb(cortex);
+    db.prepare(`
+      INSERT OR IGNORE INTO memories
+        (id, ts, author, content, source_ids, created_at, deleted_at,
+         sync_version, origin_peer_id)
+      VALUES (?, ?, 'tester', 'content-fault content', '[]', ?, NULL, 1, 'peer')
+    `).run(id, ts, ts);
+
+    let callCount = 0;
+    const queue = new CompactionQueue();
+    queue._setPipelineForTest(async () => {
+      callCount++;
+      throw new PermanentCompactionFailure('response_invalid');
+    });
+    queue.enqueue(id, cortex);
+    queue.start();
+
+    const deadline = Date.now() + 5000;
+    while (queue.getDepth(cortex) > 0 && Date.now() < deadline) {
+      await new Promise(r => setTimeout(r, 50));
+    }
+
+    const row = db.prepare('SELECT compaction_status FROM memories WHERE id = ?').get(id) as { compaction_status: string };
+    expect(row.compaction_status).toBe('permanently_skipped');
+    expect(getPermanentlySkippedCount(cortex)).toBe(1);
+    // Critical: PermanentCompactionFailure must not consume retry budget.
+    expect(callCount).toBe(1);
+  });
 
   it('successful pipeline → compaction_status = completed', async () => {
     const { CompactionQueue } = await import('../../../src/daemon/compaction/queue.js');

@@ -19,16 +19,19 @@
  *         entries:                        number,
  *         last_sync_pull:                 string | null,
  *         last_sync_push:                 string | null,
- *         compaction_queue_depth:         number,   // always 0 until AGT-301 lands
- *         compaction_permanently_skipped: number,   // AGT-302
- *         supersession_queue_depth:       number,   // always 0 until AGT-305 lands
+ *         compaction_queue_depth:         number,
+ *         compaction_permanently_skipped: number,
+ *         supersession_queue_depth:       number,
  *         warnings:                       string[],
  *       }
  *     }
  *   }
  *
- * Queue depths are load-bearing placeholders that will be wired to in-memory
- * queue workers when AGT-301 (compaction) and AGT-305 (supersession) land.
+ * `compaction_queue_depth` reflects the live in-memory compaction worker
+ * (AGT-301). `compaction_permanently_skipped` counts L2 rows where the worker
+ * exhausted retries or hit a content fault (AGT-302). `supersession_queue_depth`
+ * is a forward-compatible placeholder for a future supersession worker — it
+ * currently always returns 0.
  */
 
 import { readPackageVersion } from '../lib/version.js';
@@ -36,6 +39,7 @@ import { getConfig } from '../lib/config.js';
 import { EMBEDDING_MODEL_NAME } from '../lib/embed.js';
 import { getMemoryCount, getSyncCursor } from '../db/memory-queries.js';
 import { sanitizeName } from '../lib/paths.js';
+import { sanitizeForLog } from '../lib/sanitize.js';
 import { compactionQueue, getPermanentlySkippedCount } from './compaction/queue.js';
 
 // ---------------------------------------------------------------------------
@@ -55,20 +59,21 @@ export interface CortexStatusEntry {
   last_sync_push: string | null;
   /**
    * Number of compaction jobs queued or in-flight for this cortex.
-   * The queue runs in DRY_RUN mode (no LLM calls, no writes) until
-   * AGT-301 ships. depth=0 means the queue is idle; depth>0 means jobs
-   * are pending processing.
+   * depth=0 means the queue is idle; depth>0 means jobs are pending or
+   * being processed.
    */
   compaction_queue_depth: number;
   /**
    * Number of entries whose compaction has permanently failed (AGT-302).
-   * These entries stay raw and are excluded from daemon-startup backfill
-   * on restart. There is currently no automatic recovery path — entries
-   * remain skipped until explicitly re-queued via `think compaction retry`
-   * (a future command; not yet implemented as of AGT-302).
+   * These entries stay raw and are excluded from daemon-startup backfill on
+   * restart. There is currently no automatic recovery path — operator action
+   * is required to revisit them.
    */
   compaction_permanently_skipped: number;
-  /** Always 0 until AGT-305 (supersession worker) lands. */
+  /**
+   * Placeholder for a future supersession-worker queue depth. Currently
+   * always 0; reserved so consumers can rely on the field's presence.
+   */
   supersession_queue_depth: number;
   warnings: string[];
 }
@@ -109,9 +114,11 @@ function getCortexStatus(cortexName: string): CortexStatusEntry {
 
   const compaction_permanently_skipped = getPermanentlySkippedCount(cortexName);
   if (compaction_permanently_skipped > 0) {
+    const safeCortex = sanitizeForLog(cortexName);
+    const noun = compaction_permanently_skipped === 1 ? 'entry' : 'entries';
     warnings.push(
-      `${compaction_permanently_skipped} ${compaction_permanently_skipped === 1 ? 'entry' : 'entries'} permanently skipped for compaction in cortex ${cortexName}` +
-      ` — entries will remain raw until a future 'think compaction retry' command is available`,
+      `${compaction_permanently_skipped} ${noun} permanently skipped for compaction in cortex ${safeCortex}` +
+      ` — no automatic recovery path is currently available`,
     );
   }
 
