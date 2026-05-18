@@ -1,46 +1,43 @@
 /**
  * think_expand MCP tool — AGT-316
  *
- * Wraps the daemon expand RPC for agent use via MCP.
- * Description: Drill into the raw provenance of a compacted entry, or see the compactions that fold a given raw entry.
+ * Wraps the daemon expand RPC for agent use via MCP. Returns a markdown-formatted
+ * bundle of primary + raws + compactions, or isError: true on failure.
  */
 
 import type { ThinkToolEntry } from '../server.js';
 import { getConfig } from '../../lib/config.js';
 import type { ExpandResult } from '../../daemon/expand.js';
 
-const EXPAND_TOOL_DESCRIPTION =
-  "Drill into the raw provenance of a compacted entry, or see the compactions that fold a given raw entry.";
-
 function formatExpandResult(r: ExpandResult): string {
   const lines: string[] = [];
   const p = r.primary;
-  lines.push("## Entry " + p.id);
-  lines.push("- kind: " + (p.kind ?? "memory"));
-  lines.push("- cortex: " + p.cortex);
-  lines.push("- ts: " + p.ts);
-  lines.push("- author: " + p.author);
-  if (p.deleted_at) lines.push("- deleted_at: " + p.deleted_at);
+  lines.push(`## Entry ${p.id}`);
+  lines.push(`- kind: ${p.kind ?? 'memory'}`);
+  lines.push(`- cortex: ${p.cortex}`);
+  lines.push(`- ts: ${p.ts}`);
+  lines.push(`- author: ${p.author}`);
+  if (p.deleted_at) lines.push(`- deleted_at: ${p.deleted_at}`);
   lines.push('');
   lines.push("**Content:**");
   lines.push(p.content);
   if (r.raws.length > 0) {
     lines.push('');
-    lines.push("## Raw entries (" + r.raws.length + ") compacted into primary");
+    lines.push(`## Raw entries (${r.raws.length}) compacted into primary`);
     for (const raw of r.raws) {
-      lines.push("### " + raw.id);
-      lines.push("- ts: " + raw.ts);
-      if (raw.deleted_at) lines.push("- deleted_at: " + raw.deleted_at);
+      lines.push(`### ${raw.id}`);
+      lines.push(`- ts: ${raw.ts}`);
+      if (raw.deleted_at) lines.push(`- deleted_at: ${raw.deleted_at}`);
       lines.push(raw.content);
     }
   }
   if (r.compactions.length > 0) {
     lines.push('');
-    lines.push("## Compactions (" + r.compactions.length + ") that fold this entry");
+    lines.push(`## Compactions (${r.compactions.length}) that fold this entry`);
     for (const c of r.compactions) {
-      lines.push("### " + c.id);
-      lines.push("- ts: " + c.ts);
-      if (c.deleted_at) lines.push("- deleted_at: " + c.deleted_at);
+      lines.push(`### ${c.id}`);
+      lines.push(`- ts: ${c.ts}`);
+      if (c.deleted_at) lines.push(`- deleted_at: ${c.deleted_at}`);
       lines.push(c.content);
     }
   }
@@ -54,7 +51,7 @@ function formatExpandResult(r: ExpandResult): string {
 export const thinkExpandTool: ThinkToolEntry = {
   tool: {
     name: 'think_expand',
-    description: EXPAND_TOOL_DESCRIPTION,
+    description: "think stores knowledge by compacting many raw observations into summaries. Call this tool with an entry's ID to see either (a) the original raw entries that were folded into a compacted summary, or (b) which summary compactions absorbed a given raw entry. Useful for tracing the provenance of a memory.",
     inputSchema: {
       type: 'object',
       properties: {
@@ -88,7 +85,7 @@ export const thinkExpandTool: ThinkToolEntry = {
       result = await client.call('expand', { cortex, entry_id: entryId.trim() });
     } catch (err) {
       return {
-        content: [{ type: "text" as const, text: "think_expand: daemon error — " + (err instanceof Error ? err.message : String(err)) }],
+        content: [{ type: 'text' as const, text: `think_expand: daemon error — ${err instanceof Error ? err.message : String(err)}` }],
         isError: true,
       };
     }

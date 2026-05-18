@@ -12,13 +12,12 @@
 import type { ThinkToolEntry } from '../server.js';
 import { getConfig } from '../../lib/config.js';
 
-const SYNC_TOOL_DESCRIPTION =
-  "Record a new entry in the user's think knowledge base. Use kind='memory' for ongoing work observations, 'retro' for durable lessons about a codebase, 'event' for notable things-that-happened.";
+const VALID_KINDS = new Set(['memory', 'retro', 'event']);
 
 export const thinkSyncTool: ThinkToolEntry = {
   tool: {
     name: 'think_sync',
-    description: SYNC_TOOL_DESCRIPTION,
+    description: "Record a new entry in the user's think knowledge base. Use kind='memory' for ongoing work observations, 'retro' for durable lessons about a codebase, 'event' for notable things-that-happened.",
     inputSchema: {
       type: 'object',
       properties: {
@@ -26,6 +25,7 @@ export const thinkSyncTool: ThinkToolEntry = {
         kind: {
           type: 'string',
           enum: ['memory', 'retro', 'event'],
+          default: 'memory',
           description: "Entry kind. Default: 'memory'.",
         },
         topics: {
@@ -61,9 +61,16 @@ export const thinkSyncTool: ThinkToolEntry = {
     }
 
     const kind = typeof params['kind'] === 'string' ? params['kind'] : 'memory';
+    if (!VALID_KINDS.has(kind)) {
+      return {
+        content: [{ type: 'text' as const, text: `think_sync: invalid kind "${kind}"; must be memory | retro | event` }],
+        isError: true,
+      };
+    }
+
     const rpcParams: Record<string, unknown> = { cortex, content, kind };
     if (Array.isArray(params['topics'])) {
-      rpcParams['topics'] = params['topics'];
+      rpcParams['topics'] = (params['topics'] as unknown[]).filter((t): t is string => typeof t === 'string');
     }
 
     let result: unknown;
@@ -76,7 +83,7 @@ export const thinkSyncTool: ThinkToolEntry = {
       };
     }
 
-    const r = result as { entry_id?: string; status?: string };
+    const r = result as { entry_id?: string };
     const entryId = typeof r?.entry_id === 'string' ? r.entry_id : 'unknown';
     const abbrev = entryId.slice(0, 7);
     return { content: [{ type: 'text' as const, text: `✓ stored ${kind} ${abbrev}` }] };
