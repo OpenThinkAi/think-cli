@@ -41,6 +41,7 @@ import { compactionQueue, scanAndEnqueueUncompacted } from './compaction/queue.j
 import { backfillActivitySeqIfNeeded } from '../db/activity-seq.js';
 import { runEmbedModelChecks } from './embed-model-check.js';
 import { startProxySubscribe } from './proxy-subscribe.js';
+import { startPullLoop, notifyCliCall } from './pull-loop.js';
 
 // ---------------------------------------------------------------------------
 // Paths
@@ -399,16 +400,39 @@ export async function runDaemon(options: DaemonOptions): Promise<void> {
   }
 
   // ---------------------------------------------------------------------------
+  // Pull loop — active/idle git-fetch polling per cortex (AGT-310)
+  //
+  // Start a per-cortex background poll loop alongside the push-debouncer and
+  // compaction queue. The loop runs forever until `pullLoopHandle.stop()` is
+  // called in shutdown.
+  // ---------------------------------------------------------------------------
+
+  let pullLoopHandle: { stop(): void } | null = null;
+
+  if (activeCortex) {
+    try {
+      pullLoopHandle = startPullLoop(activeCortex, writeLine);
+      writeLine(`[pull-loop:${activeCortex}] started`);
+    } catch (pullErr: unknown) {
+      const msg = pullErr instanceof Error ? pullErr.message : String(pullErr);
+      writeLine(`WARN: could not start pull loop for cortex '${activeCortex}': ${msg}`);
+    }
+  }
+
+  // ---------------------------------------------------------------------------
   // Proxy-subscribe WS client (AGT-311)
   //
   // If config.proxy.url is set, connect to the proxy and listen for push
-  // notifications. On push, call triggerImmediatePull once AGT-310 exports it;
-  // for now the callback is a no-op (polling-only fallback is unaffected).
+  // notifications. The callback is a no-op for now; a follow-up will wire it
+  // to trigger an immediate pull on the matching cortex (AGT-310 path).
   // Falls back silently to polling if the proxy is unreachable.
   // ---------------------------------------------------------------------------
 
   const proxySubscribeHandle = startProxySubscribe((_cortex, _commitSha) => {
-    // TODO: AGT-310 export pending — wire triggerImmediatePull(cortex) here.
+    // TODO: call triggerImmediatePull(cortex) here once AGT-311 passes the
+    // cortex name through to the callback (the exported pull-loop function
+    // exists; AGT-311's WS subscriber currently invokes the callback with
+    // placeholder args).
   });
 
   // ---------------------------------------------------------------------------
@@ -436,6 +460,10 @@ export async function runDaemon(options: DaemonOptions): Promise<void> {
 
     writeLine(`shutting down (reason=${reason}, inFlightRequests=${inFlight})`);
 
+    // Stop background loops so they don't issue network calls during drain.
+    if (pullLoopHandle !== null) {
+      pullLoopHandle.stop();
+    }
     // Stop proxy-subscribe WS client (no-op if proxy not configured).
     proxySubscribeHandle.stop();
 
@@ -509,6 +537,15 @@ export async function runDaemon(options: DaemonOptions): Promise<void> {
     // without closing the connection.
     (async () => {
       for await (const request of parseLineFraming(socket)) {
+        // Notify the pull loop that CLI activity occurred so it switches to
+        // active-mode polling (AGT-310). The cortex is not known at this
+        // layer, but notifyCliCall with the active cortex is sufficient for
+        // the common single-cortex case. Handlers that know the cortex
+        // (e.g. sync) may call notifyCliCall directly with the specific name.
+        if (activeCortex) {
+          notifyCliCall(activeCortex);
+        }
+
         // Track in-flight count around each dispatch (AGT-283 drain).
         inFlight += 1;
         dispatchRequest(socket, request, daemonMethods).catch(() => {
