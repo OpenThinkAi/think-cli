@@ -49,8 +49,7 @@ export interface ThinkToolEntry {
  * Registered think tools. Populated by downstream tickets; empty for AGT-314.
  * Exported so tests and future ticket modules can inspect or extend the table.
  */
-export const registeredTools: ThinkToolEntry[] = [];
-registeredTools.push(thinkSyncTool, thinkExpandTool); // AGT-316
+export const registeredTools: ThinkToolEntry[] = [thinkSyncTool, thinkExpandTool]; // AGT-316
 
 // ---------------------------------------------------------------------------
 // Server factory

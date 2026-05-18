@@ -80,17 +80,15 @@ export const thinkExpandTool: ThinkToolEntry = {
       };
     }
 
-    let result: unknown;
     try {
-      result = await client.call('expand', { cortex, entry_id: entryId.trim() });
+      const result = await client.call('expand', { cortex, entry_id: entryId.trim() });
+      const bundle = result as ExpandResult;
+      return { content: [{ type: 'text' as const, text: formatExpandResult(bundle) }] };
     } catch (err) {
       return {
         content: [{ type: 'text' as const, text: `think_expand: daemon error — ${err instanceof Error ? err.message : String(err)}` }],
         isError: true,
       };
     }
-
-    const bundle = result as ExpandResult;
-    return { content: [{ type: 'text' as const, text: formatExpandResult(bundle) }] };
   },
 };
