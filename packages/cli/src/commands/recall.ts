@@ -254,7 +254,7 @@ export const recallCommand = new Command('recall')
     'Federation scope: active = single cortex; accessible = all your cortexes (default); all = future remote peers',
     'accessible',
   )
-  .action((query: string, opts: { engrams?: boolean; all?: boolean; days: string; limit: string; full?: boolean; includeSuperseded?: boolean; scope: string }) => {
+  .action(function (this: Command, query: string, opts: { engrams?: boolean; all?: boolean; days: string; limit: string; full?: boolean; includeSuperseded?: boolean; scope: string }) {
     const config = getConfig();
     const cortex = config.cortex?.active;
 
@@ -303,10 +303,11 @@ export const recallCommand = new Command('recall')
       console.warn(chalk.yellow(`Note: ${flag} requires the daemon (vector recall); the FTS fallback does not apply supersession or compaction filters.`));
     }
 
-    // AGT-308: Warn when --scope is non-default in FTS (degraded) mode — the
-    // flag has no effect until the daemon path is wired (AGT-289). This mirrors
-    // the existing warning for --full / --include-superseded.
-    if (scope !== 'active') {
+    // AGT-308: Warn when --scope was explicitly provided in FTS (degraded) mode
+    // and has no effect until the daemon path is wired (AGT-289). Check the
+    // Commander value source so we do NOT warn when the user ran plain
+    // `think recall` without passing --scope (the default 'accessible' is silent).
+    if (this.getOptionValueSource('scope') === 'cli') {
       const scopeNote = scope === 'all'
         ? '--scope all is ALPHA and not yet active; behaves like accessible once the daemon path is wired'
         : `--scope ${scope} requires the daemon (vector recall); the FTS fallback queries the active cortex only`;
