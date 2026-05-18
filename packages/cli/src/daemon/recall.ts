@@ -46,7 +46,7 @@ import { getCortexDb } from '../db/engrams.js';
 import { searchVectors } from '../lib/search-vectors.js';
 import { getConfig } from '../lib/config.js';
 import { listLocalBranches } from '../lib/git.js';
-import { reindexingCortexes } from './embed-model-check.js';
+import { reindexingCortexes, reindexFailedCortexes } from './embed-model-check.js';
 
 // How many extra candidates to fetch from sqlite-vec before JS rerank.
 // 5× ensures the reranked window is wide enough that a very recent entry
@@ -353,7 +353,20 @@ async function recallOneCortexWithVec(
   // per-cortex; there is no global lock.
   if (reindexingCortexes.has(cortexName)) {
     throw new Error(
-      `cortex "${cortexName}" is currently being reindexed due to an embedding model version change — this may take several seconds; retry shortly or check the daemon log for progress`
+      `cortex "${cortexName}" is currently being reindexed due to an embedding model version change — this may take a moment (up to several minutes for large cortexes); retry shortly or check the daemon log for progress`
+    );
+  }
+
+  // Per-cortex stale-vector warning (AGT-277).
+  // If the last model-mismatch reindex for this cortex failed, results may
+  // reflect an older embedding model. We do not block recall — stale results
+  // are better than no results — but we surface the degraded quality via a
+  // thrown warning. The error is intentionally the same throw path as the
+  // busy check; callers should treat it as a recoverable warning, not a hard
+  // failure (e.g., display the message to the user and proceed with recall).
+  if (reindexFailedCortexes.has(cortexName)) {
+    throw new Error(
+      `cortex "${cortexName}" recall may be degraded: the last embedding model reindex failed — results may reflect an older model. Check the daemon log for details.`
     );
   }
 

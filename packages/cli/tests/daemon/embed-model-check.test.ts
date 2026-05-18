@@ -39,7 +39,7 @@ vi.mock('../../src/lib/git.js', () => ({
 
 import * as gitLib from '../../src/lib/git.js';
 import { EMBEDDING_MODEL_NAME } from '../../src/lib/embed.js';
-import { runEmbedModelChecks, reindexingCortexes } from '../../src/daemon/embed-model-check.js';
+import { runEmbedModelChecks, reindexingCortexes, reindexFailedCortexes } from '../../src/daemon/embed-model-check.js';
 
 // ─── test-fixture helpers ─────────────────────────────────────────────────────
 
@@ -110,13 +110,15 @@ describe('runEmbedModelChecks (AGT-277)', () => {
     vi.mocked(gitLib.fetchBranch).mockReturnValue(undefined);
     vi.mocked(gitLib.listBranchFiles).mockReturnValue([]);
     vi.mocked(gitLib.readFileFromBranch).mockReturnValue(null);
-    // Ensure the busy set is clean before each test.
+    // Ensure the state sets are clean before each test.
     reindexingCortexes.clear();
+    reindexFailedCortexes.clear();
   });
 
   afterEach(() => {
     closeAllCortexDbs();
     reindexingCortexes.clear();
+    reindexFailedCortexes.clear();
     if (originalHome === undefined) delete process.env.THINK_HOME;
     else process.env.THINK_HOME = originalHome;
     rmSync(tmpHome, { recursive: true, force: true });
@@ -184,7 +186,7 @@ describe('runEmbedModelChecks (AGT-277)', () => {
     expect(reindexingCortexes.has(cortex)).toBe(false);
   });
 
-  it('clears busy flag even when reindex throws', async () => {
+  it('clears busy flag and sets failed flag when reindex throws', async () => {
     const cortex = 'reindex-fail';
     getCortexDb(cortex);
     seedRowWithModel(cortex, 'old-model');
@@ -196,7 +198,30 @@ describe('runEmbedModelChecks (AGT-277)', () => {
     await runEmbedModelChecks([cortex], writeLine);
 
     expect(reindexingCortexes.has(cortex)).toBe(false);
+    expect(reindexFailedCortexes.has(cortex)).toBe(true);
     expect(logs.some(l => l.includes('reindex failed'))).toBe(true);
+    expect(logs.some(l => l.includes('may reflect an older embedding model'))).toBe(true);
+  });
+
+  it('clears failed flag when reindex succeeds after a prior failure', async () => {
+    const cortex = 'reindex-recover';
+    getCortexDb(cortex);
+    seedRowWithModel(cortex, 'old-model');
+    // First run: fail
+    vi.mocked(gitLib.fetchBranch).mockImplementationOnce(() => {
+      throw new Error('git fetch failed');
+    });
+    await runEmbedModelChecks([cortex], writeLine);
+    expect(reindexFailedCortexes.has(cortex)).toBe(true);
+
+    // Second run: succeed (model now matches after reindex)
+    // Re-seed with old model so the mismatch is detected again
+    seedRowWithModel(cortex, 'old-model');
+    vi.mocked(gitLib.fetchBranch).mockReturnValue(undefined);
+    mockL1Pages([makeL1Line('2025-01-01T00:00:00Z', 'alice', 'test content')]);
+    logs.length = 0;
+    await runEmbedModelChecks([cortex], writeLine);
+    expect(reindexFailedCortexes.has(cortex)).toBe(false);
   });
 
   it('skips cortex gracefully when sampleEmbeddingModel throws', async () => {
@@ -288,12 +313,14 @@ describe('recall returns transient error when cortex is reindexing (AGT-277)', (
     process.env.THINK_HOME = tmpHome;
     closeAllCortexDbs();
     reindexingCortexes.clear();
+    reindexFailedCortexes.clear();
     vi.clearAllMocks();
   });
 
   afterEach(() => {
     closeAllCortexDbs();
     reindexingCortexes.clear();
+    reindexFailedCortexes.clear();
     if (originalHome === undefined) delete process.env.THINK_HOME;
     else process.env.THINK_HOME = originalHome;
     rmSync(tmpHome, { recursive: true, force: true });
@@ -335,7 +362,7 @@ describe('recall returns transient error when cortex is reindexing (AGT-277)', (
     reindexingCortexes.delete(busyCortex);
   });
 
-  it('busy error message mentions retry and daemon log', async () => {
+  it('busy error message mentions "up to several minutes" and daemon log', async () => {
     const { handleRecall } = await import('../../src/daemon/recall.js');
     const cortex = 'msg-check';
     getCortexDb(cortex);
@@ -343,8 +370,32 @@ describe('recall returns transient error when cortex is reindexing (AGT-277)', (
 
     await expect(
       handleRecall({ cortex, query: 'test', scope: 'active' })
-    ).rejects.toThrow(/retry shortly|daemon log/);
+    ).rejects.toThrow(/several minutes|retry shortly|daemon log/);
 
     reindexingCortexes.delete(cortex);
+  });
+
+  it('recall throws a degraded warning when the last reindex for that cortex failed', async () => {
+    const { handleRecall } = await import('../../src/daemon/recall.js');
+    const cortex = 'failed-reindex-cortex';
+    getCortexDb(cortex);
+
+    reindexFailedCortexes.add(cortex);
+
+    await expect(
+      handleRecall({ cortex, query: 'test', scope: 'active' })
+    ).rejects.toThrow(/degraded|older model/);
+
+    reindexFailedCortexes.delete(cortex);
+  });
+
+  it('recall succeeds normally when cortex is neither busy nor failed', async () => {
+    const { handleRecall } = await import('../../src/daemon/recall.js');
+    const cortex = 'normal-cortex';
+    getCortexDb(cortex);
+
+    // Neither set contains this cortex
+    const result = await handleRecall({ cortex, query: 'hello', scope: 'active' });
+    expect(Array.isArray(result)).toBe(true);
   });
 });

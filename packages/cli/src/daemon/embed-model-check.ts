@@ -11,6 +11,10 @@
  *   4. While a cortex is reindexing, the recall endpoint must return a transient
  *      busy error for that cortex. Other cortexes continue serving normally.
  *      Per-cortex isolation is the design; there is no global lock.
+ *   5. If a reindex fails, the cortex is added to `reindexFailedCortexes`.
+ *      Subsequent recalls for that cortex include a warning that results may
+ *      reflect an older embedding model. The busy flag is always cleared so
+ *      recall is not permanently blocked.
  *
  * Race-condition semantics:
  *   - `reindexingCortexes` is checked synchronously in the recall handler before
@@ -37,7 +41,7 @@ import { getCortexDb, closeCortexDb } from '../db/engrams.js';
 import { reindexOneCortex } from '../commands/reindex.js';
 
 // ---------------------------------------------------------------------------
-// Per-cortex busy state
+// Per-cortex state
 // ---------------------------------------------------------------------------
 
 /**
@@ -52,6 +56,17 @@ import { reindexOneCortex } from '../commands/reindex.js';
  * `finally` block should add/delete entries. Test setup may call `.clear()`.
  */
 export const reindexingCortexes: Set<string> = new Set();
+
+/**
+ * Set of cortex names whose last model-mismatch reindex failed.
+ *
+ * When a cortex is in this set, subsequent recalls include a warning that
+ * results may reflect an older embedding model. The recall is not blocked —
+ * stale results are better than no results. Populated by `runEmbedModelChecks`
+ * on reindex failure; cleared if a later reindex succeeds. Test setup may
+ * call `.clear()`.
+ */
+export const reindexFailedCortexes: Set<string> = new Set();
 
 // ---------------------------------------------------------------------------
 // Log-injection sanitizer
@@ -123,6 +138,8 @@ export async function runEmbedModelChecks(
 
     if (storedModel !== null && storedModel === EMBEDDING_MODEL_NAME) {
       writeLine(`embed-model-check: cortex "${safeCortex}" is up to date (model=${sanitizeForLog(EMBEDDING_MODEL_NAME)})`);
+      // Clear any stale failure flag from a prior daemon run.
+      reindexFailedCortexes.delete(cortexName);
       continue;
     }
 
@@ -141,11 +158,14 @@ export async function runEmbedModelChecks(
     // while the reindex is in progress.
     reindexingCortexes.add(cortexName);
 
+    let reindexSucceeded = false;
+
     // Run the reindex for this cortex. We await each one serially to avoid
     // concurrent SQLite writes to the same DB. Per-cortex isolation means
     // other cortexes continue serving recall while this one reindexes.
     try {
       const result = await reindexOneCortex(cortexName, /* force= */ true);
+      reindexSucceeded = true;
       const secs = (result.durationMs / 1000).toFixed(1);
       const rate = result.durationMs > 0
         ? Math.round(((result.total - result.failures) / result.durationMs) * 1000)
@@ -162,12 +182,19 @@ export async function runEmbedModelChecks(
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       writeLine(`embed-model-check: reindex failed for cortex "${safeCortex}": ${msg}`);
+      writeLine(`embed-model-check: recall will continue for cortex "${safeCortex}" but results may reflect an older embedding model`);
     } finally {
       // Always clear the busy flag, even on failure, so the cortex is queryable
-      // again (even if its embeddings are stale). Better to serve stale vectors
-      // than to permanently block recall.
+      // again. Better to serve stale vectors than to permanently block recall.
       reindexingCortexes.delete(cortexName);
       closeCortexDb(cortexName);
+      // Track failure state so the recall handler can surface a data quality
+      // warning when the last reindex for this cortex failed.
+      if (reindexSucceeded) {
+        reindexFailedCortexes.delete(cortexName);
+      } else {
+        reindexFailedCortexes.add(cortexName);
+      }
     }
   }
 }
