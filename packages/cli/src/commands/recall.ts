@@ -269,6 +269,14 @@ export const recallCommand = new Command('recall')
     // AGT-307 / AGT-319 JSON invariant: when --json lands, always include
     // `cortex` per entry in the serialised output — the field is load-bearing
     // for agent consumers and must never be omitted from machine-readable output.
+
+    // AGT-305: Warn when supersession/compaction filter flags are passed in
+    // FTS (degraded) mode — they have no effect until the daemon path is wired.
+    if (opts.full || opts.includeSuperseded) {
+      const flag = opts.full ? '--full' : '--include-superseded';
+      console.warn(chalk.yellow(`Note: ${flag} requires the daemon (vector recall); the FTS fallback does not apply supersession or compaction filters.`));
+    }
+
     runFtsRecall(cortex, query, { engrams: opts.engrams, limit });
     closeCortexDb(cortex);
   });

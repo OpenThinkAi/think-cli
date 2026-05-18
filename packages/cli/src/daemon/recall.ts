@@ -472,9 +472,8 @@ async function recallOneCortexWithVec(
   // so the caller sees the compacted (summarised) version instead.
   // This filter is ONLY applied to kind=memory — retros and events are never
   // compacted, so hiding them via compaction_links would be incorrect.
-  // The subquery uses a LEFT JOIN form rather than NOT IN to stay
-  // SQLite-friendly on tables with many rows (avoids the NOT IN subquery
-  // materialisation issue).
+  // Uses NOT IN subquery — acceptable because compaction_links stays small
+  // relative to the `memories` table (one row per compaction, not per entry).
   if (!full && hasCompactionLinks) {
     // When kind is explicitly filtered to memory, OR when no kind filter is
     // set (mixed results may include memories), apply the compaction filter
