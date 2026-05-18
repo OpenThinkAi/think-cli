@@ -1,7 +1,7 @@
 import { Command } from 'commander';
 import chalk from 'chalk';
 import { getConfig, saveConfig } from '../lib/config.js';
-import { isValidProxyUrl } from '../daemon/proxy-subscribe.js';
+import { isValidProxyUrl } from '../lib/proxy-url.js';
 
 const ALLOWED_KEYS = new Set([
   'cortex.curateEveryN',

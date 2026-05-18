@@ -25,6 +25,8 @@
  */
 
 import { getConfig } from '../lib/config.js';
+import { isValidProxyUrl, redactUrl } from '../lib/proxy-url.js';
+export { isValidProxyUrl, redactUrl };
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -69,42 +71,6 @@ function stripNewlines(s: string): string {
   return s.replace(/[\r\n]/g, ' ');
 }
 
-/**
- * Return a log-safe representation of a WS URL with any embedded
- * username/password replaced by '***'. Prevents credential leakage when
- * users set `ws://token:x@host/` style URLs.
- */
-export function redactUrl(raw: string): string {
-  try {
-    const u = new URL(raw);
-    if (u.username || u.password) {
-      u.username = '***';
-      u.password = '***';
-    }
-    return u.toString();
-  } catch {
-    return '(invalid url)';
-  }
-}
-
-// ---------------------------------------------------------------------------
-// URL validation
-// ---------------------------------------------------------------------------
-
-/**
- * Returns true when `url` is a valid ws:// or wss:// URL.
- * Rejects anything else (http://, ftp://, URL with fragments, etc.).
- */
-export function isValidProxyUrl(url: string): boolean {
-  let parsed: URL;
-  try {
-    parsed = new URL(url);
-  } catch {
-    return false;
-  }
-  return parsed.protocol === 'ws:' || parsed.protocol === 'wss:';
-}
-
 // ---------------------------------------------------------------------------
 // startProxySubscribe
 // ---------------------------------------------------------------------------
@@ -112,10 +78,11 @@ export function isValidProxyUrl(url: string): boolean {
 /**
  * Starts the proxy-subscribe WS client.
  *
- * If `config.proxy.url` is not set (or blank), returns immediately with a
- * no-op handle (polling-only fallback).
- * If the URL is invalid or the connection fails from startup, logs a WARN
- * and returns a polling-only fallback (no-op handle).
+ * If `config.proxy.url` is not set (or blank) or has an invalid scheme,
+ * returns immediately with a no-op handle (polling-only fallback).
+ * If the connection fails from startup, logs a WARN and retries with
+ * exponential backoff (not a no-op — the returned handle is the live retry
+ * handle and should be passed to shutdown's stop() call).
  *
  * Note: `getConfig()` is called once at invocation time. Changes to
  * `proxy.url` in the config file require a daemon restart to take effect.
