@@ -83,9 +83,14 @@ export const thinkSyncTool: ThinkToolEntry = {
       };
     }
 
-    const r = result as { entry_id?: string };
-    const entryId = typeof r?.entry_id === 'string' ? r.entry_id : 'unknown';
-    const abbrev = entryId.slice(0, 7);
+    const r = result as { entry_id: string };
+    if (typeof r?.entry_id !== 'string') {
+      return {
+        content: [{ type: 'text' as const, text: 'think_sync: daemon returned no entry_id — sync may not have persisted' }],
+        isError: true,
+      };
+    }
+    const abbrev = r.entry_id.slice(0, 7);
     return { content: [{ type: 'text' as const, text: `✓ stored ${kind} ${abbrev}` }] };
   },
 };

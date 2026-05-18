@@ -4,9 +4,10 @@
  * Uses InMemoryTransport + mocked daemon-client so no real daemon or stdio is needed.
  */
 
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import type { Server } from "@modelcontextprotocol/sdk/server/index.js";
 
 // ---------------------------------------------------------------------------
 // Mock daemon-client
@@ -34,10 +35,20 @@ vi.mock("../../src/lib/config.js", () => ({
 }));
 
 // ---------------------------------------------------------------------------
-// Helpers
+// Per-test client/server pair with afterEach teardown
 // ---------------------------------------------------------------------------
 
-async function makeClient() {
+let currentClient: Client | undefined;
+let currentServer: Server | undefined;
+
+afterEach(async () => {
+  await currentClient?.close().catch(() => { /* best-effort */ });
+  await currentServer?.close().catch(() => { /* best-effort */ });
+  currentClient = undefined;
+  currentServer = undefined;
+});
+
+async function makeClient(): Promise<{ server: Server; client: Client }> {
   // Reset registration table and re-add AGT-316 tools each test so tests are isolated.
   const { createMcpServer, registeredTools } = await import("../../src/mcp/server.js");
   registeredTools.length = 0;
@@ -50,6 +61,8 @@ async function makeClient() {
   await server.connect(serverTransport);
   const client = new Client({ name: "test", version: "0" }, { capabilities: {} });
   await client.connect(clientTransport);
+  currentClient = client;
+  currentServer = server;
   return { server, client };
 }
 
@@ -63,16 +76,15 @@ describe("think_sync tool (AGT-316)", () => {
   });
 
   it("appears in tools/list", async () => {
-    const { server, client } = await makeClient();
+    const { client } = await makeClient();
     const result = await client.listTools();
     const names = result.tools.map((t) => t.name);
     expect(names).toContain("think_sync");
-    await client.close(); await server.close();
   });
 
   it("routes to daemon sync RPC and returns stored kind abbrev-id", async () => {
     mockCall.mockResolvedValueOnce({ entry_id: "01abcdef1234567890", status: "stored" });
-    const { server, client } = await makeClient();
+    const { client } = await makeClient();
     const result = await client.callTool({
       name: "think_sync",
       arguments: { content: "working on AGT-316", kind: "memory" },
@@ -81,28 +93,25 @@ describe("think_sync tool (AGT-316)", () => {
     const content = result.content as Array<{ type: string; text: string }>;
     expect(content[0]?.text).toMatch(/✓ stored memory 01abcde/);
     expect(mockCall).toHaveBeenCalledWith("sync", expect.objectContaining({ content: "working on AGT-316", kind: "memory", cortex: "test-cortex" }));
-    await client.close(); await server.close();
   });
 
   it("passes topics to daemon when provided", async () => {
     mockCall.mockResolvedValueOnce({ entry_id: "aabbcc1234567890ab", status: "stored" });
-    const { server, client } = await makeClient();
+    const { client } = await makeClient();
     await client.callTool({
       name: "think_sync",
       arguments: { content: "retro on think-cli", kind: "retro", topics: ["think-cli", "mcp"] },
     });
     expect(mockCall).toHaveBeenCalledWith("sync", expect.objectContaining({ topics: ["think-cli", "mcp"] }));
-    await client.close(); await server.close();
   });
 
   it("returns isError:true when daemon throws", async () => {
     mockCall.mockRejectedValueOnce(new Error("daemon offline"));
-    const { server, client } = await makeClient();
+    const { client } = await makeClient();
     const result = await client.callTool({ name: "think_sync", arguments: { content: "hello" } });
     expect(result.isError).toBe(true);
     const content = result.content as Array<{ type: string; text: string }>;
     expect(content[0]?.text).toMatch(/daemon error/);
-    await client.close(); await server.close();
   });
 });
 
@@ -116,11 +125,10 @@ describe("think_expand tool (AGT-316)", () => {
   });
 
   it("appears in tools/list", async () => {
-    const { server, client } = await makeClient();
+    const { client } = await makeClient();
     const result = await client.listTools();
     const names = result.tools.map((t) => t.name);
     expect(names).toContain("think_expand");
-    await client.close(); await server.close();
   });
 
   it("routes to daemon expand RPC and returns markdown bundle", async () => {
@@ -130,7 +138,7 @@ describe("think_expand tool (AGT-316)", () => {
       compactions: [],
     };
     mockCall.mockResolvedValueOnce(expandResult);
-    const { server, client } = await makeClient();
+    const { client } = await makeClient();
     const result = await client.callTool({
       name: "think_expand",
       arguments: { entry_id: "entry-abc" },
@@ -141,14 +149,12 @@ describe("think_expand tool (AGT-316)", () => {
     expect(content[0]?.text).toMatch(/raw-1/);
     expect(content[0]?.text).toMatch(/Raw entries/);
     expect(mockCall).toHaveBeenCalledWith("expand", { cortex: "test-cortex", entry_id: "entry-abc" });
-    await client.close(); await server.close();
   });
 
   it("returns isError:true when daemon throws", async () => {
     mockCall.mockRejectedValueOnce(new Error("not_found"));
-    const { server, client } = await makeClient();
+    const { client } = await makeClient();
     const result = await client.callTool({ name: "think_expand", arguments: { entry_id: "missing-id" } });
     expect(result.isError).toBe(true);
-    await client.close(); await server.close();
   });
 });
