@@ -5,7 +5,13 @@ export default defineConfig({
   format: ['esm'],
   target: 'node22',
   platform: 'node',
-  external: ['@anthropic-ai/claude-agent-sdk'],
+  // `@huggingface/transformers` is `external` because tsup bundles it into a
+  // single chunk that strips the native `onnxruntime-node` backend bindings,
+  // producing a broken bundle that throws `listSupportedBackends is not a
+  // function` at runtime. Leaving it as a runtime import lets Node's resolver
+  // pick up the installed copy from node_modules with its native binary
+  // siblings intact. Same reason `@anthropic-ai/claude-agent-sdk` is external.
+  external: ['@anthropic-ai/claude-agent-sdk', '@huggingface/transformers'],
   banner: {
     js: '#!/usr/bin/env node --no-warnings=ExperimentalWarning',
   },
