@@ -32,14 +32,14 @@ export const briefCommand = new Command("brief")
   .option("--cortex <name>", "Repo cortex to read retros from (required)")
   .option(
     "--days <n>",
-    "[deprecated, ignored] Days filter (v2 back-compat; recency now comes from activity_seq)",
+    "[deprecated, ignored] Days filter (v2 back-compat; recency is now determined automatically)",
   )
   .option(
     "--limit <n>",
     "Max entries per section",
     String(DEFAULT_RECALL_LIMIT),
   )
-  .option("--no-sync", "No-op (back-compat; daemon handles pull automatically)")
+  .option("--no-sync", "Accepted for back-compat; no effect. The daemon manages sync; --no-sync no longer prevents daemon use.")
   .addHelpText('after', `
 Scope:
   Combines two sources into one task-start context dump:
@@ -48,7 +48,7 @@ Scope:
     2. Repo lessons — retros from the named repo cortex
        (durable wisdom for the target codebase).
 
-  --cortex is required. Deprecated: --days (now a no-op; recency from activity_seq).
+  --cortex is required.
 
   Agents: run at task start to inherit prior lessons for a codebase.
 
@@ -68,6 +68,7 @@ Examples:
 
     if (!targetCortex) {
       console.error(chalk.red("think brief: --cortex is required."));
+      console.error(chalk.red("Pass it as: think brief --cortex <name>  or  think -C <name> brief"));
       process.exitCode = 1;
       return;
     }
@@ -82,7 +83,7 @@ Examples:
     }
 
     if (this.getOptionValueSource("days") === "cli") {
-      console.log("note: --days is deprecated and ignored; recency is governed by activity_seq in the daemon.");
+      console.log("note: --days is ignored; recency is determined automatically by the daemon.");
     }
 
     const limit = parseInt(opts.limit, 10);
@@ -92,13 +93,19 @@ Examples:
     try {
       client = await connectDaemon();
     } catch (err) {
+      // Graceful degradation: warn but continue with empty sections rather than hard-exiting.
+      // think brief is a read-only orientation command; partial output is more useful than failure.
       if (err instanceof DaemonUnavailableError) {
-        console.error(chalk.red("think brief: daemon unavailable — " + err.message));
-        console.error(chalk.red("Check daemon log: " + err.logPath));
+        console.warn(chalk.yellow("note: daemon unavailable — " + err.message + ". Check daemon log: " + err.logPath));
+        console.warn(chalk.yellow("note: running in degraded mode (empty sections). Start the daemon for full results."));
       } else {
-        console.error(chalk.red("think brief: failed to connect to daemon — " + (err instanceof Error ? err.message : String(err))));
+        console.warn(chalk.yellow("note: daemon unavailable (" + (err instanceof Error ? err.message : String(err)) + "); running in degraded mode."));
       }
-      process.exitCode = 1;
+      console.log("── personal context ──");
+      console.log("note: no entries available (daemon offline)");
+      console.log();
+      console.log("── repo lessons [" + targetCortex + "] ──");
+      console.log("note: no retros available (daemon offline)");
       return;
     }
 
@@ -114,7 +121,7 @@ Examples:
 
       console.log("── personal context ──");
       if (personalEntries.length === 0) {
-        console.log("note: no entries found in personal cortex " + JSON.stringify(activeCortex));
+        console.log(`note: no entries found in personal cortex ${activeCortex}`);
       } else {
         const personalCortexes = cortexSet(personalEntries);
         personalCortexes.add(activeCortex);
@@ -135,7 +142,7 @@ Examples:
 
       console.log("── repo lessons [" + targetCortex + "] ──");
       if (repoEntries.length === 0) {
-        console.log("note: no retros found for cortex " + JSON.stringify(targetCortex));
+        console.log(`note: no retros found for cortex ${targetCortex}`);
       } else {
         const repoCortexes = cortexSet(repoEntries);
         repoCortexes.add(targetCortex);

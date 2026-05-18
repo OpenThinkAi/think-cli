@@ -79,14 +79,20 @@ describe('think brief command — v3 daemon-based (AGT-322)', () => {
     expect(process.exitCode).toBe(1);
   });
 
-  it('exits non-zero when daemon is unavailable (AC #6)', async () => {
+  it('degrades gracefully when daemon unavailable (AC #6): warns + renders empty sections, exits 0', async () => {
     vi.spyOn(daemonClientModule, 'connectDaemon').mockRejectedValue(
       new DaemonUnavailableError('daemon failed to start', '/tmp/test-daemon.log'),
     );
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
     await makeProgram().parseAsync(['node', 'think', 'brief', '--cortex', targetCortex]);
-    expect(process.exitCode).toBe(1);
-    const errOutput = (console.error as ReturnType<typeof vi.fn>).mock.calls.flat().join(' ');
-    expect(errOutput).toMatch(/daemon unavailable/i);
+    // Graceful degradation: exits 0 (not 1), renders empty section headers with notes
+    expect(process.exitCode).toBeFalsy();
+    const warnOutput = (console.warn as ReturnType<typeof vi.fn>).mock.calls.flat().join(' ');
+    expect(warnOutput).toMatch(/daemon unavailable/i);
+    const output = (console.log as ReturnType<typeof vi.fn>).mock.calls.flat().join('\n');
+    expect(output).toContain('── personal context ──');
+    expect(output).toContain('── repo lessons');
+    expect(output).toContain('daemon offline');
   });
 
   it('calls recall twice: personal (all kinds) + repo (kind=retro) (AC #2)', async () => {
@@ -143,7 +149,7 @@ describe('think brief command — v3 daemon-based (AGT-322)', () => {
     await makeProgram().parseAsync(['node', 'think', 'brief', '--cortex', targetCortex, '--days', '7']);
 
     const output = (console.log as ReturnType<typeof vi.fn>).mock.calls.flat().join('\n');
-    expect(output).toContain('note: --days is deprecated and ignored');
+    expect(output).toContain('note: --days is ignored');
   });
 
   it('does NOT print --days note when --days is not passed (AC #4)', async () => {
