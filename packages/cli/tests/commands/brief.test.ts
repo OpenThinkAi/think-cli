@@ -1,47 +1,62 @@
+/**
+ * Tests for think brief command - AGT-322 (v3 recall semantics)
+ */
+
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { mkdtempSync, rmSync, mkdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Command } from 'commander';
 import { briefCommand } from '../../src/commands/brief.js';
+import * as daemonClientModule from '../../src/lib/daemon-client.js';
+import { DaemonUnavailableError } from '../../src/lib/daemon-client.js';
 import { getCortexDb, closeAllCortexDbs } from '../../src/db/engrams.js';
-import { insertRetro, setRetroPromoted } from '../../src/db/retro-queries.js';
-import * as autoPropagate from '../../src/lib/auto-propagate.js';
-
-function makeProgram(): Command {
+import type { RecallEntry } from '../../src/daemon/recall.js';
+function makeProgram() {
   const prog = new Command();
   prog.option('-C, --cortex <name>', 'Use a specific cortex for this command');
   prog.addCommand(briefCommand);
   return prog;
 }
 
-/** Write a minimal config.json so getConfig() returns an active cortex. */
 function writeConfig(thinkHome: string, activeCortex: string): void {
   const configDir = join(thinkHome, 'config');
   mkdirSync(configDir, { recursive: true });
-  const config = {
-    peerId: 'test-peer',
-    syncPort: 19876,
-    cortex: { active: activeCortex, author: 'tester' },
-  };
-  writeFileSync(join(configDir, 'config.json'), JSON.stringify(config));
+  writeFileSync(
+    join(configDir, 'config.json'),
+    JSON.stringify({ peerId: 'test-peer', syncPort: 19876, cortex: { active: activeCortex, author: 'tester' } }),
+  );
 }
 
-describe('think brief command', () => {
+function entry(
+  overrides: Partial<RecallEntry> & Pick<RecallEntry, 'id' | 'ts' | 'kind' | 'content' | 'cortex'>
+): RecallEntry {
+  return { topics: [], similarity: 0.9, score: 0.9, ...overrides };
+}
+
+function makeMockClient(personalEntries: RecallEntry[] = [], repoEntries: RecallEntry[] = []) {
+  return {
+    call: vi.fn().mockImplementation((_method: string, params: Record<string, unknown>) => {
+      if (params['kind'] === 'retro') return Promise.resolve(repoEntries);
+      return Promise.resolve(personalEntries);
+    }),
+    close: vi.fn(),
+  };
+}
+describe('think brief command - v3 daemon-based (AGT-322)', () => {
   let originalHome: string | undefined;
   let tmpHome: string;
-  const targetCortex = 'brief-target-cortex';
+  const targetCortex = 'brief-repo-cortex';
   const personalCortex = 'brief-personal-cortex';
 
   beforeEach(() => {
     originalHome = process.env.THINK_HOME;
-    tmpHome = mkdtempSync(join(tmpdir(), 'think-brief-test-'));
+    tmpHome = mkdtempSync(join(tmpdir(), 'think-brief-v3-test-'));
     process.env.THINK_HOME = tmpHome;
-    closeAllCortexDbs();
-    // Pre-create both cortexes
-    getCortexDb(personalCortex);
-    getCortexDb(targetCortex);
     writeConfig(tmpHome, personalCortex);
+    closeAllCortexDbs();
+    getCortexDb(targetCortex);
+    closeAllCortexDbs();
     vi.spyOn(console, 'log').mockImplementation(() => {});
     vi.spyOn(console, 'error').mockImplementation(() => {});
   });
@@ -55,122 +70,146 @@ describe('think brief command', () => {
     process.exitCode = 0;
   });
 
-  it('exits non-zero when --cortex is not provided (AC #8)', async () => {
-    const prog = makeProgram();
-    await prog.parseAsync(['node', 'think', 'brief']);
+  it('exits non-zero when --cortex is not provided (AC #1)', async () => {
+    await makeProgram().parseAsync(['node', 'think', 'brief']);
     expect(process.exitCode).toBe(1);
   });
+  it('degrades gracefully when daemon unavailable: warns + empty sections, exits 0', async () => {
+    vi.spyOn(daemonClientModule, 'connectDaemon').mockRejectedValue(
+      new DaemonUnavailableError('daemon failed to start', '/tmp/test-daemon.log'),
+    );
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    await makeProgram().parseAsync(['node', 'think', 'brief', '--cortex', targetCortex]);
+    expect(process.exitCode).toBeFalsy();
+    const warnOutput = (console.warn as ReturnType<typeof vi.fn>).mock.calls.flat().join(' ');
+    expect(warnOutput).toMatch(/daemon unavailable/i);
+    const output = (console.log as ReturnType<typeof vi.fn>).mock.calls.flat().join('\n');
+    expect(output).toContain('personal context');
+    expect(output).toContain('repo lessons');
+    expect(output).toContain('daemon offline');
+  });
 
-  it('exits non-zero when target cortex does not exist (AC #6)', async () => {
-    const prog = makeProgram();
-    await prog.parseAsync(['node', 'think', 'brief', '--cortex', 'nonexistent-cortex-xyz']);
+  it('calls recall twice: personal (all kinds) + repo (kind=retro) (AC #2)', async () => {
+    const mockClient = makeMockClient();
+    vi.spyOn(daemonClientModule, 'connectDaemon').mockResolvedValue(mockClient);
+    await makeProgram().parseAsync(['node', 'think', 'brief', '--cortex', targetCortex]);
+
+    expect(daemonClientModule.connectDaemon).toHaveBeenCalledOnce();
+    expect(mockClient.call).toHaveBeenCalledTimes(2);
+
+    const calls = mockClient.call.mock.calls;
+    expect(calls[0][0]).toBe('recall');
+    expect(calls[0][1]).toMatchObject({ cortex: personalCortex, scope: 'active' });
+    expect((calls[0][1] as Record<string, unknown>)['kind']).toBeUndefined();
+
+    expect(calls[1][0]).toBe('recall');
+    expect(calls[1][1]).toMatchObject({ cortex: targetCortex, scope: 'active', kind: 'retro' });
+
+    expect(mockClient.close).toHaveBeenCalledOnce();
+  });
+  it('renders both labelled sections in output (AC #3)', async () => {
+    vi.spyOn(daemonClientModule, 'connectDaemon').mockResolvedValue(makeMockClient());
+    await makeProgram().parseAsync(['node', 'think', 'brief', '--cortex', targetCortex]);
+    expect(process.exitCode).toBeFalsy();
+    const output = (console.log as ReturnType<typeof vi.fn>).mock.calls.flat().join('\n');
+    expect(output).toContain('personal context');
+    expect(output).toContain('repo lessons');
+  });
+
+  it('renders retro entries via AGT-318 formatter in repo section (AC #3)', async () => {
+    const retroEntry = entry({ id: 'r1', ts: '2026-05-01T12:00:00Z', kind: 'retro', content: 'always run build before commit', cortex: targetCortex });
+    vi.spyOn(daemonClientModule, 'connectDaemon').mockResolvedValue(makeMockClient([], [retroEntry]));
+    await makeProgram().parseAsync(['node', 'think', 'brief', '--cortex', targetCortex]);
+    const output = (console.log as ReturnType<typeof vi.fn>).mock.calls.flat().join('\n');
+    expect(output).toContain('always run build before commit');
+    expect(output).toContain('retros (1)');
+  });
+
+  it('renders personal memory entries via AGT-318 formatter (AC #3)', async () => {
+    const memEntry = entry({ id: 'm1', ts: '2026-05-15T10:00:00Z', kind: 'memory', content: 'the daemon embedding model stays resident', cortex: personalCortex });
+    vi.spyOn(daemonClientModule, 'connectDaemon').mockResolvedValue(makeMockClient([memEntry], []));
+    await makeProgram().parseAsync(['node', 'think', 'brief', '--cortex', targetCortex]);
+    const output = (console.log as ReturnType<typeof vi.fn>).mock.calls.flat().join('\n');
+    expect(output).toContain('the daemon embedding model stays resident');
+    expect(output).toContain('memories (1)');
+  });
+
+  it('prints note: when --days is passed (deprecated back-compat, AC #4)', async () => {
+    vi.spyOn(daemonClientModule, 'connectDaemon').mockResolvedValue(makeMockClient());
+    await makeProgram().parseAsync(['node', 'think', 'brief', '--cortex', targetCortex, '--days', '7']);
+    const output = (console.log as ReturnType<typeof vi.fn>).mock.calls.flat().join('\n');
+    expect(output).toContain('note: --days is ignored');
+  });
+
+  it('does NOT print --days note when --days is not passed (AC #4)', async () => {
+    vi.spyOn(daemonClientModule, 'connectDaemon').mockResolvedValue(makeMockClient());
+    await makeProgram().parseAsync(['node', 'think', 'brief', '--cortex', targetCortex]);
+    const output = (console.log as ReturnType<typeof vi.fn>).mock.calls.flat().join('\n');
+    expect(output).not.toContain('--days is');
+  });
+
+  it('forwards --limit to both recall calls (AC #5)', async () => {
+    const mockClient = makeMockClient();
+    vi.spyOn(daemonClientModule, 'connectDaemon').mockResolvedValue(mockClient);
+    await makeProgram().parseAsync(['node', 'think', 'brief', '--cortex', targetCortex, '--limit', '3']);
+    const calls = mockClient.call.mock.calls;
+    expect(calls[0][1]).toMatchObject({ limit: 3 });
+    expect(calls[1][1]).toMatchObject({ limit: 3 });
+  });
+
+  it('shows note when personal cortex has no entries', async () => {
+    vi.spyOn(daemonClientModule, 'connectDaemon').mockResolvedValue(makeMockClient([], []));
+    await makeProgram().parseAsync(['node', 'think', 'brief', '--cortex', targetCortex]);
+    const output = (console.log as ReturnType<typeof vi.fn>).mock.calls.flat().join('\n');
+    expect(output).toContain('no entries found in personal cortex');
+  });
+
+  it('shows note when repo cortex has no retros', async () => {
+    vi.spyOn(daemonClientModule, 'connectDaemon').mockResolvedValue(makeMockClient([], []));
+    await makeProgram().parseAsync(['node', 'think', 'brief', '--cortex', targetCortex]);
+    const output = (console.log as ReturnType<typeof vi.fn>).mock.calls.flat().join('\n');
+    expect(output).toContain('no retros found for cortex');
+  });
+
+  it('accepts -C as alias for --cortex (global flag)', async () => {
+    const mockClient = makeMockClient();
+    vi.spyOn(daemonClientModule, 'connectDaemon').mockResolvedValue(mockClient);
+    await makeProgram().parseAsync(['node', 'think', '-C', targetCortex, 'brief']);
+    expect(process.exitCode).toBeFalsy();
+    const calls = mockClient.call.mock.calls;
+    expect(calls[1][1]).toMatchObject({ cortex: targetCortex, kind: 'retro' });
+  });
+
+  it('exits 0 on success', async () => {
+    vi.spyOn(daemonClientModule, 'connectDaemon').mockResolvedValue(makeMockClient());
+    await makeProgram().parseAsync(['node', 'think', 'brief', '--cortex', targetCortex]);
+    expect(process.exitCode).toBeFalsy();
+  });
+
+  it('forwards query argument to both recall calls', async () => {
+    const mockClient = makeMockClient();
+    vi.spyOn(daemonClientModule, 'connectDaemon').mockResolvedValue(mockClient);
+    await makeProgram().parseAsync(['node', 'think', 'brief', 'my search query', '--cortex', targetCortex]);
+    const calls = mockClient.call.mock.calls;
+    expect(calls[0][1]).toMatchObject({ query: 'my search query' });
+    expect(calls[1][1]).toMatchObject({ query: 'my search query' });
+  });
+
+  it('exits 1 and prints error when no active cortex configured', async () => {
+    writeConfig(tmpHome, '');
+    await makeProgram().parseAsync(['node', 'think', 'brief', '--cortex', targetCortex]);
     expect(process.exitCode).toBe(1);
     const errOutput = (console.error as ReturnType<typeof vi.fn>).mock.calls.flat().join(' ');
-    expect(errOutput).toMatch(/no cortex named|does not exist/i);
+    expect(errOutput).toMatch(/no active cortex/i);
   });
 
-  it('renders two labelled sections (AC #4)', async () => {
-    const r = insertRetro(targetCortex, { content: 'brief two-section test retro' });
-    setRetroPromoted(targetCortex, [r.id], 1);
-    closeAllCortexDbs();
-
-    const prog = makeProgram();
-    await prog.parseAsync(['node', 'think', 'brief', '--cortex', targetCortex]);
-
-    expect(process.exitCode).toBeFalsy();
-    const output = (console.log as ReturnType<typeof vi.fn>).mock.calls.flat().join('\n');
-    expect(output).toMatch(/personal context/i);
-    expect(output).toMatch(/retros for/i);
-  });
-
-  it('retros section shows promoted retros (AC #4)', async () => {
-    const r = insertRetro(targetCortex, { content: 'brief promoted retro content' });
-    setRetroPromoted(targetCortex, [r.id], 1);
-    closeAllCortexDbs();
-
-    const prog = makeProgram();
-    await prog.parseAsync(['node', 'think', 'brief', '--cortex', targetCortex]);
-
-    const output = (console.log as ReturnType<typeof vi.fn>).mock.calls.flat().join('\n');
-    expect(output).toContain('brief promoted retro content');
-  });
-
-  it('no-query path still renders both sections (AC #5)', async () => {
-    const prog = makeProgram();
-    await prog.parseAsync(['node', 'think', 'brief', '--cortex', targetCortex]);
-
-    expect(process.exitCode).toBeFalsy();
-    const output = (console.log as ReturnType<typeof vi.fn>).mock.calls.flat().join('\n');
-    expect(output).toMatch(/personal context/i);
-    expect(output).toMatch(/retros for/i);
-  });
-
-  it('shows "no retros found" when cortex has no promoted retros (AC #5)', async () => {
-    const prog = makeProgram();
-    await prog.parseAsync(['node', 'think', 'brief', '--cortex', targetCortex]);
-
-    const output = (console.log as ReturnType<typeof vi.fn>).mock.calls.flat().join('\n');
-    expect(output).toMatch(/no retros found/i);
-  });
-
-  it('bumps recall stats on retros surfaced via brief (AC #3 via brief)', async () => {
-    const r = insertRetro(targetCortex, { content: 'brief recall bump retro' });
-    setRetroPromoted(targetCortex, [r.id], 1);
-    closeAllCortexDbs();
-
-    const prog = makeProgram();
-    await prog.parseAsync(['node', 'think', 'brief', '--cortex', targetCortex]);
-
-    const db = getCortexDb(targetCortex);
-    const row = db.prepare('SELECT recalled_count, last_recalled_at FROM retros WHERE id = ?').get(r.id) as {
-      recalled_count: number;
-      last_recalled_at: string | null;
-    };
-    expect(row.recalled_count).toBe(1);
-    expect(row.last_recalled_at).not.toBeNull();
-  });
-
-  it('accepts --cortex via the global -C flag', async () => {
-    const prog = makeProgram();
-    await prog.parseAsync(['node', 'think', '-C', targetCortex, 'brief']);
-
-    expect(process.exitCode).toBeFalsy();
-    const output = (console.log as ReturnType<typeof vi.fn>).mock.calls.flat().join('\n');
-    expect(output).toMatch(/retros for/i);
-  });
-
-  it('exits 0 on success regardless of result count (AC #8)', async () => {
-    const prog = makeProgram();
-    await prog.parseAsync(['node', 'think', 'brief', '--cortex', targetCortex]);
-    expect(process.exitCode).toBeFalsy();
-  });
-
-  it('calls pullForRead before rendering retros (AC #1)', async () => {
-    const pullSpy = vi.spyOn(autoPropagate, 'pullForRead').mockResolvedValue(undefined);
-
-    const prog = makeProgram();
-    await prog.parseAsync(['node', 'think', 'brief', '--cortex', targetCortex]);
-
-    expect(pullSpy).toHaveBeenCalledWith(targetCortex, expect.objectContaining({ skip: false }));
-    expect(process.exitCode).toBeFalsy();
-  });
-
-  it('--no-sync skips pullForRead (AC #4)', async () => {
-    const pullSpy = vi.spyOn(autoPropagate, 'pullForRead').mockResolvedValue(undefined);
-
-    const prog = makeProgram();
-    await prog.parseAsync(['node', 'think', 'brief', '--cortex', targetCortex, '--no-sync']);
-
-    expect(pullSpy).toHaveBeenCalledWith(targetCortex, expect.objectContaining({ skip: true }));
-  });
-
-  it('exits 0 when pullForRead rejects (pull failure does not break brief) (AC #1)', async () => {
-    vi.spyOn(autoPropagate, 'pullForRead').mockRejectedValue(new Error('simulated pull failure'));
-
-    const prog = makeProgram();
-    await prog.parseAsync(['node', 'think', 'brief', '--cortex', targetCortex]);
-
-    // brief still renders and exits clean despite the pull throwing
-    expect(process.exitCode).toBeFalsy();
+  it('shows diagnostic warning for unknown cortex (no DB file)', async () => {
+    const mockClient = makeMockClient();
+    vi.spyOn(daemonClientModule, 'connectDaemon').mockResolvedValue(mockClient);
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    await makeProgram().parseAsync(['node', 'think', 'brief', '--cortex', 'no-such-cortex-xyz']);
+    const warnOutput = (console.warn as ReturnType<typeof vi.fn>).mock.calls.flat().join(' ');
+    expect(warnOutput).toMatch(/no local cortex named/i);
+    expect(mockClient.call).toHaveBeenCalledTimes(1);
   });
 });
