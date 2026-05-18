@@ -1,5 +1,5 @@
 /**
- * Daemon `status` endpoint — AGT-287
+ * Daemon `status` endpoint — AGT-287, AGT-302
  *
  * Returns structured health, uptime, and per-cortex state for the running daemon.
  *
@@ -16,12 +16,13 @@
  *     search_engine:   "brute-force" | "sqlite-vec",
  *     cortexes: {
  *       [name: string]: {
- *         entries:                  number,
- *         last_sync_pull:           string | null,
- *         last_sync_push:           string | null,
- *         compaction_queue_depth:   number,   // always 0 until AGT-301 lands
- *         supersession_queue_depth: number,   // always 0 until AGT-305 lands
- *         warnings:                 string[],
+ *         entries:                        number,
+ *         last_sync_pull:                 string | null,
+ *         last_sync_push:                 string | null,
+ *         compaction_queue_depth:         number,   // always 0 until AGT-301 lands
+ *         compaction_permanently_skipped: number,   // AGT-302
+ *         supersession_queue_depth:       number,   // always 0 until AGT-305 lands
+ *         warnings:                       string[],
  *       }
  *     }
  *   }
@@ -35,7 +36,7 @@ import { getConfig } from '../lib/config.js';
 import { EMBEDDING_MODEL_NAME } from '../lib/embed.js';
 import { getMemoryCount, getSyncCursor } from '../db/memory-queries.js';
 import { sanitizeName } from '../lib/paths.js';
-import { compactionQueue } from './compaction/queue.js';
+import { compactionQueue, getPermanentlySkippedCount } from './compaction/queue.js';
 
 // ---------------------------------------------------------------------------
 // Constants / defaults
@@ -59,6 +60,14 @@ export interface CortexStatusEntry {
    * are pending processing.
    */
   compaction_queue_depth: number;
+  /**
+   * Number of entries whose compaction has permanently failed (AGT-302).
+   * These entries stay raw and are excluded from daemon-startup backfill
+   * on restart. There is currently no automatic recovery path — entries
+   * remain skipped until explicitly re-queued via `think compaction retry`
+   * (a future command; not yet implemented as of AGT-302).
+   */
+  compaction_permanently_skipped: number;
   /** Always 0 until AGT-305 (supersession worker) lands. */
   supersession_queue_depth: number;
   warnings: string[];
@@ -98,11 +107,20 @@ function getCortexStatus(cortexName: string): CortexStatusEntry {
     warnings.push(`could not read sync cursors: ${msg}`);
   }
 
+  const compaction_permanently_skipped = getPermanentlySkippedCount(cortexName);
+  if (compaction_permanently_skipped > 0) {
+    warnings.push(
+      `${compaction_permanently_skipped} ${compaction_permanently_skipped === 1 ? 'entry' : 'entries'} permanently skipped for compaction in cortex ${cortexName}` +
+      ` — entries will remain raw until a future 'think compaction retry' command is available`,
+    );
+  }
+
   return {
     entries,
     last_sync_pull,
     last_sync_push,
     compaction_queue_depth: compactionQueue.getDepth(cortexName),
+    compaction_permanently_skipped,
     // Supersession queue depth placeholder — wired to real worker in AGT-305.
     supersession_queue_depth: 0,
     warnings,

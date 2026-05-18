@@ -335,6 +335,27 @@ export const migrations: Migration[] = [
       db.exec('CREATE INDEX IF NOT EXISTS idx_memories_kind ON memories(kind);');
     },
   },
+  {
+    version: 15,
+    up: (db) => {
+      // Add compaction_status column for AGT-302. Nullable — null means
+      // compaction has not yet been attempted for this entry. Valid values:
+      //   null                  — not yet attempted
+      //   'queued'              — entry is in the compaction queue
+      //   'running'             — compaction pipeline is actively processing
+      //   'completed'           — compaction succeeded (compacted entry exists)
+      //   'permanently_skipped' — 4 consecutive retries all failed; entry
+      //                           stays raw until explicitly re-queued via
+      //                           `think compaction retry` (TODO: AGT future ticket)
+      //
+      // Idempotent via PRAGMA table_info guard — safe to re-run.
+      const cols = db.prepare('PRAGMA table_info(memories)').all() as { name: string }[];
+      if (!cols.some(c => c.name === 'compaction_status')) {
+        db.exec('ALTER TABLE memories ADD COLUMN compaction_status TEXT;');
+      }
+      db.exec('CREATE INDEX IF NOT EXISTS idx_memories_compaction_status ON memories(compaction_status);');
+    },
+  },
 ];
 
 /** Returns the per-cortex SQLite connection (holds engrams, memories, longterm_summary, and sync_cursors tables) */

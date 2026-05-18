@@ -354,4 +354,158 @@ describe('scanAndEnqueueUncompacted', () => {
 
     expect(queue.getDepth(cortex)).toBe(100);
   });
+
+  it('AGT-302: skips entries with compaction_status = permanently_skipped', async () => {
+    const { CompactionQueue, scanAndEnqueueUncompacted } = await import('../../../src/daemon/compaction/queue.js');
+    const { getCortexDb } = await import('../../../src/db/engrams.js');
+
+    const cortex = 'skip-permanent-test';
+    const repoDir = join(thinkHome, 'repo', cortex);
+    mkdirSync(repoDir, { recursive: true });
+
+    // Two raw kind=memory entries; one will be marked permanently_skipped in L2.
+    const entries = [
+      { id: 'raw-ok', ts: '2026-05-01T00:00:00Z', kind: 'memory', compacted_from: null, content: 'ok', topics: [], supersedes: [], deleted_at: null },
+      { id: 'raw-skipped', ts: '2026-05-02T00:00:00Z', kind: 'memory', compacted_from: null, content: 'skipped', topics: [], supersedes: [], deleted_at: null },
+    ];
+    writeFileSync(
+      join(repoDir, '000001.jsonl'),
+      entries.map(e => JSON.stringify(e)).join('\n') + '\n',
+      'utf-8',
+    );
+
+    const ts = new Date().toISOString();
+    const db = getCortexDb(cortex);
+    for (const e of entries) {
+      db.prepare(`
+        INSERT OR IGNORE INTO memories
+          (id, ts, author, content, source_ids, created_at, deleted_at,
+           sync_version, origin_peer_id)
+        VALUES (?, ?, 'tester', ?, '[]', ?, NULL, 1, 'peer')
+      `).run(e.id, e.ts, e.content, ts);
+    }
+    db.prepare("UPDATE memories SET compaction_status = 'permanently_skipped' WHERE id = ?").run('raw-skipped');
+
+    const queue = new CompactionQueue();
+    scanAndEnqueueUncompacted(queue, [cortex]);
+
+    // raw-skipped is excluded; only raw-ok is enqueued.
+    expect(queue.getDepth(cortex)).toBe(1);
+  });
+});
+
+describe('AGT-302: compaction_status lifecycle', () => {
+  beforeEach(() => {
+    setupThinkHome();
+  });
+
+  afterEach(() => {
+    vi.clearAllMocks();
+    teardownThinkHome();
+  });
+
+  it('enqueue sets compaction_status to queued in L2', async () => {
+    const { CompactionQueue } = await import('../../../src/daemon/compaction/queue.js');
+    const { getCortexDb } = await import('../../../src/db/engrams.js');
+
+    const cortex = 'queued-status-test';
+    const id = 'queued-id-1';
+    const ts = new Date().toISOString();
+    const db = getCortexDb(cortex);
+    db.prepare(`
+      INSERT OR IGNORE INTO memories
+        (id, ts, author, content, source_ids, created_at, deleted_at,
+         sync_version, origin_peer_id)
+      VALUES (?, ?, 'tester', 'queued content', '[]', ?, NULL, 1, 'peer')
+    `).run(id, ts, ts);
+
+    const queue = new CompactionQueue();
+    queue.enqueue(id, cortex);
+
+    const row = db.prepare('SELECT compaction_status FROM memories WHERE id = ?').get(id) as { compaction_status: string };
+    expect(row.compaction_status).toBe('queued');
+  });
+
+  it('retries exhausted → compaction_status = permanently_skipped and getPermanentlySkippedCount=1', async () => {
+    const { CompactionQueue, getPermanentlySkippedCount } = await import('../../../src/daemon/compaction/queue.js');
+    const { getCortexDb } = await import('../../../src/db/engrams.js');
+
+    const cortex = 'retries-exhausted-test';
+    const id = 'exhausted-id-1';
+    const ts = new Date().toISOString();
+    const db = getCortexDb(cortex);
+    db.prepare(`
+      INSERT OR IGNORE INTO memories
+        (id, ts, author, content, source_ids, created_at, deleted_at,
+         sync_version, origin_peer_id)
+      VALUES (?, ?, 'tester', 'will fail', '[]', ?, NULL, 1, 'peer')
+    `).run(id, ts, ts);
+
+    // Inject a pipeline that always throws a transient error so all 5 attempts (1 + 4 retries) fail.
+    const queue = new CompactionQueue();
+    queue._setPipelineForTest(async () => {
+      throw new Error('transient network failure');
+    });
+
+    // Patch backoff sleep by using fake timers? Simpler: leave retries running and wait.
+    // Backoff sequence is 1s → 4s → 16s → 64s = 85s. Too slow for a unit test.
+    // Instead, override the private retry constants by exercising via the pipeline override
+    // and a manual rejection chain: rely on the fact that `Error` (not PermanentCompactionFailure)
+    // hits the retry path. We override MAX_RETRIES through a quick chain by simply waiting.
+    //
+    // Since we can't tweak MAX_RETRIES from outside, use a faster path: throw
+    // PermanentCompactionFailure-shaped error via dynamic class to take the
+    // immediate-skip branch. But that class is internal. Workaround: use the
+    // public 'response_invalid' route by injecting a pipeline that throws an
+    // Error with name='PermanentCompactionFailure' — the catch uses instanceof
+    // so this won't match. So instead, prove the retries-exhausted path via
+    // its observable effect under fake timers.
+    vi.useFakeTimers();
+    queue.enqueue(id, cortex);
+    queue.start();
+
+    // Advance through all backoffs: 1s + 4s + 16s + 64s = 85s.
+    for (let i = 0; i < 100; i++) {
+      await vi.advanceTimersByTimeAsync(1000);
+    }
+    vi.useRealTimers();
+
+    // Allow any queued microtasks to settle.
+    await new Promise(r => setTimeout(r, 50));
+
+    const row = db.prepare('SELECT compaction_status FROM memories WHERE id = ?').get(id) as { compaction_status: string };
+    expect(row.compaction_status).toBe('permanently_skipped');
+    expect(getPermanentlySkippedCount(cortex)).toBe(1);
+  }, 15000);
+
+  it('successful pipeline → compaction_status = completed', async () => {
+    const { CompactionQueue } = await import('../../../src/daemon/compaction/queue.js');
+    const { getCortexDb } = await import('../../../src/db/engrams.js');
+
+    const cortex = 'completed-status-test';
+    const id = 'completed-id-1';
+    const ts = new Date().toISOString();
+    const db = getCortexDb(cortex);
+    db.prepare(`
+      INSERT OR IGNORE INTO memories
+        (id, ts, author, content, source_ids, created_at, deleted_at,
+         sync_version, origin_peer_id)
+      VALUES (?, ?, 'tester', 'ok content', '[]', ?, NULL, 1, 'peer')
+    `).run(id, ts, ts);
+
+    const queue = new CompactionQueue();
+    queue._setPipelineForTest(async () => {
+      // No-op success.
+    });
+    queue.enqueue(id, cortex);
+    queue.start();
+
+    const deadline = Date.now() + 5000;
+    while (queue.getDepth(cortex) > 0 && Date.now() < deadline) {
+      await new Promise(r => setTimeout(r, 50));
+    }
+
+    const row = db.prepare('SELECT compaction_status FROM memories WHERE id = ?').get(id) as { compaction_status: string };
+    expect(row.compaction_status).toBe('completed');
+  });
 });
