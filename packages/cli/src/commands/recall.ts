@@ -307,7 +307,7 @@ export const recallCommand = new Command('recall')
     // and has no effect until the daemon path is wired (AGT-289). Check the
     // Commander value source so we do NOT warn when the user ran plain
     // `think recall` without passing --scope (the default 'accessible' is silent).
-    if (this.getOptionValueSource('scope') === 'cli') {
+    if (this.getOptionValueSource('scope') === 'cli' && scope !== 'active') {
       const scopeNote = scope === 'all'
         ? '--scope all is ALPHA and not yet active; behaves like accessible once the daemon path is wired'
         : `--scope ${scope} requires the daemon (vector recall); the FTS fallback queries the active cortex only`;
