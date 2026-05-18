@@ -82,3 +82,34 @@ export function assignNextSeq(cortexName: string): number {
   ).get() as { next_seq: number };
   return row.next_seq;
 }
+
+/**
+ * Checks whether any live rows in the given cortex have a NULL `activity_seq`
+ * and, if so, calls `recomputeActivitySeq` to backfill them.
+ *
+ * This is the daemon boot-time check (AGT-292 AC #2). It is a named function
+ * so tests can target it directly without spinning up a full daemon.
+ *
+ * The null-count query is a full scan of the memories table (no partial index
+ * on `activity_seq IS NULL` exists). On a fully-stamped cortex the query is still
+ * fast at typical data sizes — the key point is the recompute is skipped entirely
+ * when the count is zero.
+ *
+ * @param writeLine - optional logger (e.g. daemon's `writeLine`); when omitted
+ *   no log is produced. The INFO message is intentionally brief — one line per
+ *   cortex that actually needs backfilling.
+ */
+export function backfillActivitySeqIfNeeded(
+  cortexName: string,
+  writeLine?: (msg: string) => void,
+): void {
+  const db = getCortexDb(cortexName);
+  const { nullCount } = db.prepare(
+    'SELECT COUNT(*) AS nullCount FROM memories WHERE activity_seq IS NULL AND deleted_at IS NULL'
+  ).get() as { nullCount: number };
+
+  if (nullCount === 0) return;
+
+  writeLine?.(`backfilling activity_seq for cortex ${cortexName} (${nullCount} rows with NULL activity_seq)`);
+  recomputeActivitySeq(cortexName);
+}

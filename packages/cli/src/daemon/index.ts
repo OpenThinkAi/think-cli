@@ -38,6 +38,7 @@ import { parseLineFraming, dispatchRequest } from './protocol.js';
 import { handleSync } from './sync-handler.js';
 import { handleStatus } from './status.js';
 import { compactionQueue, scanAndEnqueueUncompacted } from './compaction/queue.js';
+import { backfillActivitySeqIfNeeded } from '../db/activity-seq.js';
 
 // ---------------------------------------------------------------------------
 // Paths
@@ -350,7 +351,28 @@ export async function runDaemon(options: DaemonOptions): Promise<void> {
   compactionQueue.start();
 
   const activeCortex = getConfig().cortex?.active;
-  if (activeCortex) scanAndEnqueueUncompacted(compactionQueue, [activeCortex]);
+
+  // ---------------------------------------------------------------------------
+  // Activity-seq backfill on startup (AGT-292 AC #2)
+  //
+  // Before serving any requests, check the active cortex for rows with a NULL
+  // activity_seq (e.g. after upgrade from v2, or after a partial reindex).
+  // backfillActivitySeqIfNeeded is a no-op when all rows are already stamped.
+  //
+  // Wrapped in try/catch: if recomputeActivitySeq fails (schema mismatch,
+  // DB corruption, etc.), the daemon logs the error and continues rather than
+  // crashing before it can serve a single request.
+  // ---------------------------------------------------------------------------
+
+  if (activeCortex) {
+    try {
+      backfillActivitySeqIfNeeded(activeCortex, writeLine);
+    } catch (backfillErr: unknown) {
+      const msg = backfillErr instanceof Error ? backfillErr.message : String(backfillErr);
+      writeLine(`activity_seq backfill for cortex '${activeCortex}' failed (continuing without backfill): ${msg}`);
+    }
+    scanAndEnqueueUncompacted(compactionQueue, [activeCortex]);
+  }
 
   // ---------------------------------------------------------------------------
   // Graceful shutdown (AGT-283)
