@@ -55,6 +55,7 @@ import { searchMemories } from '../db/memory-queries.js';
 import { getConfig } from '../lib/config.js';
 import { listLocalBranches } from '../lib/git.js';
 import { reindexingCortexes, reindexFailedCortexes } from './embed-model-check.js';
+import { sanitizeName } from '../lib/paths.js';
 
 /**
  * User-facing note printed when recall falls back to FTS ranking due to
@@ -735,6 +736,11 @@ async function recallSingleCortex(
   cortexName: string,
   params: Record<string, unknown>,
 ): Promise<RecallEntry[]> {
+  // Validate cortex name before any expensive work (embedding model load).
+  // sanitizeName throws synchronously on path-traversal or invalid chars so the
+  // caller gets a fast, clear error rather than a timeout waiting for embed().
+  sanitizeName(cortexName);
+
   const { query, limit, kind, topic, since, decay, full, includeSuperseded, noEmbed } = parseRecallParams(params);
 
   if (noEmbed) {
