@@ -83,6 +83,8 @@ async function handler(
   if (typeof params['scope'] === 'string') rpcParams['scope'] = params['scope'];
   if (typeof params['limit'] === 'number') rpcParams['limit'] = params['limit'];
   if (typeof params['kind'] === 'string') rpcParams['kind'] = params['kind'];
+  if (typeof params['topic'] === 'string') rpcParams['topic'] = params['topic'];
+  if (typeof params['since'] === 'string') rpcParams['since'] = params['since'];
   if (typeof params['cortex'] === 'string') rpcParams['cortex'] = params['cortex'];
 
   process.stderr.write(
@@ -137,6 +139,14 @@ export const thinkRecallTool: ThinkToolEntry = {
           type: 'string',
           enum: ['memory', 'retro', 'event'],
           description: 'Filter by entry kind: memory = freeform observations; retro = durable codebase wisdom; event = milestones/decisions/incidents',
+        },
+        topic: {
+          type: 'string',
+          description: 'Filter by topic — case-insensitive exact match on the entry topics array.',
+        },
+        since: {
+          type: 'string',
+          description: 'ISO-8601 lower bound on entry timestamp (e.g. 2026-05-01). Only entries at or after this date are returned.',
         },
         cortex: {
           type: 'string',

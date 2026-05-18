@@ -13,7 +13,7 @@ import type { MemoryRow } from '../db/memory-queries.js';
 import type { LongTermEventRow } from '../db/long-term-queries.js';
 import { closeCortexDb } from '../db/engrams.js';
 import type { RecallScope } from '../daemon/recall.js';
-import { NOTE_FTS_FALLBACK, NOTE_FTS_EXPLICIT } from '../daemon/recall.js';
+import { NOTE_FTS_FALLBACK, NOTE_FTS_EXPLICIT, validateKind, validateSince } from '../daemon/recall.js';
 import { formatRecallOutput, cortexSet, DEFAULT_RECALL_LIMIT } from '../lib/recall-format.js';
 
 export function printDecisions(m: MemoryRow): void {
@@ -233,6 +233,9 @@ export const recallCommand = new Command('recall')
   .option('--full', 'Return all entries including superseded and compacted-raw; lifts 200-char truncation')
   .option('--json', 'Emit results as a JSON array (one object per entry; FTS path only); incompatible with --all')
   .option('--include-superseded', 'Include superseded entries but still hide compacted-raw memories')
+  .option('--kind <kind>', 'Filter by entry kind: memory, retro, or event')
+  .option('--topic <topic>', 'Filter by topic — case-insensitive exact match on the entry topics array')
+  .option('--since <date>', 'Only entries at or after this ISO-8601 date (e.g. 2026-05-01)')
   .option('--no-embed', 'Skip semantic ranking; use FTS keyword search (fast, offline, deterministic). Also set by THINK_NO_EMBED=1.')
   .addOption(
     new Option(
@@ -242,7 +245,7 @@ export const recallCommand = new Command('recall')
       .choices(['active', 'accessible', 'all'])
       .default('accessible'),
   )
-  .action(function (this: Command, query: string, opts: { engrams?: boolean; all?: boolean; days: string; limit: string; full?: boolean; json?: boolean; includeSuperseded?: boolean; scope: string; embed: boolean }) {
+  .action(function (this: Command, query: string, opts: { engrams?: boolean; all?: boolean; days: string; limit: string; full?: boolean; json?: boolean; includeSuperseded?: boolean; scope: string; embed: boolean; kind?: string; topic?: string; since?: string }) {
     const config = getConfig();
     const cortex = config.cortex?.active;
 
@@ -265,6 +268,17 @@ export const recallCommand = new Command('recall')
       console.error(`error: --limit must be a positive integer, got '${limitRaw}'`);
       process.exitCode = 1;
       return;
+    }
+
+    // AGT-320: Validate --kind and --since eagerly on the CLI side so users get a
+    // clear error before any daemon RPC or FTS query is attempted (fail fast).
+    if (opts.kind !== undefined) {
+      try { validateKind(opts.kind); }
+      catch (e) { console.error((e as Error).message); process.exitCode = 1; return; }
+    }
+    if (opts.since !== undefined) {
+      try { validateSince(opts.since); }
+      catch (e) { console.error((e as Error).message); process.exitCode = 1; return; }
     }
 
     if (opts.all && opts.json) {
@@ -307,6 +321,17 @@ export const recallCommand = new Command('recall')
     // --include-superseded has no effect in FTS mode; the daemon path is not wired yet.
     if (opts.includeSuperseded) {
       console.warn(chalk.yellow("note: --include-superseded requires the daemon (vector recall); the FTS fallback does not apply supersession filters."));
+    }
+
+    // AGT-320: Warn when kind/topic/since are used in FTS mode — they have no effect.
+    if (opts.kind !== undefined) {
+      console.warn(chalk.yellow("note: --kind " + opts.kind + " requires the daemon (vector recall); the FTS fallback returns all entry kinds."));
+    }
+    if (opts.topic !== undefined) {
+      console.warn(chalk.yellow("note: --topic " + opts.topic + " requires the daemon (vector recall); the FTS fallback ignores topic filters."));
+    }
+    if (opts.since !== undefined) {
+      console.warn(chalk.yellow("note: --since " + opts.since + " requires the daemon (vector recall); the FTS fallback ignores the date filter."));
     }
 
     // AGT-308: Warn when --scope was explicitly provided in FTS (degraded) mode
