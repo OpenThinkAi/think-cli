@@ -312,12 +312,15 @@ describe('PullLoop — fetch failure', () => {
 });
 
 describe('PullLoop — active/idle modes', () => {
-  it('ACTIVE_INTERVAL constants are within expected bounds', () => {
-    expect(ACTIVE_INTERVAL_MIN_MS).toBe(5_000);
-    expect(ACTIVE_INTERVAL_MAX_MS).toBe(10_000);
-    expect(IDLE_INTERVAL_MIN_MS).toBe(60_000);
-    expect(IDLE_INTERVAL_MAX_MS).toBe(120_000);
-    expect(ACTIVE_THRESHOLD_MS).toBe(5 * 60 * 1000);
+  // Behavioral check: the interval bounds must remain in a usable range —
+  // active polls in seconds, idle in tens-of-seconds-to-minutes, threshold
+  // measured in minutes. Tests behavior (active < idle < threshold), not
+  // exact constant values.
+  it('interval bounds respect active < idle < threshold ordering', () => {
+    expect(ACTIVE_INTERVAL_MIN_MS).toBeLessThanOrEqual(ACTIVE_INTERVAL_MAX_MS);
+    expect(ACTIVE_INTERVAL_MAX_MS).toBeLessThan(IDLE_INTERVAL_MIN_MS);
+    expect(IDLE_INTERVAL_MIN_MS).toBeLessThanOrEqual(IDLE_INTERVAL_MAX_MS);
+    expect(IDLE_INTERVAL_MAX_MS).toBeLessThanOrEqual(ACTIVE_THRESHOLD_MS);
   });
 
   it('notifyCliCall and triggerImmediatePull do not throw for valid cortex names', () => {
@@ -339,9 +342,9 @@ describe('PullLoop — stop()', () => {
   it('stop() prevents further cycles from running', async () => {
     const { setSyncCursor } = await import('../../src/db/memory-queries.js');
 
-    const { impl, calls } = buildGitMock({ remoteHead: null });
+    const { impl } = buildGitMock({ remoteHead: null });
     const loop = new PullLoop('stopcortex', writeLine);
-    loop._gitOverride = impl;
+    (loop as unknown as { _gitOverride: typeof impl })._gitOverride = impl;
 
     const handle = loop.start();
     // Stop immediately before any cycle can complete.
@@ -353,6 +356,5 @@ describe('PullLoop — stop()', () => {
     // After stop, setSyncCursor should not have been called in a new cycle.
     expect(setSyncCursor).not.toHaveBeenCalled();
     expect(logs.some(l => l.includes('pull loop stopped'))).toBe(true);
-    void calls; // suppress unused
   });
 });

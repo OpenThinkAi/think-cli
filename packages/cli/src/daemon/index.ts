@@ -429,7 +429,10 @@ export async function runDaemon(options: DaemonOptions): Promise<void> {
   // ---------------------------------------------------------------------------
 
   const proxySubscribeHandle = startProxySubscribe((_cortex, _commitSha) => {
-    // TODO: wire to pull-loop's interrupt path once exposed.
+    // TODO: call triggerImmediatePull(cortex) here once AGT-311 passes the
+    // cortex name through to the callback (the exported pull-loop function
+    // exists; AGT-311's WS subscriber currently invokes the callback with
+    // placeholder args).
   });
 
   // ---------------------------------------------------------------------------

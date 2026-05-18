@@ -387,7 +387,7 @@ export class PullLoop {
     } catch (fetchErr: unknown) {
       const msg = (fetchErr instanceof Error ? fetchErr.message : String(fetchErr))
         .replace(/[\r\n]/g, ' ');
-      this.log(`WARN: git fetch failed for cortex '${safeCortex.replace(/[\r\n]/g, '')}': ${msg}`);
+      this.log(`WARN: git fetch failed for cortex '${safeCortex}': ${msg}`);
       // Pull failure: log at WARN, retry on next poll (AC#4).
       return;
     }
@@ -459,7 +459,7 @@ export class PullLoop {
     }
 
     if (totalIngested > 0) {
-      this.log(`ingested ${totalIngested} ${totalIngested === 1 ? 'entry' : 'entries'} from ${newCommits.length} commit(s) for cortex '${safeCortex.replace(/[\r\n]/g, '')}'`);
+      this.log(`ingested ${totalIngested} ${totalIngested === 1 ? 'entry' : 'entries'} from ${newCommits.length} commit(s) for cortex '${safeCortex}'`);
     }
   }
 
@@ -502,7 +502,7 @@ export class PullLoop {
     } catch (embedErr: unknown) {
       const msg = (embedErr instanceof Error ? embedErr.message : String(embedErr))
         .replace(/[\r\n]/g, ' ');
-      this.log(`WARN: embed failed for entry ${entryId.replace(/[\r\n]/g, '')} in cortex '${safeCortex.replace(/[\r\n]/g, '')}': ${msg} — inserting without embedding`);
+      this.log(`WARN: embed failed for entry ${entryId} in cortex '${safeCortex}': ${msg} — inserting without embedding`);
     }
 
     const activitySeq = assignNextSeq(safeCortex);
@@ -535,7 +535,8 @@ export class PullLoop {
   // ---------------------------------------------------------------------------
 
   private log(msg: string): void {
-    this.writeLine(`[pull-loop:${this.safeCortex.replace(/[\r\n]/g, '')}] ${msg}`);
+    // safeCortex is sanitizeName()-clean at construction; no further stripping needed.
+    this.writeLine(`[pull-loop:${this.safeCortex}] ${msg}`);
   }
 }
 
