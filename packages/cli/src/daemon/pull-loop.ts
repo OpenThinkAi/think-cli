@@ -207,12 +207,11 @@ async function getNewCommits(
 }
 
 /**
- * List JSONL files changed/added by a commit on a branch.
+ * List JSONL files changed/added by a commit.
  * Uses `git diff-tree` to avoid checking out the commit.
  */
 async function getJsonlFilesInCommit(
   commitSha: string,
-  safeCortex: string,
   repoPath: string,
   git: GitRunner,
 ): Promise<string[]> {
@@ -295,7 +294,7 @@ export class PullLoop {
     interruptCallbacks.set(this.safeCortex, () => this.interrupt());
 
     // Kick off the first cycle immediately so the daemon is up-to-date on start.
-    void this.cycle(true);
+    void this.cycle();
 
     return {
       stop: () => this.stop(),
@@ -329,27 +328,21 @@ export class PullLoop {
       this.currentTimer = null;
     }
     this.log('pull triggered by WS notification (interrupting backoff)');
-    void this.cycle(false);
+    void this.cycle();
   }
 
   /** Execute one fetch + ingest cycle, then schedule the next. */
-  private async cycle(isFirstCycle: boolean): Promise<void> {
+  private async cycle(): Promise<void> {
     if (this.stopped) return;
 
-    if (!isFirstCycle) {
-      await this.fetchAndIngest();
-    } else {
-      // On the very first cycle, still fetch — we may have missed pushes
-      // from a peer while the daemon was stopped.
-      await this.fetchAndIngest();
-    }
+    await this.fetchAndIngest();
 
     if (this.stopped) return;
 
     const delayMs = nextIntervalMs(this.safeCortex);
     this.currentTimer = setTimeout(() => {
       this.currentTimer = null;
-      void this.cycle(false);
+      void this.cycle();
     }, delayMs);
   }
 
@@ -398,7 +391,7 @@ export class PullLoop {
     for (const commitSha of newCommits) {
       if (this.stopped) break;
 
-      const changedFiles = await getJsonlFilesInCommit(commitSha, safeCortex, repoPath, git);
+      const changedFiles = await getJsonlFilesInCommit(commitSha, repoPath, git);
 
       for (const filePath of changedFiles) {
         if (this.stopped) break;
