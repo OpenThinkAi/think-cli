@@ -58,11 +58,33 @@ import { listLocalBranches } from '../lib/git.js';
 import { reindexingCortexes, reindexFailedCortexes } from './embed-model-check.js';
 
 /**
- * User-facing note printed when recall falls back to FTS ranking.
+ * User-facing note printed when recall falls back to FTS ranking due to
+ * an automatic embedding model failure (network, timeout, missing dep).
  * Lowercase `note:` prefix follows product prose conventions.
  */
 export const NOTE_FTS_FALLBACK =
   'note: semantic recall unavailable, using FTS ranking (rerun with model cached for semantic ranking)';
+
+/**
+ * User-facing note printed when recall uses FTS ranking due to an explicit
+ * --no-embed / THINK_NO_EMBED=1 opt-out (not a failure).
+ */
+export const NOTE_FTS_EXPLICIT =
+  'note: using FTS keyword search (--no-embed)';
+
+/**
+ * Returns true when an embed() error indicates the model is unavailable
+ * (network failure, download timeout, or missing optional dep) rather than
+ * a programming error. Both cases trigger FTS fallback; this helper is
+ * used to decide the log message.
+ */
+function isEmbedModelUnavailable(msg: string): boolean {
+  return (
+    msg.includes('failed to load embedding model') ||
+    msg.includes('@huggingface/transformers') ||
+    msg.includes('timed out')
+  );
+}
 
 // How many extra candidates to fetch from sqlite-vec before JS rerank.
 // 5× ensures the reranked window is wide enough that a very recent entry
@@ -671,11 +693,7 @@ async function recallSingleCortex(
     // Distinguish embedding model unavailability (network, timeout, missing dep)
     // from other failures. Both trigger FTS fallback; different log messages.
     const msg = err instanceof Error ? err.message : String(err);
-    const isModelUnavailable =
-      msg.includes('failed to load embedding model') ||
-      msg.includes('@huggingface/transformers') ||
-      msg.includes('timed out');
-    if (isModelUnavailable) {
+    if (isEmbedModelUnavailable(msg)) {
       process.stderr.write(`think recall: embedding model unavailable (${msg}); falling back to FTS ranking\n`);
     } else {
       process.stderr.write(`think recall: embedding error (${msg}); falling back to FTS ranking\n`);
@@ -770,9 +788,8 @@ async function recallFederated(
     queryVec = await embed(query);
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    const isUnavailable = msg.includes('failed to load embedding model') || msg.includes('@huggingface/transformers') || msg.includes('timed out');
-    process.stderr.write(`think recall: ${isUnavailable ? 'embedding model unavailable' : 'embedding error'} (${msg}); falling back to FTS ranking
-`);
+    const logKind = isEmbedModelUnavailable(msg) ? 'embedding model unavailable' : 'embedding error';
+    process.stderr.write(`think recall: ${logKind} (${msg}); falling back to FTS ranking\n`);
     const fallbackFts = await Promise.all(
       cortexNames.map(async (name) => {
         try { return recallOneCortexWithFts(name, query, limit); }

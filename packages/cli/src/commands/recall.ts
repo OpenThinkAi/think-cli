@@ -13,7 +13,7 @@ import type { MemoryRow } from '../db/memory-queries.js';
 import type { LongTermEventRow } from '../db/long-term-queries.js';
 import { closeCortexDb } from '../db/engrams.js';
 import type { RecallScope } from '../daemon/recall.js';
-import { NOTE_FTS_FALLBACK } from '../daemon/recall.js';
+import { NOTE_FTS_FALLBACK, NOTE_FTS_EXPLICIT } from '../daemon/recall.js';
 
 export function printDecisions(m: MemoryRow): void {
   if (!m.decisions) return;
@@ -245,7 +245,7 @@ export const recallCommand = new Command('recall')
       .choices(['active', 'accessible', 'all'])
       .default('accessible'),
   )
-  .action(function (this: Command, query: string, opts: { engrams?: boolean; all?: boolean; days: string; limit: string; full?: boolean; includeSuperseded?: boolean; scope: string; noEmbed?: boolean }) {
+  .action(function (this: Command, query: string, opts: { engrams?: boolean; all?: boolean; days: string; limit: string; full?: boolean; includeSuperseded?: boolean; scope: string; embed: boolean }) {
     const config = getConfig();
     const cortex = config.cortex?.active;
 
@@ -258,7 +258,8 @@ export const recallCommand = new Command('recall')
     const scope = opts.scope as RecallScope;
 
     // AGT-324: honor both --no-embed flag and THINK_NO_EMBED=1 env var.
-    const noEmbed = opts.noEmbed === true || process.env.THINK_NO_EMBED === '1';
+    // Commander.js --no-embed convention: sets opts.embed=false (not opts.noEmbed).
+    const noEmbed = opts.embed === false || process.env.THINK_NO_EMBED === '1';
 
     const limit = parseInt(opts.limit, 10);
 
@@ -308,7 +309,9 @@ export const recallCommand = new Command('recall')
       console.warn(chalk.yellow(`Note: ${scopeNote}.`));
     }
 
-    if (noEmbed) console.log(NOTE_FTS_FALLBACK);
+    // When --no-embed or THINK_NO_EMBED=1 is set explicitly, use the opt-out note.
+    // The failure-fallback (NOTE_FTS_FALLBACK) is for daemon-side auto-fallback.
+    if (noEmbed) console.log(NOTE_FTS_EXPLICIT);
     runFtsRecall(cortex, query, { engrams: opts.engrams, limit });
     closeCortexDb(cortex);
   });
