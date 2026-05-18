@@ -25,6 +25,8 @@ import {
 } from '@modelcontextprotocol/sdk/types.js';
 import { connectDaemon, DaemonUnavailableError, type DaemonClient } from '../lib/daemon-client.js';
 import { readPackageVersion } from '../lib/version.js';
+import { thinkSyncTool } from './tools/sync.js';
+import { thinkExpandTool } from './tools/expand.js';
 
 // ---------------------------------------------------------------------------
 // Tool registration table
@@ -48,6 +50,7 @@ export interface ThinkToolEntry {
  * Exported so tests and future ticket modules can inspect or extend the table.
  */
 export const registeredTools: ThinkToolEntry[] = [];
+registeredTools.push(thinkSyncTool, thinkExpandTool); // AGT-316
 
 // ---------------------------------------------------------------------------
 // Server factory

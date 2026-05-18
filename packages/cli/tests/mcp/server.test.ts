@@ -236,8 +236,8 @@ describe('MCP server — subprocess stdio', () => {
         expect(toolsListResponse).not.toHaveProperty('error');
         const result = toolsListResponse['result'] as Record<string, unknown>;
         expect(Array.isArray(result['tools'])).toBe(true);
-        // AGT-315/316/317 not yet registered; scaffold returns empty list.
-        expect((result['tools'] as unknown[]).length).toBe(0);
+        // AGT-316 registered think_sync + think_expand; AGT-315/317 may add more.
+        expect((result['tools'] as unknown[]).length).toBeGreaterThanOrEqual(2);
       } finally {
         // Trigger graceful daemon shutdown. The exitSpy makes process.exit a
         // no-op so the test process itself doesn't die; restore spies after
