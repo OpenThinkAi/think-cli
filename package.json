@@ -20,5 +20,8 @@
   "license": "MIT",
   "engines": {
     "node": ">=22.5.0"
+  },
+  "overrides": {
+    "onnxruntime-web": "1.26.0"
   }
 }
