@@ -34,6 +34,7 @@ import { briefCommand } from './commands/brief.js';
 import { daemonCommand } from './commands/daemon.js';
 import { reindexCommand } from './commands/reindex.js';
 import { hookCommand } from './commands/hook.js';
+import { mcpCommand } from './commands/mcp.js';
 
 const program = new Command();
 
@@ -74,5 +75,6 @@ program.addCommand(briefCommand);
 program.addCommand(daemonCommand);
 program.addCommand(reindexCommand);
 program.addCommand(hookCommand);
+program.addCommand(mcpCommand);
 
 program.parse();
