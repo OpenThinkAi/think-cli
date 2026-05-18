@@ -80,8 +80,11 @@ describe('think recall flags (AGT-319)', () => {
     insertMemory(CORTEX, { ts: '2026-05-01T00:00:00.000Z', author: 'tester', content: 'stable schema memory' });
     closeAllCortexDbs();
 
+    // --no-embed forces the FTS fallback path so this test exercises the
+    // FTS-shape JSON schema (similarity / activity_seq null) regardless of
+    // whether a daemon happens to be running in the test environment.
     const prog = makeProgram();
-    await prog.parseAsync(['node', 'think', 'recall', '--json', 'stable schema']);
+    await prog.parseAsync(['node', 'think', 'recall', '--json', '--no-embed', 'stable schema']);
 
     const written = stdoutWriteSpy.mock.calls.flat().join('');
     const parsed = JSON.parse(written.trim()) as Record<string, unknown>[];
@@ -168,8 +171,10 @@ describe('think recall flags (AGT-319)', () => {
     db.prepare('INSERT INTO compaction_links (raw_id, compacted_id) VALUES (?, ?)').run(rawEntry.id, compactedEntry.id);
     closeAllCortexDbs();
 
+    // --no-embed pins this test to the FTS path, which is what the assertion
+    // below describes ("FTS mode does not apply the compaction filter").
     const prog = makeProgram();
-    await prog.parseAsync(['node', 'think', 'recall', '--json', '--full', 'compaction full test']);
+    await prog.parseAsync(['node', 'think', 'recall', '--json', '--full', '--no-embed', 'compaction full test']);
 
     const written = stdoutWriteSpy.mock.calls.flat().join('');
     const parsed = JSON.parse(written.trim()) as Record<string, unknown>[];

@@ -245,7 +245,7 @@ export const recallCommand = new Command('recall')
       .choices(['active', 'accessible', 'all'])
       .default('accessible'),
   )
-  .action(function (this: Command, query: string, opts: { engrams?: boolean; all?: boolean; days: string; limit: string; full?: boolean; json?: boolean; includeSuperseded?: boolean; scope: string; embed: boolean; kind?: string; topic?: string; since?: string }) {
+  .action(async function (this: Command, query: string, opts: { engrams?: boolean; all?: boolean; days: string; limit: string; full?: boolean; json?: boolean; includeSuperseded?: boolean; scope: string; embed: boolean; kind?: string; topic?: string; since?: string }) {
     const config = getConfig();
     const cortex = config.cortex?.active;
 
@@ -294,36 +294,115 @@ export const recallCommand = new Command('recall')
       return;
     }
 
-    // AGT-289: Hook point for daemon recall routing. When the daemon recall RPC
-    // is wired (later phase), call probeDaemon(100) here — if daemon is up,
-    // route to daemon for vector recall; if not, print the degraded note and
-    // fall through to runFtsRecall. Currently FTS is the only path.
+    // ────────────────────────────────────────────────────────────────────
+    // Daemon recall path (semantic vector search + federation + filters).
     //
-    // AGT-305: When the daemon path is wired, pass full and includeSuperseded
-    // through to the RPC params so the daemon applies the right filters:
-    //   { ..., full: opts.full ?? false, includeSuperseded: opts.includeSuperseded ?? false }
+    // The CLI tries the daemon RPC first when --no-embed is NOT set. The
+    // daemon handler does the embed call, vector search via search-vectors,
+    // recency-weighted reranking, filter application, and federation.
     //
-    // AGT-308: Pass scope through to the daemon recall RPC params:
-    //   { ..., scope }
-    //
-    // AGT-307 / AGT-318 rendering note: when daemon results are wired here,
-    // every RecallEntry carries a non-empty `cortex` field. Rendering must:
-    //   - Multi-cortex results: show `[cortex-name]` tag per entry.
-    //   - Single-cortex results: omit per-entry tag; state cortex in header.
-    //
-    // AGT-307 / AGT-319 JSON invariant: when --json lands, always include
-    // `cortex` per entry in the serialised output — the field is load-bearing
-    // for agent consumers and must never be omitted from machine-readable output.
+    // Falls back to local FTS5 when:
+    //   - --no-embed (explicit opt-out — see NOTE_FTS_EXPLICIT)
+    //   - daemon spawn/connect fails (see NOTE_FTS_FALLBACK)
+    //   - daemon RPC errors mid-call (e.g. embed model crash)
+    // FTS mode silently ignores filter flags that only the daemon understands
+    // (--kind, --topic, --since, --include-superseded, --scope); a warning
+    // is emitted for each so the user knows the flag was a no-op.
+    // ────────────────────────────────────────────────────────────────────
 
-    // AGT-305: Warn when supersession/compaction filter flags are passed in
-    // FTS (degraded) mode — they have no effect until the daemon path is wired.
-    // AGT-318: --full lifts truncation in formatted output (handled in runFormattedFtsRecall).
-    // --include-superseded has no effect in FTS mode; the daemon path is not wired yet.
+    if (!noEmbed) {
+      // Dynamic import of daemon-client keeps the FTS-only path (the
+      // --no-embed branch below) free of any daemon module-load cost —
+      // useful for offline / CI runs that explicitly opt out of semantic
+      // recall and never need the IPC stack.
+      type DaemonClient = Awaited<ReturnType<typeof import('../lib/daemon-client.js').connectDaemon>>;
+      let client: DaemonClient | null = null;
+      try {
+        const { connectDaemon } = await import('../lib/daemon-client.js');
+        client = await connectDaemon();
+      } catch {
+        client = null;
+      }
+
+      if (client !== null) {
+        const rpcParams: Record<string, unknown> = { query, limit, scope };
+        if (scope === 'active') rpcParams['cortex'] = cortex;
+        if (opts.kind !== undefined) rpcParams['kind'] = opts.kind;
+        if (opts.topic !== undefined) rpcParams['topic'] = opts.topic;
+        if (opts.since !== undefined) rpcParams['since'] = opts.since;
+        if (opts.full) rpcParams['full'] = true;
+        if (opts.includeSuperseded) rpcParams['includeSuperseded'] = true;
+
+        type DaemonRecallEntry = {
+          id: string;
+          ts: string;
+          cortex: string;
+          kind: string | null;
+          content: string;
+          topics: string[];
+          supersedes: string[] | null;
+          compacted_from: string[] | null;
+          similarity: number | null;
+          activity_seq: number | null;
+          fts_fallback?: true;
+        };
+
+        let entries: DaemonRecallEntry[];
+        try {
+          entries = (await client.call('recall', rpcParams)) as DaemonRecallEntry[];
+        } catch (err) {
+          console.error(`error: recall failed — ${err instanceof Error ? err.message : String(err)}`);
+          process.exitCode = 1;
+          client.close();
+          closeCortexDb(cortex);
+          return;
+        }
+        client.close();
+
+        // Surface the degradation note when the daemon's internal embed call
+        // failed and it auto-fell-back to FTS5 ranking. Checked independently
+        // of result count so the user can distinguish "no matches" from
+        // "semantic search bypassed and also no matches" — the latter is
+        // worth knowing because re-running once the model is available may
+        // surface different results.
+        const daemonUsedFts = entries[0]?.fts_fallback === true;
+        if (daemonUsedFts) console.log(NOTE_FTS_FALLBACK);
+
+        if (opts.json) {
+          // Strip the internal `fts_fallback` signal from machine-readable
+          // output — it is not part of the documented JSON entry schema and
+          // agent schema-validators should not have to know about it. The
+          // note above is the user-facing surface for that information.
+          const jsonEntries = entries.map((e) => {
+            const out: Record<string, unknown> = { ...e };
+            delete out['fts_fallback'];
+            return out;
+          });
+          process.stdout.write(JSON.stringify(jsonEntries) + '\n');
+          closeCortexDb(cortex);
+          return;
+        }
+
+        const cortexes = entries.length > 0 ? cortexSet(entries) : new Set<string>([cortex]);
+        process.stdout.write(formatRecallOutput(entries, cortexes, { full: opts.full }) + '\n');
+        closeCortexDb(cortex);
+        return;
+      }
+
+      // Daemon unavailable — fall through to FTS with a note.
+      console.log(NOTE_FTS_FALLBACK);
+    }
+
+    // ────────────────────────────────────────────────────────────────────
+    // FTS5 fallback path (local L2 keyword search via searchMemories).
+    // Reached when --no-embed is set, daemon spawn/connect failed, or the
+    // explicit opt-out env var THINK_NO_EMBED=1 is set. Warns on any
+    // daemon-only flag so the user knows it was ignored.
+    // ────────────────────────────────────────────────────────────────────
+
     if (opts.includeSuperseded) {
       console.warn(chalk.yellow("note: --include-superseded requires the daemon (vector recall); the FTS fallback does not apply supersession filters."));
     }
-
-    // AGT-320: Warn when kind/topic/since are used in FTS mode — they have no effect.
     if (opts.kind !== undefined) {
       console.warn(chalk.yellow("note: --kind " + opts.kind + " requires the daemon (vector recall); the FTS fallback returns all entry kinds."));
     }
@@ -333,28 +412,13 @@ export const recallCommand = new Command('recall')
     if (opts.since !== undefined) {
       console.warn(chalk.yellow("note: --since " + opts.since + " requires the daemon (vector recall); the FTS fallback ignores the date filter."));
     }
-
-    // AGT-308: Warn when --scope was explicitly provided in FTS (degraded) mode
-    // and has no effect until the daemon path is wired (AGT-289). Check the
-    // Commander value source so we do NOT warn when the user ran plain
-    // `think recall` without passing --scope (the default 'accessible' is silent).
     if (this.getOptionValueSource('scope') === 'cli' && scope !== 'active') {
       const scopeNote = scope === 'all'
-        ? '--scope all is ALPHA and not yet active; behaves like accessible once the daemon path is wired'
+        ? '--scope all requires the daemon for cross-cortex federation; start the daemon (think daemon start) or omit --scope to use the FTS fallback on the active cortex'
         : `--scope ${scope} requires the daemon (vector recall); the FTS fallback queries the active cortex only`;
       console.warn(chalk.yellow(`Note: ${scopeNote}.`));
     }
 
-    // AGT-319: --json bypasses the formatter entirely and emits a JSON array.
-    // Uses the FTS/searchMemories path only (semantic ranking is not available
-    // in the CLI-direct path; daemon wiring is a later phase).
-    //
-    // Field invariants for agent consumers (stable regardless of data path):
-    //   - cortex: always the active cortex name (AGT-307/AGT-319 invariant).
-    //   - similarity/activity_seq/supersedes/compacted_from: null when not
-    //     populated on this path — null means "not tracked here," not "zero."
-    //   - content: full text when --full is set; otherwise the raw DB value
-    //     (FTS does not truncate; truncation is a formatter concern only).
     if (opts.json) {
       const rawMemories = dedupeBy(
         searchMemories(cortex, query, limit),
@@ -377,12 +441,7 @@ export const recallCommand = new Command('recall')
       return;
     }
 
-    // When --no-embed or THINK_NO_EMBED=1 is set explicitly, use the opt-out note.
-    // The failure-fallback (NOTE_FTS_FALLBACK) is for daemon-side auto-fallback.
     if (noEmbed) console.log(NOTE_FTS_EXPLICIT);
-    // AGT-318: --full lifts content truncation in FTS mode (runFormattedFtsRecall).
-    // When the daemon path is wired (AGT-289), formatRecallOutput should be called
-    // there too so truncation behavior is symmetric across both paths.
     runFormattedFtsRecall(cortex, query, { engrams: opts.engrams, limit, full: opts.full });
     closeCortexDb(cortex);
   });
