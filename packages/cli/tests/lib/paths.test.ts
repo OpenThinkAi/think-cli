@@ -151,6 +151,10 @@ describe('maybeMigrateEngramsToIndex', () => {
     const backupDirs = readdirSync(parentDir).filter((d) => d.startsWith('engrams-backup-'));
     expect(backupDirs.length).toBe(1);
     expect(existsSync(join(parentDir, backupDirs[0], 'cortex-shared.db'))).toBe(true);
+
+    // The confirmation message should mention the backup count and backup dir path.
+    expect(stderrOutput).toContain('backed up 1 conflicting database(s)');
+    expect(stderrOutput).toContain(backupDirs[0]);
   });
 
   it('only engrams/ exists → auto-rename to index/ with no prompt', async () => {

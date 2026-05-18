@@ -85,6 +85,8 @@ export function consolidateEngramsToIndex(oldDir: string, newDir: string): void 
   const files = fs.readdirSync(oldDir);
   const ts = Date.now();
   let movedCount = 0;
+  let backedUpCount = 0;
+  let backupDir: string | null = null;
 
   for (const file of files) {
     const src = path.join(oldDir, file);
@@ -93,9 +95,12 @@ export function consolidateEngramsToIndex(oldDir: string, newDir: string): void 
     if (fs.existsSync(dst)) {
       // Both dirs have this cortex DB — index/ (v3) is canonical.
       // Back up the engrams/ copy outside the tree so the user can recover it.
-      const backupDir = path.join(path.dirname(oldDir), `engrams-backup-${ts}`);
+      if (backupDir === null) {
+        backupDir = path.join(path.dirname(oldDir), `engrams-backup-${ts}`);
+      }
       fs.mkdirSync(backupDir, { recursive: true });
       fs.renameSync(src, path.join(backupDir, file));
+      backedUpCount += 1;
     } else {
       fs.renameSync(src, dst);
       movedCount += 1;
@@ -104,9 +109,12 @@ export function consolidateEngramsToIndex(oldDir: string, newDir: string): void 
 
   fs.rmSync(oldDir, { recursive: true, force: true });
 
-  process.stderr.write(
-    `think: consolidated ${movedCount} database(s) from ${oldDir} into ${newDir}; removed ${oldDir}\n`,
-  );
+  let summary = `think: consolidated ${movedCount} database(s) into ${newDir}`;
+  if (backedUpCount > 0 && backupDir !== null) {
+    summary += `; backed up ${backedUpCount} conflicting database(s) to ${backupDir}`;
+  }
+  summary += `; removed ${oldDir}`;
+  process.stderr.write(summary + '\n');
 }
 
 /**
