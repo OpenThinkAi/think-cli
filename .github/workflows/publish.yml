@@ -55,13 +55,12 @@ jobs:
           VERSION=$(node -p "require('./packages/cli/package.json').version")
           # Derive the npm dist-tag from the version string.
           # - bare X.Y.Z → latest
-          # - X.Y.Z-alpha.N or X.Y.Z-alpha_N → alpha (and likewise
-          #   beta, rc, or any other suffix label) so prerelease
-          #   versions do NOT clobber the 'latest' tag
+          # - X.Y.Z-alpha.N → alpha (and likewise beta, rc, or any
+          #   other suffix label) so prerelease versions do NOT
+          #   clobber the 'latest' tag
           if [[ "$VERSION" == *-* ]]; then
             DIST_TAG="${VERSION#*-}"
             DIST_TAG="${DIST_TAG%%.*}"
-            DIST_TAG="${DIST_TAG%%_*}"
           else
             DIST_TAG="latest"
           fi

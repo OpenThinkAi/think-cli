@@ -1,6 +1,6 @@
 # Changelog
 
-## [1.0.0-alpha_001] — 2026-05-18
+## [1.0.0-alpha.1] — 2026-05-18
 
 ### v3 — Vector recall, write-time compaction, resident daemon (AGT-311 through AGT-323)
 
@@ -30,7 +30,7 @@ v3 is a major architectural redesign. Full design: [think-v3 project README](htt
 
 **Phase 11 (AGT-322):** v3 think brief — cortex-aware status report combining daemon health, recent memories, and retros; --cortex and --json flags; --kind/--topic/--since recall filters.
 
-**Phase 12 (AGT-323):** Version bump to 1.0.0-alpha_001, README v3 overview, workflow alpha-tag fix, release/v1.0.0-alpha branch cut.
+**Phase 12 (AGT-323):** Version bump to 1.0.0-alpha.1, README v3 overview, workflow alpha-tag fix, release/v1.0.0-alpha branch cut.
 
 ---
 
