@@ -60,7 +60,8 @@ export function createMcpServer(): Server {
   let version: string;
   try {
     version = readPackageVersion();
-  } catch {
+  } catch (err) {
+    process.stderr.write(`[think mcp] warning: could not read package version — ${String(err)}\n`);
     version = '0.0.0';
   }
 

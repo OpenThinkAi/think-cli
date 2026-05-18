@@ -41,8 +41,8 @@ vi.mock('../../src/lib/daemon-client.js', () => {
 
 describe('MCP server scaffold — in-process', () => {
   async function makeClientServerPair() {
-    // Fresh import each time so module-level registeredTools state is shared
-    // but we get the real server factory.
+    // Dynamic import returns the cached module singleton; reset the shared
+    // registration table immediately after to isolate each test.
     const { createMcpServer, registeredTools } = await import('../../src/mcp/server.js');
 
     // Clear the registration table so tests are isolated.
@@ -120,7 +120,6 @@ import { existsSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { randomUUID } from 'node:crypto';
 
 const PKG_ROOT = resolve(fileURLToPath(import.meta.url), '..', '..', '..');
 const DIST_INDEX = join(PKG_ROOT, 'dist', 'index.js');
