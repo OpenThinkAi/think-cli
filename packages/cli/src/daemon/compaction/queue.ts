@@ -290,6 +290,13 @@ export class CompactionQueue {
       return this._pipelineOverride(job);
     }
 
+    // Kill-switch: compaction.enabled = false in config disables LLM calls
+    // without revoking general LLM consent. Jobs drain as no-op skips.
+    if (getConfig().compaction?.enabled === false) {
+      log(`compaction disabled by config (entry=${job.entry_id}, cortex=${job.cortex})`);
+      return;
+    }
+
     // Read the entry content + embedding from L2 (inserted by the sync handler).
     const entryWithEmbedding = readEntryWithEmbeddingFromL2(job.entry_id, job.cortex);
     if (entryWithEmbedding === null) {

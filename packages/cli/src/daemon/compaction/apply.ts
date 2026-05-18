@@ -23,7 +23,6 @@
  * unsanitized cortex name is a programmer error.
  */
 
-import fs from 'node:fs';
 import path from 'node:path';
 import { v7 as uuidv7 } from 'uuid';
 import { getCortexDb } from '../../db/engrams.js';
@@ -31,63 +30,8 @@ import { assignNextSeq } from '../../db/activity-seq.js';
 import { getRepoPath } from '../../lib/paths.js';
 import { getConfig, getPeerId } from '../../lib/config.js';
 import embed, { EMBEDDING_MODEL_NAME } from '../../lib/embed.js';
+import { appendToL1Page } from '../../lib/l1-page.js';
 import type { CompactionSuccess, NewEntry } from './call.js';
-
-// ---------------------------------------------------------------------------
-// L1 page helpers (mirrors sync-handler.ts / supersession/apply.ts)
-// ---------------------------------------------------------------------------
-
-/** Maximum number of JSONL lines per page before rotation. */
-const L1_PAGE_SIZE = 1000;
-
-/**
- * Returns the path to the active L1 JSONL page for the given cortex directory.
- * Rotates when the current page has reached L1_PAGE_SIZE lines.
- */
-function getActivePage(cortexDir: string): string {
-  let files: string[] = [];
-  try {
-    files = fs.readdirSync(cortexDir)
-      .filter(f => /^\d{6}\.jsonl$/.test(f))
-      .sort();
-  } catch {
-    files = [];
-  }
-
-  if (files.length === 0) {
-    return path.join(cortexDir, '000001.jsonl');
-  }
-
-  const latestFile = files[files.length - 1];
-  const latestPath = path.join(cortexDir, latestFile);
-
-  let lineCount = 0;
-  try {
-    const raw = fs.readFileSync(latestPath, 'utf-8');
-    for (const line of raw.split('\n')) {
-      if (line.length > 0) lineCount++;
-    }
-  } catch {
-    lineCount = 0;
-  }
-
-  if (lineCount >= L1_PAGE_SIZE) {
-    const nextNum = parseInt(latestFile, 10) + 1;
-    return path.join(cortexDir, String(nextNum).padStart(6, '0') + '.jsonl');
-  }
-
-  return latestPath;
-}
-
-/**
- * Append a single JSONL line to the active L1 page.
- * Creates the cortex directory and page file if they do not yet exist.
- */
-function appendToL1(cortexDir: string, obj: Record<string, unknown>): void {
-  fs.mkdirSync(cortexDir, { recursive: true, mode: 0o700 });
-  const pagePath = getActivePage(cortexDir);
-  fs.appendFileSync(pagePath, JSON.stringify(obj) + '\n', 'utf-8');
-}
 
 // ---------------------------------------------------------------------------
 // Public API
@@ -136,7 +80,7 @@ export async function applyCompaction(
   };
 
   const cortexDir = path.join(getRepoPath(), safeCortex);
-  appendToL1(cortexDir, l1Entry);
+  appendToL1Page(cortexDir, l1Entry);
 
   // ── Step 2: embed the compacted content ──────────────────────────────────
   const embeddingVec = await embed(llmResult.compacted_text);

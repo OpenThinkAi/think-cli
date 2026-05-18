@@ -113,6 +113,20 @@ export interface RecallConfig {
 
 export interface CompactionConfig {
   /**
+   * Master kill-switch for write-time compaction. Set to `false` to disable
+   * all compaction LLM calls without revoking general LLM consent. Jobs
+   * already in the queue are drained (no-op skips) rather than dropped —
+   * consistent with triage-gate skip behaviour. Defaults to `true` when
+   * absent.
+   *
+   * Use case: emergency stop when the LLM produces bad supersession results
+   * without disabling retro supersession checks or other LLM features.
+   *
+   * Default: true
+   */
+  enabled?: boolean;
+
+  /**
    * Cosine similarity threshold for the compaction triage gate (AGT-300).
    *
    * Before calling the LLM, the worker searches L2 for the top-K most
