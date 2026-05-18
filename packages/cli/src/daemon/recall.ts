@@ -353,7 +353,7 @@ async function recallOneCortexWithVec(
   // per-cortex; there is no global lock.
   if (reindexingCortexes.has(cortexName)) {
     throw new Error(
-      `cortex "${cortexName}" is currently being reindexed due to an embedding model version change — retry in a moment`
+      `cortex "${cortexName}" is currently being reindexed due to an embedding model version change — this may take several seconds; retry shortly or check the daemon log for progress`
     );
   }
 

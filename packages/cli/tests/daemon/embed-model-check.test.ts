@@ -4,12 +4,12 @@
  * Covers:
  *   1. Up-to-date cortex: no reindex triggered.
  *   2. Model mismatch: reindex triggered, busy flag set then cleared.
- *   3. Null stored model (first-time v3 startup): reindex triggered.
+ *   3. Null stored model (no embeddings yet): reindex triggered.
  *   4. While reindexing, recall returns a transient busy error for that cortex
  *      but succeeds for other cortexes.
  *   5. Rows are re-embedded (embedding_model updated) after reindex.
  *   6. DB error during sampleEmbeddingModel: skip that cortex gracefully.
- *   7. sanitizeForLog strips newlines from model names in log output.
+ *   7. sanitizeForLog strips newlines from model names and cortex names in log output.
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
@@ -144,7 +144,7 @@ describe('runEmbedModelChecks (AGT-277)', () => {
 
     await runEmbedModelChecks([cortex], writeLine);
 
-    expect(logs.some(l => l.includes('Embedding model changed') && l.includes('old-model') && l.includes(EMBEDDING_MODEL_NAME))).toBe(true);
+    expect(logs.some(l => l.includes('embedding model changed') && l.includes('old-model') && l.includes(EMBEDDING_MODEL_NAME))).toBe(true);
     expect(logs.some(l => l.includes('reindex complete'))).toBe(true);
     // After reindex, embedding_model should be the current model
     expect(getEmbeddingModel(cortex, id)).toBe(EMBEDDING_MODEL_NAME);
@@ -153,9 +153,9 @@ describe('runEmbedModelChecks (AGT-277)', () => {
   it('triggers reindex when no embeddings exist yet (null stored model)', async () => {
     const cortex = 'no-embeddings';
     getCortexDb(cortex);
-    // Insert a row without embedding_model (v2 data)
+    // Insert a row without embedding_model (legacy data with no embeddings)
     const ts = '2025-02-01T00:00:00Z';
-    const content = 'v2 content';
+    const content = 'legacy content';
     const id = deterministicId(ts, 'bob', content);
     const db = getCortexDb(cortex);
     db.prepare(
@@ -172,17 +172,15 @@ describe('runEmbedModelChecks (AGT-277)', () => {
     expect(getEmbeddingModel(cortex, id)).toBe(EMBEDDING_MODEL_NAME);
   });
 
-  it('busy flag is set during reindex and cleared after completion', async () => {
+  it('busy flag is cleared after reindex completes', async () => {
     const cortex = 'busy-flag';
     getCortexDb(cortex);
     seedRowWithModel(cortex, 'old-model');
     mockL1Pages([makeL1Line('2025-01-01T00:00:00Z', 'alice', 'test content')]);
 
-    // We cannot observe mid-reindex state directly in a unit test because
-    // reindexOneCortex is awaited serially. Instead, verify the flag is clear
-    // both before and after the call, which ensures finally {} runs correctly.
     expect(reindexingCortexes.has(cortex)).toBe(false);
     await runEmbedModelChecks([cortex], writeLine);
+    // Verify the finally block cleared the flag correctly
     expect(reindexingCortexes.has(cortex)).toBe(false);
   });
 
@@ -201,28 +199,19 @@ describe('runEmbedModelChecks (AGT-277)', () => {
     expect(logs.some(l => l.includes('reindex failed'))).toBe(true);
   });
 
-  it('skips cortex gracefully when DB throws during sampling', async () => {
-    // Simulate a DB-level error during sampleEmbeddingModel by providing
-    // a cortex name that would cause getCortexDb to fail. We achieve this
-    // by temporarily pointing THINK_HOME to a file (not a directory) so
-    // that mkdirSync throws when the index dir is opened.
-    const badHome = join(tmpHome, 'not-a-dir');
-    // Create a file at the index path to trigger a dir-creation error
-    const { writeFileSync, mkdirSync: mkdirSyncNode } = await import('node:fs');
-    mkdirSyncNode(badHome, { recursive: true });
-    // Write a file where the index dir would be — causes mkdirSync to fail
-    writeFileSync(join(badHome, 'index'), 'this-is-a-file-not-a-dir');
-    const oldHome = process.env.THINK_HOME;
-    process.env.THINK_HOME = badHome;
-    closeAllCortexDbs();
+  it('skips cortex gracefully when sampleEmbeddingModel throws', async () => {
+    // Mock getCortexDb at the module level to throw for this specific cortex name.
+    // This tests the catch block in runEmbedModelChecks without relying on
+    // filesystem layout details.
+    const engrams = await import('../../src/db/engrams.js');
+    const spy = vi.spyOn(engrams, 'getCortexDb').mockImplementationOnce(() => {
+      throw new Error('simulated DB open failure');
+    });
 
     const cortex = 'fail-cortex';
-    try {
-      await runEmbedModelChecks([cortex], writeLine);
-    } finally {
-      process.env.THINK_HOME = oldHome ?? tmpHome;
-      closeAllCortexDbs();
-    }
+    await runEmbedModelChecks([cortex], writeLine);
+
+    spy.mockRestore();
 
     // Should log a skip message; must NOT throw
     expect(logs.some(l => l.includes('skipping') || l.includes('could not sample'))).toBe(true);
@@ -247,7 +236,7 @@ describe('runEmbedModelChecks (AGT-277)', () => {
     expect(reindexingCortexes.has(cortex2)).toBe(false);
   });
 
-  it('sanitizes newlines in model names before logging', async () => {
+  it('sanitizes newlines in model names and cortex names before logging', async () => {
     const cortex = 'log-inject';
     getCortexDb(cortex);
     // Seed a model name with a newline — simulates a crafted DB write
@@ -256,11 +245,34 @@ describe('runEmbedModelChecks (AGT-277)', () => {
 
     await runEmbedModelChecks([cortex], writeLine);
 
-    // No log line should contain a literal newline inside the model name position
-    const modelChangedLog = logs.find(l => l.includes('Embedding model changed'));
+    // No log line should contain a literal newline from the model name position
+    const modelChangedLog = logs.find(l => l.includes('embedding model changed'));
     expect(modelChangedLog).toBeDefined();
-    // The old= value should not contain \n
     expect(modelChangedLog).not.toContain('\n');
+
+    // All log lines should be free of injected newlines
+    for (const line of logs) {
+      expect(line).not.toMatch(/\n.*\n/); // no embedded newline creating a second line
+    }
+  });
+
+  it('sanitizes newlines in cortex name before logging (log injection via cortex name)', async () => {
+    // This tests the safeCortex = sanitizeForLog(cortexName) path.
+    // We mock getCortexDb to throw so we hit the catch/skip path with the cortex name in the log.
+    const engrams = await import('../../src/db/engrams.js');
+    const spy = vi.spyOn(engrams, 'getCortexDb').mockImplementationOnce(() => {
+      throw new Error('simulated failure');
+    });
+
+    const maliciousCortex = 'cortex\ninjected-second-line';
+    await runEmbedModelChecks([maliciousCortex], writeLine);
+
+    spy.mockRestore();
+
+    // The skip log line must not contain a literal embedded newline
+    const skipLog = logs.find(l => l.includes('skipping'));
+    expect(skipLog).toBeDefined();
+    expect(skipLog).not.toContain('\n');
   });
 });
 
@@ -287,8 +299,7 @@ describe('recall returns transient error when cortex is reindexing (AGT-277)', (
     rmSync(tmpHome, { recursive: true, force: true });
   });
 
-  it('recallOneCortexWithVec throws a busy error when the cortex is in reindexingCortexes', async () => {
-    // We test this via handleRecall at the public API level, with the busy flag set.
+  it('recall throws a busy error when the cortex is in reindexingCortexes', async () => {
     const { handleRecall } = await import('../../src/daemon/recall.js');
     const cortex = 'busy-cortex';
     getCortexDb(cortex);
@@ -322,5 +333,18 @@ describe('recall returns transient error when cortex is reindexing (AGT-277)', (
     expect(Array.isArray(result)).toBe(true);
 
     reindexingCortexes.delete(busyCortex);
+  });
+
+  it('busy error message mentions retry and daemon log', async () => {
+    const { handleRecall } = await import('../../src/daemon/recall.js');
+    const cortex = 'msg-check';
+    getCortexDb(cortex);
+    reindexingCortexes.add(cortex);
+
+    await expect(
+      handleRecall({ cortex, query: 'test', scope: 'active' })
+    ).rejects.toThrow(/retry shortly|daemon log/);
+
+    reindexingCortexes.delete(cortex);
   });
 });

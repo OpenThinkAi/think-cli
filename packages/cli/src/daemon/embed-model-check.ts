@@ -6,8 +6,8 @@
  *      that produced the stored embeddings.
  *   2. If the stored model differs from the current EMBEDDING_MODEL_NAME, marks
  *      the cortex as "reindexing" and triggers a full reindex via reindexOneCortex.
- *   3. If no rows have embeddings yet (null — first-time v3 startup against v2
- *      data), also triggers an initial reindex.
+ *   3. If no rows have embeddings yet (null — no embeddings exist yet), also
+ *      triggers an initial reindex.
  *   4. While a cortex is reindexing, the recall endpoint must return a transient
  *      busy error for that cortex. Other cortexes continue serving normally.
  *      Per-cortex isolation is the design; there is no global lock.
@@ -19,12 +19,17 @@
  *   - Reindex runs sequentially per cortex (the loop in `runEmbedModelChecks`
  *     awaits each cortex in turn). This is safe because each cortex owns an
  *     independent SQLite file — no cross-cortex lock contention.
+ *   - Note: there is a deliberate race window between socket bind (when the daemon
+ *     begins accepting connections) and this check running (fire-and-forget after
+ *     bind). A recall that arrives in this gap succeeds against potentially stale
+ *     vectors with no busy-flag protection. This is an accepted trade-off so the
+ *     daemon can accept connections immediately; it is not a bug.
  *
  * Log injection guard:
- *   - The `embedding_model` column is written by the local process, but we treat
- *     it as untrusted (it could be set to an unexpected value by a future code
- *     path or direct DB edit). Both the old and new model names are sanitized
- *     before appearing in log lines to prevent log-injection via embedded newlines.
+ *   - Both the stored model name (`embedding_model` DB value) and the cortex name
+ *     are sanitized before appearing in log lines to prevent log-injection via
+ *     embedded newlines. Newlines are the only character stripped; ANSI escape
+ *     sequences are not handled.
  */
 
 import { EMBEDDING_MODEL_NAME } from '../lib/embed.js';
@@ -42,6 +47,9 @@ import { reindexOneCortex } from '../commands/reindex.js';
  * querying stale vectors. Cleared for each cortex once its reindex completes.
  * Other cortexes are never in this set unless they independently triggered a
  * reindex, so cross-cortex recall is not affected.
+ *
+ * This is a module-level mutable Set. Only `runEmbedModelChecks` and its
+ * `finally` block should add/delete entries. Test setup may call `.clear()`.
  */
 export const reindexingCortexes: Set<string> = new Set();
 
@@ -50,9 +58,9 @@ export const reindexingCortexes: Set<string> = new Set();
 // ---------------------------------------------------------------------------
 
 /**
- * Strip newlines from a value before embedding it in a log line.
- * Prevents a crafted `embedding_model` value from injecting spurious log
- * lines or ANSI escape sequences into the daemon log.
+ * Strip CR and LF from a value before embedding it in a log line.
+ * Prevents a crafted value from injecting spurious log entries via newlines.
+ * Note: ANSI escape sequences are not stripped.
  */
 function sanitizeForLog(value: string): string {
   return value.replace(/[\r\n]/g, ' ');
@@ -64,7 +72,7 @@ function sanitizeForLog(value: string): string {
 
 /**
  * Sample one row's `embedding_model` from the cortex L2. Returns:
- *   - `null`  — no rows have an embedding yet (v2 data / first-time v3 start)
+ *   - `null`  — no rows have an embedding yet
  *   - `string` — the model name recorded in the first embedded row found
  *
  * The query is fast (LIMIT 1) even on large tables because we only filter
@@ -73,7 +81,7 @@ function sanitizeForLog(value: string): string {
 function sampleEmbeddingModel(cortexName: string): string | null {
   const db = getCortexDb(cortexName);
   const row = db.prepare(
-    'SELECT DISTINCT embedding_model FROM memories WHERE embedding_model IS NOT NULL LIMIT 1'
+    'SELECT embedding_model FROM memories WHERE embedding_model IS NOT NULL LIMIT 1'
   ).get() as { embedding_model: string } | undefined;
   return row?.embedding_model ?? null;
 }
@@ -102,31 +110,29 @@ export async function runEmbedModelChecks(
   writeLine: (msg: string) => void,
 ): Promise<void> {
   for (const cortexName of cortexNames) {
+    const safeCortex = sanitizeForLog(cortexName);
     let storedModel: string | null;
     try {
       storedModel = sampleEmbeddingModel(cortexName);
     } catch (err) {
       // DB not accessible (e.g., brand-new cortex with no L2 file yet) — skip.
       const msg = err instanceof Error ? err.message : String(err);
-      writeLine(`embed-model-check: could not sample embedding_model for cortex "${cortexName}": ${msg} — skipping`);
+      writeLine(`embed-model-check: could not sample embedding_model for cortex "${safeCortex}": ${msg} — skipping`);
       continue;
     }
 
-    const needsReindex =
-      storedModel === null || storedModel !== EMBEDDING_MODEL_NAME;
-
-    if (!needsReindex) {
-      writeLine(`embed-model-check: cortex "${cortexName}" is up to date (model=${sanitizeForLog(EMBEDDING_MODEL_NAME)})`);
+    if (storedModel !== null && storedModel === EMBEDDING_MODEL_NAME) {
+      writeLine(`embed-model-check: cortex "${safeCortex}" is up to date (model=${sanitizeForLog(EMBEDDING_MODEL_NAME)})`);
       continue;
     }
 
     if (storedModel === null) {
       writeLine(
-        `embed-model-check: cortex "${cortexName}" has no embeddings yet (first-time v3 startup against v2 data), reindexing…`
+        `embed-model-check: cortex "${safeCortex}" has no embeddings yet, reindexing…`
       );
     } else {
       writeLine(
-        `embed-model-check: Embedding model changed (old=${sanitizeForLog(storedModel)} new=${sanitizeForLog(EMBEDDING_MODEL_NAME)}), reindexing cortex "${cortexName}"…`
+        `embed-model-check: embedding model changed (old=${sanitizeForLog(storedModel)} new=${sanitizeForLog(EMBEDDING_MODEL_NAME)}), reindexing cortex "${safeCortex}"…`
       );
     }
 
@@ -146,16 +152,16 @@ export async function runEmbedModelChecks(
         : 0;
       if (result.failures === 0) {
         writeLine(
-          `embed-model-check: reindex complete for cortex "${cortexName}": ${result.total} entries in ${secs}s (${rate} entries/s)`
+          `embed-model-check: reindex complete for cortex "${safeCortex}": ${result.total} entries in ${secs}s (${rate} entries/s)`
         );
       } else {
         writeLine(
-          `embed-model-check: reindex complete for cortex "${cortexName}": ${result.total} entries, ${result.failures} failures in ${secs}s (${rate} entries/s)`
+          `embed-model-check: reindex complete for cortex "${safeCortex}": ${result.total} entries, ${result.failures} failures in ${secs}s (${rate} entries/s)`
         );
       }
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      writeLine(`embed-model-check: reindex failed for cortex "${cortexName}": ${msg}`);
+      writeLine(`embed-model-check: reindex failed for cortex "${safeCortex}": ${msg}`);
     } finally {
       // Always clear the busy flag, even on failure, so the cortex is queryable
       // again (even if its embeddings are stale). Better to serve stale vectors
