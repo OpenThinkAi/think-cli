@@ -1,5 +1,14 @@
 # Changelog
 
+## [1.0.0-alpha.2] — 2026-05-18
+
+### Fixed
+- `think daemon start` (background mode) now works correctly on the published alpha (#58). Two compounding bugs were addressed:
+  - The daemon binary path resolution used brittle `../..` relative math that overshot the package root under the bundled `dist/` layout, surfacing as `daemon binary not found at @openthink/dist/...` (missing the `/think/` segment).
+  - The daemon entry exported `runDaemon` but didn't auto-execute when invoked as a script, so spawning `node <entry>` imported the module and silently exited with no daemon process. Foreground mode was unaffected.
+
+---
+
 ## [1.0.0-alpha.1] — 2026-05-18
 
 ### v3 — Vector recall, write-time compaction, resident daemon (AGT-311 through AGT-323)
