@@ -344,24 +344,7 @@ describe.skipIf(process.platform === 'win32')(
 
 describe('connectDaemon — SPAWN_TIMEOUT_MS is >= 60s', () => {
   it('SPAWN_TIMEOUT_MS is at least 60000ms to accommodate slow daemon startup', async () => {
-    // We can't import the private constant directly, but we can verify the
-    // observable behaviour: connectDaemon keeps retrying for longer than 60s
-    // before giving up. We do this by inspecting the module source text rather
-    // than running a real 60s wait (which would be impractical in a test suite).
-    //
-    // This is a compile-time constant guard. If someone accidentally reduces
-    // SPAWN_TIMEOUT_MS, this test will catch it by checking the source.
-    const fs = await import('node:fs');
-    const path = await import('node:path');
-    const srcPath = path.join(
-      import.meta.dirname ?? path.dirname(new URL(import.meta.url).pathname),
-      '../../src/lib/daemon-client.ts',
-    );
-    const src = fs.readFileSync(srcPath, 'utf-8');
-    // Extract the numeric literal assigned to SPAWN_TIMEOUT_MS.
-    const match = src.match(/const SPAWN_TIMEOUT_MS\s*=\s*(\d[\d_]*)\s*;/);
-    expect(match, 'SPAWN_TIMEOUT_MS constant not found in daemon-client.ts').toBeTruthy();
-    const value = Number(match![1]!.replace(/_/g, ''));
-    expect(value).toBeGreaterThanOrEqual(60_000);
+    const { SPAWN_TIMEOUT_MS } = await import('../../src/lib/daemon-client.js');
+    expect(SPAWN_TIMEOUT_MS).toBeGreaterThanOrEqual(60_000);
   });
 });

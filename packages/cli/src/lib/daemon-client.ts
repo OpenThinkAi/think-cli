@@ -51,8 +51,11 @@ const INITIAL_RETRY_DELAY_MS = 50;
  * to give plenty of headroom for slow machines and first-run downloads.
  * This is the spawn-timeout only — the per-call timeout (DEFAULT_CALL_TIMEOUT_MS)
  * is unchanged at 30s and governs individual RPC round-trips.
+ *
+ * @internal — exported for tests that assert a minimum value; do not rely on
+ *             this in production code.
  */
-const SPAWN_TIMEOUT_MS = 90_000;
+export const SPAWN_TIMEOUT_MS = 90_000;
 
 // ---------------------------------------------------------------------------
 // Paths
