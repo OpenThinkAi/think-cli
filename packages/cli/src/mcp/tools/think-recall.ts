@@ -46,8 +46,10 @@ interface RecallEntry {
 export function formatEntry(entry: RecallEntry): string {
   const tag = entry.kind ? `${entry.cortex}/${entry.kind}` : entry.cortex;
   // Use only the first line so the agent sees a compact list.
-  const firstLine = entry.content.trim().split('\n')[0] ?? '';
-  return `- [${tag}] ${firstLine}`;
+  const lines = entry.content.trim().split('\n');
+  const firstLine = lines[0] ?? '';
+  const truncated = lines.length > 1;
+  return `- [${tag}] ${firstLine}${truncated ? ' …' : ''}`;
 }
 
 /**
@@ -80,7 +82,7 @@ async function handler(
 
   if (typeof params['scope'] === 'string') rpcParams['scope'] = params['scope'];
   if (typeof params['limit'] === 'number') rpcParams['limit'] = params['limit'];
-  if (typeof params['kind'] === 'string')  rpcParams['kind']  = params['kind'];
+  if (typeof params['kind'] === 'string') rpcParams['kind'] = params['kind'];
   if (typeof params['cortex'] === 'string') rpcParams['cortex'] = params['cortex'];
 
   process.stderr.write(
@@ -93,7 +95,7 @@ async function handler(
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     return {
-      content: [{ type: 'text', text: `think_recall: daemon error \u2014 ${msg}` }],
+      content: [{ type: 'text', text: `think_recall: daemon error — ${msg}` }],
       isError: true,
     };
   }
@@ -118,23 +120,27 @@ export const thinkRecallTool: ThinkToolEntry = {
       properties: {
         query: {
           type: 'string',
-          description: 'Semantic query \u2014 what you want to recall',
+          description: 'Semantic query — what you want to recall',
         },
         scope: {
           type: 'string',
           enum: ['active', 'accessible'],
           default: 'accessible',
+          description: 'active = active cortex only; accessible = all locally-cloned cortexes (default)',
         },
         limit: {
           type: 'number',
           default: 5,
+          description: 'Maximum number of entries to return (default 5)',
         },
         kind: {
           type: 'string',
           enum: ['memory', 'retro', 'event'],
+          description: 'Filter by entry kind: memory = freeform observations; retro = durable codebase wisdom; event = milestones/decisions/incidents',
         },
         cortex: {
           type: 'string',
+          description: 'Name of the cortex (knowledge base) to query. Defaults to the active cortex or all accessible cortexes when scope is accessible.',
         },
       },
       required: ['query'],

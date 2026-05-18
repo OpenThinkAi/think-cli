@@ -48,9 +48,14 @@ describe('formatEntry', () => {
     expect(formatEntry(entry)).toBe('- [my-cortex] Some content');
   });
 
-  it('uses only the first line of multi-line content', () => {
+  it('uses only the first line of multi-line content with truncation indicator', () => {
     const entry = { id: '1', ts: '', kind: 'retro', content: 'Line one\nLine two\nLine three', cortex: 'proj' };
-    expect(formatEntry(entry)).toBe('- [proj/retro] Line one');
+    expect(formatEntry(entry)).toBe('- [proj/retro] Line one …');
+  });
+
+  it('does not append truncation indicator for single-line content', () => {
+    const entry = { id: '1', ts: '', kind: 'memory', content: 'Single line', cortex: 'proj' };
+    expect(formatEntry(entry)).toBe('- [proj/memory] Single line');
   });
 });
 
@@ -136,6 +141,26 @@ describe('think_recall MCP tool', () => {
     const content = result.content as Array<{ type: string; text: string }>;
     expect(content[0]?.text).toMatch(/daemon error/i);
 
+    await client.close();
+    await server.close();
+  });
+
+  it('returns isError:true when query is empty string', async () => {
+    const { server, client } = await makeClientServerPair();
+    const result = await client.callTool({ name: 'think_recall', arguments: { query: '' } });
+    expect(result.isError).toBe(true);
+    const content = result.content as Array<{ type: string; text: string }>;
+    expect(content[0]?.text).toMatch(/query is required/i);
+    await client.close();
+    await server.close();
+  });
+
+  it('returns isError:true when query is whitespace-only', async () => {
+    const { server, client } = await makeClientServerPair();
+    const result = await client.callTool({ name: 'think_recall', arguments: { query: '   ' } });
+    expect(result.isError).toBe(true);
+    const content = result.content as Array<{ type: string; text: string }>;
+    expect(content[0]?.text).toMatch(/query is required/i);
     await client.close();
     await server.close();
   });
