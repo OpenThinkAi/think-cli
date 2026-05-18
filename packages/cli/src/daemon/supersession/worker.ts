@@ -19,7 +19,6 @@
 import embed from '../../lib/embed.js';
 import { searchVectors } from '../../lib/search-vectors.js';
 import { getCortexDb } from '../../db/engrams.js';
-import { sanitizeName } from '../../lib/paths.js';
 import { runSupersession } from './call.js';
 import { applySupersession } from './apply.js';
 import type { RetroEntry, RetroCandidate } from './call.js';
@@ -53,19 +52,16 @@ const SIMILARITY_THRESHOLD = 0.6;
  *
  * Errors bubble up to the caller (sync-handler wraps in .catch with a warn log).
  *
- * @param cortex Sanitized via `sanitizeName()` inside this function; callers may
- *   pass either a pre-sanitized or unsanitized value — both are safe.
+ * @param safeCortex Cortex name. Caller must have already sanitized via
+ *   `sanitizeName()`; this module trusts the value and performs no further
+ *   sanitization. Passing an unsanitized cortex name is a programmer error.
  */
 export async function runSupersessionWorker(
   newEntryId: string,
   newEntryTs: string,
   content: string,
-  cortex: string,
+  safeCortex: string,
 ): Promise<void> {
-  // Re-sanitize defensively — callers pass safeCortex but an explicit guard
-  // prevents future call sites from accidentally passing unsanitized values.
-  const safeCortex = sanitizeName(cortex);
-
   // Step 1: embed the new entry's content
   const queryVec = await embed(content);
 

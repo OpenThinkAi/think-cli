@@ -22,7 +22,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { getCortexDb } from '../../db/engrams.js';
-import { getRepoPath, sanitizeName } from '../../lib/paths.js';
+import { getRepoPath } from '../../lib/paths.js';
 import type { SupersessionResult } from './call.js';
 
 // ---------------------------------------------------------------------------
@@ -86,14 +86,16 @@ function appendToL1(cortexDir: string, obj: Record<string, unknown>): void {
  *
  * @param newEntryId  The id of the newly-stored retro entry.
  * @param result      The parsed LLM supersession result (from runSupersession).
- * @param cortex      The cortex name (same value passed to handleSync).
+ * @param safeCortex  Cortex name. Caller must have already sanitized via
+ *                    `sanitizeName()`; this module trusts the value and performs
+ *                    no further sanitization. Passing an unsanitized cortex name
+ *                    is a programmer error.
  */
 export function applySupersession(
   newEntryId: string,
   result: SupersessionResult,
-  cortex: string,
+  safeCortex: string,
 ): void {
-  const safeCortex = sanitizeName(cortex);
   const db = getCortexDb(safeCortex);
   const now = new Date().toISOString();
 
@@ -128,9 +130,11 @@ export function applySupersession(
         deleted_at: now,
         tombstone_reason: 'duplicate_detected_by_supersession',
       });
-      // Log a note line (visible in daemon log / stderr)
-      console.info(
-        `[supersession] note: retro ${newEntryId} detected as duplicate; tombstoned`,
+      // Data deletion — log at warn so it's visible alongside the L1-divergence
+      // warning below. The daemon log is the only out-of-band signal for
+      // tombstone events; info-level would be filtered out by warn+ consumers.
+      console.warn(
+        `[supersession] retro ${newEntryId} detected as duplicate; tombstoned`,
       );
     } else {
       // L2 tombstone is set above; L1 entry was not found (possible if the
