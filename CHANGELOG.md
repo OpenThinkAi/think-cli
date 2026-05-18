@@ -46,7 +46,7 @@ reindexes automatically and all existing JSONL entries are preserved.
 A deprecation warning is emitted on use; `--no-push` is the forward path.
 
 **Optional ML dependency:** semantic recall requires
-`@huggingface/transformers@4.2.0` (bundled as an optional peer dep).
+`@huggingface/transformers@4.2.0` (shipped as an optional dependency).
 Without it, `think recall` falls back to full-text search with no data
 loss. The daemon startup message tells you if the model is unavailable.
 
