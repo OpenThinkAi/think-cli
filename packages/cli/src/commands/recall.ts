@@ -234,7 +234,7 @@ export const recallCommand = new Command('recall')
   .option('--json', 'Emit results as a JSON array (one object per entry; FTS path only); incompatible with --all')
   .option('--include-superseded', 'Include superseded entries but still hide compacted-raw memories')
   .option('--kind <kind>', 'Filter by entry kind: memory, retro, or event')
-  .option('--topic <topic>', 'Filter by topic (exact match, lowercase)')
+  .option('--topic <topic>', 'Filter by topic — case-insensitive exact match on the entry topics array')
   .option('--since <date>', 'Only entries at or after this ISO-8601 date (e.g. 2026-05-01)')
   .option('--no-embed', 'Skip semantic ranking; use FTS keyword search (fast, offline, deterministic). Also set by THINK_NO_EMBED=1.')
   .addOption(
@@ -321,6 +321,17 @@ export const recallCommand = new Command('recall')
     // --include-superseded has no effect in FTS mode; the daemon path is not wired yet.
     if (opts.includeSuperseded) {
       console.warn(chalk.yellow("note: --include-superseded requires the daemon (vector recall); the FTS fallback does not apply supersession filters."));
+    }
+
+    // AGT-320: Warn when kind/topic/since are used in FTS mode — they have no effect.
+    if (opts.kind !== undefined) {
+      console.warn(chalk.yellow("note: --kind " + opts.kind + " requires the daemon (vector recall); the FTS fallback returns all entry kinds."));
+    }
+    if (opts.topic !== undefined) {
+      console.warn(chalk.yellow("note: --topic " + opts.topic + " requires the daemon (vector recall); the FTS fallback ignores topic filters."));
+    }
+    if (opts.since !== undefined) {
+      console.warn(chalk.yellow("note: --since " + opts.since + " requires the daemon (vector recall); the FTS fallback ignores the date filter."));
     }
 
     // AGT-308: Warn when --scope was explicitly provided in FTS (degraded) mode

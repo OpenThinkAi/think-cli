@@ -142,7 +142,7 @@ export const thinkRecallTool: ThinkToolEntry = {
         },
         topic: {
           type: 'string',
-          description: 'Filter by topic — exact match (lowercase) on the entry topics array.',
+          description: 'Filter by topic — case-insensitive exact match on the entry topics array.',
         },
         since: {
           type: 'string',

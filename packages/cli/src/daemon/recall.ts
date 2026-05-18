@@ -242,7 +242,7 @@ const VALID_KINDS: ReadonlySet<string> = new Set(['memory', 'retro', 'event']);
 export function validateKind(kind: string): void {
   if (!VALID_KINDS.has(kind)) {
     throw new Error(
-      `error: --kind must be one of memory, retro, event, got '${kind}'`,
+      `error: kind must be one of memory, retro, event, got '${kind}'`,
     );
   }
 }
@@ -260,7 +260,7 @@ export function validateKind(kind: string): void {
 export function validateSince(since: string): void {
   if (!ISO_8601_RE.test(since)) {
     throw new Error(
-      `error: --since must be an ISO-8601 date (e.g. 2026-05-01 or 2026-05-01T00:00:00Z), got '${since}'`,
+      `error: since must be an ISO-8601 date (e.g. 2026-05-01 or 2026-05-01T00:00:00Z), got '${since}'`,
     );
   }
 }
@@ -634,8 +634,10 @@ async function recallOneCortexWithVec(
   // Parameterized with `?` — no string concatenation of user input.
   if (topic) {
     const topicsColName = hasTopics ? 'topics' : 'topics_json';
+    // Case-insensitive match: lower() on both sides so stored topics like
+    // "Auth" match user input "auth" (AGT-320 review feedback).
     conditions.push(
-      `EXISTS (SELECT 1 FROM json_each(${topicsColName}) jt WHERE jt.value = ?)`,
+      `EXISTS (SELECT 1 FROM json_each(${topicsColName}) jt WHERE lower(jt.value) = ?)`,
     );
     binds.push(topic.toLowerCase());
   }
