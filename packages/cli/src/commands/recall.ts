@@ -229,8 +229,9 @@ export const recallCommand = new Command('recall')
   .option('--engrams', 'Also search local engrams (not just memories)')
   .option('--all', 'Dump all recent memories + long-term summary (ignores query for memories)')
   .option('--days <n>', 'Days of memories to include (only with --all)', '14')
-  .option('--limit <n>', 'Max results to return (default: 8; was 20 — lowered to cap output size)', String(DEFAULT_RECALL_LIMIT))
-  .option('--full', 'Return all entries including superseded and compacted-raw; also lifts 200-char content truncation in FTS mode')
+  .option('--limit <n>', 'Max results to return (default: 8)', String(DEFAULT_RECALL_LIMIT))
+  .option('--full', 'Return all entries including superseded and compacted-raw; lifts 200-char truncation')
+  .option('--json', 'Emit results as a JSON array (one object per entry); compatible with --full and --limit')
   .option('--include-superseded', 'Include superseded entries but still hide compacted-raw memories')
   .option('--no-embed', 'Skip semantic ranking; use FTS keyword search (fast, offline, deterministic). Also set by THINK_NO_EMBED=1.')
   .addOption(
@@ -241,7 +242,7 @@ export const recallCommand = new Command('recall')
       .choices(['active', 'accessible', 'all'])
       .default('accessible'),
   )
-  .action(function (this: Command, query: string, opts: { engrams?: boolean; all?: boolean; days: string; limit: string; full?: boolean; includeSuperseded?: boolean; scope: string; embed: boolean }) {
+  .action(function (this: Command, query: string, opts: { engrams?: boolean; all?: boolean; days: string; limit: string; full?: boolean; json?: boolean; includeSuperseded?: boolean; scope: string; embed: boolean }) {
     const config = getConfig();
     const cortex = config.cortex?.active;
 
@@ -257,7 +258,14 @@ export const recallCommand = new Command('recall')
     // Commander.js --no-embed convention: sets opts.embed=false (not opts.noEmbed).
     const noEmbed = opts.embed === false || process.env.THINK_NO_EMBED === '1';
 
-    const limit = parseInt(opts.limit, 10);
+    // AGT-319: validate --limit: must be a positive integer.
+    const limitRaw = opts.limit;
+    const limit = parseInt(limitRaw, 10);
+    if (!Number.isInteger(limit) || limit <= 0 || String(limit) !== limitRaw.trim()) {
+      console.error(`error: --limit must be a positive integer, got '${limitRaw}'`);
+      process.exitCode = 1;
+      return;
+    }
 
     if (opts.all) {
       const days = parseInt(opts.days, 10);
@@ -304,6 +312,33 @@ export const recallCommand = new Command('recall')
         ? '--scope all is ALPHA and not yet active; behaves like accessible once the daemon path is wired'
         : `--scope ${scope} requires the daemon (vector recall); the FTS fallback queries the active cortex only`;
       console.warn(chalk.yellow(`Note: ${scopeNote}.`));
+    }
+
+    // AGT-319: --json bypasses the formatter entirely and emits a JSON array.
+    // Each element includes all RecallEntry fields; fields not yet tracked in the
+    // FTS path (supersedes, compacted_from, activity_seq) are always emitted as
+    // null so the schema is stable for agent consumers regardless of data path.
+    // cortex is always present per the AGT-307/AGT-319 invariant.
+    if (opts.json) {
+      const rawMemories = dedupeBy(
+        searchMemories(cortex, query, limit),
+        m => JSON.stringify([m.ts, m.author, m.content]),
+      );
+      const jsonEntries = rawMemories.map(m => ({
+        id: m.id,
+        ts: m.ts,
+        cortex,
+        kind: (m as unknown as { kind?: string }).kind ?? null,
+        content: m.content,
+        topics: [] as string[],
+        supersedes: null,
+        compacted_from: null,
+        similarity: 0,
+        activity_seq: null,
+      }));
+      process.stdout.write(JSON.stringify(jsonEntries) + '\n');
+      closeCortexDb(cortex);
+      return;
     }
 
     // When --no-embed or THINK_NO_EMBED=1 is set explicitly, use the opt-out note.
