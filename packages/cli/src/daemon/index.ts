@@ -29,9 +29,10 @@
 import fs from 'node:fs';
 import net from 'node:net';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { readPackageVersion } from '../lib/version.js';
 import { getConfig } from '../lib/config.js';
-import { getThinkDir } from '../lib/paths.js';
+import { getThinkDir, getDaemonSocketPath } from '../lib/paths.js';
 import { getDaemonPidPath, isDaemonRunning, removePidFile } from '../lib/daemon-status.js';
 import { DEFAULT_DAEMON_TCP_PORT } from '../lib/daemon-constants.js';
 import { parseLineFraming, dispatchRequest } from './protocol.js';
@@ -565,4 +566,40 @@ export async function runDaemon(options: DaemonOptions): Promise<void> {
     process.stdin.resume();
     process.stdin.on('end', () => shutdown('stdin-close'));
   }
+}
+
+// ---------------------------------------------------------------------------
+// Auto-execute when invoked as a script (#58)
+// ---------------------------------------------------------------------------
+//
+// `spawnDaemon` in lib/daemon-client.ts runs `node <dist/daemon/index.js>` as
+// a detached child. Until this block existed, that spawn imported the module
+// (registering `runDaemon` as a named export) and then exited — nothing ever
+// started serving, and the parent's connect-retry loop silently timed out.
+//
+// `process.argv[1]` is the script path Node was invoked with. Compare it to
+// this module's own resolved filename to detect "was I invoked as a script?"
+// without breaking `import { runDaemon } from ...` callers (foreground mode
+// in commands/daemon.ts).
+//
+// `fs.realpathSync` on both sides is required because macOS resolves symlinks
+// like `/tmp` → `/private/tmp` in `import.meta.url` but leaves `process.argv[1]`
+// unresolved — direct string compare fails for the same physical file.
+let _invokedAsScript = false;
+if (process.argv[1]) {
+  try {
+    _invokedAsScript = fs.realpathSync(process.argv[1]) === fs.realpathSync(fileURLToPath(import.meta.url));
+  } catch {
+    // If realpath fails (path missing, perms), assume not script-invoked.
+  }
+}
+if (_invokedAsScript) {
+  runDaemon({ socketPath: getDaemonSocketPath(), foreground: false }).catch((err) => {
+    // Last-resort logging — daemon log helper may not be set up if startup
+    // crashed early. stderr captures it for `node <entry> 2>&1` style debugging.
+    process.stderr.write(
+      `daemon startup failed: ${err instanceof Error ? (err.stack ?? err.message) : String(err)}\n`,
+    );
+    process.exit(1);
+  });
 }
