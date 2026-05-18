@@ -90,9 +90,10 @@ export function assignNextSeq(cortexName: string): number {
  * This is the daemon boot-time check (AGT-292 AC #2). It is a named function
  * so tests can target it directly without spinning up a full daemon.
  *
- * The check is O(1): SQLite satisfies `COUNT(*) WHERE activity_seq IS NULL`
- * via a targeted partial scan; on a fully-stamped cortex the query returns
- * immediately without touching the recompute path.
+ * The null-count query is a full scan of the memories table (no partial index
+ * on `activity_seq IS NULL` exists). On a fully-stamped cortex the query is still
+ * fast at typical data sizes — the key point is the recompute is skipped entirely
+ * when the count is zero.
  *
  * @param writeLine - optional logger (e.g. daemon's `writeLine`); when omitted
  *   no log is produced. The INFO message is intentionally brief — one line per
@@ -109,6 +110,6 @@ export function backfillActivitySeqIfNeeded(
 
   if (nullCount === 0) return;
 
-  writeLine?.(`backfilling activity_seq for cortex ${cortexName} (${nullCount} rows without seq)`);
+  writeLine?.(`backfilling activity_seq for cortex ${cortexName} (${nullCount} rows with NULL activity_seq)`);
   recomputeActivitySeq(cortexName);
 }

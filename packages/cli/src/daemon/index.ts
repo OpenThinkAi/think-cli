@@ -355,14 +355,24 @@ export async function runDaemon(options: DaemonOptions): Promise<void> {
   // ---------------------------------------------------------------------------
   // Activity-seq backfill on startup (AGT-292 AC #2)
   //
-  // Before serving any requests, check each known cortex for rows with a NULL
+  // Before serving any requests, check the active cortex for rows with a NULL
   // activity_seq (e.g. after upgrade from v2, or after a partial reindex).
   // backfillActivitySeqIfNeeded is a no-op when all rows are already stamped.
+  //
+  // Wrapped in try/catch: if recomputeActivitySeq fails (schema mismatch,
+  // DB corruption, etc.), the daemon logs the error and continues rather than
+  // crashing before it can serve a single request.
   // ---------------------------------------------------------------------------
 
-  if (activeCortex) backfillActivitySeqIfNeeded(activeCortex, writeLine);
-
-  if (activeCortex) scanAndEnqueueUncompacted(compactionQueue, [activeCortex]);
+  if (activeCortex) {
+    try {
+      backfillActivitySeqIfNeeded(activeCortex, writeLine);
+    } catch (backfillErr: unknown) {
+      const msg = backfillErr instanceof Error ? backfillErr.message : String(backfillErr);
+      writeLine(`warn: activity_seq backfill for cortex '${activeCortex}' failed — ${msg}`);
+    }
+    scanAndEnqueueUncompacted(compactionQueue, [activeCortex]);
+  }
 
   // ---------------------------------------------------------------------------
   // Graceful shutdown (AGT-283)
