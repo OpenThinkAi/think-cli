@@ -13,6 +13,7 @@ import type { MemoryRow } from '../db/memory-queries.js';
 import type { LongTermEventRow } from '../db/long-term-queries.js';
 import { closeCortexDb } from '../db/engrams.js';
 import type { RecallScope } from '../daemon/recall.js';
+import { NOTE_FTS_FALLBACK } from '../daemon/recall.js';
 
 export function printDecisions(m: MemoryRow): void {
   if (!m.decisions) return;
@@ -235,6 +236,7 @@ export const recallCommand = new Command('recall')
   .option('--limit <n>', 'Max results to return', '20')
   .option('--full', 'Return all entries including superseded and compacted-raw (overrides --include-superseded)')
   .option('--include-superseded', 'Include superseded entries but still hide compacted-raw memories')
+  .option('--no-embed', 'Skip semantic ranking; use FTS keyword search (fast, offline, deterministic). Also set by THINK_NO_EMBED=1.')
   .addOption(
     new Option(
       '--scope <value>',
@@ -243,7 +245,7 @@ export const recallCommand = new Command('recall')
       .choices(['active', 'accessible', 'all'])
       .default('accessible'),
   )
-  .action(function (this: Command, query: string, opts: { engrams?: boolean; all?: boolean; days: string; limit: string; full?: boolean; includeSuperseded?: boolean; scope: string }) {
+  .action(function (this: Command, query: string, opts: { engrams?: boolean; all?: boolean; days: string; limit: string; full?: boolean; includeSuperseded?: boolean; scope: string; noEmbed?: boolean }) {
     const config = getConfig();
     const cortex = config.cortex?.active;
 
@@ -254,6 +256,9 @@ export const recallCommand = new Command('recall')
 
     // AGT-308: scope is validated by Commander .choices() before action runs.
     const scope = opts.scope as RecallScope;
+
+    // AGT-324: honor both --no-embed flag and THINK_NO_EMBED=1 env var.
+    const noEmbed = opts.noEmbed === true || process.env.THINK_NO_EMBED === '1';
 
     const limit = parseInt(opts.limit, 10);
 
@@ -303,6 +308,7 @@ export const recallCommand = new Command('recall')
       console.warn(chalk.yellow(`Note: ${scopeNote}.`));
     }
 
+    if (noEmbed) console.log(NOTE_FTS_FALLBACK);
     runFtsRecall(cortex, query, { engrams: opts.engrams, limit });
     closeCortexDb(cortex);
   });
