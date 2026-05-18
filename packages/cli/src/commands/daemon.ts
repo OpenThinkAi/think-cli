@@ -23,6 +23,12 @@ function defaultSocketPath(): string {
   return path.join(override || path.join(os.homedir(), '.think'), 'daemon.sock');
 }
 
+/** Compute the default daemon log path (parallel to defaultSocketPath). */
+function defaultLogPath(): string {
+  const override = process.env.THINK_HOME;
+  return path.join(override || path.join(os.homedir(), '.think'), 'daemon.log');
+}
+
 // ---------------------------------------------------------------------------
 // `think daemon start`
 // ---------------------------------------------------------------------------
@@ -60,7 +66,10 @@ const startSubcommand = new Command('start')
 
     if (status.running) {
       // Already running — exit 0 per AC #2.
-      process.stdout.write(`daemon already running (pid=${status.pid})\n`);
+      // Output format: key=value lines, matching `status` subcommand for
+      // script-friendly parsing across the daemon command group.
+      process.stdout.write(`status=already-running\n`);
+      process.stdout.write(`pid=${status.pid}\n`);
       return;
     }
 
@@ -81,7 +90,7 @@ const startSubcommand = new Command('start')
       });
       if (!client) return;
       client.close();
-      process.stdout.write(`daemon started\n`);
+      process.stdout.write(`status=started\n`);
     }
   });
 
@@ -108,7 +117,8 @@ const stopSubcommand = new Command('stop')
       const socketAlive = await probeDaemon(500);
       if (!socketAlive) {
         // Idempotent: mirror `start`'s already-running exit 0 contract.
-        process.stdout.write(`daemon not running (no-op)\n`);
+        // key=value output to keep parsing consistent with `status`.
+        process.stdout.write(`status=not-running\n`);
         return;
       }
       enteredViaProbe = true;
@@ -160,12 +170,12 @@ const stopSubcommand = new Command('stop')
       const after = isDaemonRunning();
       if (!after.running) {
         if (!enteredViaProbe) {
-          process.stdout.write(`daemon stopped\n`);
+          process.stdout.write(`status=stopped\n`);
           return;
         }
         const stillAlive = await probeDaemon(200);
         if (!stillAlive) {
-          process.stdout.write(`daemon stopped\n`);
+          process.stdout.write(`status=stopped\n`);
           return;
         }
       }
@@ -185,7 +195,7 @@ const stopSubcommand = new Command('stop')
 const statusSubcommand = new Command('status')
   .description(
     'Print the current running state, pid, socket path, and (when available) uptime and version. ' +
-    'Output is provisional key=value lines; machine-parseable --json support is planned. ' +
+    'Output is key=value lines (a `--json` flag is planned in AGT-287+ as an additional format). ' +
     'FORMAT NOTE: prior versions printed prose (`daemon running (pid N)`). v3 emits ' +
     'key=value lines (`pid=N`, `socket=…`, `status=running`); existing parsers must update.',
   )
@@ -204,7 +214,10 @@ const statusSubcommand = new Command('status')
     } else {
       const socketAlive = await probeDaemon(500);
       if (!socketAlive) {
-        process.stderr.write(`error: daemon is not running — run 'think daemon start' to start it\n`);
+        process.stderr.write(
+          `error: daemon is not running — run 'think daemon start' to start it ` +
+          `(log: ${defaultLogPath()})\n`,
+        );
         process.exit(1);
         return;
       }

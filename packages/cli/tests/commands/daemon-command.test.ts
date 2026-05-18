@@ -165,7 +165,8 @@ describe.skipIf(process.platform === 'win32')('think daemon start', () => {
     // Parse + execute `daemon start`.
     await prog.parseAsync(['node', 'think', 'daemon', 'start']);
 
-    expect(getStdout()).toMatch(/daemon already running \(pid=\d+\)/);
+    expect(getStdout()).toMatch(/status=already-running/);
+    expect(getStdout()).toMatch(/pid=\d+/);
     // process.exit should NOT have been called (success path).
     expect(getExitSpy()).not.toHaveBeenCalled();
   });
@@ -180,7 +181,7 @@ describe.skipIf(process.platform === 'win32')('think daemon stop', () => {
     const prog = await makeProg();
     await prog.parseAsync(['node', 'think', 'daemon', 'stop']);
 
-    expect(getStdout()).toMatch(/daemon not running \(no-op\)/);
+    expect(getStdout()).toMatch(/status=not-running/);
     expect(getExitSpy()).not.toHaveBeenCalledWith(1);
   });
 
@@ -220,7 +221,7 @@ describe.skipIf(process.platform === 'win32')('think daemon stop', () => {
       clearInterval(pidCleanupInterval);
 
       expect(shutdownCalled).toBe(true);
-      expect(getStdout()).toMatch(/daemon stopped/);
+      expect(getStdout()).toMatch(/status=stopped/);
       expect(getExitSpy()).not.toHaveBeenCalledWith(1);
     } finally {
       await mock.close();
