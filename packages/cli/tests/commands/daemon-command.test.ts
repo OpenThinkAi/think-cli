@@ -281,7 +281,10 @@ describe.skipIf(process.platform === 'win32')('think daemon status', () => {
       expect(stdout).toMatch(/socket=/);
       expect(stdout).toMatch(/status=running/);
       expect(stdout).toMatch(/rpc=unavailable/);
-      expect(stdout).toMatch(/rpc_detail=no status endpoint/);
+      // rpc_detail removed: error values can contain `=` / spaces and break
+      // simple parsers; rpc=unavailable is the script-facing anchor until
+      // --json lands (AGT-287+).
+      expect(stdout).not.toMatch(/rpc_detail=/);
       expect(getExitSpy()).not.toHaveBeenCalledWith(1);
     } finally {
       await mock.close();

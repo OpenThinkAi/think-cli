@@ -15,6 +15,7 @@
 
 import path from 'node:path';
 import os from 'node:os';
+import fs from 'node:fs';
 import { Command, Option } from 'commander';
 
 /** Compute the default socket path without importing daemon/index.ts. */
@@ -90,7 +91,11 @@ const startSubcommand = new Command('start')
       });
       if (!client) return;
       client.close();
+      // Read the PID from the file the spawned daemon just wrote.
+      // It may not be flushed yet on very fast machines; emit pid=unknown if so.
+      const afterSpawn = isDaemonRunning();
       process.stdout.write(`status=started\n`);
+      process.stdout.write(`pid=${afterSpawn.running ? afterSpawn.pid : 'unknown'}\n`);
     }
   });
 
@@ -182,8 +187,13 @@ const stopSubcommand = new Command('stop')
       await new Promise<void>((r) => setTimeout(r, POLL_MS));
     }
 
+    // Surface the PID when we know it (PID-file entry path); fall back to
+    // <unknown> on the probe-only entry path where no PID file ever existed.
+    const pidHint = !enteredViaProbe && status.pid !== undefined
+      ? String(status.pid)
+      : '<unknown>';
     process.stderr.write(
-      `error: daemon did not exit cleanly within 5s — use \`kill <pid>\` to force-terminate\n`,
+      `error: daemon did not exit cleanly within 5s — use \`kill ${pidHint}\` to force-terminate\n`,
     );
     process.exit(1);
   });
@@ -218,6 +228,16 @@ const statusSubcommand = new Command('status')
           `error: daemon is not running — run 'think daemon start' to start it ` +
           `(log: ${defaultLogPath()})\n`,
         );
+        // Print the last 10 lines of the daemon log to help diagnose why it
+        // stopped, when the log is available. Silent skip if unreadable.
+        try {
+          const content = fs.readFileSync(defaultLogPath(), 'utf-8');
+          const tail = content.split('\n').filter(l => l.length > 0).slice(-10);
+          if (tail.length > 0) {
+            process.stderr.write(`--- last ${tail.length} log lines ---\n`);
+            for (const line of tail) process.stderr.write(line + '\n');
+          }
+        } catch { /* log unreadable — silent */ }
         process.exit(1);
         return;
       }
@@ -226,12 +246,12 @@ const statusSubcommand = new Command('status')
 
     const socketPath = defaultSocketPath();
 
-    // These three lines are always emitted regardless of RPC outcome.
-    // Output format: provisional key=value lines (unstable until --json lands, AGT-287+).
-    // `status=running` is emitted on ALL paths so scripts can exact-match it.
+    // Output format: key=value lines (a `--json` flag is planned in AGT-287+).
+    // `status=running` is emitted FIRST so positional parsers see it at index 0
+    // — matches the ordering contract used by `start` and `stop`.
+    process.stdout.write(`status=running\n`);
     process.stdout.write(`${pidLine}\n`);
     process.stdout.write(`socket=${socketPath}\n`);
-    process.stdout.write(`status=running\n`);
 
     // Try the `status` RPC (AGT-287 may not be landed yet — degrade gracefully).
     // `rpc=unavailable(...)` is added only when the RPC is unreachable.
@@ -259,28 +279,14 @@ const statusSubcommand = new Command('status')
         process.stdout.write(`version=${version}\n`);
       }
     } catch (err: unknown) {
-      // Graceful degradation: if the `status` method doesn't exist yet (METHOD_NOT_FOUND),
-      // or the RPC connection fails, emit rpc=unavailable and keep going.
-      //
-      // DaemonConnection.processLine (daemon-client.ts) throws a plain Error with the
-      // message format `daemon error [<CODE>]: <message>`. Until the client surfaces a
-      // typed DaemonRpcError with a `.code` property on this code path, we match the
-      // literal bracket-wrapped code in the message. The exact format is stable and
-      // unit-tested in tests/lib/daemon-client.test.ts.
-      //
-      // Strip newlines from the error message: multi-line Node errors (e.g. ECONNRESET
-      // with a stack trace) would corrupt the key=value output format.
-      const rawMsg = err instanceof Error ? err.message : String(err);
-      // Take the first line only: Node error messages can include multi-line
-      // stack traces that would corrupt the key=value output format.
-      const msg = rawMsg.split('\n')[0];
-      const isNoEndpoint = msg.includes('[METHOD_NOT_FOUND]');
-      const rpcDetail = isNoEndpoint ? 'no status endpoint' : msg;
-      // `rpc=unavailable` is a scalar anchor; rpc_detail carries the human-readable
-      // reason. Note: rpc_detail values may contain spaces (e.g. Node error messages);
-      // the format is provisional until --json lands.
+      // Graceful degradation: if the `status` method doesn't exist yet
+      // (METHOD_NOT_FOUND), or the RPC connection fails, emit rpc=unavailable.
+      // The human-readable detail is intentionally NOT emitted as a key=value
+      // line — error messages can contain `=` and spaces, which would break
+      // simple `cut -d= -f2` parsers. Wait for the `--json` flag (AGT-287+)
+      // before exposing the raw error to scripts; until then, the daemon log
+      // is the place to find the underlying reason.
       process.stdout.write(`rpc=unavailable\n`);
-      process.stdout.write(`rpc_detail=${rpcDetail}\n`);
     }
   });
 
