@@ -139,6 +139,10 @@ interface ColumnInfo {
    */
   hasTopics: boolean;
   hasActivitySeq: boolean;
+  /** True when migration 14 has run and superseded_at column exists. */
+  hasSupersededAt: boolean;
+  /** True when migration 12 has run and the compaction_links table exists. */
+  hasCompactionLinks: boolean;
 }
 
 const columnInfoCache = new WeakMap<DatabaseSync, ColumnInfo>();
@@ -152,9 +156,19 @@ function getColumnInfo(db: DatabaseSync): ColumnInfo {
       (c) => c.name,
     ),
   );
+
+  // Check for compaction_links table existence (added in migration 12).
+  const tables = new Set(
+    (db.prepare("SELECT name FROM sqlite_master WHERE type='table'").all() as { name: string }[]).map(
+      (r) => r.name,
+    ),
+  );
+
   const info: ColumnInfo = {
     hasTopics: cols.has('topics'),
     hasActivitySeq: cols.has('activity_seq'),
+    hasSupersededAt: cols.has('superseded_at'),
+    hasCompactionLinks: tables.has('compaction_links'),
   };
   columnInfoCache.set(db, info);
   return info;
@@ -188,6 +202,18 @@ interface ParsedRecallParams {
   topic: string | undefined;
   since: string | undefined;
   decay: number;
+  /**
+   * When true, skip BOTH the superseded_at and compaction_links filters —
+   * return every entry regardless of supersession or compaction state.
+   * Set by the `--full` CLI flag (AGT-305).
+   */
+  full: boolean;
+  /**
+   * When true, skip ONLY the superseded_at filter but still apply the
+   * compaction_links filter for kind=memory entries.
+   * Set by the `--include-superseded` CLI flag (AGT-305).
+   */
+  includeSuperseded: boolean;
 }
 
 /**
@@ -237,7 +263,10 @@ function parseRecallParams(params: Record<string, unknown>): ParsedRecallParams 
   const cfg = getConfig();
   const decay = cfg.recall?.recencyDecay ?? DEFAULT_DECAY;
 
-  return { query, limit, kind, topic, since, decay };
+  const full = params['full'] === true;
+  const includeSuperseded = params['includeSuperseded'] === true;
+
+  return { query, limit, kind, topic, since, decay, full, includeSuperseded };
 }
 
 // ---------------------------------------------------------------------------
@@ -350,6 +379,8 @@ async function recallOneCortexWithVec(
   topic: string | undefined,
   since: string | undefined,
   decay: number,
+  full: boolean,
+  includeSuperseded: boolean,
 ): Promise<RecallEntry[]> {
   // Per-cortex reindex busy check (AGT-277).
   // If the daemon is currently reindexing this cortex due to an embedding model
@@ -384,7 +415,7 @@ async function recallOneCortexWithVec(
   // getCortexDb calls getIndexDbPath → sanitizeName, which rejects `/`, `\`, and
   // `..` sequences. Path-traversal attempts are caught here with a clear error.
   const db = getCortexDb(cortexName);
-  const { hasTopics, hasActivitySeq } = getColumnInfo(db);
+  const { hasTopics, hasActivitySeq, hasSupersededAt, hasCompactionLinks } = getColumnInfo(db);
 
   // Topic filtering is not yet implemented — migration 14 added `topics_json`
   // rather than a `topics` column, so the SELECT below cannot match against a
@@ -428,6 +459,40 @@ async function recallOneCortexWithVec(
 
   const conditions: string[] = ['deleted_at IS NULL', `id IN (${placeholders})`];
   const binds: (string | number)[] = [...vectorIds];
+
+  // AGT-305: Filter superseded entries unless --full or --include-superseded.
+  // The superseded_at column was added in migration 14; skip when absent so
+  // older DBs that haven't migrated yet continue to work without filtering.
+  if (!full && !includeSuperseded && hasSupersededAt) {
+    conditions.push('superseded_at IS NULL');
+  }
+
+  // AGT-305: Filter compacted-raw entries for kind=memory unless --full.
+  // Raw entries that have been folded into a compaction are hidden by default
+  // so the caller sees the compacted (summarised) version instead.
+  // This filter is ONLY applied to kind=memory — retros and events are never
+  // compacted, so hiding them via compaction_links would be incorrect.
+  // Uses NOT IN subquery — acceptable because compaction_links stays small
+  // relative to the `memories` table (one row per compaction, not per entry).
+  if (!full && hasCompactionLinks) {
+    // When kind is explicitly filtered to memory, OR when no kind filter is
+    // set (mixed results may include memories), apply the compaction filter
+    // conditionally per-row using a WHERE-clause expression that only hides
+    // memory rows in compaction_links.
+    if (kind === 'memory') {
+      // All returned rows are memories — safe to filter globally.
+      conditions.push(
+        'id NOT IN (SELECT raw_id FROM compaction_links)',
+      );
+    } else if (kind === undefined) {
+      // Mixed results — apply only to memory rows. Non-memory kinds pass through.
+      conditions.push(
+        "(kind != 'memory' OR kind IS NULL OR id NOT IN (SELECT raw_id FROM compaction_links))",
+      );
+    }
+    // If kind is set to something other than 'memory', no compaction filter
+    // is needed — retros/events are never in compaction_links.
+  }
 
   if (since) {
     conditions.push('ts >= ?');
@@ -524,10 +589,10 @@ async function recallSingleCortex(
   cortexName: string,
   params: Record<string, unknown>,
 ): Promise<RecallEntry[]> {
-  const { query, limit, kind, topic, since, decay } = parseRecallParams(params);
+  const { query, limit, kind, topic, since, decay, full, includeSuperseded } = parseRecallParams(params);
   const queryVec = await embed(query);
   const entries = await recallOneCortexWithVec(
-    cortexName, queryVec, limit, kind, topic, since, decay,
+    cortexName, queryVec, limit, kind, topic, since, decay, full, includeSuperseded,
   );
   entries.sort((a, b) => b.score - a.score);
   return entries.slice(0, limit);
@@ -561,7 +626,7 @@ async function recallSingleCortex(
 async function recallFederated(
   params: Record<string, unknown>,
 ): Promise<RecallEntry[]> {
-  const { query, limit, kind, topic, since, decay } = parseRecallParams(params);
+  const { query, limit, kind, topic, since, decay, full, includeSuperseded } = parseRecallParams(params);
 
   // Embed once; the vector is shared across all cortex legs so the model is
   // only invoked once regardless of how many cortexes are queried.
@@ -604,7 +669,7 @@ async function recallFederated(
     cortexNames.map(async (name) => {
       try {
         return await recallOneCortexWithVec(
-          name, queryVec, limit, kind, topic, since, decay,
+          name, queryVec, limit, kind, topic, since, decay, full, includeSuperseded,
         );
       } catch (err) {
         // Partial failure: cortex is unavailable or corrupt; contribute zero

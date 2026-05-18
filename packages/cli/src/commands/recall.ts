@@ -232,7 +232,9 @@ export const recallCommand = new Command('recall')
   .option('--all', 'Dump all recent memories + long-term summary (ignores query for memories)')
   .option('--days <n>', 'Days of memories to include (only with --all)', '14')
   .option('--limit <n>', 'Max results to return', '20')
-  .action((query: string, opts: { engrams?: boolean; all?: boolean; days: string; limit: string }) => {
+  .option('--full', 'Return all entries including superseded and compacted-raw (overrides --include-superseded)')
+  .option('--include-superseded', 'Include superseded entries but still hide compacted-raw memories')
+  .action((query: string, opts: { engrams?: boolean; all?: boolean; days: string; limit: string; full?: boolean; includeSuperseded?: boolean }) => {
     const config = getConfig();
     const cortex = config.cortex?.active;
 
@@ -255,6 +257,10 @@ export const recallCommand = new Command('recall')
     // route to daemon for vector recall; if not, print the degraded note and
     // fall through to runFtsRecall. Currently FTS is the only path.
     //
+    // AGT-305: When the daemon path is wired, pass full and includeSuperseded
+    // through to the RPC params so the daemon applies the right filters:
+    //   { ..., full: opts.full ?? false, includeSuperseded: opts.includeSuperseded ?? false }
+    //
     // AGT-307 / AGT-318 rendering note: when daemon results are wired here,
     // every RecallEntry carries a non-empty `cortex` field. Rendering must:
     //   - Multi-cortex results: show `[cortex-name]` tag per entry.
@@ -263,6 +269,14 @@ export const recallCommand = new Command('recall')
     // AGT-307 / AGT-319 JSON invariant: when --json lands, always include
     // `cortex` per entry in the serialised output — the field is load-bearing
     // for agent consumers and must never be omitted from machine-readable output.
+
+    // AGT-305: Warn when supersession/compaction filter flags are passed in
+    // FTS (degraded) mode — they have no effect until the daemon path is wired.
+    if (opts.full || opts.includeSuperseded) {
+      const flag = opts.full ? '--full' : '--include-superseded';
+      console.warn(chalk.yellow(`Note: ${flag} requires the daemon (vector recall); the FTS fallback does not apply supersession or compaction filters.`));
+    }
+
     runFtsRecall(cortex, query, { engrams: opts.engrams, limit });
     closeCortexDb(cortex);
   });
