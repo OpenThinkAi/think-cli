@@ -1,5 +1,5 @@
 /**
- * Daemon `recall` endpoint — AGT-285 / AGT-291 / AGT-324
+ * Daemon `recall` endpoint — AGT-285 / AGT-291 / AGT-320 / AGT-324
  *
  * Embed query → brute-force or sqlite-vec cosine search → recency-weighted
  * rerank → return ranked entries.
@@ -9,8 +9,7 @@
  *   query    string   (required) — semantic search query
  *   limit    number   (optional, default 20, max 500) — must be a positive integer
  *   kind     string   (optional) — filter by kind
- *   topic    string   (optional) — filter entries whose topics array contains this value
- *                                  (not yet implemented; see ColumnInfo.hasTopics)
+ *   topic    string   (optional) — exact-match (lowercase) on topics array
  *   since    string   (optional) — ISO-8601 lower bound on ts (format check, inclusive)
  *   no_embed boolean  (optional) — skip embedding model entirely; fall back to FTS ranking
  *
@@ -183,6 +182,7 @@ interface ColumnInfo {
    * and parser; until then, the SELECT emits `'[]' as topics`.
    */
   hasTopics: boolean;
+  hasTopicsJson: boolean;
   hasActivitySeq: boolean;
   /** True when migration 14 has run and superseded_at column exists. */
   hasSupersededAt: boolean;
@@ -211,6 +211,7 @@ function getColumnInfo(db: DatabaseSync): ColumnInfo {
 
   const info: ColumnInfo = {
     hasTopics: cols.has('topics'),
+    hasTopicsJson: cols.has('topics_json'),
     hasActivitySeq: cols.has('activity_seq'),
     hasSupersededAt: cols.has('superseded_at'),
     hasCompactionLinks: tables.has('compaction_links'),
@@ -228,8 +229,40 @@ const MAX_LIMIT = 500;
 // Basic ISO-8601 format check (not a calendar-validity check).
 const ISO_8601_RE = /^\d{4}-\d{2}-\d{2}(T\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}:\d{2})?)?$/;
 
-function isValidIso8601(s: string): boolean {
-  return ISO_8601_RE.test(s);
+/** Valid kind values for the --kind filter (AGT-320). */
+const VALID_KINDS: ReadonlySet<string> = new Set(['memory', 'retro', 'event']);
+
+/**
+ * Validate a `kind` filter value. Throws with a lowercase `error:` prefix on
+ * invalid input (product prose convention from AGT-320 review guidance).
+ *
+ * Exported so the CLI command layer can reuse validation before the daemon RPC
+ * is invoked (fail fast on the client side for a cleaner UX).
+ */
+export function validateKind(kind: string): void {
+  if (!VALID_KINDS.has(kind)) {
+    throw new Error(
+      `error: --kind must be one of memory, retro, event, got '${kind}'`,
+    );
+  }
+}
+
+/**
+ * Validate a `since` ISO-8601 date string. Throws with a lowercase `error:`
+ * prefix on invalid input.
+ *
+ * Accepts date-only (2026-05-01) or full ISO-8601 timestamps. Uses only a
+ * regex check — no Date constructor side-effects, no eval.
+ *
+ * Exported so the CLI command layer can reuse validation before the daemon RPC
+ * is invoked (fail fast on the client side for a cleaner UX).
+ */
+export function validateSince(since: string): void {
+  if (!ISO_8601_RE.test(since)) {
+    throw new Error(
+      `error: --since must be an ISO-8601 date (e.g. 2026-05-01 or 2026-05-01T00:00:00Z), got '${since}'`,
+    );
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -297,16 +330,24 @@ function parseRecallParams(params: Record<string, unknown>): ParsedRecallParams 
   }
   const limit = (limitRaw as number | undefined) ?? 20;
 
-  const kind = typeof params['kind'] === 'string' ? params['kind'] : undefined;
+  // AGT-320: validate kind against enum if provided.
+  const kindRaw = typeof params['kind'] === 'string' ? params['kind'] : undefined;
+  if (kindRaw !== undefined) {
+    validateKind(kindRaw);
+  }
+  const kind = kindRaw;
+
   const topic = typeof params['topic'] === 'string' ? params['topic'] : undefined;
 
+  // AGT-320: validate since as ISO-8601 if provided.
   const sinceRaw = params['since'];
   if (sinceRaw !== undefined) {
-    if (typeof sinceRaw !== 'string' || !isValidIso8601(sinceRaw)) {
+    if (typeof sinceRaw !== 'string') {
       throw new Error(
-        `recall: 'since' must be an ISO-8601 date string (format check only), got ${JSON.stringify(sinceRaw)}`,
+        `recall: 'since' must be an ISO-8601 date string, got ${JSON.stringify(sinceRaw)}`,
       );
     }
+    validateSince(sinceRaw);
   }
   const since = typeof sinceRaw === 'string' ? sinceRaw : undefined;
 
@@ -498,15 +539,14 @@ async function recallOneCortexWithVec(
   // getCortexDb calls getIndexDbPath → sanitizeName, which rejects `/`, `\`, and
   // `..` sequences. Path-traversal attempts are caught here with a clear error.
   const db = getCortexDb(cortexName);
-  const { hasTopics, hasActivitySeq, hasSupersededAt, hasCompactionLinks } = getColumnInfo(db);
+  const { hasTopics, hasTopicsJson, hasActivitySeq, hasSupersededAt, hasCompactionLinks } = getColumnInfo(db);
 
-  // Topic filtering is not yet implemented — migration 14 added `topics_json`
-  // rather than a `topics` column, so the SELECT below cannot match against a
-  // topics array. Fail loudly rather than silently returning unfiltered results.
-  if (topic !== undefined && !hasTopics) {
+  // AGT-320: topic filter requires a topics column. Throw rather than silently
+  // returning unfiltered results. Give a helpful hint to run 'think reindex'.
+  const canFilterTopics = hasTopics || hasTopicsJson;
+  if (topic !== undefined && !canFilterTopics) {
     throw new Error(
-      `recall: 'topic' filter is not yet implemented for cortex "${cortexName}" ` +
-      `(column is 'topics_json'; SELECT wiring pending)`,
+      `recall: 'topic' filter requires a topics column in cortex "${cortexName}" — run 'think reindex' to apply the latest schema migrations`,
     );
   }
 
@@ -577,31 +617,44 @@ async function recallOneCortexWithVec(
     // is needed — retros/events are never in compaction_links.
   }
 
+  // AGT-320: since filter — ISO-8601 lower bound (inclusive) on ts.
   if (since) {
     conditions.push('ts >= ?');
     binds.push(since);
   }
+
+  // AGT-320: kind filter — SQL parameterized, not string concat.
   if (kind) {
     conditions.push('kind = ?');
     binds.push(kind);
   }
+
+  // AGT-320: topic filter — exact-match (lowercase) on the topics array.
+  // Uses json_each() for both topics and topics_json columns.
+  // Parameterized with `?` — no string concatenation of user input.
   if (topic) {
+    const topicsColName = hasTopics ? 'topics' : 'topics_json';
     conditions.push(
-      `EXISTS (SELECT 1 FROM json_each(topics) jt WHERE jt.value = ?)`,
+      `EXISTS (SELECT 1 FROM json_each(${topicsColName}) jt WHERE jt.value = ?)`,
     );
-    binds.push(topic);
+    binds.push(topic.toLowerCase());
   }
+
+  // AGT-320: topics_json wiring — alias topics_json as `topics` in the SELECT
+  // so the rest of the pipeline (HydratedRow, JSON.parse) is uniform regardless
+  // of which column is present. Fallback to '[]' when neither column exists.
+  const topicsSelectExpr = hasTopics
+    ? 'topics'
+    : hasTopicsJson
+      ? 'topics_json as topics'
+      : "'[]' as topics";
 
   const selectCols = [
     'id',
     'ts',
     'content',
     'kind',
-    // See ColumnInfo.hasTopics: until topic-array column wiring lands, recall
-    // always emits an empty topics array; the topic-filter throw above ensures
-    // callers asking for topic filtering get a clear error rather than silent
-    // unfiltered results.
-    hasTopics ? 'topics' : "'[]' as topics",
+    topicsSelectExpr,
     hasActivitySeq ? 'activity_seq' : 'NULL as activity_seq',
   ].join(', ');
 

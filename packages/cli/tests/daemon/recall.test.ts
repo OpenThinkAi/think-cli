@@ -150,9 +150,9 @@ describe('handleRecall (AGT-285)', () => {
     const db2 = getCortexDb(CORTEX);
     db2.prepare('UPDATE memories SET embedding = ? WHERE id = ?')
       .run(toBlob(axis(0)), fixtureIds[0]); // re-apply embeddings after reopen
-    // Tag fixture[0] as 'note', fixture[1] as 'decision'.
-    db2.prepare("UPDATE memories SET kind = 'note' WHERE id = ?").run(fixtureIds[0]);
-    db2.prepare("UPDATE memories SET kind = 'decision' WHERE id = ?").run(fixtureIds[1]);
+    // Tag fixture[0] as 'event', fixture[1] as 'retro'.
+    db2.prepare("UPDATE memories SET kind = 'event' WHERE id = ?").run(fixtureIds[0]);
+    db2.prepare("UPDATE memories SET kind = 'retro' WHERE id = ?").run(fixtureIds[1]);
     // Restore embeddings for the remaining fixtures.
     for (let i = 1; i < FIXTURES.length; i++) {
       db2.prepare('UPDATE memories SET embedding = ? WHERE id = ?')
@@ -161,11 +161,11 @@ describe('handleRecall (AGT-285)', () => {
 
     vi.spyOn(embedModule, 'default').mockResolvedValue(axis(1)); // query ≈ fixture[1]
 
-    const results = await handleRecall({ cortex: CORTEX, query: 'ocean', kind: 'decision' });
+    const results = await handleRecall({ cortex: CORTEX, query: 'ocean', kind: 'retro' });
     expect(results.length).toBeGreaterThan(0);
-    // Every result must have kind='decision'.
+    // Every result must have kind='retro'.
     for (const r of results) {
-      expect(r.kind).toBe('decision');
+      expect(r.kind).toBe('retro');
     }
     // fixture[1] (kind=decision, top cosine match) should be first.
     expect(results[0].id).toBe(fixtureIds[1]);
@@ -252,7 +252,7 @@ describe('handleRecall (AGT-285)', () => {
   it('throws on non-ISO-8601 since value', async () => {
     await expect(
       handleRecall({ cortex: CORTEX, query: 'test', since: 'last week' }),
-    ).rejects.toThrow(/recall:.*since/i);
+    ).rejects.toThrow(/since.*ISO-8601/i);
   });
 
   it('throws on path-traversal cortex name (sanitizeName guard)', async () => {
