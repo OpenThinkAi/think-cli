@@ -14,6 +14,7 @@ import type { LongTermEventRow } from '../db/long-term-queries.js';
 import { closeCortexDb } from '../db/engrams.js';
 import type { RecallScope } from '../daemon/recall.js';
 import { NOTE_FTS_FALLBACK, NOTE_FTS_EXPLICIT } from '../daemon/recall.js';
+import { formatRecallOutput, cortexSet, DEFAULT_RECALL_LIMIT } from '../lib/recall-format.js';
 
 export function printDecisions(m: MemoryRow): void {
   if (!m.decisions) return;
@@ -227,13 +228,70 @@ function runFtsRecall(cortex: string, query: string, opts: { engrams?: boolean; 
   }
 }
 
+/**
+ * AGT-318: Formatted FTS recall — maps searchMemories results to RecallEntry[]
+ * and renders via the pure formatter (formatRecallOutput).
+ * Called by the recall action when the daemon is unavailable (FTS degraded mode).
+ */
+function runFormattedFtsRecall(
+  cortex: string,
+  query: string,
+  opts: { engrams?: boolean; limit: number; full?: boolean },
+): void {
+  const { limit } = opts;
+
+  const rawMemories = dedupeBy(
+    searchMemories(cortex, query, limit),
+    m => JSON.stringify([m.ts, m.author, m.content]),
+  );
+
+  // Map MemoryRow to RecallEntry (fts_fallback path; no similarity/score data).
+  // The memories table contains kind=memory, kind=retro, kind=event rows.
+  // Cast through unknown because MemoryRow type does not expose the kind
+  // column yet (it exists in the DB but has not been added to the TS interface).
+  const entries = rawMemories.map(m => ({
+    id: m.id,
+    ts: m.ts,
+    kind: (m as unknown as { kind?: string }).kind ?? null,
+    content: m.content,
+    topics: [] as string[],
+    similarity: 0,
+    score: 0,
+    cortex,
+    fts_fallback: true as const,
+  }));
+
+  const cortexes = cortexSet(entries);
+  // Ensure the cortex appears in the set even when results are empty.
+  cortexes.add(cortex);
+
+  const formatted = formatRecallOutput(entries.slice(0, limit), cortexes, { full: opts.full });
+  console.log(formatted);
+
+  // Optionally include engrams (legacy v2 local index not part of the v3 kind model).
+  if (opts.engrams) {
+    const matchingEngrams = dedupeBy(
+      searchEngrams(cortex, query, limit),
+      e => JSON.stringify([e.created_at, e.content]),
+    );
+    if (matchingEngrams.length > 0) {
+      console.log();
+      console.log(chalk.cyan(`Matching engrams (${matchingEngrams.length}):`));
+      for (const e of matchingEngrams) {
+        const ts = e.created_at.slice(0, 16).replace("T", " ");
+        console.log(`  ${chalk.gray(ts)} ${e.content}`);
+      }
+    }
+  }
+}
+
 export const recallCommand = new Command('recall')
   .argument('<query>', 'What to recall')
   .description('Search memories and local engrams')
   .option('--engrams', 'Also search local engrams (not just memories)')
   .option('--all', 'Dump all recent memories + long-term summary (ignores query for memories)')
   .option('--days <n>', 'Days of memories to include (only with --all)', '14')
-  .option('--limit <n>', 'Max results to return', '20')
+  .option('--limit <n>', 'Max results to return', String(DEFAULT_RECALL_LIMIT))
   .option('--full', 'Return all entries including superseded and compacted-raw (overrides --include-superseded)')
   .option('--include-superseded', 'Include superseded entries but still hide compacted-raw memories')
   .option('--no-embed', 'Skip semantic ranking; use FTS keyword search (fast, offline, deterministic). Also set by THINK_NO_EMBED=1.')
@@ -293,9 +351,10 @@ export const recallCommand = new Command('recall')
 
     // AGT-305: Warn when supersession/compaction filter flags are passed in
     // FTS (degraded) mode — they have no effect until the daemon path is wired.
-    if (opts.full || opts.includeSuperseded) {
-      const flag = opts.full ? '--full' : '--include-superseded';
-      console.warn(chalk.yellow(`Note: ${flag} requires the daemon (vector recall); the FTS fallback does not apply supersession or compaction filters.`));
+    // AGT-318: --full lifts truncation in formatted output (handled in runFormattedFtsRecall).
+    // --include-superseded has no effect in FTS mode; the daemon path is not wired yet.
+    if (opts.includeSuperseded) {
+      console.warn(chalk.yellow("note: --include-superseded requires the daemon (vector recall); the FTS fallback does not apply supersession filters."));
     }
 
     // AGT-308: Warn when --scope was explicitly provided in FTS (degraded) mode
@@ -312,6 +371,6 @@ export const recallCommand = new Command('recall')
     // When --no-embed or THINK_NO_EMBED=1 is set explicitly, use the opt-out note.
     // The failure-fallback (NOTE_FTS_FALLBACK) is for daemon-side auto-fallback.
     if (noEmbed) console.log(NOTE_FTS_EXPLICIT);
-    runFtsRecall(cortex, query, { engrams: opts.engrams, limit });
+    runFormattedFtsRecall(cortex, query, { engrams: opts.engrams, limit, full: opts.full });
     closeCortexDb(cortex);
   });
