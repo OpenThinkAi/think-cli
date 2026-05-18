@@ -82,7 +82,10 @@ export interface SyncParams {
 /**
  * Response shape for the `sync` RPC.
  *
- * - `status: 'stored'` — entry written to L1 and L2 successfully.
+ * - `status: 'stored'` — entry written to L1 and L2 successfully. NOTE: when
+ *   `supersession_scheduled` is also true, this status reflects the initial
+ *   write only; the entry may be tombstoned shortly after by the async
+ *   duplicate check.
  * - `status: 'queued'` — reserved for AGT-299 (L1 written, L2 pending
  *   compaction replay); not yet returned by this implementation.
  * - `supersession_scheduled` — present and `true` for every `kind=retro` entry.
@@ -100,9 +103,14 @@ export interface SyncResult {
    * True for every `kind=retro` entry. An async supersession check was scheduled
    * and will run shortly after this response is returned. The check may tombstone
    * the entry as a duplicate — there is no completion callback or follow-up signal.
-   * Tombstone events are recorded only in the daemon log (console.info line).
-   * Callers may surface this to the user as "duplicate check running; retro may
-   * be suppressed if it duplicates an existing one."
+   * Tombstone events are recorded only in the daemon log at warn level
+   * (`[supersession] retro <id> detected as duplicate; tombstoned`).
+   * Verification path for users: tombstoned entries are L2-soft-deleted via
+   * `deleted_at` and an L1 tombstone line is appended — they will not appear
+   * in default recall results but remain inspectable via daemon log scraping
+   * or a future `--include-deleted` recall flag.
+   * Suggested caller copy: "duplicate check running; retro may be suppressed
+   * if it duplicates an existing one. Check daemon log for tombstone events."
    */
   supersession_scheduled?: boolean;
   warnings?: string[];

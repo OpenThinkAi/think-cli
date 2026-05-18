@@ -360,7 +360,8 @@ async function recallOneCortexWithVec(
   // topics array. Fail loudly rather than silently returning unfiltered results.
   if (topic !== undefined && !hasTopics) {
     throw new Error(
-      `recall: 'topic' filter is not yet implemented for cortex "${cortexName}" (topics column not present)`,
+      `recall: 'topic' filter is not yet implemented for cortex "${cortexName}" ` +
+      `(column is 'topics_json'; SELECT wiring pending)`,
     );
   }
 
