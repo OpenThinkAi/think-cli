@@ -43,8 +43,16 @@ const DEFAULT_CALL_TIMEOUT_MS = 30_000;
 /** Initial retry delay in milliseconds (doubles on each attempt). */
 const INITIAL_RETRY_DELAY_MS = 50;
 
-/** Maximum total time to wait for the daemon to start (milliseconds). */
-const SPAWN_TIMEOUT_MS = 5_000;
+/**
+ * Maximum total time to wait for the daemon to start (milliseconds).
+ *
+ * The daemon now blocks "ready" until the embedding model is loaded
+ * (Xenova/bge-small-en-v1.5, ~34s even with cached files). Set to 90s
+ * to give plenty of headroom for slow machines and first-run downloads.
+ * This is the spawn-timeout only — the per-call timeout (DEFAULT_CALL_TIMEOUT_MS)
+ * is unchanged at 30s and governs individual RPC round-trips.
+ */
+const SPAWN_TIMEOUT_MS = 90_000;
 
 // ---------------------------------------------------------------------------
 // Paths
@@ -423,6 +431,15 @@ export interface ConnectDaemonOptions {
    * @internal — test-injection seam only; do not use in production code.
    */
   _spawnOverride?: () => void;
+
+  /**
+   * Override the total retry window in ms.
+   * Defaults to SPAWN_TIMEOUT_MS (90s). Tests that expect a quick failure can
+   * pass a smaller value (e.g. 500) so they don't wait 90s.
+   *
+   * @internal — test-injection seam only.
+   */
+  _spawnTimeoutOverride?: number;
 }
 
 /**
@@ -433,13 +450,14 @@ export interface ConnectDaemonOptions {
  *  1. Try to connect. Success → return.
  *  2. ENOENT / ECONNREFUSED → spawn daemon (or `_spawnOverride`), then retry
  *     with exponential backoff.
- *  3. After 5 s of retries: throw with a pointer to daemon.log.
+ *  3. After 90 s of retries: throw with a pointer to daemon.log.
  *  4. Any other connect error: propagate immediately (don't retry).
  */
 export async function connectDaemon(
   options: ConnectDaemonOptions = {},
 ): Promise<DaemonClient> {
   const doSpawn = options._spawnOverride ?? spawnDaemon;
+  const spawnTimeout = options._spawnTimeoutOverride ?? SPAWN_TIMEOUT_MS;
 
   // First attempt — no spawn yet.
   try {
@@ -456,7 +474,7 @@ export async function connectDaemon(
   doSpawn();
 
   // Retry loop with exponential backoff.
-  const deadline = Date.now() + SPAWN_TIMEOUT_MS;
+  const deadline = Date.now() + spawnTimeout;
   let delay = INITIAL_RETRY_DELAY_MS;
 
   while (Date.now() < deadline) {

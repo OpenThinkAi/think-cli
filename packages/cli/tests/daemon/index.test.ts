@@ -1,9 +1,11 @@
 /**
- * Tests for daemon startup — embedding model warmup (alpha.5).
+ * Tests for daemon startup — embedding model warmup (alpha.6).
  *
- * Verifies that warmupEmbedModel() is called as a fire-and-forget
- * immediately after the daemon binds its socket and logs "ready", so
- * the first real sync call does not block on a cold model load.
+ * Verifies that:
+ *  1. warmupEmbedModel() is AWAITED before the daemon logs "ready", so the
+ *     first sync call never blocks on a cold model load (the alpha.5 bug).
+ *  2. If warmupEmbedModel() rejects (optional dep missing, ONNX error), the
+ *     daemon still becomes "ready" in FTS-only mode and logs a warning.
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
@@ -22,8 +24,7 @@ vi.mock('@huggingface/transformers', () => ({
 }));
 
 // ---------------------------------------------------------------------------
-// Mock embed module so we can spy on warmupEmbedModel without the full
-// HuggingFace stack.  We replace it with a spy that resolves instantly.
+// Mock embed module so we can control warmupEmbedModel timing and outcome.
 // ---------------------------------------------------------------------------
 
 const warmupSpy = vi.fn().mockResolvedValue(42);
@@ -66,33 +67,91 @@ describe.skipIf(process.platform === 'win32')(
       rmSync(thinkHome, { recursive: true, force: true });
     });
 
-    it('warmupEmbedModel is called after daemon binds socket and logs ready', async () => {
+    it('warmupEmbedModel is awaited BEFORE daemon logs "ready"', async () => {
+      // Use a controlled delay so we can observe that "ready" is not logged
+      // until warmup resolves.
+      let resolveWarmup!: (ms: number) => void;
+      const warmupPromise = new Promise<number>((r) => { resolveWarmup = r; });
+
       // Re-import after resetModules so the mock is in effect for this module instance.
       const embedMod = await import('../../src/lib/embed.js');
-      const localWarmupSpy = vi.spyOn(embedMod, 'warmupEmbedModel').mockResolvedValue(42);
+      const localWarmupSpy = vi.spyOn(embedMod, 'warmupEmbedModel').mockReturnValue(warmupPromise);
 
       const { runDaemon } = await import('../../src/daemon/index.js');
       const socketPath = join(thinkHome, 'daemon.sock');
 
-      // Resolve when the daemon logs "ready".
+      const logLines: string[] = [];
       let resolveReady!: () => void;
-      const ready = new Promise<void>((r) => { resolveReady = r; });
+      const readyPromise = new Promise<void>((r) => { resolveReady = r; });
 
       const origWrite = process.stderr.write.bind(process.stderr);
       stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation((chunk) => {
-        if (String(chunk).includes('think daemon ready')) resolveReady();
+        const s = String(chunk);
+        logLines.push(s);
+        if (s.includes('think daemon ready')) resolveReady();
         return origWrite(chunk);
       });
 
       const daemonPromise = runDaemon({ socketPath, foreground: true });
 
-      // Wait for ready signal.
-      await ready;
+      // Let the daemon get to the warmup await point, but don't let warmup complete.
+      await new Promise<void>((r) => setTimeout(r, 100));
 
-      // Give the fire-and-forget warmup a tick to be called.
-      await new Promise<void>((r) => setTimeout(r, 50));
+      // "ready" must NOT have been logged yet.
+      const readyLoggedBeforeWarmup = logLines.some((l) => l.includes('think daemon ready'));
+      expect(readyLoggedBeforeWarmup).toBe(false);
 
-      expect(localWarmupSpy).toHaveBeenCalledTimes(1);
+      // Now resolve warmup — this should unblock the "ready" log.
+      resolveWarmup(34259);
+      await readyPromise;
+
+      // Confirm "loaded" was logged before "ready".
+      const loadedIdx = logLines.findIndex((l) => l.includes('embed-model: loaded'));
+      const readyIdx  = logLines.findIndex((l) => l.includes('think daemon ready'));
+      expect(loadedIdx).toBeGreaterThanOrEqual(0);
+      expect(readyIdx).toBeGreaterThanOrEqual(0);
+      expect(loadedIdx).toBeLessThan(readyIdx);
+
+      // Shut down cleanly.
+      process.emit('SIGTERM');
+      await daemonPromise.catch(() => {});
+
+      localWarmupSpy.mockRestore();
+    }, 15_000);
+
+    it('daemon still reaches "ready" (FTS-only mode) when warmup fails', async () => {
+      const warmupError = new Error('onnxruntime ABI mismatch');
+
+      const embedMod = await import('../../src/lib/embed.js');
+      const localWarmupSpy = vi.spyOn(embedMod, 'warmupEmbedModel').mockRejectedValue(warmupError);
+
+      const { runDaemon } = await import('../../src/daemon/index.js');
+      const socketPath = join(thinkHome, 'daemon.sock');
+
+      const logLines: string[] = [];
+      let resolveReady!: () => void;
+      const readyPromise = new Promise<void>((r) => { resolveReady = r; });
+
+      const origWrite = process.stderr.write.bind(process.stderr);
+      stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation((chunk) => {
+        const s = String(chunk);
+        logLines.push(s);
+        if (s.includes('think daemon ready')) resolveReady();
+        return origWrite(chunk);
+      });
+
+      const daemonPromise = runDaemon({ socketPath, foreground: true });
+
+      // Should still reach "ready" even though warmup rejected.
+      await readyPromise;
+
+      // A warning log must have been emitted.
+      const warnLogged = logLines.some((l) => l.includes('embed-model: WARN warmup failed'));
+      expect(warnLogged).toBe(true);
+
+      // "ready" must appear.
+      const readyLogged = logLines.some((l) => l.includes('think daemon ready'));
+      expect(readyLogged).toBe(true);
 
       // Shut down cleanly.
       process.emit('SIGTERM');
