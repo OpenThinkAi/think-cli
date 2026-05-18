@@ -128,6 +128,17 @@ export interface CompactionConfig {
   triageThreshold?: number;
 }
 
+export interface ProxyConfig {
+  /**
+   * WebSocket URL of the think-v3 proxy server (ws:// or wss:// only).
+   * When set, the daemon subscribes to near-realtime push notifications for
+   * all accessible cortexes and fetches immediately on push instead of
+   * waiting for the next poll interval.
+   * Set via `think config set proxy.url <url>`.
+   */
+  url?: string;
+}
+
 export interface Config {
   peerId: string;
   syncPort: number;
@@ -138,6 +149,7 @@ export interface Config {
   daemon?: DaemonConfig;
   recall?: RecallConfig;
   compaction?: CompactionConfig;
+  proxy?: ProxyConfig;
 }
 
 export function getConfigDir(): string {

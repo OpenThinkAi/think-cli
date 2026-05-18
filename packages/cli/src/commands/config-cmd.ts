@@ -16,6 +16,7 @@ const ALLOWED_KEYS = new Set([
   'cortex.staleWindowMinutes',
   'cortex.retroRelegateAfterRuns',
   'paused',
+  'proxy.url',
   'search.engine',
 ]);
 
