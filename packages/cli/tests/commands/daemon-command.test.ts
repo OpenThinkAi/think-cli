@@ -173,7 +173,7 @@ describe.skipIf(process.platform === 'win32')('think daemon start', () => {
 });
 
 describe.skipIf(process.platform === 'win32')('think daemon stop', () => {
-  const { getThinkHome, getStdout, getStderr, getExitSpy } = useThinkHome();
+  const { getThinkHome, getStdout, getExitSpy } = useThinkHome();
 
   it('exits 0 with "daemon not running (no-op)" when daemon is not running', async () => {
     // No PID file → isDaemonRunning returns { running: false }.

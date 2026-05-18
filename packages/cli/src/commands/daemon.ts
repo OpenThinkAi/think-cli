@@ -148,12 +148,18 @@ const stopSubcommand = new Command('stop')
       // Unexpected errors (not socket-close/ECONNRESET/EPIPE) mean the shutdown RPC
       // was not delivered. Exit immediately rather than polling: the daemon may still
       // be running, and polling would give a confusing success message.
+      //
+      // Detection order: errno codes first (preserved when the underlying socket
+      // error bubbles up directly), then string-matching the daemon-client's
+      // custom wrappers ('socket closed', 'connection closed') which don't
+      // carry an errno code.
+      const code = (err as NodeJS.ErrnoException).code;
       const msg = err instanceof Error ? err.message : String(err);
       const isExpected =
+        code === 'ECONNRESET' ||
+        code === 'EPIPE' ||
         msg.includes('socket closed') ||
-        msg.includes('connection closed') ||
-        msg.includes('ECONNRESET') ||
-        msg.includes('EPIPE');
+        msg.includes('connection closed');
       if (!isExpected) {
         client.close();
         process.stderr.write(`error: shutdown RPC failed — ${msg}\n`);
