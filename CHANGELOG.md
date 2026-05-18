@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.0.0-alpha.3] — 2026-05-18
+
+### Fixed
+- `think recall` semantic similarity search now works on the published alpha. tsup was bundling `@huggingface/transformers` into a single chunk that stripped the native `onnxruntime-node` backend bindings, producing a broken runtime import (`listSupportedBackends is not a function`). The daemon's embed call caught the failure and the CLI silently fell back to writing v2-shape engrams that v3 `recall` does not query — recall always returned `note: no entries matched`. Mark the package `external` in `tsup.config.ts` so Node resolves it from node_modules at runtime, with its native binary siblings intact.
+
+---
+
 ## [1.0.0-alpha.2] — 2026-05-18
 
 ### Fixed
