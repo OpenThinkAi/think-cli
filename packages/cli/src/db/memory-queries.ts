@@ -45,6 +45,11 @@ export interface MemoryRow {
    * to rank cosine × recency_weight without relying on wall-clock time.
    */
   activity_seq: number | null;
+  /**
+   * Entry kind: "memory" | "retro" | "event" | null.
+   * Null for pre-v3 rows that pre-date kind tagging. Added in migration 11.
+   */
+  kind: string | null;
 }
 
 export interface InsertMemoryParams {
