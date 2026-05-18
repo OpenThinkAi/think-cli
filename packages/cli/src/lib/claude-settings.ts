@@ -20,16 +20,35 @@ import os from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { resolvePackageEntry } from './pkg-paths.js';
 
-/** The shape of a single hook command entry in Claude Code's settings. */
+/** The shape of a single hook command entry (inner item in a matcher-group). */
 export interface HookCommandEntry {
   type: 'command';
   command: string;
 }
 
+/**
+ * The shape of a hook matcher-group as required by Claude Code.
+ *
+ * Claude Code's settings schema wraps each hook command in a matcher-group
+ * object.  A flat `{ type, command }` entry at the top level is the OLD
+ * (broken) shape that triggers `/doctor` warnings.  The correct shape is:
+ *
+ * ```jsonc
+ * { "matcher": "", "hooks": [{ "type": "command", "command": "node \"…\"" }] }
+ * ```
+ *
+ * An empty-string `matcher` means "always fire", which is appropriate for
+ * `UserPromptSubmit` context injection.
+ */
+export interface HookMatcherGroup {
+  matcher: string;
+  hooks: HookCommandEntry[];
+}
+
 /** Minimal subset of the Claude Code settings shape we care about. */
 export interface ClaudeSettings {
   hooks?: {
-    UserPromptSubmit?: HookCommandEntry[];
+    UserPromptSubmit?: HookMatcherGroup[];
     [key: string]: unknown;
   };
   [key: string]: unknown;
@@ -234,14 +253,79 @@ export function removeMcpEntry(config: McpConfig): 'removed' | 'not_found' {
 }
 
 /**
- * Add a `UserPromptSubmit` hook entry for the given command path.
+ * Build the shell command string for the hook script.
  *
- * - If the entry is already present (same `command`), returns `'already_installed'`.
- * - Otherwise merges the new entry into the existing list and returns `'installed'`.
+ * Claude Code executes `command` via shell, so a bare `.js` path won't run.
+ * We prefix with `node` and quote the path so it survives spaces in the
+ * install prefix (e.g. "/Users/some name/.npm-global/…"). Any embedded `"`
+ * in the path is backslash-escaped so a pathological path can't break out
+ * of the quoted string.
+ */
+function buildHookCommand(scriptPath: string): string {
+  const escaped = scriptPath.replace(/"/g, '\\"');
+  return `node "${escaped}"`;
+}
+
+/**
+ * Return true if an entry in either the old (flat) shape or the new
+ * (matcher-group) shape references the hook script identified by
+ * `scriptBasename`.
+ *
+ * Old flat shape:  `{ type: 'command', command: '/abs/path/<basename>' }`
+ * New shape:       `{ matcher: '', hooks: [{ type: 'command', command: 'node "…/<basename>"' }] }`
+ *
+ * Matches on the basename substring so that the same logic catches:
+ *   - bare-path entries from the old shape,
+ *   - `node "…"`-wrapped entries from the new shape,
+ *   - entries written by a different install prefix (different absolute path,
+ *     same basename — useful when a user reinstalls under a different npm
+ *     prefix and we want the upgrade to clean up the stale entry).
+ *
+ * The basename is supplied by the caller from `resolveHookScriptPath()` so
+ * the match always tracks whatever the current build emits — no hardcoding.
+ */
+function isOurHookEntry(entry: unknown, scriptBasename: string): boolean {
+  if (typeof entry !== 'object' || entry === null) return false;
+  const e = entry as Record<string, unknown>;
+
+  // Old flat shape
+  if (typeof e['command'] === 'string' && e['command'].includes(scriptBasename)) {
+    return true;
+  }
+
+  // New matcher-group shape
+  if (Array.isArray(e['hooks'])) {
+    return (e['hooks'] as unknown[]).some(
+      (inner) =>
+        typeof inner === 'object' &&
+        inner !== null &&
+        typeof (inner as Record<string, unknown>)['command'] === 'string' &&
+        ((inner as Record<string, unknown>)['command'] as string).includes(scriptBasename),
+    );
+  }
+
+  return false;
+}
+
+/**
+ * Add a `UserPromptSubmit` hook entry for the given script path.
+ *
+ * Writes the correct matcher-group shape required by Claude Code:
+ *   `{ matcher: '', hooks: [{ type: 'command', command: 'node "…"' }] }`
+ *
+ * Migration: any existing entries in either the old flat shape or the new
+ * matcher-group shape that reference `user-prompt-submit.js` are removed
+ * first, then the single correct entry is added.  This makes re-running
+ * `think hook install` idempotent and self-healing for users on alpha.4–alpha.8.
+ *
+ * Unrelated `UserPromptSubmit` entries (hooks not from think) are preserved.
+ *
+ * Returns `'already_installed'` if our entry is already present in the
+ * correct shape (no changes needed), `'installed'` otherwise.
  */
 export function addHookEntry(
   settings: ClaudeSettings,
-  commandPath: string,
+  scriptPath: string,
 ): 'installed' | 'already_installed' {
   if (!settings.hooks) {
     settings.hooks = {};
@@ -250,37 +334,74 @@ export function addHookEntry(
     settings.hooks.UserPromptSubmit = [];
   }
 
-  const existing = settings.hooks.UserPromptSubmit;
-  const alreadyPresent = existing.some((e) => e.command === commandPath);
-  if (alreadyPresent) {
+  const existing = settings.hooks.UserPromptSubmit as unknown[];
+  const expectedCommand = buildHookCommand(scriptPath);
+
+  // Check if the correct new-shape entry is already present
+  const alreadyCorrect = existing.some(
+    (entry) =>
+      typeof entry === 'object' &&
+      entry !== null &&
+      (entry as Record<string, unknown>)['matcher'] === '' &&
+      Array.isArray((entry as Record<string, unknown>)['hooks']) &&
+      ((entry as Record<string, unknown>)['hooks'] as unknown[]).some(
+        (inner) =>
+          typeof inner === 'object' &&
+          inner !== null &&
+          (inner as Record<string, unknown>)['command'] === expectedCommand,
+      ),
+  );
+
+  if (alreadyCorrect) {
     return 'already_installed';
   }
 
-  existing.push({ type: 'command', command: commandPath });
+  // Remove any existing entries (old flat shape or new shape) pointing at our script
+  const scriptBasename = path.basename(scriptPath);
+  const cleaned = existing.filter((entry) => !isOurHookEntry(entry, scriptBasename));
+
+  // Add the correct matcher-group entry
+  cleaned.push({
+    matcher: '',
+    hooks: [{ type: 'command', command: expectedCommand }],
+  } as unknown as HookMatcherGroup);
+
+  settings.hooks.UserPromptSubmit = cleaned as HookMatcherGroup[];
   return 'installed';
 }
 
 /**
- * Remove the `UserPromptSubmit` hook entry for the given command path.
+ * Remove all `UserPromptSubmit` hook entries pointing at the hook script
+ * identified by `scriptPath`.
  *
- * Returns `'removed'` if an entry was found and removed, `'not_found'` otherwise.
+ * Match is by basename (`path.basename(scriptPath)`), which covers both:
+ *   - the old flat shape (alpha.4–alpha.8): `{ type: 'command', command: '<path>' }`
+ *   - the new matcher-group shape: `{ matcher: '', hooks: [{ type, command: 'node "<path>"' }] }`
+ *
+ * Basename matching also catches stale entries written by a different install
+ * prefix on the same machine (e.g. a user who switched npm prefix between
+ * installs), which is the upgrade-self-heal case this function exists for.
+ * Unrelated `UserPromptSubmit` entries (hooks not from think) are preserved.
+ *
+ * Returns `'removed'` if at least one entry was removed, `'not_found'` otherwise.
  * Cleans up empty `UserPromptSubmit` arrays and empty `hooks` objects.
  */
 export function removeHookEntry(
   settings: ClaudeSettings,
-  commandPath: string,
+  scriptPath: string,
 ): 'removed' | 'not_found' {
-  const list = settings.hooks?.UserPromptSubmit;
+  const list = settings.hooks?.UserPromptSubmit as unknown[] | undefined;
   if (!list) return 'not_found';
 
+  const scriptBasename = path.basename(scriptPath);
   const before = list.length;
-  const after = list.filter((e) => e.command !== commandPath);
+  const after = list.filter((entry) => !isOurHookEntry(entry, scriptBasename));
   if (after.length === before) return 'not_found';
 
   if (after.length === 0) {
     delete settings.hooks!.UserPromptSubmit;
   } else {
-    settings.hooks!.UserPromptSubmit = after;
+    settings.hooks!.UserPromptSubmit = after as HookMatcherGroup[];
   }
   if (settings.hooks && Object.keys(settings.hooks).length === 0) {
     delete settings.hooks;
