@@ -115,6 +115,22 @@ async function getPipeline(): Promise<FeatureExtractionPipeline> {
 const MAX_EMBED_CHARS = 32_000;
 
 /**
+ * Kick off model loading in the background so the first real embed() call
+ * doesn't hit a cold-start penalty.  Safe to call before the model is needed;
+ * the existing pipelinePromise singleton dedupes concurrent callers — any
+ * embed() that arrives during warmup awaits the same in-flight load.
+ *
+ * Returns a Promise that resolves with the elapsed load time (ms) on success
+ * or rejects with the load error.  Callers that want fire-and-forget should
+ * attach a `.catch()` to prevent unhandledRejection.
+ */
+export async function warmupEmbedModel(): Promise<number> {
+  const start = Date.now();
+  await getPipeline();
+  return Date.now() - start;
+}
+
+/**
  * Embed a text string into a 384-dim normalized Float32Array using
  * {@link EMBEDDING_MODEL_NAME} (pooling: mean, normalize: true).
  *

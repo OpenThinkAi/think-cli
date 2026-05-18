@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.0.0-alpha.5] — 2026-05-18
+
+### Fixed
+- **Daemon: pre-load embedding model at startup** — the first `think sync` after daemon start previously triggered a cold load of `Xenova/bge-small-en-v1.5` (~30 s even with the model cached on disk), hitting the CLI's 30 s call timeout and falling back to a v2-shape local write. The daemon now kicks off `warmupEmbedModel()` as a fire-and-forget immediately after binding its socket and logging "ready". The socket bind (and the "ready" log) happen before model load, so spawn-or-connect latency is unchanged. Any sync call that arrives during warmup awaits the same in-flight load via the existing `pipelinePromise` singleton — no duplicate model instantiation, no race.
+- **engrams/ consolidation: decide for the user, not at them** — the "both engrams/ and index/ exist" warning was printed on every CLI invocation, putting file-management burden on users. The new behaviour: if stdin is a TTY, think prints a single clear prompt (with an explicit IRREVERSIBLE warning and a Ctrl-C escape hatch), blocks synchronously for the user to press Enter, then moves all `.db` files from `engrams/` into `index/` and removes `engrams/`. For cortex DBs that exist in both dirs, `index/` (v3 canonical) is kept and the `engrams/` copy is backed up to a timestamped `engrams-backup-<ts>/` sibling so the user can recover it. In non-interactive sessions (hooks, MCP, scripts) the check is silently skipped — the next interactive `think` invocation will handle it.
+
+---
+
 ## [1.0.0-alpha.4] — 2026-05-18
 
 ### Fixed
