@@ -1,6 +1,8 @@
 import { execSync } from 'node:child_process';
 import { Command } from 'commander';
 import fs from 'node:fs';
+import net from 'node:net';
+import os from 'node:os';
 import path from 'node:path';
 import readline from 'node:readline';
 import chalk from 'chalk';
@@ -58,6 +60,23 @@ think sync "shipped X" --silent
 That's all. Don't run \`think sync\` for exploration, debugging, decisions that weren't acted on, or anything mid-conversation. Logged entries become engrams; with curator consent granted (\`THINK_LLM_CONSENT=1\`), curated content reaches Anthropic. The minimal template keeps that pipeline narrow by design — augment with the default template (\`think init --yes\`) if you decide you want richer logging later.
 `;
 
+// v3 work-log template. Recall is now implicit via the hook + MCP server,
+// so the "you MUST recall per-activity" hard rule from v2 shrinks to a
+// brief note. The three verbs (sync/retro/event) replace the v2 sync-only
+// model. Cortex inference is unchanged.
+const V3_WORKLOG_BLOCK = `# think v3
+
+If you have think v3 installed with the hook + MCP server, you'll see relevant context auto-injected via additionalContext, and you can call think_recall mid-conversation when you need to drill in. You don't need to manually run \`think recall\` unless you want to inspect what's stored.
+
+Three verbs for writing:
+
+- \`think sync "<content>"\` — work stream; kind=memory. Use after shipping a change (commit pushed, PR opened, deploy completed). This is the equivalent of v2 \`think sync\`.
+- \`think retro "<content>"\` — durable wisdom about a codebase; kind=retro. Use when you notice a convention, invariant, gotcha, or prior decision worth preserving for the next agent in this repo. Not compacted — text is preserved exactly as written.
+- \`think event "<content>"\` — notable thing happened; kind=event. Use for milestones, decisions, incidents. Events accumulate and are never superseded.
+
+Cortex is inferred from the repo basename (\`basename "$(git rev-parse --show-toplevel)"\`) unless you pass \`--cortex <name>\` explicitly. For repos with a stable name, prefer \`think init --retro --cortex <name>\` to bake it into the block.
+`;
+
 const OTEAM_EXTRA_LINE = `\n**Under an \`oteam\` workspace:** run \`think recall\` before \`oteam assign\` and \`think sync\` after each role-pipeline hand-off.\n`;
 
 const RETRO_BLOCK = `# Iterative Learning
@@ -110,7 +129,30 @@ function detectOteamWorkspace(home: string): boolean {
   }
 }
 
-function buildBlock(oteamPresent: boolean, minimal = false): string {
+// Attempt a zero-byte connect to the v3 daemon socket with a short timeout.
+// Returns true only if the socket accepts the connection. Any error or timeout
+// is treated as "daemon not reachable" — safe fallback to v2 block.
+function isV3DaemonReachable(timeoutMs = 1500): Promise<boolean> {
+  const socketPath = path.join(os.homedir(), '.think', 'daemon.sock');
+  return new Promise((resolve) => {
+    const socket = net.createConnection(socketPath);
+    const timer = setTimeout(() => {
+      socket.destroy();
+      resolve(false);
+    }, timeoutMs);
+    socket.once('connect', () => {
+      clearTimeout(timer);
+      socket.destroy();
+      resolve(true);
+    });
+    socket.once('error', () => {
+      clearTimeout(timer);
+      resolve(false);
+    });
+  });
+}
+
+function buildBlock(oteamPresent: boolean, minimal = false, version: 'v2' | 'v3' = 'v2'): string {
   if (minimal) {
     // Wrap the minimal body in the same begin/end markers as the default
     // path so `upsertBlock` can replace-in-place across re-runs and
@@ -118,6 +160,11 @@ function buildBlock(oteamPresent: boolean, minimal = false): string {
     // re-invocation would append a fresh block (no marker → no
     // existing-block detection → fall through to plain append).
     return `${BEGIN_MARKER}\n${MINIMAL_WORKLOG_BLOCK}${END_MARKER}\n`;
+  }
+  if (version === 'v3') {
+    const oteamSegment = oteamPresent ? OTEAM_EXTRA_LINE : '';
+    const body = `${V3_WORKLOG_BLOCK}${oteamSegment}`;
+    return `${BEGIN_MARKER}\n${body}${END_MARKER}\n`;
   }
   const oteamSegment = oteamPresent ? OTEAM_EXTRA_LINE : '';
   const body = `${WORKLOG_BLOCK}${oteamSegment}\n${RETRO_BLOCK}`;
@@ -323,6 +370,7 @@ export const initCommand = new Command('init')
   .option('--minimal', 'Write a conservative work-log template that logs only explicit shipped outcomes — no decision narration, no oteam adaptation, no retro pattern. Skips the disclosure prompt. Mutually exclusive with --retro.')
   .option('--retro', 'Upsert the iterative-learning (retro) block instead of the work-logging block. Requires --cortex. When no -d is given: writes silently to the git repo root if inside a repo; prompts with cwd as the default otherwise.')
   .option('--cortex <name>', 'Cortex name baked into the retro block commands (required with --retro).')
+  .option('--version <ver>', "Force block version: v2 (default, v0.6 compatible) or v3 (v3 daemon block, skips daemon detection).")
   .addHelpText('after', `
 Modes:
   Default (no --retro):
@@ -348,16 +396,25 @@ Modes:
 Examples:
   think init                              # work-log block in ~/CLAUDE.md
   think init --dir . --yes                # work-log block in ./CLAUDE.md
+  think init --version v3                 # force v3 block even without daemon
   think init --retro --cortex fx-tracker  # retro block at git root (silent)
   think init --dir . --retro --cortex my-repo  # retro block in ./CLAUDE.md
 `)
-  .action(async function (this: Command, opts: { dir?: string; yes?: boolean; minimal?: boolean; retro?: boolean; cortex?: string }) {
+  .action(async function (this: Command, opts: { dir?: string; yes?: boolean; minimal?: boolean; retro?: boolean; cortex?: string; version?: string }) {
     // The program declares a global `-C, --cortex <name>` option which shadows
     // the subcommand-local `--cortex` when invoked through the full CLI. Fall
     // back to the global so both `think -C foo init --retro` and
     // `think init --retro --cortex foo` resolve to the same value.
     const globalOpts = this.optsWithGlobals() as { cortex?: string };
     const cortex = opts.cortex ?? globalOpts.cortex;
+
+    // Validate --version flag early.
+    const versionFlag = opts.version;
+    if (versionFlag !== undefined && versionFlag !== 'v2' && versionFlag !== 'v3') {
+      console.error(chalk.red(`think init: --version must be 'v2' or 'v3', got '${versionFlag}'.`));
+      process.exit(1);
+    }
+    const forcedVersion = versionFlag as 'v2' | 'v3' | undefined;
 
     if (opts.minimal && opts.retro) {
       console.error(chalk.red('think init: --minimal and --retro are mutually exclusive (one writes the work-log block, the other writes the retro block).'));
@@ -459,12 +516,25 @@ Examples:
       }
     }
 
+    // Determine which block version to write:
+    //   1. --version v3 → always v3
+    //   2. --version v2 → always v2
+    //   3. No flag → probe daemon; v3 if reachable, v2 otherwise
+    let version: 'v2' | 'v3';
+    if (forcedVersion !== undefined) {
+      version = forcedVersion;
+    } else {
+      version = (await isV3DaemonReachable()) ? 'v3' : 'v2';
+    }
+
     const oteamPresent = detectOteamWorkspace(home);
-    const block = buildBlock(oteamPresent, opts.minimal);
+    const block = buildBlock(oteamPresent, opts.minimal, version);
     const label = opts.minimal ? 'minimal work logging' : 'work logging';
 
     if (opts.minimal) {
       console.log(chalk.dim('Writing the minimal work-log template — no oteam adaptation, no retro pattern, no decision narration.'));
+    } else if (version === 'v3') {
+      console.log(chalk.dim('Writing v3 block (implicit recall via hook + MCP server).'));
     } else if (oteamPresent) {
       console.log(chalk.dim('Detected oteam workspace — block tuned for role-pipeline cadence.'));
     }

@@ -591,3 +591,131 @@ describe('think init — minimum-necessary defaults + --minimal flag (AGT-067)',
     expect(content).toContain('After shipping a change');
   });
 });
+
+// AGT-321: v3 block detection, --version flag, daemon-reachability fallback.
+describe('think init — v3 block (AGT-321)', () => {
+  let homeRoot: string;
+  let projectDir: string;
+  let prevHome: string | undefined;
+
+  beforeEach(() => {
+    homeRoot = mkdtempSync(path.join(tmpdir(), 'think-init-v3-home-'));
+    projectDir = mkdtempSync(path.join(tmpdir(), 'think-init-v3-project-'));
+    prevHome = process.env.HOME;
+    process.env.HOME = homeRoot;
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    rmSync(homeRoot, { recursive: true, force: true });
+    rmSync(projectDir, { recursive: true, force: true });
+    if (prevHome === undefined) delete process.env.HOME;
+    else process.env.HOME = prevHome;
+    vi.restoreAllMocks();
+  });
+
+  function readClaude(): string {
+    return readFileSync(path.join(projectDir, 'CLAUDE.md'), 'utf-8');
+  }
+
+  it('--version v3 writes v3 block even when daemon is unreachable', async () => {
+    // No daemon running in test env; --version v3 forces v3 regardless.
+    await initCommand.parseAsync(['--dir', projectDir, '--yes', '--version', 'v3'], { from: 'user' });
+    const content = readClaude();
+    expect(content).toContain(BEGIN_MARKER);
+    expect(content).toContain(END_MARKER);
+    expect(content).toContain('# think v3');
+    expect(content).toContain('think_recall');
+    expect(content).toContain('think sync');
+    expect(content).toContain('think retro');
+    expect(content).toContain('think event');
+    // v3 block should not contain the v2-only privacy disclosure
+    expect(content).not.toContain('# Work Logging\n');
+  });
+
+  it('--version v3 block is idempotent (second run does not duplicate)', async () => {
+    await initCommand.parseAsync(['--dir', projectDir, '--yes', '--version', 'v3'], { from: 'user' });
+    const first = readClaude();
+    await initCommand.parseAsync(['--dir', projectDir, '--yes', '--version', 'v3'], { from: 'user' });
+    const second = readClaude();
+    expect(second).toEqual(first);
+    expect((second.match(/# think v3/g) ?? []).length).toBe(1);
+  });
+
+  it('--version v2 forces v2 block regardless of daemon state', async () => {
+    await initCommand.parseAsync(['--dir', projectDir, '--yes', '--version', 'v2'], { from: 'user' });
+    const content = readClaude();
+    expect(content).toContain('# Work Logging');
+    expect(content).not.toContain('# think v3');
+  });
+
+  it('daemon-unreachable falls back to v2 block (no --version flag)', async () => {
+    // No daemon running in CI/test — expect v2 fallback.
+    await initCommand.parseAsync(['--dir', projectDir, '--yes'], { from: 'user' });
+    const content = readClaude();
+    // v2 block contains "# Work Logging"; v3 block does not.
+    expect(content).toContain('# Work Logging');
+    expect(content).not.toContain('# think v3');
+  });
+
+  it('v3 block contains all three verb descriptions', async () => {
+    await initCommand.parseAsync(['--dir', projectDir, '--yes', '--version', 'v3'], { from: 'user' });
+    const content = readClaude();
+    // Paragraph (a): implicit recall via hook + MCP
+    expect(content).toContain('hook + MCP server');
+    expect(content).toContain('additionalContext');
+    // Paragraph (b): three verbs
+    expect(content).toContain('kind=memory');
+    expect(content).toContain('kind=retro');
+    expect(content).toContain('kind=event');
+    // Paragraph (c): cortex inference
+    expect(content).toContain('repo basename');
+    expect(content).toContain('--cortex <name>');
+  });
+
+  it('v3 block uses the same BEGIN/END markers (idempotent replace with v2)', async () => {
+    // Write v2 first, then upgrade to v3 — markers must allow in-place replace.
+    await initCommand.parseAsync(['--dir', projectDir, '--yes', '--version', 'v2'], { from: 'user' });
+    expect(readClaude()).toContain('# Work Logging');
+
+    await initCommand.parseAsync(['--dir', projectDir, '--yes', '--version', 'v3'], { from: 'user' });
+    const content = readClaude();
+    expect(content).toContain('# think v3');
+    // Only one begin marker — replaced, not appended.
+    expect((content.match(/think:begin/g) ?? []).length).toBe(1);
+    expect((content.match(/think:end/g) ?? []).length).toBe(1);
+  });
+
+  it('--retro --cortex still works unchanged alongside v3 detection', async () => {
+    // retro path should be unaffected by v3 changes
+    await initCommand.parseAsync(
+      ['--dir', projectDir, '--yes', '--retro', '--cortex', 'my-repo'],
+      { from: 'user' },
+    );
+    const content = readClaude();
+    expect(content).toContain(RETRO_BEGIN_MARKER);
+    expect(content).toContain('think brief --cortex my-repo');
+    expect(content).toContain('think retro "<observation>" --cortex my-repo');
+  });
+
+  it('invalid --version value exits with error', async () => {
+    const prevExit = process.exit;
+    const errors: string[] = [];
+    vi.mocked(console.error).mockImplementation((...args: unknown[]) => {
+      errors.push(args.map(String).join(' '));
+    });
+    process.exit = ((code?: number) => {
+      throw new Error(`process.exit:${code ?? 0}`);
+    }) as typeof process.exit;
+
+    try {
+      await expect(
+        initCommand.parseAsync(['--dir', projectDir, '--yes', '--version', 'v4'], { from: 'user' }),
+      ).rejects.toThrow('process.exit:1');
+      expect(errors.join('\n')).toContain("must be 'v2' or 'v3'");
+    } finally {
+      process.exit = prevExit;
+    }
+  });
+});
