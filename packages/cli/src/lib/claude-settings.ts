@@ -170,8 +170,12 @@ export function removeHookEntry(
   const after = list.filter((e) => e.command !== commandPath);
   if (after.length === before) return 'not_found';
 
-  settings.hooks!.UserPromptSubmit = after.length > 0 ? after : undefined;
-  if (settings.hooks && Object.keys(settings.hooks).every((k) => settings.hooks![k] === undefined)) {
+  if (after.length === 0) {
+    delete settings.hooks!.UserPromptSubmit;
+  } else {
+    settings.hooks!.UserPromptSubmit = after;
+  }
+  if (settings.hooks && Object.keys(settings.hooks).length === 0) {
     delete settings.hooks;
   }
 

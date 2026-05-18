@@ -33,7 +33,7 @@ const installSubcommand = new Command('install')
   .description('Register the think UserPromptSubmit hook in Claude Code settings.')
   .option(
     '--project',
-    'Write to <cwd>/.claude/settings.local.json instead of ~/.claude/settings.json',
+    'Target <cwd>/.claude/settings.local.json instead of ~/.claude/settings.json',
   )
   .action((opts: { project?: boolean }) => {
     const settingsFile = opts.project ? projectSettingsPath() : globalSettingsPath();
@@ -47,11 +47,17 @@ const installSubcommand = new Command('install')
       return;
     }
 
+    // Guard: if the hook script does not exist on disk (e.g. partial install or
+    // dev build without compiling), registering it would leave Claude Code with
+    // a broken hook path. Abort with a clear error rather than silently writing
+    // a dangling entry.
     if (!fs.existsSync(hookScript)) {
       console.error(
-        `warning: hook script not found at ${hookScript}; ` +
-          `run \`npm run build\` or reinstall @openthink/think before using this hook.`,
+        `error: hook script not found at ${hookScript}. ` +
+          `Reinstall @openthink/think and try again.`,
       );
+      process.exitCode = 1;
+      return;
     }
 
     let settings;
@@ -66,7 +72,7 @@ const installSubcommand = new Command('install')
     const result = addHookEntry(settings, hookScript);
 
     if (result === 'already_installed') {
-      console.log(`already installed (${settingsFile})`);
+      console.log(`think hook install: already installed (${settingsFile})`);
       return;
     }
 
@@ -78,8 +84,7 @@ const installSubcommand = new Command('install')
       return;
     }
 
-    console.log(`installed → ${settingsFile}`);
-    console.log(`hook script: ${hookScript}`);
+    console.log(`think hook install: installed to ${settingsFile}`);
   });
 
 // ---------------------------------------------------------------------------
@@ -116,7 +121,7 @@ const uninstallSubcommand = new Command('uninstall')
     const result = removeHookEntry(settings, hookScript);
 
     if (result === 'not_found') {
-      console.log(`not installed (no matching entry in ${settingsFile})`);
+      console.log(`think hook uninstall: not installed (${settingsFile})`);
       return;
     }
 
@@ -128,7 +133,7 @@ const uninstallSubcommand = new Command('uninstall')
       return;
     }
 
-    console.log(`removed from ${settingsFile}`);
+    console.log(`think hook uninstall: removed from ${settingsFile}`);
   });
 
 // ---------------------------------------------------------------------------
