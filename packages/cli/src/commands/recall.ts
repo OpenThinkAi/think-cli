@@ -1,4 +1,4 @@
-import { Command } from 'commander';
+import { Command, Option } from 'commander';
 import chalk from 'chalk';
 import { getConfig } from '../lib/config.js';
 import { searchEngrams } from '../db/engram-queries.js';
@@ -13,20 +13,6 @@ import type { MemoryRow } from '../db/memory-queries.js';
 import type { LongTermEventRow } from '../db/long-term-queries.js';
 import { closeCortexDb } from '../db/engrams.js';
 import type { RecallScope } from '../daemon/recall.js';
-
-// ---------------------------------------------------------------------------
-// Scope validation (AGT-308)
-// ---------------------------------------------------------------------------
-
-const VALID_SCOPES = ['active', 'accessible', 'all'] as const;
-
-function parseScope(raw: string): RecallScope {
-  if ((VALID_SCOPES as readonly string[]).includes(raw)) {
-    return raw as RecallScope;
-  }
-  console.error(`error: invalid --scope value '${raw}'; expected one of: active, accessible, all`);
-  process.exit(1);
-}
 
 export function printDecisions(m: MemoryRow): void {
   if (!m.decisions) return;
@@ -249,10 +235,13 @@ export const recallCommand = new Command('recall')
   .option('--limit <n>', 'Max results to return', '20')
   .option('--full', 'Return all entries including superseded and compacted-raw (overrides --include-superseded)')
   .option('--include-superseded', 'Include superseded entries but still hide compacted-raw memories')
-  .option(
-    '--scope <value>',
-    'Federation scope: active = single cortex; accessible = all your cortexes (default); all = future remote peers',
-    'accessible',
+  .addOption(
+    new Option(
+      '--scope <value>',
+      'Federation scope: active = single cortex; accessible = all your cortexes (default); all = future remote peers',
+    )
+      .choices(['active', 'accessible', 'all'])
+      .default('accessible'),
   )
   .action(function (this: Command, query: string, opts: { engrams?: boolean; all?: boolean; days: string; limit: string; full?: boolean; includeSuperseded?: boolean; scope: string }) {
     const config = getConfig();
@@ -263,8 +252,8 @@ export const recallCommand = new Command('recall')
       process.exit(1);
     }
 
-    // AGT-308: validate --scope before any other processing.
-    const scope: RecallScope = parseScope(opts.scope);
+    // AGT-308: scope is validated by Commander .choices() before action runs.
+    const scope = opts.scope as RecallScope;
 
     const limit = parseInt(opts.limit, 10);
 

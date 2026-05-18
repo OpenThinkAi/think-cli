@@ -38,7 +38,7 @@ function toBlob(vec: Float32Array): Uint8Array {
 }
 
 const CORTEX_ACTIVE = 'scope-active-cortex';
-const CORTEX_OTHER  = 'scope-other-cortex';
+const CORTEX_OTHER = 'scope-other-cortex';
 
 // ---------------------------------------------------------------------------
 // Suite
