@@ -38,6 +38,7 @@ import { parseLineFraming, dispatchRequest } from './protocol.js';
 import { handleSync } from './sync-handler.js';
 import { handleStatus } from './status.js';
 import { compactionQueue, scanAndEnqueueUncompacted } from './compaction/queue.js';
+import { backfillActivitySeqIfNeeded } from '../db/activity-seq.js';
 
 // ---------------------------------------------------------------------------
 // Paths
@@ -350,6 +351,17 @@ export async function runDaemon(options: DaemonOptions): Promise<void> {
   compactionQueue.start();
 
   const activeCortex = getConfig().cortex?.active;
+
+  // ---------------------------------------------------------------------------
+  // Activity-seq backfill on startup (AGT-292 AC #2)
+  //
+  // Before serving any requests, check each known cortex for rows with a NULL
+  // activity_seq (e.g. after upgrade from v2, or after a partial reindex).
+  // backfillActivitySeqIfNeeded is a no-op when all rows are already stamped.
+  // ---------------------------------------------------------------------------
+
+  if (activeCortex) backfillActivitySeqIfNeeded(activeCortex, writeLine);
+
   if (activeCortex) scanAndEnqueueUncompacted(compactionQueue, [activeCortex]);
 
   // ---------------------------------------------------------------------------
