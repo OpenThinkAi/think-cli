@@ -18,7 +18,6 @@
 
 import { Command } from 'commander';
 import chalk from 'chalk';
-import { getConfig } from '../lib/config.js';
 import { connectDaemon, DaemonUnavailableError } from '../lib/daemon-client.js';
 
 // ---------------------------------------------------------------------------
@@ -58,16 +57,21 @@ export const retroCommand = new Command('retro')
   .description('Record a permanent codebase observation to a cortex')
   .argument('<content>', 'The observation to record')
   .option('--cortex <name>', 'Target cortex (required; overrides -C global flag)')
-  .option('--topic <topic>', 'Tag this retro with a topic (repeatable)', (val: string, prev: string[]) => [...prev, val], [] as string[])
+  .option('--topic <topic>', 'Tag this retro with a topic (repeatable; replaces --kind from v2)', (val: string, prev: string[]) => [...prev, val], [] as string[])
   .addHelpText('after', `
+Requirements:
+  Requires the think daemon (start it with: think daemon start).
+
 Storage contract:
   Retros have no TTL and are never purged. Text is preserved exactly as written.
   Supersession check (AGT-305) runs asynchronously on the daemon side.
 
-  --cortex is required (pass it directly or via the global -C flag).
-  Retros scope to a specific codebase or tool, not the current working context.
-
+  --cortex is required. No fallback to the active cortex — retros are scoped
+  to a specific codebase or tool, not the user's current working context.
   A cortex must already exist (run 'think cortex create <name>' if needed).
+
+Reads:
+  To recall retros, use: think recall --kind retro [--cortex <name>]
 
 Examples:
   think retro "users hate the modal" --topic ux
@@ -77,12 +81,13 @@ Examples:
 `)
   .action(async function (this: Command, content: string, opts: { cortex?: string; topic: string[] }) {
     const globalOpts = this.optsWithGlobals() as { cortex?: string };
-    const config = getConfig();
 
-    const cortex = opts.cortex ?? globalOpts.cortex ?? config.cortex?.active;
+    // Intentionally no fallback to config.cortex?.active — retros are scoped
+    // to a specific codebase or tool, not the user's current working context.
+    const cortex = opts.cortex ?? globalOpts.cortex;
 
     if (!cortex) {
-      console.error(chalk.red('think retro: --cortex is required (no fallback to working directory — retros are scoped to a specific codebase or tool).'));
+      console.error(chalk.red('think retro: --cortex is required. Retros scope to a specific codebase or tool.'));
       console.error(chalk.red('Pass it as: think retro "..." --cortex <name>  or  think -C <name> retro "..."'));
       process.exitCode = 1;
       return;
@@ -105,7 +110,14 @@ Examples:
       }
 
       const safeEntryId = stripControls(result.entry_id);
-      console.log(`${chalk.green('✓')} stored retro ${safeEntryId}`);
+      const badge = chalk.cyan(`[${cortex}]`);
+      const excerpt = content.length > 60 ? content.slice(0, 60) + '…' : content;
+      if (result.status === 'queued') {
+        console.log(`${chalk.yellow('⏳')} ${badge} queued retro ${safeEntryId}`);
+      } else {
+        console.log(`${chalk.green('✓')} ${badge} stored retro ${safeEntryId}`);
+      }
+      console.log(`  ${excerpt}`);
 
       if (Array.isArray(result.warnings) && result.warnings.length > 0) {
         for (const w of result.warnings) {
@@ -116,7 +128,7 @@ Examples:
       if (err instanceof DaemonUnavailableError) {
         console.error(chalk.red('think retro: daemon unavailable.'));
         console.error(chalk.red(`  Start it with: think daemon start`));
-        console.error(chalk.dim(`  (log: ${err.logPath})`));
+        console.error(chalk.dim(`  (log: ${stripControls(err.logPath)})`));
         process.exitCode = 1;
       } else {
         const msg = err instanceof Error ? err.message : String(err);

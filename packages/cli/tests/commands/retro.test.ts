@@ -3,7 +3,7 @@
  *
  * Verifies:
  *  1. When daemon is available, calls daemonClient.call("sync", {..., kind: "retro"})
- *  2. Output is "✓ stored retro <id>"
+ *  2. Output is "✓ [cortex] stored retro <id>" with content excerpt
  *  3. --cortex flag overrides active cortex
  *  4. --topic flag (repeatable) is forwarded to daemon as topics array
  *  5. v2 subcommands (add / recall) no longer exist on this command
@@ -78,15 +78,18 @@ describe('think retro — daemon-routed path (AGT-294)', () => {
     expect(mockClient.close).toHaveBeenCalled();
   });
 
-  it('outputs "✓ stored retro <id>" on success (AC #2)', async () => {
+  it('outputs "✓ [cortex] stored retro <id>" with content excerpt on success (AC #2)', async () => {
     const mockClient = makeMockClient({ entry_id: 'abc123def456' });
     vi.spyOn(daemonClientModule, 'connectDaemon').mockResolvedValue(mockClient);
 
+    const cortex = 'output-test';
     const prog = makeProgram();
-    await prog.parseAsync(['node', 'think', '-C', 'output-test', 'retro', 'some observation']);
+    await prog.parseAsync(['node', 'think', '-C', cortex, 'retro', 'some observation']);
 
     const output = (console.log as ReturnType<typeof vi.fn>).mock.calls.flat().join('\n');
     expect(output).toContain('stored retro abc123def456');
+    expect(output).toContain(cortex);
+    expect(output).toContain('some observation');
   });
 
   it('--cortex flag overrides active cortex (AC #3)', async () => {
@@ -156,6 +159,21 @@ describe('think retro — daemon-routed path (AGT-294)', () => {
     expect(process.exitCode).toBe(1);
   });
 
+  it('does not fall back to active cortex from config — retros require explicit cortex', async () => {
+    // Even if an active cortex is configured, retro requires explicit --cortex
+    // (intentional design: retros scope to a specific tool, not working context)
+    const { saveConfig, getConfig } = await import('../../src/lib/config.js');
+    saveConfig({ ...getConfig(), cortex: { active: 'some-active-cortex' } });
+
+    const connectSpy = vi.spyOn(daemonClientModule, 'connectDaemon');
+    const prog = makeProgram();
+    await prog.parseAsync(['node', 'think', 'retro', 'obs without explicit cortex']);
+
+    // Should exit non-zero — no daemon call
+    expect(connectSpy).not.toHaveBeenCalled();
+    expect(process.exitCode).toBe(1);
+  });
+
   it('exits non-zero when daemon is unavailable', async () => {
     vi.spyOn(daemonClientModule, 'connectDaemon').mockRejectedValue(
       new DaemonUnavailableError('daemon failed to start', '/tmp/think/daemon.log'),
@@ -203,5 +221,16 @@ describe('think retro — daemon-routed path (AGT-294)', () => {
     await prog.parseAsync(['node', 'think', '-C', 'exit-test', 'retro', 'test content']);
 
     expect(process.exitCode).toBeFalsy();
+  });
+
+  it('uses "queued" output label when daemon returns status=queued', async () => {
+    const mockClient = makeMockClient({ entry_id: 'queue-id', status: 'queued' });
+    vi.spyOn(daemonClientModule, 'connectDaemon').mockResolvedValue(mockClient);
+
+    const prog = makeProgram();
+    await prog.parseAsync(['node', 'think', '-C', 'queued-test', 'retro', 'queued content']);
+
+    const output = (console.log as ReturnType<typeof vi.fn>).mock.calls.flat().join('\n');
+    expect(output).toContain('queued retro queue-id');
   });
 });
