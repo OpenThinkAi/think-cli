@@ -140,6 +140,10 @@ export async function runEmbedModelChecks(
       writeLine(`embed-model-check: cortex "${safeCortex}" is up to date (model=${sanitizeForLog(EMBEDDING_MODEL_NAME)})`);
       // Clear any stale failure flag from a prior daemon run.
       reindexFailedCortexes.delete(cortexName);
+      // The DB handle opened by sampleEmbeddingModel is left in the getCortexDb
+      // cache so subsequent recall requests can reuse it without reopening.
+      // This is intentional: getCortexDb caches handles for the process lifetime
+      // and recall will open the same DB shortly after startup anyway.
       continue;
     }
 
@@ -158,14 +162,11 @@ export async function runEmbedModelChecks(
     // while the reindex is in progress.
     reindexingCortexes.add(cortexName);
 
-    let reindexSucceeded = false;
-
     // Run the reindex for this cortex. We await each one serially to avoid
     // concurrent SQLite writes to the same DB. Per-cortex isolation means
     // other cortexes continue serving recall while this one reindexes.
     try {
       const result = await reindexOneCortex(cortexName, /* force= */ true);
-      reindexSucceeded = true;
       const secs = (result.durationMs / 1000).toFixed(1);
       const rate = result.durationMs > 0
         ? Math.round(((result.total - result.failures) / result.durationMs) * 1000)
@@ -179,22 +180,17 @@ export async function runEmbedModelChecks(
           `embed-model-check: reindex complete for cortex "${safeCortex}": ${result.total} entries, ${result.failures} failures in ${secs}s (${rate} entries/s)`
         );
       }
+      reindexFailedCortexes.delete(cortexName);
     } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
+      const msg = sanitizeForLog(err instanceof Error ? err.message : String(err));
       writeLine(`embed-model-check: reindex failed for cortex "${safeCortex}": ${msg}`);
       writeLine(`embed-model-check: recall will continue for cortex "${safeCortex}" but results may reflect an older embedding model`);
+      reindexFailedCortexes.add(cortexName);
     } finally {
       // Always clear the busy flag, even on failure, so the cortex is queryable
       // again. Better to serve stale vectors than to permanently block recall.
       reindexingCortexes.delete(cortexName);
       closeCortexDb(cortexName);
-      // Track failure state so the recall handler can surface a data quality
-      // warning when the last reindex for this cortex failed.
-      if (reindexSucceeded) {
-        reindexFailedCortexes.delete(cortexName);
-      } else {
-        reindexFailedCortexes.add(cortexName);
-      }
     }
   }
 }

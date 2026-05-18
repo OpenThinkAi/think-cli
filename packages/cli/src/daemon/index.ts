@@ -392,7 +392,7 @@ export async function runDaemon(options: DaemonOptions): Promise<void> {
 
   if (activeCortex) {
     runEmbedModelChecks([activeCortex], writeLine).catch((err: unknown) => {
-      const msg = err instanceof Error ? err.message : String(err);
+      const msg = (err instanceof Error ? err.message : String(err)).replace(/[\r\n]/g, ' ');
       writeLine(`embed-model-check: unexpected error: ${msg}`);
     });
   }

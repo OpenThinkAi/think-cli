@@ -360,11 +360,19 @@ async function recallOneCortexWithVec(
   // Per-cortex stale-vector warning (AGT-277).
   // If the last model-mismatch reindex for this cortex failed, log a daemon-level
   // warning and proceed with recall. Stale results are better than no results;
-  // we do not block. The warning surfaces in the daemon log so operators can see
-  // the degraded state without silently returning bad vectors.
+  // we do not block. The warning surfaces via stderr so operators can see the
+  // degraded state without silently returning bad vectors.
+  //
+  // Note: `writeLine` (the daemon log writer) is not threaded into this inner
+  // function — it is owned by the daemon startup scope in index.ts and is not
+  // part of the recall handler's call chain. console.error routes to stderr,
+  // which the daemon captures in the log when running in background mode.
+  // This is an accepted trade-off; a future refactor could thread writeLine
+  // through the recall handler if daemon-log routing for this warning matters.
   if (reindexFailedCortexes.has(cortexName)) {
-    process.stderr.write(
-      `think recall: cortex "${cortexName}" results may be degraded — the last embedding model reindex failed; results may reflect an older model. Check the daemon log for details.\n`
+    const safeCortex = cortexName.replace(/[\r\n]/g, ' ');
+    console.error(
+      `think recall: cortex "${safeCortex}" results may be degraded — the last embedding model reindex failed; results may reflect an older model. Check the daemon log for details.`
     );
   }
 
