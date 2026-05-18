@@ -230,8 +230,10 @@ describe.skipIf(process.platform === 'win32')(
       const { connectDaemon } = await import('../../src/lib/daemon-client.js');
 
       // _spawnOverride does nothing — no server ever binds.
+      // Use a short _spawnTimeoutOverride so the test completes quickly (the
+      // production timeout is 90s to accommodate slow embed-model warmup).
       await expect(
-        connectDaemon({ _spawnOverride: () => {} }),
+        connectDaemon({ _spawnOverride: () => {}, _spawnTimeoutOverride: 500 }),
       ).rejects.toThrow(/daemon failed to start/);
     }, 10_000);
   },
@@ -264,7 +266,9 @@ describe.skipIf(process.platform === 'win32')(
 
       let caught: unknown;
       try {
-        await connectDaemon({ _spawnOverride: () => {} });
+        // Use a short _spawnTimeoutOverride so the test completes quickly
+        // (the production timeout is 90s to accommodate slow embed-model warmup).
+        await connectDaemon({ _spawnOverride: () => {}, _spawnTimeoutOverride: 500 });
       } catch (err) {
         caught = err;
       }
@@ -314,7 +318,9 @@ describe.skipIf(process.platform === 'win32')(
 
       let caught: unknown;
       try {
-        await connectDaemon({ _spawnOverride: () => {} });
+        // Use a short _spawnTimeoutOverride so the test completes quickly
+        // (the production timeout is 90s to accommodate slow embed-model warmup).
+        await connectDaemon({ _spawnOverride: () => {}, _spawnTimeoutOverride: 500 });
       } catch (err) {
         caught = err;
       }
@@ -328,3 +334,17 @@ describe.skipIf(process.platform === 'win32')(
     }, 10_000);
   },
 );
+
+// ---------------------------------------------------------------------------
+// SPAWN_TIMEOUT_MS sanity check (alpha.6)
+//
+// The daemon now blocks "ready" until the embedding model is loaded (~34s).
+// The spawn-or-connect retry window must be long enough to survive that.
+// ---------------------------------------------------------------------------
+
+describe('connectDaemon — SPAWN_TIMEOUT_MS is >= 60s', () => {
+  it('SPAWN_TIMEOUT_MS is at least 60000ms to accommodate slow daemon startup', async () => {
+    const { SPAWN_TIMEOUT_MS } = await import('../../src/lib/daemon-client.js');
+    expect(SPAWN_TIMEOUT_MS).toBeGreaterThanOrEqual(60_000);
+  });
+});

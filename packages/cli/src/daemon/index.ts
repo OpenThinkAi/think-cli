@@ -338,32 +338,37 @@ export async function runDaemon(options: DaemonOptions): Promise<void> {
     process.exit(1);
   }
 
+  // ---------------------------------------------------------------------------
+  // Embedding model warmup — pre-load Xenova/bge-small-en-v1.5 BEFORE
+  // declaring "ready", so the first sync call never blocks on a cold model
+  // load (~34s even with files cached on disk).
+  //
+  // v3 README §"Write path (kind=memory)" specifies embed+L2 insert is
+  // synchronous with a target of 10–30ms. That target assumes the model is
+  // already resident. Blocking "ready" on warmup is the correct fix: the
+  // daemon is long-lived, so the one-time ~34s startup cost is amortised
+  // across all syncs in the daemon's lifetime.
+  //
+  // If warmup fails (optional dep missing, ONNX ABI break, network error on
+  // first download), we log a warning and proceed to "ready" in FTS-only mode
+  // rather than refusing to start. The existing FTS fallback in sync-handler
+  // handles missing-embed gracefully; callers see a degraded but working daemon.
+  // ---------------------------------------------------------------------------
+
+  writeLine(`embed-model: loading ${EMBEDDING_MODEL_NAME}…`);
+  try {
+    const warmupMs = await warmupEmbedModel();
+    writeLine(`embed-model: loaded (${EMBEDDING_MODEL_NAME}, ${warmupMs}ms)`);
+  } catch (err: unknown) {
+    const msg = (err instanceof Error ? err.message : String(err)).replace(/[\r\n]/g, ' ');
+    writeLine(`embed-model: WARN warmup failed — starting in FTS-only mode: ${msg}`);
+  }
+
   if (isWindows && tcpPort !== null) {
     writeLine(`think daemon ready (tcp=127.0.0.1:${tcpPort})`);
   } else {
     writeLine(`think daemon ready (socket=${socketPath})`);
   }
-
-  // ---------------------------------------------------------------------------
-  // Embedding model warmup — pre-load Xenova/bge-small-en-v1.5 so the first
-  // sync call does not time out waiting for model decode + weight load (~30s
-  // on a cold cache even when the model is already on disk).
-  //
-  // Fire-and-forget: the daemon logs "ready" first so spawn-or-connect is fast.
-  // If a sync arrives during warmup the singleton pipelinePromise dedupes it —
-  // sync will await the same in-flight load rather than triggering a duplicate.
-  // If warmup fails (optional dep missing, ONNX error), the existing embed()
-  // fallback paths handle it; we just log the failure at WARN level.
-  // ---------------------------------------------------------------------------
-
-  warmupEmbedModel()
-    .then((ms) => {
-      writeLine(`embed-model: loaded (${EMBEDDING_MODEL_NAME}, ${ms}ms)`);
-    })
-    .catch((err: unknown) => {
-      const msg = (err instanceof Error ? err.message : String(err)).replace(/[\r\n]/g, ' ');
-      writeLine(`embed-model: warmup failed (continuing without pre-load): ${msg}`);
-    });
 
   // ---------------------------------------------------------------------------
   // Compaction queue startup (AGT-299)

@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.0.0-alpha.6] — 2026-05-18
+
+### Fixed
+- **Daemon: block "ready" until embedding model is loaded** — alpha.5 added `warmupEmbedModel()` as a fire-and-forget after the daemon logged "ready", which left the root cause untouched: if a `think sync` arrived during the ~34s warmup window, it blocked on the same in-flight `getPipeline()` promise and the CLI's 30s call timeout fired before the model finished loading. The fix promotes warmup to a blocking `await` that runs *before* the "ready" log line. The daemon logs `embed-model: loading…` at startup, then `embed-model: loaded (…, 34259ms)` once the model is resident, then `think daemon ready`. If warmup fails (optional dep missing, ONNX ABI break), the daemon still becomes ready in FTS-only mode and logs a `WARN` — the existing FTS fallback in the sync handler handles the missing-embed case gracefully. The CLI's spawn-or-connect retry window (`SPAWN_TIMEOUT_MS`) has been bumped from 5s to 90s to accommodate the now-blocking startup.
+
+---
+
 ## [1.0.0-alpha.5] — 2026-05-18
 
 ### Fixed
