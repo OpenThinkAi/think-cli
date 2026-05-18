@@ -46,6 +46,7 @@ import { getCortexDb } from '../db/engrams.js';
 import { searchVectors } from '../lib/search-vectors.js';
 import { getConfig } from '../lib/config.js';
 import { listLocalBranches } from '../lib/git.js';
+import { reindexingCortexes, reindexFailedCortexes } from './embed-model-check.js';
 
 // How many extra candidates to fetch from sqlite-vec before JS rerank.
 // 5× ensures the reranked window is wide enough that a very recent entry
@@ -350,6 +351,36 @@ async function recallOneCortexWithVec(
   since: string | undefined,
   decay: number,
 ): Promise<RecallEntry[]> {
+  // Per-cortex reindex busy check (AGT-277).
+  // If the daemon is currently reindexing this cortex due to an embedding model
+  // version change, return a transient error rather than querying stale or
+  // partially-rebuilt vectors. Other cortexes are unaffected — the busy set is
+  // per-cortex; there is no global lock.
+  if (reindexingCortexes.has(cortexName)) {
+    throw new Error(
+      `cortex "${cortexName}" is currently being reindexed due to an embedding model version change — this may take a moment (up to several minutes for large cortexes); retry shortly or check the daemon log for progress`
+    );
+  }
+
+  // Per-cortex stale-vector warning (AGT-277).
+  // If the last model-mismatch reindex for this cortex failed, log a daemon-level
+  // warning and proceed with recall. Stale results are better than no results;
+  // we do not block. The warning surfaces via stderr so operators can see the
+  // degraded state without silently returning bad vectors.
+  //
+  // Note: `writeLine` (the daemon log writer) is not threaded into this inner
+  // function — it is owned by the daemon startup scope in index.ts and is not
+  // part of the recall handler's call chain. console.error routes to stderr,
+  // which the daemon captures in the log when running in background mode.
+  // This is an accepted trade-off; a future refactor could thread writeLine
+  // through the recall handler if daemon-log routing for this warning matters.
+  if (reindexFailedCortexes.has(cortexName)) {
+    const safeCortex = cortexName.replace(/[\r\n]/g, ' ');
+    console.error(
+      `think recall: cortex "${safeCortex}" results may be degraded — the last embedding model reindex failed; results may reflect an older model. Check the daemon log for details.`
+    );
+  }
+
   // getCortexDb calls getIndexDbPath → sanitizeName, which rejects `/`, `\`, and
   // `..` sequences. Path-traversal attempts are caught here with a clear error.
   const db = getCortexDb(cortexName);
