@@ -10,6 +10,7 @@ import { checkForUpdate } from '../lib/update-check.js';
 import { validateEngramContent, stripControls } from '../lib/sanitize.js';
 import { connectDaemon, DaemonUnavailableError } from '../lib/daemon-client.js';
 import type { SyncResult as DaemonSyncResult } from '../daemon/sync-handler.js';
+import { addWriteOptions, extractWriteOpts } from '../lib/write-options.js';
 
 export const logCommand = new Command('log')
   .description('Log a note or entry')
@@ -52,7 +53,7 @@ export const logCommand = new Command('log')
 // per test and need an unparented sync command; production calls it once at
 // startup via the syncCommand singleton below.
 export function makeSyncCommand(): Command {
-  return new Command('sync')
+  return addWriteOptions(new Command('sync')
     .description('Record a memory entry to the active cortex (or local think.db if no cortex is configured)')
     .argument('<message>', 'The message to log')
     .option('-s, --source <source>', 'Source of the entry', 'manual')
@@ -61,9 +62,15 @@ export function makeSyncCommand(): Command {
     .option('--context <json>', 'Attach structured JSON metadata to this memory')
     .option('-d, --decision <text>', 'Record a decision (repeatable)', (val: string, prev: string[]) => [...prev, val], [] as string[])
     .option('--silent', 'Suppress output')
-    .option('--no-push', 'Skip the remote git push after writing (only applies when a daemon is running)')
+    .option('--no-push', 'Skip the remote git push after writing (only applies when a daemon is running)'))
     .addOption(new Option('--no-sync', 'Deprecated alias for --no-push (preserved for v2 compat)').hideHelp())
-    .action(async function (this: Command, message: string, opts: { source: string; tags?: string; episode?: string; context?: string; decision?: string[]; silent?: boolean; push: boolean; sync: boolean }) {
+    .addHelpText('after', `
+Examples:
+  think sync "fixed the auth race condition"
+  think sync "merged the JWT refresh PR" --topic auth --topic jwt
+  think -C my-repo sync "landed the v2 migration"
+`)
+    .action(async function (this: Command, message: string, opts: { topic: string[]; cortex?: string; source: string; tags?: string; episode?: string; context?: string; decision?: string[]; silent?: boolean; push: boolean; sync: boolean }) {
       const globalOpts = this.optsWithGlobals() as { cortex?: string };
       const config = getConfig();
 
@@ -72,7 +79,8 @@ export function makeSyncCommand(): Command {
         return;
       }
 
-      const cortex = globalOpts.cortex ?? config.cortex?.active;
+      const { topics, cortex: localCortex } = extractWriteOpts(opts);
+      const cortex = localCortex ?? globalOpts.cortex ?? config.cortex?.active;
 
       // AGT-289: Hook point for daemon write routing. When the daemon write RPC
       // is wired (later phase), the live path will be inserted here with
@@ -129,6 +137,7 @@ export function makeSyncCommand(): Command {
                 cortex,
                 content: message,
                 kind: 'memory',
+                ...(topics ? { topics } : {}),
                 skipPush,
               }) as DaemonSyncResult;
             } finally {

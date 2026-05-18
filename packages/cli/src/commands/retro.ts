@@ -19,6 +19,7 @@
 import { Command } from 'commander';
 import chalk from 'chalk';
 import { connectDaemon, DaemonUnavailableError } from '../lib/daemon-client.js';
+import { addWriteOptions, extractWriteOpts } from '../lib/write-options.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -53,11 +54,9 @@ function stripControls(s: unknown): string {
 // Command
 // ---------------------------------------------------------------------------
 
-export const retroCommand = new Command('retro')
+export const retroCommand = addWriteOptions(new Command('retro')
   .description('Record a permanent codebase observation to a cortex')
-  .argument('<content>', 'The observation to record')
-  .option('--cortex <name>', 'Target cortex (required; overrides -C global flag)')
-  .option('--topic <topic>', 'Tag this retro with a topic (repeatable; replaces --kind from v2)', (val: string, prev: string[]) => [...prev, val], [] as string[])
+  .argument('<content>', 'The observation to record'))
   .addHelpText('after', `
 Requirements:
   Requires the think daemon (start it with: think daemon start).
@@ -80,11 +79,11 @@ Reads:
 
 Examples:
   think retro "users hate the modal" --topic ux
-  think retro "always run migrations in a transaction" --cortex my-repo
+  think retro "always run migrations in a transaction" --cortex fx-tracker
   think -C fx-tracker retro "strategy engine type contracts are not documented"
   think retro "AGT-169 pattern" --cortex think-cli --topic prior_decision
 `)
-  .action(async function (this: Command, content: string, opts: { cortex?: string; topic: string[] }) {
+  .action(async function (this: Command, content: string, opts: { topic: string[]; cortex?: string }) {
     const globalOpts = this.optsWithGlobals() as { cortex?: string };
 
     // Guard against v2 muscle memory: "think retro add <obs>" or
@@ -105,9 +104,11 @@ Examples:
       return;
     }
 
+    const { topics, cortex: localCortex } = extractWriteOpts(opts);
+
     // Intentionally no fallback to config.cortex?.active — retros are scoped
     // to a specific codebase or tool, not the user's current working context.
-    const cortex = opts.cortex ?? globalOpts.cortex;
+    const cortex = localCortex ?? globalOpts.cortex;
 
     if (!cortex) {
       console.error(chalk.red('think retro: --cortex is required. Retros scope to a specific codebase or tool.'));
@@ -115,8 +116,6 @@ Examples:
       process.exitCode = 1;
       return;
     }
-
-    const topics = opts.topic.length > 0 ? opts.topic : undefined;
 
     try {
       const client = await connectDaemon();

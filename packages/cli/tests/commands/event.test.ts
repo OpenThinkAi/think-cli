@@ -126,6 +126,21 @@ describe('think event -- daemon-routed path (AGT-295)', () => {
     }));
   });
 
+  it('all --topic values reach L1 topics array for event (AGT-296 AC #6)', async () => {
+    const mockClient = makeMockClient();
+    vi.spyOn(daemonClientModule, 'connectDaemon').mockResolvedValue(mockClient);
+
+    const cortex = 'multi-topic-event';
+    const prog = makeProgram();
+    await prog.parseAsync([
+      'node', 'think', '-C', cortex, 'event', 'shipped new feature',
+      '--topic', 'deploy', '--topic', 'v2', '--topic', 'prod',
+    ]);
+
+    const callArgs = mockClient.call.mock.calls[0][1] as Record<string, unknown>;
+    expect(callArgs['topics']).toEqual(['deploy', 'v2', 'prod']);
+  });
+
   it('omits topics field when no --topic given', async () => {
     const mockClient = makeMockClient();
     vi.spyOn(daemonClientModule, 'connectDaemon').mockResolvedValue(mockClient);
