@@ -41,7 +41,8 @@ export interface FormatOptions {
  * Returns the original string if it is already short enough.
  */
 export function truncateUnicode(text: string, maxChars: number): string {
-  // Fast path: string length in code units equals scalar count for BMP text.
+  // Fast path: code-unit count is always >= scalar count, so a short code-unit
+  // count proves the scalar count is also short — safe to return early.
   if (text.length <= maxChars) return text;
   // Spread splits by Unicode code point, not UTF-16 code unit.
   const chars = [...text];

@@ -165,68 +165,6 @@ export function renderPersonalAll(cortex: string, { days, query }: { days: numbe
   }
 }
 
-/**
- * Run FTS-only recall against the local L2 index (the v2 search path).
- * Used directly when the daemon is unavailable (degraded mode — AGT-289).
- */
-function runFtsRecall(cortex: string, query: string, opts: { engrams?: boolean; limit: number }): void {
-  const { limit } = opts;
-
-  // Default: FTS search against memories AND long-term events.
-  const matchingMemories = dedupeBy(
-    searchMemories(cortex, query, limit),
-    m => JSON.stringify([m.ts, m.author, m.content]),
-  );
-
-  // Long-term: FTS match on title/content + topic match (free-form tokens).
-  const queryTopics = query.toLowerCase().split(/[\s,]+/).filter(Boolean);
-  const ftsEvents = searchLongTermEvents(cortex, query, limit);
-  const topicEvents = getRecentLongTermEventsForContext(cortex, { topics: queryTopics, limit });
-  const matchingEvents = dedupeBy([...ftsEvents, ...topicEvents], e => e.id);
-
-  if (matchingEvents.length > 0) {
-    console.log(chalk.cyan(`Long-term history (${matchingEvents.length}):`));
-    renderLongTermEvents(cortex, matchingEvents);
-    console.log();
-  }
-
-  if (matchingMemories.length > 0) {
-    console.log(chalk.cyan(`Matching memories (${matchingMemories.length}):`));
-    for (const m of matchingMemories) {
-      const ts = m.ts.slice(0, 16).replace('T', ' ');
-      console.log(`  ${chalk.gray(ts)} ${chalk.dim(m.author + ':')} ${m.content}`);
-      printDecisions(m);
-    }
-    console.log();
-  } else if (matchingEvents.length === 0) {
-    // Fall back to long-term summary when neither FTS nor events match
-    const longterm = getLongtermSummary(cortex);
-    if (longterm) {
-      console.log(chalk.dim('No matching memories or events. Showing legacy long-term summary:'));
-      console.log(`  ${longterm}`);
-      console.log();
-    } else {
-      console.log(chalk.dim('No matching memories or long-term events.'));
-      console.log();
-    }
-  }
-
-  // Optionally include engrams
-  if (opts.engrams) {
-    const matchingEngrams = dedupeBy(
-      searchEngrams(cortex, query, limit),
-      e => JSON.stringify([e.created_at, e.content]),
-    );
-    if (matchingEngrams.length > 0) {
-      console.log(chalk.cyan(`Matching engrams (${matchingEngrams.length}):`));
-      for (const e of matchingEngrams) {
-        const ts = e.created_at.slice(0, 16).replace('T', ' ');
-        console.log(`  ${chalk.gray(ts)} ${e.content}`);
-      }
-      console.log();
-    }
-  }
-}
 
 /**
  * AGT-318: Formatted FTS recall — maps searchMemories results to RecallEntry[]
@@ -265,7 +203,7 @@ function runFormattedFtsRecall(
   // Ensure the cortex appears in the set even when results are empty.
   cortexes.add(cortex);
 
-  const formatted = formatRecallOutput(entries.slice(0, limit), cortexes, { full: opts.full });
+  const formatted = formatRecallOutput(entries, cortexes, { full: opts.full });
   console.log(formatted);
 
   // Optionally include engrams (legacy v2 local index not part of the v3 kind model).
@@ -291,8 +229,8 @@ export const recallCommand = new Command('recall')
   .option('--engrams', 'Also search local engrams (not just memories)')
   .option('--all', 'Dump all recent memories + long-term summary (ignores query for memories)')
   .option('--days <n>', 'Days of memories to include (only with --all)', '14')
-  .option('--limit <n>', 'Max results to return', String(DEFAULT_RECALL_LIMIT))
-  .option('--full', 'Return all entries including superseded and compacted-raw (overrides --include-superseded)')
+  .option('--limit <n>', 'Max results to return (default: 8; was 20 — lowered to cap output size)', String(DEFAULT_RECALL_LIMIT))
+  .option('--full', 'Return all entries including superseded and compacted-raw; also lifts 200-char content truncation in FTS mode')
   .option('--include-superseded', 'Include superseded entries but still hide compacted-raw memories')
   .option('--no-embed', 'Skip semantic ranking; use FTS keyword search (fast, offline, deterministic). Also set by THINK_NO_EMBED=1.')
   .addOption(
@@ -371,6 +309,9 @@ export const recallCommand = new Command('recall')
     // When --no-embed or THINK_NO_EMBED=1 is set explicitly, use the opt-out note.
     // The failure-fallback (NOTE_FTS_FALLBACK) is for daemon-side auto-fallback.
     if (noEmbed) console.log(NOTE_FTS_EXPLICIT);
+    // AGT-318: --full lifts content truncation in FTS mode (runFormattedFtsRecall).
+    // When the daemon path is wired (AGT-289), formatRecallOutput should be called
+    // there too so truncation behavior is symmetric across both paths.
     runFormattedFtsRecall(cortex, query, { engrams: opts.engrams, limit, full: opts.full });
     closeCortexDb(cortex);
   });
