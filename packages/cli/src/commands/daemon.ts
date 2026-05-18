@@ -8,11 +8,10 @@ import { isDaemonRunning } from '../lib/daemon-status.js';
 /**
  * `think daemon` — lifecycle commands for the resident think daemon.
  *
- * This file is the CLI stub for AGT-278. Only `start` is wired up today.
- * `stop` and `status` land in downstream tickets.
- *
- * AGT-289: `status` subcommand added — reports daemon state or spawn-failure
- * reason (last 20 lines of daemon.log) when daemon is unavailable.
+ * Subcommands:
+ *   start   — start the daemon in the foreground (AGT-278)
+ *   status  — report running state; surface last log lines on failure (AGT-289)
+ *   stop    — stub; full implementation is in a follow-up ticket
  */
 
 /** Compute the default socket path without importing daemon/index.ts so the
@@ -93,7 +92,16 @@ const statusSubcommand = new Command('status')
     process.exitCode = 1;
   });
 
+const stopSubcommand = new Command('stop')
+  .description('Stop the think daemon (not yet implemented)')
+  .action(() => {
+    console.error('think daemon stop: not yet implemented.');
+    console.error('  To stop the daemon, send SIGTERM to the process: kill $(cat ~/.think/daemon.pid)');
+    process.exitCode = 1;
+  });
+
 export const daemonCommand = new Command('daemon')
   .description('Manage the think resident daemon process')
   .addCommand(startSubcommand)
-  .addCommand(statusSubcommand);
+  .addCommand(statusSubcommand)
+  .addCommand(stopSubcommand);
