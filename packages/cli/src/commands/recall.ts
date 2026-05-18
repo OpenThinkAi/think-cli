@@ -190,7 +190,7 @@ function runFormattedFtsRecall(
   const entries = rawMemories.map(m => ({
     id: m.id,
     ts: m.ts,
-    kind: (m as unknown as { kind?: string }).kind ?? null,
+    kind: m.kind ?? null,
     content: m.content,
     topics: [] as string[],
     similarity: 0,
@@ -339,7 +339,7 @@ export const recallCommand = new Command('recall')
         id: m.id,
         ts: m.ts,
         cortex,
-        kind: (m as unknown as { kind?: string }).kind ?? null,
+        kind: m.kind ?? null,
         content: m.content,
         topics: [] as string[],
         supersedes: null,
