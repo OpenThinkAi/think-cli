@@ -190,8 +190,14 @@ async function getOriginHeadSha(
 /**
  * Maximum commits to ingest in a single poll cycle when there is no prior
  * cursor (i.e., first-ever poll for a cortex). Bounds the embed() work for
- * established cortexes with deep history. Subsequent polls work backwards
- * in batches until history is fully caught up.
+ * established cortexes with deep history.
+ *
+ * IMPORTANT — first-sync policy: when no cursor exists, the pull loop ingests
+ * only the {@link FIRST_SYNC_MAX_COMMITS} most-recent ancestors of HEAD and
+ * advances the cursor straight to HEAD. **Older history is intentionally
+ * skipped.** Users who want full history backfilled into L2 should run
+ * `think reindex <cortex>` after the initial sync; that command walks the
+ * full L1 JSONL files (the canonical record) rather than `git rev-list`.
  */
 const FIRST_SYNC_MAX_COMMITS = 100;
 
@@ -199,11 +205,9 @@ const FIRST_SYNC_MAX_COMMITS = 100;
  * Get commit SHAs reachable from `newSha` but NOT from `oldSha`.
  * Returns in chronological order (oldest first).
  *
- * When `oldSha` is null (first-ever sync) the range is an unbounded walk of
- * the remote branch's full history, which can be expensive. We cap it at
- * {@link FIRST_SYNC_MAX_COMMITS} to bound the embed() work per cycle; the
- * pull loop revisits the same range on the next poll and advances the cursor
- * incrementally until history is fully ingested.
+ * When `oldSha` is null (first-ever sync) we cap the walk at
+ * {@link FIRST_SYNC_MAX_COMMITS} and ingest only the newest N commits;
+ * older history is intentionally skipped (see the constant's JSDoc).
  */
 async function getNewCommits(
   oldSha: string | null,
@@ -296,9 +300,12 @@ export class PullLoop {
   /**
    * Optional git-runner override for unit tests. When set, used in place of
    * the real execFile-based runner so tests don't spawn subprocesses.
-   * @internal Not part of the public API.
+   * @internal Not part of the public API; tests reach it via a cast since
+   * TypeScript's `private` would block them. Production callers must not
+   * touch this field.
    */
-  _gitOverride?: GitRunner;
+  // eslint-disable-next-line @typescript-eslint/naming-convention
+  private _gitOverride?: GitRunner;
 
   private stopped = false;
   private currentTimer: ReturnType<typeof setTimeout> | null = null;

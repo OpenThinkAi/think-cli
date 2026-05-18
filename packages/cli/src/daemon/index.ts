@@ -412,7 +412,7 @@ export async function runDaemon(options: DaemonOptions): Promise<void> {
   if (activeCortex) {
     try {
       pullLoopHandle = startPullLoop(activeCortex, writeLine);
-      writeLine(`pull loop started for cortex '${activeCortex}'`);
+      writeLine(`[pull-loop:${activeCortex}] started`);
     } catch (pullErr: unknown) {
       const msg = pullErr instanceof Error ? pullErr.message : String(pullErr);
       writeLine(`WARN: could not start pull loop for cortex '${activeCortex}': ${msg}`);
