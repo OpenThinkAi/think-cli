@@ -20,16 +20,15 @@ import { closeCortexDb } from '../db/engrams.js';
 import { validateEngramContent, stripControls } from '../lib/sanitize.js';
 import { connectDaemon, DaemonUnavailableError } from '../lib/daemon-client.js';
 import type { SyncResult as DaemonSyncResult } from '../daemon/sync-handler.js';
+import { addWriteOptions, extractWriteOpts } from '../lib/write-options.js';
 
 // Factory returns a fresh Command instance per call. Tests build a new program
 // per test and need an unparented event command; production calls it once at
 // startup via the eventCommand singleton below.
 export function makeEventCommand(): Command {
-  return new Command('event')
+  return addWriteOptions(new Command('event')
     .description('Record a notable event to the active cortex (milestone, deploy, decision, incident)')
-    .argument('<message>', 'The event to record')
-    .option('--topic <topic>', 'Tag this event with a topic (repeatable)', (val: string, prev: string[]) => [...prev, val], [] as string[])
-    .option('--cortex <name>', 'Override the active cortex for this write')
+    .argument('<message>', 'The event to record'))
     .option('--silent', 'Suppress output')
     .option('--no-push', 'Skip the remote git push after writing (only applies when a daemon is running)')
     .addHelpText('after', `
@@ -59,8 +58,10 @@ Examples:
         return;
       }
 
+      const { topics, cortex: localCortex } = extractWriteOpts(opts);
+
       // Local --cortex flag takes precedence over global -C flag.
-      const cortex = opts.cortex ?? globalOpts.cortex ?? config.cortex?.active;
+      const cortex = localCortex ?? globalOpts.cortex ?? config.cortex?.active;
 
       if (cortex) {
         // Validate and sanitize content before storage.
@@ -84,7 +85,7 @@ Examples:
               cortex,
               content: message,
               kind: 'event',
-              topics: opts.topic.length > 0 ? opts.topic : undefined,
+              topics,
               skipPush,
             }) as DaemonSyncResult;
           } finally {

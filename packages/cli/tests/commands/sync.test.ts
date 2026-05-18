@@ -261,6 +261,34 @@ describe('think sync — daemon-routed path (AGT-293)', () => {
     const output = (console.log as ReturnType<typeof vi.fn>).mock.calls.flat().join('\n');
     expect(output).toContain('queued memory queue-id (indexing in background)');
   });
+
+  // AGT-296: --topic flags reach the daemon topics array
+  it('forwards multiple --topic flags as topics array to daemon (AGT-296 AC #6)', async () => {
+    const mockClient = makeMockClient();
+    vi.spyOn(daemonClientModule, 'connectDaemon').mockResolvedValue(mockClient);
+
+    const cortex = 'topic-test';
+    const prog = makeProgram();
+    await prog.parseAsync([
+      'node', 'think', '-C', cortex, 'sync', 'merged the JWT refresh PR',
+      '--topic', 'auth', '--topic', 'jwt',
+    ]);
+
+    const callArgs = mockClient.call.mock.calls[0][1] as Record<string, unknown>;
+    expect(callArgs['topics']).toEqual(['auth', 'jwt']);
+  });
+
+  it('omits topics key when no --topic flags given (AGT-296)', async () => {
+    const mockClient = makeMockClient();
+    vi.spyOn(daemonClientModule, 'connectDaemon').mockResolvedValue(mockClient);
+
+    const cortex = 'no-topic-test';
+    const prog = makeProgram();
+    await prog.parseAsync(['node', 'think', '-C', cortex, 'sync', 'some memory']);
+
+    const callArgs = mockClient.call.mock.calls[0][1] as Record<string, unknown>;
+    expect(callArgs).not.toHaveProperty('topics');
+  });
 });
 
 describe('think sync — degraded fallback when daemon unavailable (AC #5)', () => {

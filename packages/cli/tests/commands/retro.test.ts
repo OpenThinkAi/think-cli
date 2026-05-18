@@ -116,6 +116,20 @@ describe('think retro — daemon-routed path (AGT-294)', () => {
     }));
   });
 
+  it('all --topic values reach L1 topics array for retro (AGT-296 AC #6)', async () => {
+    const mockClient = makeMockClient();
+    vi.spyOn(daemonClientModule, 'connectDaemon').mockResolvedValue(mockClient);
+
+    const prog = makeProgram();
+    await prog.parseAsync([
+      'node', 'think', '-C', 'multi-topic-retro', 'retro', 'always use transactions',
+      '--topic', 'db', '--topic', 'safety', '--topic', 'convention',
+    ]);
+
+    const callArgs = mockClient.call.mock.calls[0][1] as Record<string, unknown>;
+    expect(callArgs['topics']).toEqual(['db', 'safety', 'convention']);
+  });
+
   it('does not include topics key when no --topic flags (clean params)', async () => {
     const mockClient = makeMockClient();
     vi.spyOn(daemonClientModule, 'connectDaemon').mockResolvedValue(mockClient);
