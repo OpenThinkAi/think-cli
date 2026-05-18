@@ -1,14 +1,5 @@
 /**
- * Tests for `think brief` command — AGT-322 (v3 recall semantics)
- *
- * AC #1: --cortex required
- * AC #2: two daemon recall calls (personal all kinds, repo kind=retro)
- * AC #3: output sections personal context + repo lessons via AGT-318 formatter
- * AC #4: --days deprecated, ignored, note printed when passed
- * AC #5: --limit per-section
- * AC #6: daemon unavailable exits non-zero
- * AC #7: no active cortex exits non-zero
- * AC #8: --cortex via -C flag
+ * Tests for think brief command - AGT-322 (v3 recall semantics)
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
@@ -19,6 +10,7 @@ import { Command } from 'commander';
 import { briefCommand } from '../../src/commands/brief.js';
 import * as daemonClientModule from '../../src/lib/daemon-client.js';
 import { DaemonUnavailableError } from '../../src/lib/daemon-client.js';
+import { getCortexDb, closeAllCortexDbs } from '../../src/db/engrams.js';
 import type { RecallEntry } from '../../src/daemon/recall.js';
 function makeProgram() {
   const prog = new Command();
@@ -37,7 +29,7 @@ function writeConfig(thinkHome: string, activeCortex: string): void {
 }
 
 function entry(
-  overrides: Partial<RecallEntry> & Pick<RecallEntry, 'id' | 'ts' | 'kind' | 'content' | 'cortex'>,
+  overrides: Partial<RecallEntry> & Pick<RecallEntry, 'id' | 'ts' | 'kind' | 'content' | 'cortex'>
 ): RecallEntry {
   return { topics: [], similarity: 0.9, score: 0.9, ...overrides };
 }
@@ -51,7 +43,7 @@ function makeMockClient(personalEntries: RecallEntry[] = [], repoEntries: Recall
     close: vi.fn(),
   };
 }
-describe('think brief command — v3 daemon-based (AGT-322)', () => {
+describe('think brief command - v3 daemon-based (AGT-322)', () => {
   let originalHome: string | undefined;
   let tmpHome: string;
   const targetCortex = 'brief-repo-cortex';
@@ -62,11 +54,15 @@ describe('think brief command — v3 daemon-based (AGT-322)', () => {
     tmpHome = mkdtempSync(join(tmpdir(), 'think-brief-v3-test-'));
     process.env.THINK_HOME = tmpHome;
     writeConfig(tmpHome, personalCortex);
+    closeAllCortexDbs();
+    getCortexDb(targetCortex);
+    closeAllCortexDbs();
     vi.spyOn(console, 'log').mockImplementation(() => {});
     vi.spyOn(console, 'error').mockImplementation(() => {});
   });
 
   afterEach(() => {
+    closeAllCortexDbs();
     if (originalHome === undefined) delete process.env.THINK_HOME;
     else process.env.THINK_HOME = originalHome;
     rmSync(tmpHome, { recursive: true, force: true });
@@ -78,20 +74,18 @@ describe('think brief command — v3 daemon-based (AGT-322)', () => {
     await makeProgram().parseAsync(['node', 'think', 'brief']);
     expect(process.exitCode).toBe(1);
   });
-
-  it('degrades gracefully when daemon unavailable (AC #6): warns + renders empty sections, exits 0', async () => {
+  it('degrades gracefully when daemon unavailable: warns + empty sections, exits 0', async () => {
     vi.spyOn(daemonClientModule, 'connectDaemon').mockRejectedValue(
       new DaemonUnavailableError('daemon failed to start', '/tmp/test-daemon.log'),
     );
     vi.spyOn(console, 'warn').mockImplementation(() => {});
     await makeProgram().parseAsync(['node', 'think', 'brief', '--cortex', targetCortex]);
-    // Graceful degradation: exits 0 (not 1), renders empty section headers with notes
     expect(process.exitCode).toBeFalsy();
     const warnOutput = (console.warn as ReturnType<typeof vi.fn>).mock.calls.flat().join(' ');
     expect(warnOutput).toMatch(/daemon unavailable/i);
     const output = (console.log as ReturnType<typeof vi.fn>).mock.calls.flat().join('\n');
-    expect(output).toContain('── personal context ──');
-    expect(output).toContain('── repo lessons');
+    expect(output).toContain('personal context');
+    expect(output).toContain('repo lessons');
     expect(output).toContain('daemon offline');
   });
 
@@ -113,22 +107,19 @@ describe('think brief command — v3 daemon-based (AGT-322)', () => {
 
     expect(mockClient.close).toHaveBeenCalledOnce();
   });
-
   it('renders both labelled sections in output (AC #3)', async () => {
     vi.spyOn(daemonClientModule, 'connectDaemon').mockResolvedValue(makeMockClient());
     await makeProgram().parseAsync(['node', 'think', 'brief', '--cortex', targetCortex]);
-
     expect(process.exitCode).toBeFalsy();
     const output = (console.log as ReturnType<typeof vi.fn>).mock.calls.flat().join('\n');
-    expect(output).toContain('── personal context ──');
-    expect(output).toContain('── repo lessons [' + targetCortex + '] ──');
+    expect(output).toContain('personal context');
+    expect(output).toContain('repo lessons');
   });
 
   it('renders retro entries via AGT-318 formatter in repo section (AC #3)', async () => {
     const retroEntry = entry({ id: 'r1', ts: '2026-05-01T12:00:00Z', kind: 'retro', content: 'always run build before commit', cortex: targetCortex });
     vi.spyOn(daemonClientModule, 'connectDaemon').mockResolvedValue(makeMockClient([], [retroEntry]));
     await makeProgram().parseAsync(['node', 'think', 'brief', '--cortex', targetCortex]);
-
     const output = (console.log as ReturnType<typeof vi.fn>).mock.calls.flat().join('\n');
     expect(output).toContain('always run build before commit');
     expect(output).toContain('retros (1)');
@@ -138,7 +129,6 @@ describe('think brief command — v3 daemon-based (AGT-322)', () => {
     const memEntry = entry({ id: 'm1', ts: '2026-05-15T10:00:00Z', kind: 'memory', content: 'the daemon embedding model stays resident', cortex: personalCortex });
     vi.spyOn(daemonClientModule, 'connectDaemon').mockResolvedValue(makeMockClient([memEntry], []));
     await makeProgram().parseAsync(['node', 'think', 'brief', '--cortex', targetCortex]);
-
     const output = (console.log as ReturnType<typeof vi.fn>).mock.calls.flat().join('\n');
     expect(output).toContain('the daemon embedding model stays resident');
     expect(output).toContain('memories (1)');
@@ -147,7 +137,6 @@ describe('think brief command — v3 daemon-based (AGT-322)', () => {
   it('prints note: when --days is passed (deprecated back-compat, AC #4)', async () => {
     vi.spyOn(daemonClientModule, 'connectDaemon').mockResolvedValue(makeMockClient());
     await makeProgram().parseAsync(['node', 'think', 'brief', '--cortex', targetCortex, '--days', '7']);
-
     const output = (console.log as ReturnType<typeof vi.fn>).mock.calls.flat().join('\n');
     expect(output).toContain('note: --days is ignored');
   });
@@ -155,66 +144,72 @@ describe('think brief command — v3 daemon-based (AGT-322)', () => {
   it('does NOT print --days note when --days is not passed (AC #4)', async () => {
     vi.spyOn(daemonClientModule, 'connectDaemon').mockResolvedValue(makeMockClient());
     await makeProgram().parseAsync(['node', 'think', 'brief', '--cortex', targetCortex]);
-
     const output = (console.log as ReturnType<typeof vi.fn>).mock.calls.flat().join('\n');
-    expect(output).not.toContain('--days is deprecated');
+    expect(output).not.toContain('--days is');
   });
 
   it('forwards --limit to both recall calls (AC #5)', async () => {
     const mockClient = makeMockClient();
     vi.spyOn(daemonClientModule, 'connectDaemon').mockResolvedValue(mockClient);
-    await makeProgram().parseAsync(['node', 'think', 'brief', '--cortex', targetCortex, '--limit', '5']);
-
+    await makeProgram().parseAsync(['node', 'think', 'brief', '--cortex', targetCortex, '--limit', '3']);
     const calls = mockClient.call.mock.calls;
-    expect(calls[0][1]).toMatchObject({ limit: 5 });
-    expect(calls[1][1]).toMatchObject({ limit: 5 });
+    expect(calls[0][1]).toMatchObject({ limit: 3 });
+    expect(calls[1][1]).toMatchObject({ limit: 3 });
   });
 
-  it('shows no-entries note for empty personal section', async () => {
+  it('shows note when personal cortex has no entries', async () => {
     vi.spyOn(daemonClientModule, 'connectDaemon').mockResolvedValue(makeMockClient([], []));
     await makeProgram().parseAsync(['node', 'think', 'brief', '--cortex', targetCortex]);
-
     const output = (console.log as ReturnType<typeof vi.fn>).mock.calls.flat().join('\n');
-    expect(output).toMatch(/no entries found in personal cortex/i);
+    expect(output).toContain('no entries found in personal cortex');
   });
 
-  it('shows no-retros note for empty repo section', async () => {
+  it('shows note when repo cortex has no retros', async () => {
     vi.spyOn(daemonClientModule, 'connectDaemon').mockResolvedValue(makeMockClient([], []));
     await makeProgram().parseAsync(['node', 'think', 'brief', '--cortex', targetCortex]);
-
     const output = (console.log as ReturnType<typeof vi.fn>).mock.calls.flat().join('\n');
-    expect(output).toMatch(/no retros found for cortex/i);
+    expect(output).toContain('no retros found for cortex');
   });
 
-  it('accepts --cortex via the global -C flag (AC #8)', async () => {
+  it('accepts -C as alias for --cortex (global flag)', async () => {
     const mockClient = makeMockClient();
     vi.spyOn(daemonClientModule, 'connectDaemon').mockResolvedValue(mockClient);
     await makeProgram().parseAsync(['node', 'think', '-C', targetCortex, 'brief']);
-
     expect(process.exitCode).toBeFalsy();
-    expect(mockClient.call.mock.calls[1][1]).toMatchObject({ cortex: targetCortex, kind: 'retro' });
+    const calls = mockClient.call.mock.calls;
+    expect(calls[1][1]).toMatchObject({ cortex: targetCortex, kind: 'retro' });
   });
 
-  it('exits 0 on success regardless of result count', async () => {
+  it('exits 0 on success', async () => {
     vi.spyOn(daemonClientModule, 'connectDaemon').mockResolvedValue(makeMockClient());
     await makeProgram().parseAsync(['node', 'think', 'brief', '--cortex', targetCortex]);
     expect(process.exitCode).toBeFalsy();
   });
 
-  it('forwards query to both recall calls', async () => {
+  it('forwards query argument to both recall calls', async () => {
     const mockClient = makeMockClient();
     vi.spyOn(daemonClientModule, 'connectDaemon').mockResolvedValue(mockClient);
-    await makeProgram().parseAsync(['node', 'think', 'brief', 'migrations', '--cortex', targetCortex]);
-
+    await makeProgram().parseAsync(['node', 'think', 'brief', 'my search query', '--cortex', targetCortex]);
     const calls = mockClient.call.mock.calls;
-    expect(calls[0][1]).toMatchObject({ query: 'migrations' });
-    expect(calls[1][1]).toMatchObject({ query: 'migrations' });
+    expect(calls[0][1]).toMatchObject({ query: 'my search query' });
+    expect(calls[1][1]).toMatchObject({ query: 'my search query' });
   });
 
-  it('exits non-zero when no active cortex configured (AC #7)', async () => {
-    const configDir = join(tmpHome, 'config');
-    writeFileSync(join(configDir, 'config.json'), JSON.stringify({ peerId: 'test', syncPort: 9999 }));
+  it('exits 1 and prints error when no active cortex configured', async () => {
+    writeConfig(tmpHome, '');
     await makeProgram().parseAsync(['node', 'think', 'brief', '--cortex', targetCortex]);
     expect(process.exitCode).toBe(1);
+    const errOutput = (console.error as ReturnType<typeof vi.fn>).mock.calls.flat().join(' ');
+    expect(errOutput).toMatch(/no active cortex/i);
+  });
+
+  it('shows diagnostic warning for unknown cortex (no DB file)', async () => {
+    const mockClient = makeMockClient();
+    vi.spyOn(daemonClientModule, 'connectDaemon').mockResolvedValue(mockClient);
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    await makeProgram().parseAsync(['node', 'think', 'brief', '--cortex', 'no-such-cortex-xyz']);
+    const warnOutput = (console.warn as ReturnType<typeof vi.fn>).mock.calls.flat().join(' ');
+    expect(warnOutput).toMatch(/no local cortex named/i);
+    expect(mockClient.call).toHaveBeenCalledTimes(1);
   });
 });

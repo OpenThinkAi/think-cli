@@ -15,9 +15,11 @@
  *   - --no-sync is preserved for back-compat but has no effect.
  */
 
+import { existsSync } from "node:fs";
 import { Command } from "commander";
 import chalk from "chalk";
 import { getConfig } from "../lib/config.js";
+import { getIndexDbPath } from "../lib/paths.js";
 import { connectDaemon, DaemonUnavailableError } from "../lib/daemon-client.js";
 import { formatRecallOutput, cortexSet, DEFAULT_RECALL_LIMIT } from "../lib/recall-format.js";
 import type { RecallEntry } from "../daemon/recall.js";
@@ -129,6 +131,15 @@ Examples:
       }
 
       console.log();
+
+      // Pre-flight: check that the target cortex DB exists locally.
+      // The daemon returns empty (not an error) for unknown cortex names;
+      // this check surfaces a diagnostic when the name is likely a typo.
+      if (!existsSync(getIndexDbPath(targetCortex))) {
+        console.log(`── repo lessons [${targetCortex}] ──`);
+        console.warn(chalk.yellow(`note: no local cortex named "${targetCortex}" — check spelling or run: think retro "..." --cortex ${targetCortex}`));
+        return;
+      }
 
       const repoRaw = await client.call("recall", {
         cortex: targetCortex,
