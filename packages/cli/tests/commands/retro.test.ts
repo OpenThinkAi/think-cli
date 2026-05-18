@@ -127,19 +127,30 @@ describe('think retro — daemon-routed path (AGT-294)', () => {
     expect(callArgs).not.toHaveProperty('topics');
   });
 
-  it('v2 subcommands no longer exist — "add" is treated as content (AC #5)', async () => {
-    const mockClient = makeMockClient();
-    vi.spyOn(daemonClientModule, 'connectDaemon').mockResolvedValue(mockClient);
+  it('content "add" exits non-zero with migration message (AC #5 — no silent data corruption)', async () => {
+    const connectSpy = vi.spyOn(daemonClientModule, 'connectDaemon');
 
     const prog = makeProgram();
-    // In v3, "add" is the content argument, not a subcommand
-    await prog.parseAsync(['node', 'think', '-C', 'subcommand-test', 'retro', 'add']);
+    await prog.parseAsync(['node', 'think', '-C', 'add-guard-test', 'retro', 'add']);
 
-    // Should have called daemon with "add" as the content
-    expect(mockClient.call).toHaveBeenCalledWith('sync', expect.objectContaining({
-      content: 'add',
-      kind: 'retro',
-    }));
+    // Guard fires — daemon never called, exits non-zero
+    expect(connectSpy).not.toHaveBeenCalled();
+    expect(process.exitCode).toBe(1);
+    const errOutput = (console.error as ReturnType<typeof vi.fn>).mock.calls.flat().join('\n');
+    expect(errOutput).toContain('"add" is no longer a subcommand');
+  });
+
+  it('content "recall" exits non-zero with migration message (AC #5 — no silent data corruption)', async () => {
+    const connectSpy = vi.spyOn(daemonClientModule, 'connectDaemon');
+
+    const prog = makeProgram();
+    await prog.parseAsync(['node', 'think', '-C', 'recall-guard-test', 'retro', 'recall']);
+
+    // Guard fires — daemon never called, exits non-zero
+    expect(connectSpy).not.toHaveBeenCalled();
+    expect(process.exitCode).toBe(1);
+    const errOutput = (console.error as ReturnType<typeof vi.fn>).mock.calls.flat().join('\n');
+    expect(errOutput).toContain('"recall" is no longer a subcommand');
   });
 
   it('L1 entry has kind: "retro" (AC #7)', async () => {

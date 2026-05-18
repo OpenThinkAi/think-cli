@@ -70,6 +70,11 @@ Storage contract:
   to a specific codebase or tool, not the user's current working context.
   A cortex must already exist (run 'think cortex create <name>' if needed).
 
+v2 migration notes:
+  - 'think retro add "<obs>"' → 'think retro "<obs>"' (drop "add")
+  - 'think retro recall' → 'think recall --kind retro' (use unified recall)
+  - '--kind convention|invariant|prior_decision|gotcha' → '--topic <tag>' (open string)
+
 Reads:
   To recall retros, use: think recall --kind retro [--cortex <name>]
 
@@ -81,6 +86,24 @@ Examples:
 `)
   .action(async function (this: Command, content: string, opts: { cortex?: string; topic: string[] }) {
     const globalOpts = this.optsWithGlobals() as { cortex?: string };
+
+    // Guard against v2 muscle memory: "think retro add <obs>" or
+    // "think retro recall" — the former would silently write "add" as the
+    // retro content; the latter would write "recall". Both are silent-corruption
+    // footguns. Print a targeted migration message instead.
+    if (content === 'add') {
+      console.error(chalk.red('think retro: "add" is no longer a subcommand.'));
+      console.error(chalk.yellow('  v3 usage: think retro "<your observation>" --cortex <name>'));
+      console.error(chalk.yellow('  (drop "add" — the content is now the first positional argument)'));
+      process.exitCode = 1;
+      return;
+    }
+    if (content === 'recall') {
+      console.error(chalk.red('think retro: "recall" is no longer a subcommand.'));
+      console.error(chalk.yellow('  To read retros, use: think recall --kind retro [--cortex <name>]'));
+      process.exitCode = 1;
+      return;
+    }
 
     // Intentionally no fallback to config.cortex?.active — retros are scoped
     // to a specific codebase or tool, not the user's current working context.
