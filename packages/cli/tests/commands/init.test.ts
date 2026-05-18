@@ -621,7 +621,7 @@ describe('think init — v3 block (AGT-321)', () => {
 
   it('--version v3 writes v3 block even when daemon is unreachable', async () => {
     // No daemon running in test env; --version v3 forces v3 regardless.
-    await initCommand.parseAsync(['--dir', projectDir, '--yes', '--version', 'v3'], { from: 'user' });
+    await initCommand.parseAsync(['--dir', projectDir, '--yes', '--block-version', 'v3'], { from: 'user' });
     const content = readClaude();
     expect(content).toContain(BEGIN_MARKER);
     expect(content).toContain(END_MARKER);
@@ -635,16 +635,16 @@ describe('think init — v3 block (AGT-321)', () => {
   });
 
   it('--version v3 block is idempotent (second run does not duplicate)', async () => {
-    await initCommand.parseAsync(['--dir', projectDir, '--yes', '--version', 'v3'], { from: 'user' });
+    await initCommand.parseAsync(['--dir', projectDir, '--yes', '--block-version', 'v3'], { from: 'user' });
     const first = readClaude();
-    await initCommand.parseAsync(['--dir', projectDir, '--yes', '--version', 'v3'], { from: 'user' });
+    await initCommand.parseAsync(['--dir', projectDir, '--yes', '--block-version', 'v3'], { from: 'user' });
     const second = readClaude();
     expect(second).toEqual(first);
     expect((second.match(/# think v3/g) ?? []).length).toBe(1);
   });
 
   it('--version v2 forces v2 block regardless of daemon state', async () => {
-    await initCommand.parseAsync(['--dir', projectDir, '--yes', '--version', 'v2'], { from: 'user' });
+    await initCommand.parseAsync(['--dir', projectDir, '--yes', '--block-version', 'v2'], { from: 'user' });
     const content = readClaude();
     expect(content).toContain('# Work Logging');
     expect(content).not.toContain('# think v3');
@@ -660,11 +660,12 @@ describe('think init — v3 block (AGT-321)', () => {
   });
 
   it('v3 block contains all three verb descriptions', async () => {
-    await initCommand.parseAsync(['--dir', projectDir, '--yes', '--version', 'v3'], { from: 'user' });
+    await initCommand.parseAsync(['--dir', projectDir, '--yes', '--block-version', 'v3'], { from: 'user' });
     const content = readClaude();
     // Paragraph (a): implicit recall via hook + MCP
-    expect(content).toContain('hook + MCP server');
+    expect(content).toContain('UserPromptSubmit hook');
     expect(content).toContain('additionalContext');
+    expect(content).toContain('think_recall\` MCP tool');
     // Paragraph (b): three verbs
     expect(content).toContain('kind=memory');
     expect(content).toContain('kind=retro');
@@ -676,10 +677,10 @@ describe('think init — v3 block (AGT-321)', () => {
 
   it('v3 block uses the same BEGIN/END markers (idempotent replace with v2)', async () => {
     // Write v2 first, then upgrade to v3 — markers must allow in-place replace.
-    await initCommand.parseAsync(['--dir', projectDir, '--yes', '--version', 'v2'], { from: 'user' });
+    await initCommand.parseAsync(['--dir', projectDir, '--yes', '--block-version', 'v2'], { from: 'user' });
     expect(readClaude()).toContain('# Work Logging');
 
-    await initCommand.parseAsync(['--dir', projectDir, '--yes', '--version', 'v3'], { from: 'user' });
+    await initCommand.parseAsync(['--dir', projectDir, '--yes', '--block-version', 'v3'], { from: 'user' });
     const content = readClaude();
     expect(content).toContain('# think v3');
     // Only one begin marker — replaced, not appended.
@@ -699,7 +700,7 @@ describe('think init — v3 block (AGT-321)', () => {
     expect(content).toContain('think retro "<observation>" --cortex my-repo');
   });
 
-  it('invalid --version value exits with error', async () => {
+  it('invalid --block-version value exits with error', async () => {
     const prevExit = process.exit;
     const errors: string[] = [];
     vi.mocked(console.error).mockImplementation((...args: unknown[]) => {
@@ -711,9 +712,29 @@ describe('think init — v3 block (AGT-321)', () => {
 
     try {
       await expect(
-        initCommand.parseAsync(['--dir', projectDir, '--yes', '--version', 'v4'], { from: 'user' }),
+        initCommand.parseAsync(['--dir', projectDir, '--yes', '--block-version', 'v4'], { from: 'user' }),
       ).rejects.toThrow('process.exit:1');
-      expect(errors.join('\n')).toContain("must be 'v2' or 'v3'");
+      expect(errors.join('\n')).toContain("--block-version must be 'v2' or 'v3'");
+    } finally {
+      process.exit = prevExit;
+    }
+  });
+
+  it('--minimal and --block-version are mutually exclusive', async () => {
+    const prevExit = process.exit;
+    const errors: string[] = [];
+    vi.mocked(console.error).mockImplementation((...args: unknown[]) => {
+      errors.push(args.map(String).join(' '));
+    });
+    process.exit = ((code?: number) => {
+      throw new Error(`process.exit:${code ?? 0}`);
+    }) as typeof process.exit;
+
+    try {
+      await expect(
+        initCommand.parseAsync(['--dir', projectDir, '--yes', '--minimal', '--block-version', 'v3'], { from: 'user' }),
+      ).rejects.toThrow('process.exit:1');
+      expect(errors.join('\n')).toContain('--minimal and --block-version are mutually exclusive');
     } finally {
       process.exit = prevExit;
     }

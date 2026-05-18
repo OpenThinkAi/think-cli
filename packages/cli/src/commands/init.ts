@@ -66,12 +66,12 @@ That's all. Don't run \`think sync\` for exploration, debugging, decisions that 
 // model. Cortex inference is unchanged.
 const V3_WORKLOG_BLOCK = `# think v3
 
-If you have think v3 installed with the hook + MCP server, you'll see relevant context auto-injected via additionalContext, and you can call think_recall mid-conversation when you need to drill in. You don't need to manually run \`think recall\` unless you want to inspect what's stored.
+Context is auto-injected via the UserPromptSubmit hook on every turn (additionalContext field); call the \`think_recall\` MCP tool mid-conversation when you need to drill into a specific topic. You don't need to manually run \`think recall\` unless you want to inspect what's stored.
 
 Three verbs for writing:
 
-- \`think sync "<content>"\` — work stream; kind=memory. Use after shipping a change (commit pushed, PR opened, deploy completed). This is the equivalent of v2 \`think sync\`.
-- \`think retro "<content>"\` — durable wisdom about a codebase; kind=retro. Use when you notice a convention, invariant, gotcha, or prior decision worth preserving for the next agent in this repo. Not compacted — text is preserved exactly as written.
+- \`think sync "<content>"\` — work stream; kind=memory. Use after shipping a change (commit pushed, PR opened, deploy completed).
+- \`think retro "<content>"\` — durable wisdom about a codebase; kind=retro. Use when you notice a convention, invariant, gotcha, or prior decision worth preserving for the next agent in this repo. Text is preserved exactly as written.
 - \`think event "<content>"\` — notable thing happened; kind=event. Use for milestones, decisions, incidents. Events accumulate and are never superseded.
 
 Cortex is inferred from the repo basename (\`basename "$(git rev-parse --show-toplevel)"\`) unless you pass \`--cortex <name>\` explicitly. For repos with a stable name, prefer \`think init --retro --cortex <name>\` to bake it into the block.
@@ -132,8 +132,12 @@ function detectOteamWorkspace(home: string): boolean {
 // Attempt a zero-byte connect to the v3 daemon socket with a short timeout.
 // Returns true only if the socket accepts the connection. Any error or timeout
 // is treated as "daemon not reachable" — safe fallback to v2 block.
-function isV3DaemonReachable(timeoutMs = 1500): Promise<boolean> {
-  const socketPath = path.join(os.homedir(), '.think', 'daemon.sock');
+// Accepts home so tests can override via process.env.HOME without re-deriving.
+function isV3DaemonReachable(home: string, timeoutMs = 300): Promise<boolean> {
+  const socketPath = path.join(home, '.think', 'daemon.sock');
+  // Fast path: if the socket file doesn't exist the probe would fail immediately,
+  // but skip the net.createConnection call entirely to avoid even the ENOENT round-trip.
+  if (!fs.existsSync(socketPath)) return Promise.resolve(false);
   return new Promise((resolve) => {
     const socket = net.createConnection(socketPath);
     const timer = setTimeout(() => {
@@ -370,7 +374,7 @@ export const initCommand = new Command('init')
   .option('--minimal', 'Write a conservative work-log template that logs only explicit shipped outcomes — no decision narration, no oteam adaptation, no retro pattern. Skips the disclosure prompt. Mutually exclusive with --retro.')
   .option('--retro', 'Upsert the iterative-learning (retro) block instead of the work-logging block. Requires --cortex. When no -d is given: writes silently to the git repo root if inside a repo; prompts with cwd as the default otherwise.')
   .option('--cortex <name>', 'Cortex name baked into the retro block commands (required with --retro).')
-  .option('--version <ver>', "Force block version: v2 (default, v0.6 compatible) or v3 (v3 daemon block, skips daemon detection).")
+  .option('--block-version <ver>', 'Force block version: v2 (standard, default) or v3 (hook + MCP server). When omitted, v3 is used if the daemon is reachable; otherwise v2.')
   .addHelpText('after', `
 Modes:
   Default (no --retro):
@@ -396,11 +400,11 @@ Modes:
 Examples:
   think init                              # work-log block in ~/CLAUDE.md
   think init --dir . --yes                # work-log block in ./CLAUDE.md
-  think init --version v3                 # force v3 block even without daemon
+  think init --block-version v3           # force v3 block even without daemon
   think init --retro --cortex fx-tracker  # retro block at git root (silent)
   think init --dir . --retro --cortex my-repo  # retro block in ./CLAUDE.md
 `)
-  .action(async function (this: Command, opts: { dir?: string; yes?: boolean; minimal?: boolean; retro?: boolean; cortex?: string; version?: string }) {
+  .action(async function (this: Command, opts: { dir?: string; yes?: boolean; minimal?: boolean; retro?: boolean; cortex?: string; blockVersion?: string }) {
     // The program declares a global `-C, --cortex <name>` option which shadows
     // the subcommand-local `--cortex` when invoked through the full CLI. Fall
     // back to the global so both `think -C foo init --retro` and
@@ -408,13 +412,20 @@ Examples:
     const globalOpts = this.optsWithGlobals() as { cortex?: string };
     const cortex = opts.cortex ?? globalOpts.cortex;
 
-    // Validate --version flag early.
-    const versionFlag = opts.version;
+    // Validate --block-version flag early.
+    const versionFlag = opts.blockVersion;
     if (versionFlag !== undefined && versionFlag !== 'v2' && versionFlag !== 'v3') {
-      console.error(chalk.red(`think init: --version must be 'v2' or 'v3', got '${versionFlag}'.`));
+      console.error(chalk.red(`think init: --block-version must be 'v2' or 'v3', got '${versionFlag}'.`));
       process.exit(1);
     }
     const forcedVersion = versionFlag as 'v2' | 'v3' | undefined;
+
+    // --minimal and --block-version are mutually exclusive: minimal always writes the minimal
+    // v2-style template; a --block-version flag would be silently ignored by buildBlock.
+    if (opts.minimal && forcedVersion !== undefined) {
+      console.error(chalk.red('think init: --minimal and --block-version are mutually exclusive.'));
+      process.exit(1);
+    }
 
     if (opts.minimal && opts.retro) {
       console.error(chalk.red('think init: --minimal and --retro are mutually exclusive (one writes the work-log block, the other writes the retro block).'));
@@ -524,7 +535,7 @@ Examples:
     if (forcedVersion !== undefined) {
       version = forcedVersion;
     } else {
-      version = (await isV3DaemonReachable()) ? 'v3' : 'v2';
+      version = (await isV3DaemonReachable(home)) ? 'v3' : 'v2';
     }
 
     const oteamPresent = detectOteamWorkspace(home);
