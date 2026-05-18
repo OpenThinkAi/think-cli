@@ -231,7 +231,7 @@ export const recallCommand = new Command('recall')
   .option('--days <n>', 'Days of memories to include (only with --all)', '14')
   .option('--limit <n>', 'Max results to return (default: 8)', String(DEFAULT_RECALL_LIMIT))
   .option('--full', 'Return all entries including superseded and compacted-raw; lifts 200-char truncation')
-  .option('--json', 'Emit results as a JSON array (one object per entry); compatible with --full and --limit')
+  .option('--json', 'Emit results as a JSON array (one object per entry; FTS path only); incompatible with --all')
   .option('--include-superseded', 'Include superseded entries but still hide compacted-raw memories')
   .option('--no-embed', 'Skip semantic ranking; use FTS keyword search (fast, offline, deterministic). Also set by THINK_NO_EMBED=1.')
   .addOption(
@@ -263,6 +263,12 @@ export const recallCommand = new Command('recall')
     const limit = parseInt(limitRaw, 10);
     if (!Number.isInteger(limit) || limit <= 0 || String(limit) !== limitRaw.trim()) {
       console.error(`error: --limit must be a positive integer, got '${limitRaw}'`);
+      process.exitCode = 1;
+      return;
+    }
+
+    if (opts.all && opts.json) {
+      console.error("error: --json is not compatible with --all");
       process.exitCode = 1;
       return;
     }
@@ -315,10 +321,15 @@ export const recallCommand = new Command('recall')
     }
 
     // AGT-319: --json bypasses the formatter entirely and emits a JSON array.
-    // Each element includes all RecallEntry fields; fields not yet tracked in the
-    // FTS path (supersedes, compacted_from, activity_seq) are always emitted as
-    // null so the schema is stable for agent consumers regardless of data path.
-    // cortex is always present per the AGT-307/AGT-319 invariant.
+    // Uses the FTS/searchMemories path only (semantic ranking is not available
+    // in the CLI-direct path; daemon wiring is a later phase).
+    //
+    // Field invariants for agent consumers (stable regardless of data path):
+    //   - cortex: always the active cortex name (AGT-307/AGT-319 invariant).
+    //   - similarity/activity_seq/supersedes/compacted_from: null when not
+    //     populated on this path — null means "not tracked here," not "zero."
+    //   - content: full text when --full is set; otherwise the raw DB value
+    //     (FTS does not truncate; truncation is a formatter concern only).
     if (opts.json) {
       const rawMemories = dedupeBy(
         searchMemories(cortex, query, limit),
@@ -333,7 +344,7 @@ export const recallCommand = new Command('recall')
         topics: [] as string[],
         supersedes: null,
         compacted_from: null,
-        similarity: 0,
+        similarity: null,
         activity_seq: null,
       }));
       process.stdout.write(JSON.stringify(jsonEntries) + '\n');

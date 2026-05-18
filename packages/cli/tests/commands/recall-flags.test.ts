@@ -95,7 +95,7 @@ describe('think recall flags (AGT-319)', () => {
     expect(entry).toHaveProperty('topics');
     expect(entry).toHaveProperty('supersedes', null);
     expect(entry).toHaveProperty('compacted_from', null);
-    expect(entry).toHaveProperty('similarity', 0);
+    expect(entry).toHaveProperty('similarity', null);
     expect(entry).toHaveProperty('activity_seq', null);
   });
 
@@ -179,5 +179,14 @@ describe('think recall flags (AGT-319)', () => {
     const ids = parsed.map(e => e['id']);
     expect(ids).toContain(rawEntry.id);
     expect(ids).toContain(compactedEntry.id);
+  });
+
+  it('--json --all exits non-zero with clear incompatibility error', async () => {
+    const prog = makeProgram();
+    await prog.parseAsync(['node', 'think', 'recall', '--json', '--all', 'some query']);
+
+    expect(process.exitCode).toBe(1);
+    const errOutput = (console.error as ReturnType<typeof vi.fn>).mock.calls.flat().join(' ');
+    expect(errOutput).toMatch(/--json.*--all|not compatible/i);
   });
 });
