@@ -13,6 +13,7 @@
  * With --project the target is <cwd>/.claude/settings.local.json.
  */
 
+import fs from 'node:fs';
 import { Command } from 'commander';
 import {
   globalSettingsPath,
@@ -44,6 +45,13 @@ const installSubcommand = new Command('install')
       console.error(`error: ${(err as Error).message}`);
       process.exitCode = 1;
       return;
+    }
+
+    if (!fs.existsSync(hookScript)) {
+      console.error(
+        `warning: hook script not found at ${hookScript}; ` +
+          `run \`npm run build\` or reinstall @openthink/think before using this hook.`,
+      );
     }
 
     let settings;
@@ -82,7 +90,7 @@ const uninstallSubcommand = new Command('uninstall')
   .description('Remove the think UserPromptSubmit hook from Claude Code settings.')
   .option(
     '--project',
-    'Read from <cwd>/.claude/settings.local.json instead of ~/.claude/settings.json',
+    'Target <cwd>/.claude/settings.local.json instead of ~/.claude/settings.json',
   )
   .action((opts: { project?: boolean }) => {
     const settingsFile = opts.project ? projectSettingsPath() : globalSettingsPath();
