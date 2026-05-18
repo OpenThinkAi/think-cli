@@ -41,6 +41,7 @@ import { handleStatus } from './status.js';
 import { compactionQueue, scanAndEnqueueUncompacted } from './compaction/queue.js';
 import { backfillActivitySeqIfNeeded } from '../db/activity-seq.js';
 import { runEmbedModelChecks } from './embed-model-check.js';
+import { warmupEmbedModel, EMBEDDING_MODEL_NAME } from '../lib/embed.js';
 import { startProxySubscribe } from './proxy-subscribe.js';
 import { startPullLoop, notifyCliCall } from './pull-loop.js';
 
@@ -342,6 +343,27 @@ export async function runDaemon(options: DaemonOptions): Promise<void> {
   } else {
     writeLine(`think daemon ready (socket=${socketPath})`);
   }
+
+  // ---------------------------------------------------------------------------
+  // Embedding model warmup — pre-load Xenova/bge-small-en-v1.5 so the first
+  // sync call does not time out waiting for model decode + weight load (~30s
+  // on a cold cache even when the model is already on disk).
+  //
+  // Fire-and-forget: the daemon logs "ready" first so spawn-or-connect is fast.
+  // If a sync arrives during warmup the singleton pipelinePromise dedupes it —
+  // sync will await the same in-flight load rather than triggering a duplicate.
+  // If warmup fails (optional dep missing, ONNX error), the existing embed()
+  // fallback paths handle it; we just log the failure at WARN level.
+  // ---------------------------------------------------------------------------
+
+  warmupEmbedModel()
+    .then((ms) => {
+      writeLine(`embed-model: loaded (${EMBEDDING_MODEL_NAME}, ${ms}ms)`);
+    })
+    .catch((err: unknown) => {
+      const msg = (err instanceof Error ? err.message : String(err)).replace(/[\r\n]/g, ' ');
+      writeLine(`embed-model: warmup failed (continuing without pre-load): ${msg}`);
+    });
 
   // ---------------------------------------------------------------------------
   // Compaction queue startup (AGT-299)
