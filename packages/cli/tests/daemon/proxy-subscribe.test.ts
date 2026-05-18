@@ -15,11 +15,11 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import {
   isValidProxyUrl,
+  startProxySubscribe,
   RECONNECT_INITIAL_MS,
   RECONNECT_MULTIPLIER,
   RECONNECT_MAX_MS,
 } from '../../src/daemon/proxy-subscribe.js';
-import { startProxySubscribe } from '../../src/daemon/proxy-subscribe.js';
 
 // ---------------------------------------------------------------------------
 // Config mock — hoisted so vitest replaces the module before any import runs.
@@ -294,12 +294,21 @@ describe('startProxySubscribe — message handling', () => {
 
     const handle = startProxySubscribe(() => { received.push(null); });
 
-    // Stop before any message
+    expect(wsConstructed).toBe(true);
+    expect(capturedMessageHandler).not.toBeNull();
+
+    // Fire a valid message BEFORE stop — should invoke the callback.
+    sendMessage(JSON.stringify({ type: 'push', cortex: 'before', commit_sha: 'sha1' }));
+    expect(received).toHaveLength(1);
+
+    // Stop the client.
     handle.stop();
 
-    // capturedMessageHandler still exists; calling it after stop should not add to received
-    // (stop() does not clear the handler on the already-constructed WS, but the WS is closed)
-    // Verify stop does not throw
+    // Fire a valid message AFTER stop — handleMessage's `stopped` guard should block it.
+    sendMessage(JSON.stringify({ type: 'push', cortex: 'after', commit_sha: 'sha2' }));
+    expect(received).toHaveLength(1); // count unchanged
+
+    // Calling stop() again is idempotent.
     expect(() => handle.stop()).not.toThrow();
   });
 });

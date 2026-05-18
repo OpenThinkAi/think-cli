@@ -17,6 +17,8 @@
  * - URL validated to ws:// or wss:// before use.
  * - Incoming messages capped at MAX_MESSAGE_BYTES (1 KB) to prevent DoS.
  * - JSON is parsed only after the size check.
+ * - All external-origin strings (cortex, commit_sha, close reason) are
+ *   stripped of CR/LF before log interpolation to prevent log injection.
  */
 
 import { getConfig } from '../lib/config.js';
@@ -48,11 +50,20 @@ export interface ProxySubscribeHandle {
 }
 
 // ---------------------------------------------------------------------------
-// Internal log helper
+// Internal helpers
 // ---------------------------------------------------------------------------
 
 function log(level: 'INFO' | 'WARN' | 'DEBUG', msg: string): void {
   process.stderr.write(`[${new Date().toISOString()}] [proxy-subscribe] ${level}: ${msg}\n`);
+}
+
+/**
+ * Strip CR and LF characters from a string before interpolating it into
+ * a log line. Prevents log-injection by a malicious or compromised proxy
+ * that sends field values containing embedded newlines.
+ */
+function stripNewlines(s: string): string {
+  return s.replace(/[\r\n]/g, ' ');
 }
 
 // ---------------------------------------------------------------------------
@@ -143,7 +154,8 @@ export function startProxySubscribe(onPush: OnPushCallback): ProxySubscribeHandl
     socket.addEventListener('close', (event: CloseEvent) => {
       ws = null;
       if (stopped) return;
-      log('WARN', `disconnected from proxy (code=${event.code}, reason=${event.reason || '(none)'}) — scheduling reconnect in ${reconnectDelayMs}ms`);
+      const safeReason = stripNewlines(event.reason || '(none)');
+      log('WARN', `disconnected from proxy (code=${event.code}, reason=${safeReason}) — scheduling reconnect in ${reconnectDelayMs}ms`);
       scheduleReconnect();
     });
   }
@@ -192,7 +204,8 @@ export function startProxySubscribe(onPush: OnPushCallback): ProxySubscribeHandl
       return;
     }
 
-    log('DEBUG', `push notification: cortex=${cortex} commit=${commitSha}`);
+    if (stopped) return;
+    log('DEBUG', `push notification: cortex=${stripNewlines(cortex)} commit=${stripNewlines(commitSha)}`);
     try {
       onPush(cortex, commitSha);
     } catch (err) {
