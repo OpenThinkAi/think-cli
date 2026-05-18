@@ -31,8 +31,7 @@ import { assignNextSeq } from '../../db/activity-seq.js';
 import { getRepoPath } from '../../lib/paths.js';
 import { getConfig, getPeerId } from '../../lib/config.js';
 import embed, { EMBEDDING_MODEL_NAME } from '../../lib/embed.js';
-import type { CompactionSuccess } from './call.js';
-import type { NewEntry } from './call.js';
+import type { CompactionSuccess, NewEntry } from './call.js';
 
 // ---------------------------------------------------------------------------
 // L1 page helpers (mirrors sync-handler.ts / supersession/apply.ts)
@@ -150,7 +149,6 @@ export async function applyCompaction(
   // ── Step 3: atomic L2 writes ──────────────────────────────────────────────
   const activitySeq = assignNextSeq(safeCortex);
   const db = getCortexDb(safeCortex);
-  const now = ts;
 
   db.exec('BEGIN');
   try {
@@ -192,7 +190,7 @@ export async function applyCompaction(
          WHERE id = ? AND superseded_at IS NULL`,
       );
       for (const id of llmResult.supersedes) {
-        supersededStmt.run(now, compactedId, id);
+        supersededStmt.run(ts, compactedId, id);
       }
     }
 

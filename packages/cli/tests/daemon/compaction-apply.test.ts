@@ -9,10 +9,11 @@
  *   4. Entries in llmResult.supersedes get superseded_at + superseded_by set.
  *   5. Idempotent supersession: second call with same superseded ID does not
  *      change the superseded_at timestamp.
- *   6. All three L2 mutations are atomic: if a row insert fails mid-transaction,
- *      none of the mutations are persisted.
- *   7. Empty supersedes list: no rows updated, compaction link and entry still
+ *   6. Empty supersedes list: no rows updated, compaction link and entry still
  *      written correctly.
+ *   7. Atomicity: if the L2 transaction fails (COMMIT throws), none of the three
+ *      mutations (memories INSERT, compaction_links INSERT, superseded_at UPDATE)
+ *      are persisted.
  */
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
@@ -333,5 +334,72 @@ describe('applyCompaction (AGT-301)', () => {
     const lines = readL1Lines(cortexDir);
     const compacted = lines.find(l => Array.isArray(l['compacted_from']));
     expect(compacted).toBeDefined();
+  });
+
+  it('atomicity: transaction rollback leaves L2 untouched', async () => {
+    // Verify that all three L2 mutations (memories INSERT, compaction_links INSERT,
+    // superseded_at UPDATE) are executed atomically. We simulate a mid-transaction
+    // failure by preparing a broken statement before calling applyCompaction, which
+    // causes the COMMIT to never happen and the transaction to roll back.
+    //
+    // Technique: corrupt the DB state so the memories INSERT throws (UNIQUE
+    // constraint — the compacted id already exists). Because the id is a uuidv7
+    // generated inside applyCompaction we can't predict it, so instead we
+    // monkeypatch db.exec to throw on COMMIT after the first successful BEGIN.
+    const rawId = 'raw-atomic-001';
+    const oldId = 'old-atomic-001';
+    writeL1RawEntry(rawId, 'should roll back.');
+    writeL1RawEntry(oldId, 'supersede target.');
+    await insertRawEntry(rawId, 'should roll back.');
+    await insertRawEntry(oldId, 'supersede target.');
+
+    const { getCortexDb } = await import('../../src/db/engrams.js');
+    const db = getCortexDb(CORTEX);
+
+    // Intercept db.exec so that COMMIT throws, causing applyCompaction's catch
+    // block to call ROLLBACK — exercising the atomicity guarantee. We do NOT
+    // call ROLLBACK ourselves here; the catch block in apply.ts does that.
+    const originalExec = db.exec.bind(db);
+    let commitIntercepted = false;
+    (db as unknown as Record<string, unknown>)['exec'] = (sql: string) => {
+      if (sql === 'COMMIT' && !commitIntercepted) {
+        commitIntercepted = true;
+        throw new Error('simulated commit failure');
+      }
+      return originalExec(sql);
+    };
+
+    const { applyCompaction } = await import('../../src/daemon/compaction/apply.js');
+    await expect(
+      applyCompaction(
+        { id: rawId, ts: new Date().toISOString(), content: 'should roll back.' },
+        {
+          status: 'ok',
+          compacted_text: 'rolled-back compaction.',
+          supersedes: [oldId],
+          topics: ['rollback'],
+        },
+        CORTEX,
+      ),
+    ).rejects.toThrow('simulated commit failure');
+
+    // Restore original exec
+    (db as unknown as Record<string, unknown>)['exec'] = originalExec;
+
+    // L2: no compacted entry should have been inserted
+    const compactedRows = db.prepare(
+      `SELECT id FROM memories WHERE content = ?`,
+    ).all('rolled-back compaction.') as { id: string }[];
+    expect(compactedRows.length).toBe(0);
+
+    // L2: no compaction_links row
+    const linkRows = db.prepare(
+      `SELECT raw_id FROM compaction_links WHERE raw_id = ?`,
+    ).all(rawId) as { raw_id: string }[];
+    expect(linkRows.length).toBe(0);
+
+    // L2: oldId should NOT have been marked superseded
+    const oldRow = await getMemoryRow(oldId);
+    expect(oldRow!['superseded_at']).toBeNull();
   });
 });

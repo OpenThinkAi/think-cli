@@ -24,7 +24,7 @@ import { getRepoPath, sanitizeName } from '../../lib/paths.js';
 import { getConfig } from '../../lib/config.js';
 import { LlmConsentError } from '../../lib/llm-consent.js';
 import { searchVectors } from '../../lib/search-vectors.js';
-import type { NewEntry } from './call.js';
+import type { NewEntry, CandidateEntry } from './call.js';
 
 /**
  * When true, the worker logs what would be compacted but does NOT call the LLM
@@ -355,7 +355,7 @@ export class CompactionQueue {
       `SELECT id, ts, content, topics_json FROM memories
        WHERE id = ? AND deleted_at IS NULL AND superseded_at IS NULL`,
     );
-    const candidates: import('./call.js').CandidateEntry[] = [];
+    const candidates: CandidateEntry[] = [];
     for (const c of triageOthers) {
       const row = candidateStmt.get(c.id) as
         { id: string; ts: string; content: string; topics_json: string | null } | undefined;
