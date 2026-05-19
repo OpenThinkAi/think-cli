@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.0.2] — 2026-05-19
+
+### Fixed
+- **Daemon orphan-leak spawn race (#60).** `connectDaemon()` previously decided whether to spawn a new daemon based purely on socket connectivity. Two concurrent CLI invocations during the ~30s embed-model warmup window both saw the socket unresponsive and both spawned a daemon. The loser kept running its background loops (compaction queue, pull loop, embedding model resident) independently of the supervised daemon — `think daemon stop` only terminated the supervised one, and orphans accumulated across a dev session (99 observed in one report). Each orphan independently called `claude-sonnet-4-6` for compaction work and held hundreds of MB resident. Fix: before spawning, `connectDaemon()` now (1) consults the PID file — if a daemon is already alive (mid-warmup), it skips the spawn and waits for the in-flight socket; (2) acquires an atomic `O_EXCL` spawn-mutex at `~/.think/daemon.spawn.lock` — if another CLI is already mid-spawn, this one waits for its daemon instead of double-spawning. Stale locks (dead holder PID or older than `SPAWN_TIMEOUT_MS`) are reclaimed; the lock is released on connect success or retry timeout so subsequent CLI calls don't wait it out. No interface changes.
+
+---
+
 ## [1.0.1] — 2026-05-19
 
 ### Fixed
