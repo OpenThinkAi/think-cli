@@ -20,7 +20,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { getCortexDb } from '../../db/engrams.js';
-import { getRepoPath, sanitizeName } from '../../lib/paths.js';
+import { getRepoPath, getThinkDir, sanitizeName } from '../../lib/paths.js';
 import { getConfig } from '../../lib/config.js';
 import { LlmConsentError } from '../../lib/llm-consent.js';
 import { sanitizeForLog } from '../../lib/sanitize.js';
@@ -698,9 +698,27 @@ function sleep(ms: number): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
-/** Write a timestamped line to stderr (daemon log). */
+/**
+ * Write a timestamped line to both stderr and `daemon.log`.
+ *
+ * The daemon is spawned detached with `stdio: 'ignore'` (see
+ * `lib/daemon-client.ts:spawnDaemon`), which discards stderr. Without the
+ * daemon.log append, all compaction-queue messages — including critical
+ * `[ERROR] compaction permanently skipped` lines — vanish in production
+ * (any non-`--foreground` daemon). Writing both keeps the foreground UX
+ * intact while ensuring detached runs have a permanent record.
+ *
+ * Sync `appendFileSync` is acceptable for a low-volume log (a handful of
+ * lines per compaction call, queue running at most a few per second).
+ */
 function log(msg: string): void {
-  process.stderr.write(`[${new Date().toISOString()}] [compaction-queue] ${msg}\n`);
+  const line = `[${new Date().toISOString()}] [compaction-queue] ${msg}\n`;
+  process.stderr.write(line);
+  try {
+    fs.appendFileSync(path.join(getThinkDir(), 'daemon.log'), line);
+  } catch {
+    // Best-effort — never let logging failures propagate into the worker loop.
+  }
 }
 
 // ---------------------------------------------------------------------------

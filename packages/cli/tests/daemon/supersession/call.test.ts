@@ -125,7 +125,7 @@ describe('runSupersession — happy path', () => {
     await runSupersession(NEW_RETRO, CANDIDATES);
 
     const call = mockCreate.mock.calls[0][0] as Record<string, unknown>;
-    expect(call['model']).toBe('claude-haiku-4-5');
+    expect(call['model']).toBe('claude-sonnet-4-6');
     expect(call['temperature']).toBe(0.1);
     expect(call['max_tokens']).toBe(300);
   });

@@ -159,7 +159,7 @@ describe('runCompaction — happy path', () => {
     await runCompaction(NEW_ENTRY, CANDIDATES);
 
     const callArgs = mockMessagesCreate.mock.calls[0][0];
-    expect(callArgs.model).toBe('claude-haiku-4-5');
+    expect(callArgs.model).toBe('claude-sonnet-4-6');
     expect(callArgs.max_tokens).toBe(600);
     expect(callArgs.temperature).toBe(0.2);
   });
