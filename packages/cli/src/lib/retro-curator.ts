@@ -95,7 +95,7 @@ export async function runRetroDedupe(prompt: string): Promise<DedupeJudgment[]> 
     options: {
       systemPrompt: RETRO_DEDUPE_SYSTEM_PROMPT,
       tools: [],
-      model: 'claude-sonnet-4-6',
+      model: 'claude-haiku-4-5',
       persistSession: false,
     },
   })) {

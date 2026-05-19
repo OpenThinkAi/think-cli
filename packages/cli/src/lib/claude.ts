@@ -34,7 +34,7 @@ export async function generateSummary(entries: Entry[]): Promise<string> {
     options: {
       systemPrompt: SYSTEM_PROMPT,
       tools: [],
-      model: 'claude-sonnet-4-6',
+      model: 'claude-haiku-4-5',
       persistSession: false,
     },
   })) {
