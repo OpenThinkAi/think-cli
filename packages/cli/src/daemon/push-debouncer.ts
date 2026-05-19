@@ -26,6 +26,7 @@
 import { execFile } from 'node:child_process';
 import { getRepoPath, sanitizeName } from '../lib/paths.js';
 import { safeGitEnv } from '../lib/git.js';
+import { daemonLog } from './log.js';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -72,9 +73,9 @@ function runGitAsync(args: string[], cwd: string): Promise<string> {
   });
 }
 
-/** Write a timestamped line to stderr (daemon log). */
+/** Write a timestamped push-debouncer line to both stderr and daemon.log. */
 function log(msg: string): void {
-  process.stderr.write(`[${new Date().toISOString()}] [push-debouncer] ${msg}\n`);
+  daemonLog('push-debouncer', msg);
 }
 
 // ---------------------------------------------------------------------------

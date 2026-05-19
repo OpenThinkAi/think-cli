@@ -1,5 +1,14 @@
 # Changelog
 
+## [1.0.0-alpha.14] — 2026-05-18
+
+### Fixed
+- **`push-debouncer` and `proxy-subscribe` log lines now reach `daemon.log`** — alpha.13 extended the dual-write pattern (stderr + `daemon.log`) to `compaction-queue` only. Real-corpus testing by a personal-machine test agent confirmed the other two logging subsystems were still silent: `grep -c 'push-debouncer' daemon.log` returned 0 on a running alpha.13 daemon. Root cause: both modules had local `log()` functions writing only to `process.stderr`, which the detached daemon discards. Fix: a shared `daemon/log.ts` helper (`daemonLog(subsystem, msg)`) is extracted and wired into all three subsystems — `compaction-queue`, `push-debouncer`, and `proxy-subscribe` — replacing the per-module stderr-only implementations. Every future subsystem gains the dual-write pattern for free by calling `daemonLog`.
+- **Successful compaction is now visible in `daemon.log`** — the `processJobWithRetry` success path called `setCompactionStatus(..., 'completed')` with no log line, so a working compaction produced no trace in `daemon.log`. Operators saw backfill and triage-skip messages but never "compacted entry X". A single `log('compaction completed: entry=… cortex=…')` line is now emitted after `setCompactionStatus('completed')` returns.
+- **`think reindex` `kind`/`topics_json` backfill confirmed correct** — a test agent reported that pre-alpha.10 entries still showed `kind = NULL` after `think reindex`. Code review confirmed the reindex command already uses `INSERT OR REPLACE` with both `kind` and `topics_json` sourced from L1 JSONL (`parseMemoriesJsonl` defaults `kind` to `'memory'` for v2-era entries that omit the field). The report was a misdiagnosis — the fix shipped in alpha.10 is intact and correct. No code change needed; documented here so the record is clear.
+
+---
+
 ## [1.0.0-alpha.13] — 2026-05-18
 
 ### Fixed

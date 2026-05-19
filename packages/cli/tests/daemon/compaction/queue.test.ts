@@ -529,4 +529,52 @@ describe('AGT-302: compaction_status lifecycle', () => {
     const row = db.prepare('SELECT compaction_status FROM memories WHERE id = ?').get(id) as { compaction_status: string };
     expect(row.compaction_status).toBe('completed');
   });
+
+  it('successful pipeline → logs compaction completed line to stderr', async () => {
+    // Verify the new success log line is emitted after setCompactionStatus('completed').
+    // Prior to this fix, a successful compaction was silent in daemon.log — operators
+    // saw backfill/skip messages but no trace of successful compactions.
+    const { CompactionQueue } = await import('../../../src/daemon/compaction/queue.js');
+    const { getCortexDb } = await import('../../../src/db/engrams.js');
+
+    const cortex = 'completed-log-test';
+    const id = 'completed-log-id-1';
+    const ts = new Date().toISOString();
+    const db = getCortexDb(cortex);
+    db.prepare(`
+      INSERT OR IGNORE INTO memories
+        (id, ts, author, content, source_ids, created_at, deleted_at,
+         sync_version, origin_peer_id)
+      VALUES (?, ?, 'tester', 'ok content for log test', '[]', ?, NULL, 1, 'peer')
+    `).run(id, ts, ts);
+
+    const stderrLines: string[] = [];
+    const origWrite = process.stderr.write.bind(process.stderr);
+    const spy = vi.spyOn(process.stderr, 'write').mockImplementation((chunk: unknown, ...rest: unknown[]) => {
+      if (typeof chunk === 'string') stderrLines.push(chunk);
+      return origWrite(chunk as Parameters<typeof origWrite>[0], ...(rest as Parameters<typeof origWrite>[1][]));
+    });
+
+    const queue = new CompactionQueue();
+    queue._setPipelineForTest(async () => {
+      // No-op success.
+    });
+    queue.enqueue(id, cortex);
+    queue.start();
+
+    const deadline = Date.now() + 5000;
+    while (queue.getDepth(cortex) > 0 && Date.now() < deadline) {
+      await new Promise(r => setTimeout(r, 50));
+    }
+
+    spy.mockRestore();
+
+    const successLine = stderrLines.find(l =>
+      l.includes('[compaction-queue]') &&
+      l.includes('compaction completed') &&
+      l.includes(`entry=${id}`) &&
+      l.includes(`cortex=${cortex}`),
+    );
+    expect(successLine).toBeDefined();
+  });
 });
