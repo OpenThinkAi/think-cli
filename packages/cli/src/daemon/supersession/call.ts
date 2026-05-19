@@ -112,11 +112,15 @@ function extractText(response: Anthropic.Message): string {
 /**
  * Run the supersession check for a new retro against a set of candidates.
  *
- * Uses `claude-sonnet-4-6` with `temperature: 0.1` (classification task) and
- * a cached system prompt (`cache_control: { type: "ephemeral" }`).  Strips
- * markdown code fences before JSON.parse to handle models that wrap output.
- * Retries once on parse failure (recovers from transient non-determinism;
- * systematic failures will still fail on the second attempt).
+ * Uses `claude-haiku-4-5` with `temperature: 0.1` (classification task) and
+ * a cached system prompt (`cache_control: { type: "ephemeral" }`). Haiku is
+ * chosen during alpha for cost containment; the task is bounded JSON
+ * classification ("which candidates does this new retro supersede?") and
+ * Haiku handles it acceptably. Revisit if we observe false-supersession on
+ * real retros. Strips markdown code fences before JSON.parse to handle
+ * models that wrap output. Retries once on parse failure (recovers from
+ * transient non-determinism; systematic failures will still fail on the
+ * second attempt).
  *
  * `max_tokens: 300` is sized for compact JSON output. If the candidate count
  * is ever raised significantly (> ~20 long IDs), revisit this limit.
@@ -138,7 +142,7 @@ export async function runSupersession(
 
   const callClaude = (): Promise<Anthropic.Message> =>
     client.messages.create({
-      model: 'claude-sonnet-4-6',
+      model: 'claude-haiku-4-5',
       temperature: 0.1,
       max_tokens: 300,
       system: [

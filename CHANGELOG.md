@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.0.0-alpha.11] — 2026-05-18
+
+### Changed
+- **Compaction and retro-supersession switched from `claude-sonnet-4-6` to `claude-haiku-4-5`** during alpha for cost containment. A real-corpus smoke test came in at ~$0.07 per Sonnet compaction call; at team scale (10 people × ~30 compactions/day each, post-triage-gate) that's roughly $300/mo of LLM spend on a single subsystem before any real-world signal on whether the corpus benefits from Sonnet-class quality. The compaction task is structured rewrite with a JSON-schema-validated output and a supersession judgment — Haiku is acceptable here with the trade-off that hairy multi-entry trajectories may be flattened or over-superseded. Re-evaluate after real-corpus A/B with usage data on hand. Source comments in `daemon/compaction/call.ts` and `daemon/supersession/call.ts` document the revisit trigger.
+
+---
+
 ## [1.0.0-alpha.10] — 2026-05-18
 
 ### Fixed

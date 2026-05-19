@@ -52,7 +52,13 @@ export type CompactionResult = CompactionSuccess | CompactionResponseInvalid;
 // Constants
 // ---------------------------------------------------------------------------
 
-const MODEL = 'claude-sonnet-4-6';
+// Compaction model. Haiku 4.5 during alpha for cost containment (~3x cheaper
+// than Sonnet 4.6 for this workload). The task is structured rewrite with a
+// JSON schema, multi-document context, and a supersession judgment — Haiku
+// is acceptable here with the caveat that it may over-supersede or flatten
+// trajectory on hairy multi-entry cases. Revisit once we have real-corpus
+// usage data on hand to A/B against Sonnet output quality.
+const MODEL = 'claude-haiku-4-5';
 const MAX_TOKENS = 600;
 const TEMPERATURE = 0.2;
 
