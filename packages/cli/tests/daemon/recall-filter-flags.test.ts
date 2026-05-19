@@ -208,6 +208,27 @@ describe('handleRecall — filter flags (AGT-320)', () => {
     expect(ids).not.toContain(wrongTopic.id);
     expect(ids).not.toContain(tooOld.id);
   });
+
+  // ── full entry shape (Bug 2 fix) ──────────────────────────────────────────
+
+  it('recall result includes activity_seq, compacted_from, supersedes fields', async () => {
+    const db = getCortexDb(CORTEX);
+    const entry = insertMemory(CORTEX, {
+      ts: '2026-05-01T00:00:00.000Z', author: 'test', content: 'shape test entry',
+    });
+    db.prepare('UPDATE memories SET embedding = ?, kind = ? WHERE id = ?')
+      .run(toBlob(axis(0)), 'memory', entry.id);
+    vi.spyOn(embedModule, 'default').mockResolvedValue(axis(0));
+    const results = await handleRecall({ cortex: CORTEX, query: 'shape test' });
+    expect(results).toHaveLength(1);
+    const r = results[0];
+    expect('activity_seq' in r).toBe(true);
+    expect('compacted_from' in r).toBe(true);
+    expect('supersedes' in r).toBe(true);
+    // For a raw entry with no compaction_links, compacted_from is null and supersedes is []
+    expect(r.compacted_from).toBeNull();
+    expect(r.supersedes).toEqual([]);
+  });
 });
 
 // ---------------------------------------------------------------------------

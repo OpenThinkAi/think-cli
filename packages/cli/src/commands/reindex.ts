@@ -126,13 +126,14 @@ export async function reindexOneCortex(
   const upsertStmt = db.prepare(`
     INSERT OR REPLACE INTO memories
       (id, ts, author, content, source_ids, created_at,
-       deleted_at, sync_version, embedding, embedding_model)
+       deleted_at, sync_version, embedding, embedding_model,
+       kind, topics_json)
     VALUES (
       ?, ?, ?, ?, ?,
       COALESCE((SELECT created_at FROM memories WHERE id = ?), ?),
       ?,
       COALESCE((SELECT sync_version FROM memories WHERE id = ?), 1),
-      ?, ?
+      ?, ?, ?, ?
     )
   `);
 
@@ -170,6 +171,8 @@ export async function reindexOneCortex(
           entry.deleted_at ?? null,
           /* sync_version subquery param */ id,
           embeddingBytes, EMBEDDING_MODEL_NAME,
+          entry.kind,
+          JSON.stringify(entry.topics ?? []),
         );
       } catch (err) {
         const snippet = entry.content.slice(0, 60).replace(/\n/g, ' ');

@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.0.0-alpha.10] — 2026-05-18
+
+### Fixed
+- **Sync now writes `kind` and `topics_json` to L2** — entries synced via `think sync` were missing `kind` and `topics_json` in the L2 SQLite index (the columns existed from migration 14 but the INSERT in `sync-handler.ts` never populated them). All new synced entries now have `kind` and `topics_json` set immediately. Pre-alpha.10 entries have `kind = NULL`; run `think reindex <cortex>` to backfill `kind` and `topics_json` on entries synced before this release. The `sync` RPC no longer emits advisory `warnings` for non-memory kinds or topics; these limitations have been resolved.
+- **Recall RPC response now includes `activity_seq`, `compacted_from`, and `supersedes`** — the `recall` daemon RPC (used by `think recall --json` and the `think_recall` MCP tool) was silently dropping three fields from every result entry. `activity_seq` is now always present (null for pre-backfill rows). `compacted_from` is populated for compacted entries via a single batched `compaction_links` query (not N+1). `supersedes` equals `compacted_from` for compacted memory entries, and `[]` for raw entries.
+- **`think reindex` now backfills `kind` and `topics_json`** — the reindex command reads `kind` and `topics` from L1 JSONL and writes them to L2 via `INSERT OR REPLACE`, so running `think reindex <cortex>` after upgrading to alpha.10 fully repairs the L2 index for existing data.
+
+### Known limitation
+- **`--since` filter interacts with vector overfetch** — recall does: vector search → top-K candidates → filter by `since`/`kind`/`topic`. If filters reject most of the top-K, results can be sparse even when many matching entries exist. Workaround: increase `--limit` to widen the candidate pool.
+
+---
+
 ## [1.0.0-alpha.9] — 2026-05-18
 
 ### Fixed

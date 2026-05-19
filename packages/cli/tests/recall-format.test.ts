@@ -27,6 +27,9 @@ function entry(
     topics: [],
     similarity: 0,
     score: 0,
+    activity_seq: null,
+    compacted_from: null,
+    supersedes: [],
     ...overrides,
   };
 }
