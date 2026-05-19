@@ -1,5 +1,35 @@
 # Changelog
 
+## [1.0.0] — 2026-05-19
+
+The v3 architecture — vector recall, write-time compaction, and a resident daemon — graduates from alpha to stable. Same code path as `1.0.0-alpha.14`, dropping the prerelease suffix and flipping the npm `latest` tag from `0.6.12` to `1.0.0`.
+
+### What's in 1.0
+- **Vector recall** via the resident `bge-small-en-v1.5` embedding model. `think recall <query>` returns semantically similar entries even when query and stored text share no vocabulary. FTS5 keyword search remains as `--no-embed` and as the automatic fallback when the embedding model is unavailable.
+- **Write-time compaction** folds new memory entries into a one-line summary that bakes the relevant trajectory in, via `claude-sonnet-4-6` (see alpha.13 for the alpha-period Haiku experiment + revert). Compacted entries supersede their raw inputs in default recall; `--full` surfaces the originals.
+- **Resident daemon** at `~/.think/daemon.sock` holds the embedding model in memory after the first launch (~30s OS-cache-cold, otherwise instant on subsequent spawns). Every CLI command reuses the same daemon process. `think daemon start|stop|status` exposes lifecycle.
+- **Agent integration**: `think hook install` wires a `UserPromptSubmit` hook into Claude Code so context is auto-injected on every prompt. `think mcp install` registers an MCP server exposing `think_recall`, `think_sync`, and `think_expand` as tools the agent can call mid-conversation.
+- **Cross-cortex federation**: `think recall --scope accessible` (the default) queries all locally-cloned cortexes in parallel and merges results. `--scope active` constrains to the active cortex.
+- **Filter flags** on `think recall`: `--kind memory|retro|event`, `--topic <topic>`, `--since <iso-date>`, `--limit <n>`, `--full`, `--json` (with the documented entry schema: `id, ts, cortex, kind, content, topics, supersedes, compacted_from, similarity, activity_seq`).
+- **Three kinds**: `think sync` writes a memory, `think retro` writes durable wisdom about a codebase, `think event` writes a milestone/decision. All routed through the daemon.
+
+### Upgrading from v0.6.x
+Run `npm install -g @openthink/think` to upgrade. The first interactive run prompts to consolidate `~/.think/engrams/` into `~/.think/index/` (the v3 storage location). Existing JSONL data in `~/.think/repo/` is read-compatible; the daemon's first launch backfills the L2 vector index. v0.6.x commands all continue to work; the daemon-routed equivalents are recommended.
+
+### Upgrading from an alpha install
+If you installed via `npm install -g @openthink/think@alpha`, your install is pinned to the `@alpha` dist-tag and will NOT pick up the stable `1.0.0` automatically. Switch tags explicitly:
+
+```sh
+npm install -g @openthink/think     # or @latest — both resolve to 1.0.0 now
+```
+
+### Stable known issues (file GitHub issues if you hit these)
+- `think audit` reports "No sync activity" against v3 data — v2 audit-log path needs updating.
+- `--scope all` is documented but not yet wired to remote-peer federation; the CLI emits a `note:` warning each time it's used and the daemon falls back to `--scope accessible` (queries all locally-cloned cortexes).
+- `think hook install` / `think mcp install` no-op when an existing entry is present but stale (e.g. left over from an alpha install pointing at a different install prefix). Re-running these commands does not refresh; a `--force` flag is on the roadmap. **Interim workaround**: remove the existing `think` entry from `~/.claude/settings.json` (hook) or `~/.claude.json` (MCP), then re-run the install command.
+
+---
+
 ## [1.0.0-alpha.14] — 2026-05-18
 
 ### Fixed

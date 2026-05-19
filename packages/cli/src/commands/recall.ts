@@ -325,6 +325,16 @@ export const recallCommand = new Command('recall')
       }
 
       if (client !== null) {
+        // --scope all is documented as "future remote peers" but is not yet
+        // wired to remote-peer federation. The daemon treats it identically
+        // to --scope accessible. Warn loudly so users don't infer that
+        // remote-peer federation is happening silently.
+        if (scope === 'all') {
+          console.warn(chalk.yellow(
+            "note: --scope all is not yet wired to remote-peer federation; behaves like --scope accessible (queries all locally-cloned cortexes).",
+          ));
+        }
+
         const rpcParams: Record<string, unknown> = { query, limit, scope };
         if (scope === 'active') rpcParams['cortex'] = cortex;
         if (opts.kind !== undefined) rpcParams['kind'] = opts.kind;
