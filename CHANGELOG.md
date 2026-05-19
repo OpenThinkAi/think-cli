@@ -1,5 +1,16 @@
 # Changelog
 
+## [1.0.2] — 2026-05-19
+
+### Fixed
+- **Daemon orphan-leak spawn race (#60).** Concurrent CLI invocations during the ~30s embed-model warmup window could each spawn their own daemon, because `connectDaemon()` decided whether to spawn based purely on socket connectivity. The loser kept running its compaction queue, pull loop, and resident embedding model independently of the supervised daemon — `think daemon stop` only terminated the supervised one, and orphans accumulated across a dev session (99 observed in one report). Each orphan held hundreds of MB resident and independently called `claude-sonnet-4-6` on its own backfill schedule. Fix: before spawning, `connectDaemon()` now (1) consults the PID file and skips the spawn if a daemon is already alive (mid-warmup), and (2) acquires an atomic `O_EXCL` spawn-mutex so concurrent CLIs serialize through one spawn instead of all racing it. Stale locks (dead holder PID or older than `SPAWN_TIMEOUT_MS`) are reclaimed automatically. No interface changes.
+
+### Upgrade notes
+- **Clean up pre-1.0.2 orphans.** The fix is preventative — it stops new orphans from being created, but does not terminate orphans already running from earlier sessions. After upgrading, run `pkill -f "dist/daemon/index.js"` (macOS/Linux) to terminate any leftover daemons, then `think daemon start` to spawn a fresh supervised one. `think daemon stop` alone will only terminate the supervised daemon and leave the orphans behind.
+- **New state file.** `~/.think/daemon.spawn.lock` may appear briefly in `~/.think/` during daemon startup. It is held only while a CLI is in the spawn-or-connect retry loop and is removed automatically on success or timeout — safe to delete if found stale.
+
+---
+
 ## [1.0.1] — 2026-05-19
 
 ### Fixed
