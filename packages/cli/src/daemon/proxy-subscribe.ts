@@ -26,6 +26,7 @@
 
 import { getConfig } from '../lib/config.js';
 import { isValidProxyUrl, redactUrl } from '../lib/proxy-url.js';
+import { daemonLog } from './log.js';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -57,8 +58,9 @@ export interface ProxySubscribeHandle {
 // Internal helpers
 // ---------------------------------------------------------------------------
 
+/** Write a timestamped proxy-subscribe line to both stderr and daemon.log. */
 function log(level: 'INFO' | 'WARN' | 'DEBUG', msg: string): void {
-  process.stderr.write(`[${new Date().toISOString()}] [proxy-subscribe] ${level}: ${msg}\n`);
+  daemonLog('proxy-subscribe', `${level}: ${msg}`);
 }
 
 /**
