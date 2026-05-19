@@ -32,6 +32,7 @@ import { fileURLToPath } from 'node:url';
 import { getThinkDir } from './paths.js';
 import { getConfig } from './config.js';
 import { DEFAULT_DAEMON_TCP_PORT } from './daemon-constants.js';
+import { isDaemonRunning } from './daemon-status.js';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -67,6 +68,17 @@ function getDaemonSocketPath(): string {
 
 function getDaemonLogPath(): string {
   return path.join(getThinkDir(), 'daemon.log');
+}
+
+/**
+ * Path to the spawn-mutex lockfile (issue #60).
+ *
+ * Held by a CLI process that is mid-spawn. Concurrent CLI calls inspect this
+ * file (via {@link tryAcquireSpawnLock}) to decide whether to skip spawning
+ * and just wait for the in-progress daemon to come up.
+ */
+function getDaemonSpawnLockPath(): string {
+  return path.join(getThinkDir(), 'daemon.spawn.lock');
 }
 
 /**
@@ -389,6 +401,155 @@ function tryConnect(): Promise<net.Socket> {
 }
 
 // ---------------------------------------------------------------------------
+// Spawn mutex (issue #60)
+//
+// Two concurrent `think` invocations during the ~30s embed-model warmup window
+// would both see the socket unresponsive and both spawn a daemon. Only one wins
+// the bind; the loser would still go through warmup, write its PID file over
+// the winner's, and — in edge cases where bind contention races with socket
+// chmod — could even unlink the winner's socket. Hence the orphan leak.
+//
+// The mutex is a simple atomic O_EXCL lockfile at ~/.think/daemon.spawn.lock
+// containing "<pid>:<timestamp_ms>". A second CLI that arrives during the spawn
+// window sees the lock and skips its spawn step, dropping into the retry loop
+// to wait for the in-flight daemon. Stale locks (holder PID dead, or older than
+// SPAWN_TIMEOUT_MS) are reclaimed.
+// ---------------------------------------------------------------------------
+
+/**
+ * Result of {@link tryAcquireSpawnLock}.
+ *
+ * `acquired` means this caller now owns the lock and must spawn the daemon.
+ * `held-by-other` means another CLI is already spawning; skip the spawn step.
+ */
+type SpawnLockResult =
+  | { kind: 'acquired'; release: () => void }
+  | { kind: 'held-by-other' };
+
+/**
+ * Parse a spawn-lock file's content into pid + timestamp, or null if corrupt.
+ * Format: "<pid>:<timestamp_ms>" — one line.
+ */
+function parseSpawnLock(raw: string): { pid: number; timestampMs: number } | null {
+  const [pidStr, tsStr] = raw.trim().split(':');
+  const pid = parseInt(pidStr ?? '', 10);
+  const timestampMs = parseInt(tsStr ?? '', 10);
+  if (!Number.isFinite(pid) || pid <= 0) return null;
+  if (!Number.isFinite(timestampMs) || timestampMs <= 0) return null;
+  return { pid, timestampMs };
+}
+
+/**
+ * Is a lock stale? A lock is stale when the holder PID is dead OR the
+ * timestamp is older than `staleAfterMs`. Corrupt locks are treated as stale.
+ */
+function isSpawnLockStale(
+  lockPath: string,
+  staleAfterMs: number,
+  now: number = Date.now(),
+): boolean {
+  let raw: string;
+  try {
+    raw = fs.readFileSync(lockPath, 'utf8');
+  } catch (err: unknown) {
+    // ENOENT → no lock exists; treat as "not stale" so callers fall through
+    // to the O_EXCL create path (which will succeed).
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return false;
+    // Unreadable for any other reason — assume stale so we can recover.
+    return true;
+  }
+
+  const parsed = parseSpawnLock(raw);
+  if (parsed === null) return true;
+
+  if (now - parsed.timestampMs > staleAfterMs) return true;
+
+  // PID liveness via kill(pid, 0). ESRCH → dead → stale. EPERM → alive (we
+  // just can't signal it). Any other error → treat as stale to avoid wedging.
+  try {
+    process.kill(parsed.pid, 0);
+    return false; // alive
+  } catch (err: unknown) {
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code === 'EPERM') return false; // alive, just not ours
+    return true; // ESRCH or anything else
+  }
+}
+
+/**
+ * Try to atomically acquire the spawn lock.
+ *
+ * Returns `{ kind: 'acquired', release }` if this caller now owns the lock.
+ * The caller is then responsible for spawning the daemon and calling
+ * `release()` once it has either successfully connected or given up.
+ *
+ * Returns `{ kind: 'held-by-other' }` if another live CLI holds the lock —
+ * the caller should NOT spawn; it should wait in the retry loop for the
+ * holder's daemon to come up.
+ *
+ * @param staleAfterMs Age beyond which a lock is considered stale and reclaimed.
+ *                     Should match SPAWN_TIMEOUT_MS so we never wait longer for
+ *                     a lock than the retry loop is willing to wait for a socket.
+ */
+function tryAcquireSpawnLock(staleAfterMs: number): SpawnLockResult {
+  const lockPath = getDaemonSpawnLockPath();
+  const dir = path.dirname(lockPath);
+  fs.mkdirSync(dir, { recursive: true });
+
+  const content = `${process.pid}:${Date.now()}\n`;
+
+  // Up to two tries: first attempt, then one reclaim-after-stale retry.
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      const fd = fs.openSync(lockPath, 'wx', 0o600);
+      try {
+        fs.writeSync(fd, content);
+      } finally {
+        fs.closeSync(fd);
+      }
+      // We hold the lock. Build the release closure.
+      let released = false;
+      const release = (): void => {
+        if (released) return;
+        released = true;
+        try {
+          // Only unlink if the file is still ours. Best-effort PID check —
+          // if it's already been reclaimed by a stale-sweep, we just leave it.
+          const raw = fs.readFileSync(lockPath, 'utf8');
+          const parsed = parseSpawnLock(raw);
+          if (parsed && parsed.pid === process.pid) {
+            fs.unlinkSync(lockPath);
+          }
+        } catch {
+          // ENOENT or unreadable — nothing to clean up.
+        }
+      };
+      return { kind: 'acquired', release };
+    } catch (err: unknown) {
+      const code = (err as NodeJS.ErrnoException).code;
+      if (code !== 'EEXIST') {
+        // Permission error or full disk — fall back to "held by other" so the
+        // caller waits rather than crashing. The retry loop will surface a
+        // clearer error if the daemon never comes up.
+        return { kind: 'held-by-other' };
+      }
+      // EEXIST: check staleness and possibly reclaim.
+      if (attempt === 0 && isSpawnLockStale(lockPath, staleAfterMs)) {
+        try {
+          fs.unlinkSync(lockPath);
+        } catch {
+          // Lost the reclaim race — another CLI got there first. Treat as held.
+          return { kind: 'held-by-other' };
+        }
+        continue; // retry the create
+      }
+      return { kind: 'held-by-other' };
+    }
+  }
+  return { kind: 'held-by-other' };
+}
+
+// ---------------------------------------------------------------------------
 // Spawn daemon
 // ---------------------------------------------------------------------------
 
@@ -451,10 +612,17 @@ export interface ConnectDaemonOptions {
  *
  * Flow:
  *  1. Try to connect. Success → return.
- *  2. ENOENT / ECONNREFUSED → spawn daemon (or `_spawnOverride`), then retry
- *     with exponential backoff.
- *  3. After 90 s of retries: throw with a pointer to daemon.log.
- *  4. Any other connect error: propagate immediately (don't retry).
+ *  2. ENOENT / ECONNREFUSED → check whether a daemon is already alive
+ *     (PID file) or another CLI is mid-spawn (spawn lock). Spawn only if
+ *     neither is true.
+ *  3. Retry connect with exponential backoff for up to SPAWN_TIMEOUT_MS.
+ *  4. After timeout: throw with a pointer to daemon.log.
+ *  5. Any non-retryable connect error: propagate immediately.
+ *
+ * Issue #60: prior versions spawned a daemon on every cache miss, so two
+ * concurrent CLI calls during the embed-model warmup window both spawned —
+ * producing orphan daemons that ran background loops (compaction queue,
+ * pull loop, embed model) independently of the supervised daemon.
  */
 export async function connectDaemon(
   options: ConnectDaemonOptions = {},
@@ -473,33 +641,60 @@ export async function connectDaemon(
     }
   }
 
-  // Daemon is not running — spawn it.
-  doSpawn();
-
-  // Retry loop with exponential backoff.
-  const deadline = Date.now() + spawnTimeout;
-  let delay = INITIAL_RETRY_DELAY_MS;
-
-  while (Date.now() < deadline) {
-    await new Promise<void>((resolve) => setTimeout(resolve, delay));
-    delay = Math.min(delay * 2, 1000); // cap individual delay at 1 s
-
-    try {
-      const socket = await tryConnect();
-      return new DaemonConnection(socket);
-    } catch (err: unknown) {
-      const code = (err as NodeJS.ErrnoException).code;
-      if (!isRetryableConnectError(code)) {
-        throw err;
+  // Two pre-spawn checks to prevent the orphan-leak race (#60):
+  //   1. PID file says a daemon is alive → it's mid-warmup, just wait for
+  //      its socket. No spawn needed.
+  //   2. Spawn lock says another CLI is already spawning → wait for it.
+  // Only if neither check fires do we spawn ourselves.
+  let lockRelease: (() => void) | null = null;
+  const pidStatus = isDaemonRunning();
+  if (!pidStatus.running) {
+    const lock = tryAcquireSpawnLock(spawnTimeout);
+    if (lock.kind === 'acquired') {
+      lockRelease = lock.release;
+      try {
+        doSpawn();
+      } catch (spawnErr) {
+        // Spawn failed before we even entered the retry loop — release the
+        // lock so subsequent CLIs can try again, then re-throw.
+        lockRelease();
+        throw spawnErr;
       }
-      // Retryable — loop continues until deadline.
     }
+    // else: another CLI is spawning. Fall through to the retry loop.
   }
+  // else: a daemon process exists. Fall through to the retry loop.
 
-  throw new DaemonUnavailableError(
-    `daemon failed to start; check ${getDaemonLogPath()}`,
-    getDaemonLogPath(),
-  );
+  try {
+    // Retry loop with exponential backoff.
+    const deadline = Date.now() + spawnTimeout;
+    let delay = INITIAL_RETRY_DELAY_MS;
+
+    while (Date.now() < deadline) {
+      await new Promise<void>((resolve) => setTimeout(resolve, delay));
+      delay = Math.min(delay * 2, 1000); // cap individual delay at 1 s
+
+      try {
+        const socket = await tryConnect();
+        return new DaemonConnection(socket);
+      } catch (err: unknown) {
+        const code = (err as NodeJS.ErrnoException).code;
+        if (!isRetryableConnectError(code)) {
+          throw err;
+        }
+        // Retryable — loop continues until deadline.
+      }
+    }
+
+    throw new DaemonUnavailableError(
+      `daemon failed to start; check ${getDaemonLogPath()}`,
+      getDaemonLogPath(),
+    );
+  } finally {
+    // Release the spawn lock regardless of success/failure so subsequent CLIs
+    // don't have to wait out staleAfterMs to retry. No-op if we didn't hold it.
+    lockRelease?.();
+  }
 }
 
 // ---------------------------------------------------------------------------
