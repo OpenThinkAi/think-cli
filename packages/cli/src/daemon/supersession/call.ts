@@ -2,15 +2,17 @@
  * Supersession LLM call — AGT-303
  *
  * Calls Claude to determine whether a new retro supersedes, duplicates, or
- * coexists with a set of same-cortex same-kind candidates.
+ * coexists with a set of same-cortex same-kind candidates. Uses a forced
+ * tool_use call so the API enforces output shape server-side.
  *
- * The candidate-pull is the caller's responsibility.  This module only
+ * The candidate-pull is the caller's responsibility. This module only
  * builds the prompt and calls the Anthropic SDK.
  */
 
 // @anthropic-ai/sdk is a direct dep (not just a transitive dep via claude-agent-sdk)
 // because the agent SDK does not re-export the Anthropic class or Message types.
 import Anthropic from '@anthropic-ai/sdk';
+import type { Tool } from '@anthropic-ai/sdk/resources/messages/messages.js';
 import { requireLlmConsent } from '../../lib/llm-consent.js';
 import {
   SUPERSESSION_SYSTEM_PROMPT,
@@ -38,49 +40,60 @@ export interface SupersessionResult {
    * `supersedes` will be empty in this case — callers MUST NOT delete
    * any candidate when `isDuplicate` is true.
    *
-   * The LLM JSON schema uses `is_duplicate` (snake_case) — the parser
+   * The tool input_schema uses `is_duplicate` (snake_case) — the parser
    * maps it to this camelCase field on the way out.
    */
   isDuplicate: boolean;
 }
 
 // ---------------------------------------------------------------------------
+// Constants
+// ---------------------------------------------------------------------------
+
+const MODEL = 'claude-haiku-4-5';
+const MAX_TOKENS = 300;
+const TEMPERATURE = 0.1;
+
+const SUPERSESSION_TOOL: Tool = {
+  name: 'submit_supersession',
+  description:
+    'Submit the supersession judgment: which candidates the new retro replaces, topic tags, and a duplicate flag.',
+  input_schema: {
+    type: 'object',
+    properties: {
+      supersedes: {
+        type: 'array',
+        items: { type: 'string' },
+        description: 'Candidate ids the new retro replaces. Must be empty when is_duplicate is true.',
+      },
+      topics: {
+        type: 'array',
+        items: { type: 'string' },
+        description: '1–4 short lowercase topic tags.',
+      },
+      is_duplicate: {
+        type: 'boolean',
+        description: 'True when the new retro is essentially a duplicate of an existing candidate.',
+      },
+    },
+    required: ['supersedes', 'topics', 'is_duplicate'],
+  },
+};
+
+// ---------------------------------------------------------------------------
 // Internal helpers
 // ---------------------------------------------------------------------------
 
-/**
- * Strip optional markdown code fences (```json or ```) from a string.
- * Applied before JSON.parse so that models that occasionally wrap their
- * output still produce valid results.
- */
-function stripFences(text: string): string {
-  return text
-    .replace(/^```(?:json)?\s*\n?/, '')
-    .replace(/\n?```\s*$/, '')
-    .trim();
-}
-
-function parseSupersessionResponse(text: string): SupersessionResult {
-  const cleaned = stripFences(text);
-  let raw: unknown;
-  try {
-    raw = JSON.parse(cleaned) as unknown;
-  } catch (err) {
-    throw new Error(
-      `Supersession JSON parse failed. Raw (${text.length} chars): "${text.slice(0, 300)}"`,
-      { cause: err },
-    );
+function parseSupersessionToolInput(input: unknown): SupersessionResult {
+  if (!input || typeof input !== 'object') {
+    throw new Error('Supersession tool_use.input is not an object');
   }
-  if (!raw || typeof raw !== 'object') {
-    throw new Error('Supersession response is not a JSON object');
-  }
-  const obj = raw as Record<string, unknown>;
+  const obj = input as Record<string, unknown>;
 
-  // LLM JSON key is snake_case; map to camelCase on the way out.
   const isDuplicate = typeof obj.is_duplicate === 'boolean' ? obj.is_duplicate : false;
 
   // When isDuplicate is true, callers must NOT delete any candidate —
-  // treat it as a skip-storage-only result.  Enforce here rather than
+  // treat it as a skip-storage-only result. Enforce here rather than
   // relying on callers to read the JSDoc.
   const supersedes = isDuplicate
     ? []
@@ -98,11 +111,13 @@ function parseSupersessionResponse(text: string): SupersessionResult {
   return { supersedes, topics, isDuplicate };
 }
 
-function extractText(response: Anthropic.Message): string {
+function extractToolUseInput(response: Anthropic.Message): unknown {
   for (const block of response.content) {
-    if (block.type === 'text') return block.text;
+    if (block.type === 'tool_use' && block.name === SUPERSESSION_TOOL.name) {
+      return block.input;
+    }
   }
-  return '';
+  return null;
 }
 
 // ---------------------------------------------------------------------------
@@ -112,19 +127,14 @@ function extractText(response: Anthropic.Message): string {
 /**
  * Run the supersession check for a new retro against a set of candidates.
  *
- * Uses `claude-sonnet-4-6` with `temperature: 0.1` (classification task) and
- * a cached system prompt (`cache_control: { type: "ephemeral" }`). alpha.11
- * switched this to Haiku 4.5 alongside compaction for cost containment, but
- * alpha.13 reverts after a real-corpus test showed Haiku's output failed
- * downstream JSON validation 100% of the time on the compaction prompt; we
- * revert supersession in lockstep to keep the LLM model surface uniform
- * until both prompts have been re-engineered for smaller-model conformance.
- * Strips markdown code fences before JSON.parse to handle models that wrap
- * output. Retries once on parse failure (recovers from transient
- * non-determinism; systematic failures will still fail on the second attempt).
+ * Uses Haiku 4.5 with forced tool_use so the API enforces output shape
+ * server-side. alpha.11 tried Haiku with freeform JSON and hit 100% downstream
+ * parse failures (reverted in alpha.13); this iteration moves to tool_use so
+ * structural conformance is no longer the model's job. Retries once on a
+ * missing tool_use block (transient non-determinism).
  *
- * `max_tokens: 300` is sized for compact JSON output. If the candidate count
- * is ever raised significantly (> ~20 long IDs), revisit this limit.
+ * `max_tokens: 300` is sized for the compact tool input. If the candidate
+ * count is ever raised significantly (> ~20 long IDs), revisit this limit.
  *
  * The caller is responsible for fetching the candidate list (filter by
  * `kind = 'retro'` AND same cortex via vector search) before calling this.
@@ -143,9 +153,9 @@ export async function runSupersession(
 
   const callClaude = (): Promise<Anthropic.Message> =>
     client.messages.create({
-      model: 'claude-sonnet-4-6',
-      temperature: 0.1,
-      max_tokens: 300,
+      model: MODEL,
+      temperature: TEMPERATURE,
+      max_tokens: MAX_TOKENS,
       system: [
         {
           type: 'text',
@@ -153,6 +163,12 @@ export async function runSupersession(
           cache_control: { type: 'ephemeral' },
         },
       ],
+      tools: [SUPERSESSION_TOOL],
+      tool_choice: {
+        type: 'tool',
+        name: SUPERSESSION_TOOL.name,
+        disable_parallel_tool_use: true,
+      },
       messages,
     });
 
@@ -160,28 +176,30 @@ export async function runSupersession(
   const response = await callClaude();
   if (response.stop_reason === 'max_tokens') {
     throw new Error(
-      'Supersession response truncated at max_tokens=300 — increase budget or reduce candidate count',
+      `Supersession response truncated at max_tokens=${MAX_TOKENS} — increase budget or reduce candidate count`,
     );
   }
-  const rawText = extractText(response);
-
-  try {
-    return parseSupersessionResponse(rawText);
-  } catch (firstErr) {
-    // Retry once on transient parse failure (non-deterministic model output).
-    // Fence stripping handles systematic wrapping; this retry is a last resort
-    // for genuinely transient failures.
-    console.warn(
-      `[supersession] parse failed on attempt 1, retrying — raw (${rawText.length} chars): "${rawText.slice(0, 200)}"`,
-      firstErr,
-    );
-    const retryResponse = await callClaude();
-    if (retryResponse.stop_reason === 'max_tokens') {
-      throw new Error(
-        'Supersession response truncated at max_tokens=300 — increase budget or reduce candidate count',
-      );
+  const toolInput = extractToolUseInput(response);
+  if (toolInput !== null) {
+    try {
+      return parseSupersessionToolInput(toolInput);
+    } catch (firstErr) {
+      console.warn(`[supersession] parse failed on attempt 1, retrying`, firstErr);
     }
-    const retryText = extractText(retryResponse);
-    return parseSupersessionResponse(retryText);
+  } else {
+    console.warn('[supersession] no tool_use block on attempt 1, retrying');
   }
+
+  // Retry once on missing or unparseable tool_use (transient non-determinism).
+  const retryResponse = await callClaude();
+  if (retryResponse.stop_reason === 'max_tokens') {
+    throw new Error(
+      `Supersession response truncated at max_tokens=${MAX_TOKENS} — increase budget or reduce candidate count`,
+    );
+  }
+  const retryToolInput = extractToolUseInput(retryResponse);
+  if (retryToolInput === null) {
+    throw new Error('Supersession response missing tool_use block after retry');
+  }
+  return parseSupersessionToolInput(retryToolInput);
 }

@@ -2,15 +2,16 @@
  * Compaction SDK call — AGT-298
  *
  * Wraps the Anthropic SDK `messages.create` call for the compaction worker.
- * Uses a cached system prompt (cache_control: ephemeral), parses the JSON
- * response, validates the shape, and retries once on any invalid response.
+ * Uses a cached system prompt (cache_control: ephemeral) and a forced tool_use
+ * call so the API enforces the JSON output shape server-side. Retries once on
+ * any invalid response.
  *
  * Network errors (5xx, rate limit) are NOT caught here — they bubble up to
  * the queue layer (AGT-299) for retry with backoff.
  */
 
 import Anthropic from '@anthropic-ai/sdk';
-import type { TextBlockParam } from '@anthropic-ai/sdk/resources/messages/messages.js';
+import type { TextBlockParam, Tool } from '@anthropic-ai/sdk/resources/messages/messages.js';
 import {
   COMPACTION_SYSTEM_PROMPT,
   buildCompactionMessages,
@@ -38,9 +39,9 @@ export interface CompactionSuccess {
 
 /**
  * Returned when the model response is unusable after one retry. Covers three
- * distinct failure modes: JSON parse error, schema validation failure, and
- * empty response.content (no text block). The queue (AGT-299) marks the
- * entry as compaction-skipped (AGT-304) on receiving this.
+ * distinct failure modes: no tool_use block, schema validation failure
+ * (e.g. empty compacted_text), or empty topics array. The queue (AGT-299)
+ * marks the entry as compaction-skipped (AGT-304) on receiving this.
  */
 export interface CompactionResponseInvalid {
   status: 'response_invalid';
@@ -52,27 +53,50 @@ export type CompactionResult = CompactionSuccess | CompactionResponseInvalid;
 // Constants
 // ---------------------------------------------------------------------------
 
-// Compaction model. Sonnet 4.6 — alpha.11 switched this to Haiku 4.5 for
-// cost containment, alpha.13 reverts after a real-corpus test showed Haiku
-// returns content that fails `validateShape` 100% of the time on this prompt.
-// The Haiku response did not conform to the JSON schema even after a retry,
-// every entry hit the `permanently_skipped` (content-fault) sentinel, and
-// the cost saving turned into pure waste. Revisit Haiku only after the prompt
-// has been re-engineered for smaller-model output conformance (e.g. tool_use
-// for forced JSON), or a per-model output validator that tolerates Haiku's
-// quirks.
-const MODEL = 'claude-sonnet-4-6';
+// Compaction model. Haiku 4.5 — alpha.11 tried Haiku with freeform JSON and
+// hit 100% validateShape failures (reverted in alpha.13). This iteration uses
+// forced tool_use with a server-validated input_schema so structural conformance
+// is no longer the model's job. validateShape() remains as a belt-and-braces
+// check for business rules (non-empty compacted_text, non-empty topics).
+const MODEL = 'claude-haiku-4-5';
 const MAX_TOKENS = 600;
 const TEMPERATURE = 0.2;
+
+const COMPACTION_TOOL: Tool = {
+  name: 'submit_compaction',
+  description:
+    'Submit the compacted entry, list of superseded entry ids, and topic tags.',
+  input_schema: {
+    type: 'object',
+    properties: {
+      compacted_text: {
+        type: 'string',
+        description: 'One-line self-contained rewrite of the new entry.',
+      },
+      supersedes: {
+        type: 'array',
+        items: { type: 'string' },
+        description: 'IDs of context entries that the new entry replaces.',
+      },
+      topics: {
+        type: 'array',
+        items: { type: 'string' },
+        description: '1–4 short lowercase topic tags.',
+      },
+    },
+    required: ['compacted_text', 'supersedes', 'topics'],
+  },
+};
 
 // ---------------------------------------------------------------------------
 // Response shape validation
 // ---------------------------------------------------------------------------
 
 /**
- * Validate that a parsed value matches the expected compaction result shape.
- * Hand-rolled — zod would add dep weight for a three-field schema (see ticket
- * comment re: tool_use migration in a future stable iteration).
+ * Validate business rules on tool_use.input. The API has already enforced the
+ * structural shape via input_schema; this only catches semantic problems an
+ * input_schema can't express (empty compacted_text → data loss if caller
+ * deletes superseded entries).
  *
  * Returns the typed result or null on failure.
  */
@@ -81,8 +105,6 @@ function validateShape(parsed: unknown): CompactionSuccess | null {
 
   const obj = parsed as Record<string, unknown>;
 
-  // compacted_text must be a non-empty string — an empty string produces data
-  // loss if the caller deletes the entries named in supersedes.
   if (typeof obj.compacted_text !== 'string' || obj.compacted_text.trim() === '') return null;
   if (!Array.isArray(obj.supersedes)) return null;
   if (!obj.supersedes.every((s) => typeof s === 'string')) return null;
@@ -119,31 +141,21 @@ async function attemptCompaction(
     max_tokens: MAX_TOKENS,
     temperature: TEMPERATURE,
     system: [systemBlock],
+    tools: [COMPACTION_TOOL],
+    tool_choice: {
+      type: 'tool',
+      name: COMPACTION_TOOL.name,
+      disable_parallel_tool_use: true,
+    },
     messages,
   });
 
-  // Extract the first text content block.
-  const textBlock = response.content.find((b): b is Anthropic.TextBlock => b.type === 'text');
-  if (!textBlock) return null;
+  const toolUse = response.content.find(
+    (b): b is Anthropic.ToolUseBlock => b.type === 'tool_use' && b.name === COMPACTION_TOOL.name,
+  );
+  if (!toolUse) return null;
 
-  // Strip optional markdown code fences before JSON.parse. Mirrors the
-  // supersession path's `stripFences`. Models — even Sonnet — occasionally
-  // wrap structured output in ``` despite the system prompt's "no code
-  // fences" instruction; tolerating it costs nothing and prevents a
-  // legitimate response from being marked `response_invalid`.
-  const cleaned = textBlock.text
-    .replace(/^```(?:json)?\s*\n?/, '')
-    .replace(/\n?```\s*$/, '')
-    .trim();
-
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(cleaned);
-  } catch {
-    return null;
-  }
-
-  return validateShape(parsed);
+  return validateShape(toolUse.input);
 }
 
 // ---------------------------------------------------------------------------
@@ -154,8 +166,8 @@ async function attemptCompaction(
  * Run the compaction call against the Anthropic API.
  *
  * - Enforces LLM consent gate before any network call.
- * - On any invalid response (no text block, JSON parse error, schema
- *   validation failure): retries once with the identical prompt.
+ * - On any invalid response (no tool_use block or business-rule failure):
+ *   retries once with the identical prompt.
  * - On second failure: returns `{ status: "response_invalid" }`.
  * - Network errors (5xx, rate limit) bubble up to the caller unchanged.
  *
@@ -170,11 +182,9 @@ export async function runCompaction(
 
   const client = new Anthropic();
 
-  // First attempt
   const first = await attemptCompaction(client, newEntry, candidates);
   if (first !== null) return first;
 
-  // Single retry on any invalid response
   const second = await attemptCompaction(client, newEntry, candidates);
   if (second !== null) return second;
 
