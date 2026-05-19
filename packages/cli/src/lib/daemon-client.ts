@@ -452,8 +452,11 @@ function isSpawnLockStale(
   try {
     raw = fs.readFileSync(lockPath, 'utf8');
   } catch (err: unknown) {
-    // ENOENT → no lock exists; treat as "not stale" so callers fall through
-    // to the O_EXCL create path (which will succeed).
+    // ENOENT here means the file vanished between the caller's O_EXCL EEXIST
+    // and our readFileSync (very tight TOCTOU window). Return false ("not
+    // stale") so the caller does NOT attempt to unlink — the file is already
+    // gone, and the caller returns `held-by-other`, letting the retry loop
+    // pick up whichever daemon is coming up. Conservative and safe.
     if ((err as NodeJS.ErrnoException).code === 'ENOENT') return false;
     // Unreadable for any other reason — assume stale so we can recover.
     return true;
