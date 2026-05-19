@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.0.1] — 2026-05-19
+
+### Fixed
+- **`UserPromptSubmit` hook no longer SyntaxErrors at line 2** — Claude Code emitted `UserPromptSubmit hook error … :2` on every prompt for many users. Root cause: the bundled `dist/hooks/user-prompt-submit.js` had TWO shebangs. The source file started with `#!/usr/bin/env node`, and tsup's `banner.js` config prepends `#!/usr/bin/env node --no-warnings=ExperimentalWarning` on top of that. Node parses the FIRST shebang as a shebang line, then hits the SECOND `#!` on line 2 — which is a SyntaxError under ESM. The hook crashed before any logic ran. Fix: remove the source-file shebang from `src/hooks/user-prompt-submit.ts`; the tsup banner is the canonical shebang and is already correct. After upgrading, the hook loads cleanly and writes either `additionalContext` (when recall returns hits) or `{}` (fail-open).
+- **Script-detection guard hardened to handle symlinked paths.** The same hook entry's `if (fileURLToPath(import.meta.url) === process.argv[1])` guard would silently fail when either path traversed a symlink (e.g. macOS `/tmp` → `/private/tmp`, or any nvm-global setup where the binary lives behind a `lib/` symlink). `main()` was never invoked in those cases, the script exited 0 with no output, and Claude Code surfaced it as the same `:2` error. Both sides are now `fs.realpathSync`-normalized before comparison — same idiom as the `daemon/index.ts` fix in alpha.7. Together with the shebang fix this closes the entire family of "hook script silently misbehaves on macOS" failures.
+
+---
+
 ## [1.0.0] — 2026-05-19
 
 The v3 architecture — vector recall, write-time compaction, and a resident daemon — graduates from alpha to stable. Same code path as `1.0.0-alpha.14`, dropping the prerelease suffix and flipping the npm `latest` tag from `0.6.12` to `1.0.0`.

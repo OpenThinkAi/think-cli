@@ -1,4 +1,3 @@
-#!/usr/bin/env node
 /**
  * Claude Code `UserPromptSubmit` hook — AGT-312
  *
@@ -44,6 +43,7 @@
  * When workspace-scoped recall lands (future AGT), wire `cwd` through here.
  */
 
+import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { connectDaemon } from '../lib/daemon-client.js';
 import type { RecallEntry } from '../daemon/recall.js';
@@ -223,9 +223,24 @@ export async function main(
 // Claude Code (or the shell), not on every module import (e.g. during tests).
 //
 // ESM has no `require.main === module` equivalent. The canonical guard is
-// comparing import.meta.url against the resolved path of process.argv[1].
+// comparing import.meta.url against the resolved path of process.argv[1] —
+// but `fs.realpathSync` is required on BOTH sides because macOS resolves
+// symlinks (e.g. `/tmp` → `/private/tmp`) in `import.meta.url` while leaving
+// `process.argv[1]` unresolved. A direct string compare silently fails for
+// the same physical file when either path traverses a symlink, which makes
+// the hook a no-op (and Claude Code surfaces the empty/failed response as
+// "UserPromptSubmit hook error … :2"). Same idiom as `daemon/index.ts`
+// auto-execute block (fix shipped in alpha.7).
 // ---------------------------------------------------------------------------
-if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
+let _invokedAsScript = false;
+if (process.argv[1]) {
+  try {
+    _invokedAsScript = fs.realpathSync(process.argv[1]) === fs.realpathSync(fileURLToPath(import.meta.url));
+  } catch {
+    // If realpath fails (path missing, perms), assume not script-invoked.
+  }
+}
+if (_invokedAsScript) {
   main().catch(() => {
     // Catch-all: any unhandled rejection — fail open, don't crash Claude Code.
     writeEmpty();
