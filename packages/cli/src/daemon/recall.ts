@@ -164,8 +164,10 @@ export interface RecallEntry {
    */
   compacted_from: string[] | null;
   /**
-   * The set of entry IDs this entry supersedes. For compacted memories,
-   * equals compacted_from. For retros, populated by the supersession worker.
+   * The set of entry IDs this entry supersedes.
+   * For compacted memory entries, equals `compacted_from`.
+   * For retros, this field is always `[]` — retro supersession is tracked via
+   * `memories.superseded_by` and is not yet surfaced in the recall response.
    * Always an array (empty when not applicable).
    */
   supersedes: string[];
