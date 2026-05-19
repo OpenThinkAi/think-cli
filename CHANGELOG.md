@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.0.0-alpha.12] — 2026-05-18
+
+### Fixed
+- **Engrams→index consolidation prompt now works on macOS zsh** — on alpha.11, pressing Enter at the "Press Enter to consolidate, or Ctrl-C to cancel:" prompt was silently treated as a cancellation, causing the prompt to re-fire on every subsequent `think` invocation and the consolidation to never happen. Root cause: `fs.readSync(0, …)` throws `EAGAIN` (errno -35) on macOS when npm or the shell puts stdin into non-blocking mode before the process starts; the catch block treated any throw as Ctrl-C. The fix reads confirmation from `/dev/tty` (the controlling terminal) via `execSync('head -n 1 < /dev/tty')` instead — `/dev/tty` is always in canonical blocking mode regardless of what has been done to stdin, so Enter is reliably accepted and only a real Ctrl-C (SIGINT) is treated as cancellation.
+
+---
+
 ## [1.0.0-alpha.11] — 2026-05-18
 
 ### Changed

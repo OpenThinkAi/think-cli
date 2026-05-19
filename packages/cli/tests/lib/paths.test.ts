@@ -14,7 +14,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { mkdtempSync, rmSync, mkdirSync, writeFileSync, existsSync, readdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import fs from 'node:fs';
+import childProcess from 'node:child_process';
 
 // ---------------------------------------------------------------------------
 // Helper: produce a fresh tmp THINK_HOME for each test.
@@ -55,7 +55,7 @@ describe('maybeMigrateEngramsToIndex', () => {
     rmSync(thinkHome, { recursive: true, force: true });
   });
 
-  // ── helper: create dirs and stub fs.readSync to simulate Enter ────────────
+  // ── helper: create dirs and stub _waitForUserConfirmation to simulate Enter ─
 
   function seedBothDirs(files: { engrams: string[]; index: string[] } = { engrams: ['a.db'], index: [] }): { oldDir: string; newDir: string } {
     const oldDir = join(thinkHome, 'engrams');
@@ -67,23 +67,27 @@ describe('maybeMigrateEngramsToIndex', () => {
     return { oldDir, newDir };
   }
 
-  // Stub fs.readSync(0, ...) to simulate the user pressing Enter (newline byte).
-  function stubReadSyncEnter(): ReturnType<typeof vi.spyOn> {
-    return vi.spyOn(fs, 'readSync').mockImplementation(
-      (fd, buf, offset, length, _position) => {
-        if (fd === 0) {
-          (buf as Buffer)[offset as number] = 10; // '\n'
-          return 1;
+  // Stub childProcess.execSync to simulate the user pressing Enter.
+  // The real implementation spawns `head -n 1 < /dev/tty` via childProcess.execSync;
+  // we bypass that in tests so the suite doesn't require an interactive TTY.
+  // Because paths.ts imports `childProcess` as the default export object and
+  // calls `childProcess.execSync(...)`, spying on that property intercepts the
+  // call regardless of module caching — same pattern the old fs.readSync stub used.
+  function stubExecSyncEnter(): ReturnType<typeof vi.spyOn> {
+    return vi.spyOn(childProcess, 'execSync').mockImplementation(
+      (cmd: string, ..._args: unknown[]) => {
+        if (typeof cmd === 'string' && cmd.includes('/dev/tty')) {
+          return Buffer.alloc(0); // simulate Enter: return without throwing
         }
-        // Delegate other fds to the real implementation (shouldn't be needed in tests).
-        return fs.readSync(fd, buf as Buffer, offset as number, length as number, _position);
+        // Delegate other execSync calls (shouldn't occur in these tests).
+        return (childProcess.execSync as (...a: unknown[]) => Buffer)(cmd, ..._args);
       }
     );
   }
 
   it('both dirs exist + TTY → consolidates engrams/ into index/ and removes engrams/', async () => {
     const { oldDir, newDir } = seedBothDirs({ engrams: ['cortex-a.db', 'cortex-b.db'], index: [] });
-    const readSyncStub = stubReadSyncEnter();
+    const execSyncStub = stubExecSyncEnter();
 
     // Simulate a TTY stdin.
     const origIsTTY = process.stdin.isTTY;
@@ -93,7 +97,7 @@ describe('maybeMigrateEngramsToIndex', () => {
     maybeMigrateEngramsToIndex();
 
     Object.defineProperty(process.stdin, 'isTTY', { value: origIsTTY, configurable: true });
-    readSyncStub.mockRestore();
+    execSyncStub.mockRestore();
 
     expect(existsSync(oldDir)).toBe(false);
     expect(existsSync(join(newDir, 'cortex-a.db'))).toBe(true);
@@ -125,7 +129,7 @@ describe('maybeMigrateEngramsToIndex', () => {
       engrams: ['cortex-shared.db', 'cortex-new.db'],
       index: ['cortex-shared.db'],
     });
-    const readSyncStub = stubReadSyncEnter();
+    const execSyncStub = stubExecSyncEnter();
 
     const origIsTTY = process.stdin.isTTY;
     Object.defineProperty(process.stdin, 'isTTY', { value: true, configurable: true });
@@ -134,7 +138,7 @@ describe('maybeMigrateEngramsToIndex', () => {
     maybeMigrateEngramsToIndex();
 
     Object.defineProperty(process.stdin, 'isTTY', { value: origIsTTY, configurable: true });
-    readSyncStub.mockRestore();
+    execSyncStub.mockRestore();
 
     // engrams/ should be removed.
     expect(existsSync(oldDir)).toBe(false);
