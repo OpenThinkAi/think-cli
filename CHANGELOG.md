@@ -1,5 +1,24 @@
 # Changelog
 
+## [1.0.3] — 2026-05-19
+
+### Changed
+- **Compaction + supersession moved to `claude-haiku-4-5` via forced tool_use.** alpha.11 tried Haiku for these two sites with freeform JSON output and hit 100% `validateShape` rejection (reverted in alpha.13 back to `claude-sonnet-4-6`). This release retries the Haiku swap with a different shape contract: each call now declares a `submit_compaction` / `submit_supersession` tool with a full `input_schema`, and `tool_choice: { type: 'tool', name: ..., disable_parallel_tool_use: true }` forces the model to call it. The Anthropic API enforces the schema server-side, so structural conformance is no longer the model's job. `validateShape` (compaction) and `parseSupersessionToolInput` (supersession) remain as belt-and-braces for business rules that an input_schema can't express: non-empty `compacted_text`, the `is_duplicate → empty supersedes` invariant, the topics cap at 4. Smoke test on personal corpus showed 13/13 compactions completing cleanly with synthesized fold-entries showing real narrative awareness, vs. the 100% permanent-skip rate of alpha.11.
+- **Three lower-frequency LLM call sites also switched to `claude-haiku-4-5`.** These were drop-in model swaps — output is freeform prose or lenient classification with no strict JSON contract that would bite Haiku:
+  - `lib/claude.ts` `generateSummary` — weekly 1:1 work-log markdown summary
+  - `lib/curator.ts` `runConsolidation` — narrative consolidation of aging memories
+  - `lib/retro-curator.ts` `runRetroDedupe` — binary equivalence classification (bad-parse already skips, no data-loss risk)
+
+### Unchanged
+- **`lib/curator.ts` `runCuration` stays on `claude-sonnet-4-6`.** The main curator decision loop synthesizes across a 50k-char context window of memories + long-term events + pending engrams and emits a multi-field structured output (`memories[]`, `purge_ids[]`, `long_term_events[]`). Reasoning depth is the limiting factor, not output shape; Haiku has not been validated for this kind of multi-stage long-context judgment in this codebase.
+- **`commands/long-term.ts` `runBackfillBatch` stays on `claude-sonnet-4-6`.** Bulk historical curation that emits durable long-term events. Low frequency (one-time / on-demand) and high stakes (durable writes), so the cost-saving math doesn't justify the model change.
+
+### Upgrade notes
+- **Behavior change, not interface change.** No code that calls the affected modules needs to update. The `CompactionResult` / `SupersessionResult` types are unchanged.
+- **Daemon must have `ANTHROPIC_API_KEY` in its env.** Unchanged from prior releases, but worth re-stating: the daemon process inherits env at spawn time. If your shell exports `ANTHROPIC_API_KEY` only conditionally (e.g. via a wrapper function), restart the daemon under that wrapper so it picks up the key.
+
+---
+
 ## [1.0.2] — 2026-05-19
 
 ### Fixed
