@@ -1,5 +1,6 @@
 import path from 'node:path';
 import fs from 'node:fs';
+import childProcess from 'node:child_process';
 
 function getHome(): string {
   const home = process.env.HOME;
@@ -66,6 +67,7 @@ export function getCuratorMdPath(): string {
 
 /** Module-level guard so the migration check runs at most once per process. */
 let _migrationChecked = false;
+
 
 /**
  * Consolidate engrams/ → index/ when both directories exist and the session
@@ -177,15 +179,32 @@ export function maybeMigrateEngramsToIndex(): void {
   process.stderr.write('\n');
   process.stderr.write(`Press Enter to consolidate, or Ctrl-C to cancel: `);
 
-  // Synchronous stdin read — blocks until the user presses Enter (or Ctrl-C).
-  // We do NOT make ensureThinkDirs async because that would ripple through
-  // dozens of call sites; sync stdin read is the right pattern here.
-  const buf = Buffer.alloc(64);
+  // Read confirmation from /dev/tty rather than stdin (fd 0).
+  //
+  // Why not fs.readSync(0, ...)?  On macOS, npm and the shell commonly put
+  // the inherited stdin fd into O_NONBLOCK mode before the process starts.
+  // fs.readSync then throws EAGAIN (errno -35) immediately, which the old
+  // catch block treated as cancellation — so pressing Enter was reported as
+  // "consolidation cancelled." on every invocation.
+  //
+  // /dev/tty is the controlling terminal, always available in an interactive
+  // shell regardless of what has been done to stdin.  We use `execSync` with
+  // `head -n 1 < /dev/tty` to read exactly one line in canonical mode (the
+  // user's terminal driver handles echo and line-editing) and discard the
+  // output.  Ctrl-C sends SIGINT to the child, causing execSync to throw a
+  // SpawnError with signal === 'SIGINT' — the catch below handles that as
+  // real cancellation.  No user input flows into the shell command string, so
+  // there is no injection risk.
+  //
+  // We do NOT make ensureThinkDirs async; the one-shot process-spawn cost is
+  // acceptable for this interactive, one-time-per-install migration prompt.
   try {
-    fs.readSync(0, buf, 0, buf.length, null);
+    childProcess.execSync('head -n 1 < /dev/tty > /dev/null', {
+      stdio: ['inherit', 'inherit', 'inherit'],
+      shell: '/bin/sh',
+    });
   } catch {
-    // readSync on stdin can throw on some platforms when stdin is already
-    // closed or signaled; treat as cancellation.
+    // Real cancellation: Ctrl-C → SIGINT → execSync throws.
     process.stderr.write('\nthink: consolidation cancelled.\n');
     return;
   }
