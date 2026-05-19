@@ -21,6 +21,9 @@ import {
 import {
   mkdtempSync,
   rmSync,
+  writeFileSync,
+  existsSync,
+  readFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -348,3 +351,169 @@ describe('connectDaemon — SPAWN_TIMEOUT_MS is >= 60s', () => {
     expect(SPAWN_TIMEOUT_MS).toBeGreaterThanOrEqual(60_000);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Tests: spawn-race protection (issue #60)
+//
+// Two concurrent CLI invocations during the embed-model warmup window must
+// NOT both spawn a daemon. The fix layers two checks before doSpawn():
+//   1. PID file says a daemon is already alive → skip spawn.
+//   2. Spawn lockfile says another CLI is mid-spawn → skip spawn.
+// ---------------------------------------------------------------------------
+
+describe.skipIf(process.platform === 'win32')(
+  'connectDaemon — spawn-race protection (#60)',
+  () => {
+    let thinkHome: string;
+    let originalThinkHome: string | undefined;
+    let echoServer: { close: () => Promise<void> } | null = null;
+
+    beforeEach(() => {
+      originalThinkHome = process.env.THINK_HOME;
+      thinkHome = tmpThinkHome();
+      process.env.THINK_HOME = thinkHome;
+    });
+
+    afterEach(async () => {
+      if (echoServer) {
+        await echoServer.close().catch(() => {});
+        echoServer = null;
+      }
+      if (originalThinkHome === undefined) delete process.env.THINK_HOME;
+      else process.env.THINK_HOME = originalThinkHome;
+      rmSync(thinkHome, { recursive: true, force: true });
+    });
+
+    it('skips spawn when a live daemon PID file already exists', async () => {
+      // Simulate a daemon mid-warmup: PID file written by daemon, socket not
+      // yet bound. The PID points at our own process so kill(pid, 0) reports
+      // alive — that's exactly what isDaemonRunning() would see for a peer
+      // daemon process that's still warming up.
+      const pidPath = join(thinkHome, 'daemon.pid');
+      writeFileSync(pidPath, `${process.pid}\n`, { mode: 0o600 });
+
+      const { connectDaemon } = await import('../../src/lib/daemon-client.js');
+
+      let spawnCallCount = 0;
+      const socketPath = join(thinkHome, 'daemon.sock');
+
+      // _spawnOverride increments a counter so the test can assert it was
+      // NOT called. After the lock check we bind the echo server directly
+      // (simulating the in-flight daemon binding its socket) so the retry
+      // loop succeeds.
+      const spawnOverride = (): void => {
+        spawnCallCount++;
+      };
+      // Start the echo server after a short delay to mimic the in-flight
+      // daemon finally binding its socket.
+      setTimeout(async () => {
+        echoServer = await startEchoServer(socketPath).catch(() => null) as typeof echoServer;
+      }, 100);
+
+      const client = await connectDaemon({ _spawnOverride: spawnOverride });
+      try {
+        const result = await client.call('ping', {});
+        expect(result).toMatchObject({ echo: 'ping' });
+        expect(spawnCallCount).toBe(0);
+      } finally {
+        client.close();
+      }
+    }, 10_000);
+
+    it('skips spawn when another CLI holds the spawn lock', async () => {
+      // Simulate another CLI mid-spawn: write a spawn lock pointing at a
+      // live PID (our own) with a current timestamp.
+      const lockPath = join(thinkHome, 'daemon.spawn.lock');
+      writeFileSync(lockPath, `${process.pid}:${Date.now()}\n`, { mode: 0o600 });
+
+      const { connectDaemon } = await import('../../src/lib/daemon-client.js');
+      const socketPath = join(thinkHome, 'daemon.sock');
+
+      let spawnCallCount = 0;
+      const spawnOverride = (): void => {
+        spawnCallCount++;
+      };
+      // The "other CLI's" daemon eventually binds.
+      setTimeout(async () => {
+        echoServer = await startEchoServer(socketPath).catch(() => null) as typeof echoServer;
+      }, 100);
+
+      const client = await connectDaemon({ _spawnOverride: spawnOverride });
+      try {
+        const result = await client.call('ping', {});
+        expect(result).toMatchObject({ echo: 'ping' });
+        expect(spawnCallCount).toBe(0);
+      } finally {
+        client.close();
+      }
+    }, 10_000);
+
+    it('reclaims a stale spawn lock (dead holder PID) and spawns', async () => {
+      // PID 1 is init (always alive) — use a clearly-dead PID instead. Picking
+      // a high PID minimizes the chance of collision with a real process on
+      // CI runners; if it happens to be taken, kill(pid, 0) returning EPERM
+      // would treat it as alive and this test would (correctly) fail loudly.
+      const deadPid = 999_999;
+      const lockPath = join(thinkHome, 'daemon.spawn.lock');
+      writeFileSync(lockPath, `${deadPid}:${Date.now()}\n`, { mode: 0o600 });
+
+      const { connectDaemon } = await import('../../src/lib/daemon-client.js');
+      const socketPath = join(thinkHome, 'daemon.sock');
+
+      let spawnCallCount = 0;
+      const spawnOverride = (): void => {
+        spawnCallCount++;
+        setTimeout(async () => {
+          echoServer = await startEchoServer(socketPath).catch(() => null) as typeof echoServer;
+        }, 50);
+      };
+
+      const client = await connectDaemon({ _spawnOverride: spawnOverride });
+      try {
+        const result = await client.call('ping', {});
+        expect(result).toMatchObject({ echo: 'ping' });
+        expect(spawnCallCount).toBe(1);
+      } finally {
+        client.close();
+      }
+    }, 10_000);
+
+    it('releases its own spawn lock after a successful connect', async () => {
+      const { connectDaemon } = await import('../../src/lib/daemon-client.js');
+      const socketPath = join(thinkHome, 'daemon.sock');
+      const lockPath = join(thinkHome, 'daemon.spawn.lock');
+
+      const spawnOverride = (): void => {
+        // The lock should exist *during* spawn — verify mid-flight.
+        expect(existsSync(lockPath)).toBe(true);
+        const raw = readFileSync(lockPath, 'utf8');
+        expect(raw.startsWith(`${process.pid}:`)).toBe(true);
+        setTimeout(async () => {
+          echoServer = await startEchoServer(socketPath).catch(() => null) as typeof echoServer;
+        }, 50);
+      };
+
+      const client = await connectDaemon({ _spawnOverride: spawnOverride });
+      try {
+        await client.call('ping', {});
+        // After connectDaemon resolves, the lock must be gone so subsequent
+        // CLI calls don't have to wait for it to expire.
+        expect(existsSync(lockPath)).toBe(false);
+      } finally {
+        client.close();
+      }
+    }, 10_000);
+
+    it('releases the spawn lock when the spawn timeout expires', async () => {
+      const { connectDaemon, DaemonUnavailableError } = await import('../../src/lib/daemon-client.js');
+      const lockPath = join(thinkHome, 'daemon.spawn.lock');
+
+      await expect(
+        connectDaemon({ _spawnOverride: () => {}, _spawnTimeoutOverride: 300 }),
+      ).rejects.toBeInstanceOf(DaemonUnavailableError);
+
+      // Lock must be released even on failure so subsequent CLIs can retry.
+      expect(existsSync(lockPath)).toBe(false);
+    }, 10_000);
+  },
+);
