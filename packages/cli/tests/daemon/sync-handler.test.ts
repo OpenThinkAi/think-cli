@@ -114,7 +114,7 @@ describe('sync handler (AGT-286)', () => {
     expect(result.status).toBe('stored');
     expect(typeof result.entry_id).toBe('string');
     expect(result.entry_id.length).toBeGreaterThan(0);
-    // No warnings for kind=memory with no topics
+    // No warnings — kind and topics are now written to L2 directly
     expect(result.warnings).toBeUndefined();
 
     // Verify L1: entry appears in the JSONL page.
@@ -128,23 +128,29 @@ describe('sync handler (AGT-286)', () => {
     expect(l1Entry['supersedes']).toEqual([]);
     expect(l1Entry['compacted_from']).toBeNull();
 
-    // Verify L2: row exists with embedding non-null.
+    // Verify L2: row exists with embedding, kind, and topics_json populated.
     const db = getCortexDb(cortexName);
     const row = db.prepare('SELECT * FROM memories WHERE id = ?').get(result.entry_id) as {
       id: string;
       content: string;
       embedding: Uint8Array | null;
       activity_seq: number | null;
+      kind: string | null;
+      topics_json: string | null;
     } | undefined;
 
     expect(row).toBeDefined();
     expect(row!.content).toBe('Test memory for AGT-286');
     expect(row!.embedding).not.toBeNull();
     expect(row!.activity_seq).toBeGreaterThan(0);
+    // Bug 1 fix: kind and topics_json must be written to L2
+    expect(row!.kind).toBe('memory');
+    expect(row!.topics_json).toBe('[]');
   });
 
-  it('stores a retro with topics in L1 and returns warnings', async () => {
+  it('stores a retro with topics in L1 and L2', async () => {
     const { handleSync } = await import('../../src/daemon/sync-handler.js');
+    const { getCortexDb } = await import('../../src/db/engrams.js');
 
     const result = await handleSync({
       cortex: cortexName,
@@ -154,16 +160,23 @@ describe('sync handler (AGT-286)', () => {
     });
 
     expect(result.status).toBe('stored');
-
-    // Warnings should be present: kind != memory and topics provided
-    expect(result.warnings).toBeDefined();
-    expect(result.warnings!.some(w => w.includes('retro'))).toBe(true);
-    expect(result.warnings!.some(w => w.includes('topics'))).toBe(true);
+    // No warnings — kind and topics are now written to L2 directly
+    expect(result.warnings).toBeUndefined();
 
     const l1Lines = readL1Lines(thinkHome, cortexName);
     expect(l1Lines.length).toBe(1);
     expect(l1Lines[0]['kind']).toBe('retro');
     expect(l1Lines[0]['topics']).toEqual(['testing', 'validation']);
+
+    // Verify L2 has kind and topics_json populated
+    const db = getCortexDb(cortexName);
+    const row = db.prepare('SELECT kind, topics_json FROM memories WHERE id = ?').get(result.entry_id) as {
+      kind: string | null;
+      topics_json: string | null;
+    } | undefined;
+    expect(row).toBeDefined();
+    expect(row!.kind).toBe('retro');
+    expect(JSON.parse(row!.topics_json ?? '[]')).toEqual(['testing', 'validation']);
   });
 
   it('rejects empty content', async () => {

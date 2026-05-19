@@ -351,17 +351,15 @@ export async function handleSync(params: Record<string, unknown>): Promise<SyncR
   );
 
   // --- insert into L2 ---
-  // `kind` and `topics` are stored in L1 above; the `memories` table does
-  // not yet have those columns. They will be added in the L2 schema
-  // extension that follows AGT-286, after which this INSERT can include them.
   const activitySeq = assignNextSeq(safeCortex);
   const db = getCortexDb(safeCortex);
 
   db.prepare(`
     INSERT OR IGNORE INTO memories
       (id, ts, author, content, source_ids, created_at, deleted_at,
-       sync_version, origin_peer_id, embedding, embedding_model, activity_seq)
-    VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?)
+       sync_version, origin_peer_id, embedding, embedding_model, activity_seq,
+       kind, topics_json)
+    VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?)
   `).run(
     id,
     ts,
@@ -374,6 +372,8 @@ export async function handleSync(params: Record<string, unknown>): Promise<SyncR
     embeddingBytes,
     EMBEDDING_MODEL_NAME,
     activitySeq,
+    kind,
+    JSON.stringify(topics ?? []),
   );
 
   // Fire-and-forget: enqueue compaction job after L1+L2 write completes.
@@ -401,23 +401,9 @@ export async function handleSync(params: Record<string, unknown>): Promise<SyncR
   // running integration tests that have no configured remote (AGT-293).
   pushDebouncer.notify(safeCortex, skipPush);
 
-  // Build advisory warnings for fields accepted but not yet L2-queryable.
-  const warnings: string[] = [];
-  if (kind !== 'memory') {
-    warnings.push(
-      `kind '${kind}' stored to L1 only; L2 schema extension pending — kind-filtered queries not yet supported`,
-    );
-  }
-  if (topics && topics.length > 0) {
-    warnings.push(
-      'topics stored to L1 only; L2 schema extension pending — topic-scoped queries not yet supported',
-    );
-  }
-
   return {
     entry_id: id,
     status: 'stored',
     ...(kind === 'retro' ? { supersession_scheduled: true } : {}),
-    ...(warnings.length > 0 ? { warnings } : {}),
   };
 }

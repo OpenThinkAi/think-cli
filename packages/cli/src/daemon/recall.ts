@@ -158,6 +158,22 @@ export interface RecallEntry {
    * or `no_embed` was requested.
    */
   fts_fallback?: true;
+  /**
+   * The raw entry IDs that were folded into this compacted entry.
+   * Non-empty only for compacted entries; null for raw entries.
+   */
+  compacted_from: string[] | null;
+  /**
+   * The set of entry IDs this entry supersedes. For compacted memories,
+   * equals compacted_from. For retros, populated by the supersession worker.
+   * Always an array (empty when not applicable).
+   */
+  supersedes: string[];
+  /**
+   * Stable integer position within this cortex (ORDER BY ts ASC, id ASC).
+   * Null for entries that pre-date the AGT-291 activity_seq backfill.
+   */
+  activity_seq: number | null;
 }
 
 interface HydratedRow {
@@ -397,6 +413,9 @@ function recallOneCortexWithFts(
     score: 0,
     cortex: cortexName,
     fts_fallback: true as const,
+    activity_seq: null,
+    compacted_from: null,
+    supersedes: [],
   }));
 }
 
@@ -675,6 +694,25 @@ async function recallOneCortexWithVec(
     vectorResults.map((r) => [r.id, r.similarity]),
   );
 
+  // Batched compaction_links lookup — one query for all returned IDs, not N+1.
+  // compacted_from_map: compacted_id → array of raw_ids that folded into it.
+  const compactedFromMap = new Map<string, string[]>();
+  if (hasCompactionLinks && rows.length > 0) {
+    const rowIds = rows.map((r) => r.id);
+    const idPlaceholders = rowIds.map(() => '?').join(', ');
+    const linkRows = db.prepare(
+      `SELECT raw_id, compacted_id FROM compaction_links WHERE compacted_id IN (${idPlaceholders})`,
+    ).all(...rowIds) as { raw_id: string; compacted_id: string }[];
+    for (const link of linkRows) {
+      const existing = compactedFromMap.get(link.compacted_id);
+      if (existing) {
+        existing.push(link.raw_id);
+      } else {
+        compactedFromMap.set(link.compacted_id, [link.raw_id]);
+      }
+    }
+  }
+
   return rows.map((row) => {
     let topicsValue: string[] = [];
     try {
@@ -702,6 +740,11 @@ async function recallOneCortexWithVec(
       score = similarity;
     }
 
+    const compactedFrom = compactedFromMap.get(row.id) ?? null;
+    // For compacted entries, supersedes == compacted_from (the raws absorbed).
+    // For retros, supersedes is tracked in memories.superseded_by (out of scope here).
+    const supersedes = compactedFrom ?? [];
+
     return {
       id: row.id,
       ts: row.ts,
@@ -711,6 +754,9 @@ async function recallOneCortexWithVec(
       similarity,
       score,
       cortex: cortexName,
+      activity_seq: row.activity_seq,
+      compacted_from: compactedFrom,
+      supersedes,
     };
   });
 }
