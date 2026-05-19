@@ -1,5 +1,29 @@
 # Changelog
 
+## [1.0.0-alpha.13] — 2026-05-18
+
+### Fixed
+- **Compaction queue log lines now reach `daemon.log`** — the daemon spawns detached with `stdio: 'ignore'`, so compaction-queue messages written via `process.stderr.write` (the worker's `log()`) were going to `/dev/null` in production. Result: 100%-failing compaction was completely invisible to users — entries silently piled up with `compaction_status = 'permanently_skipped'` (content-fault) and no log evidence outside `--foreground` mode. The `log()` function in `daemon/compaction/queue.ts` now appends to `daemon.log` in addition to stderr, so detached runs leave a permanent record.
+- **Compaction now strips markdown code fences before `JSON.parse`** — mirrors the supersession path, which has had this defensive parse since AGT-303. Even with the schema-respecting prompt, models occasionally wrap structured output in ``` fences; tolerating it costs nothing and prevents a legitimate response from being marked `response_invalid`.
+
+### Reverted
+- **Compaction and retro-supersession switched back from `claude-haiku-4-5` to `claude-sonnet-4-6`.** alpha.11 moved both LLM call sites to Haiku 4.5 for cost containment. Real-corpus testing showed Haiku's output failed the `validateShape` JSON contract on **100%** of compaction calls — every entry hit `permanently_skipped` (content-fault), no compactions ever completed, and the cost saving turned into pure waste (Haiku still charges for the failed attempts). The detached-daemon observability bug above hid this failure: `[compaction-queue] [ERROR] compaction permanently skipped` lines existed only in foreground-mode stderr. Sonnet was the working baseline through alpha.10; restoring it brings compaction back to a known-good state. Haiku is worth revisiting only after the prompt has been re-engineered for smaller-model output conformance — likely via `tool_use` for forced-JSON output rather than relying on schema discipline in plain text.
+
+### Unsticking entries marked permanently_skipped by alpha.11/alpha.12
+
+If your daemon ran alpha.11 or alpha.12 with `THINK_LLM_CONSENT=1`, the corpus may have entries flagged `compaction_status = 'permanently_skipped'` from the failed Haiku attempts. To allow them to retry on Sonnet:
+
+```sh
+THINK_DIR="${THINK_HOME:-$HOME/.think}"
+for db in "$THINK_DIR"/index/*.db; do
+  sqlite3 "$db" "UPDATE memories SET compaction_status = NULL WHERE compaction_status = 'permanently_skipped'"
+done
+# Restart the daemon to re-scan and enqueue:
+think daemon stop && think daemon start
+```
+
+---
+
 ## [1.0.0-alpha.12] — 2026-05-18
 
 ### Fixed

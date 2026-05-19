@@ -52,13 +52,16 @@ export type CompactionResult = CompactionSuccess | CompactionResponseInvalid;
 // Constants
 // ---------------------------------------------------------------------------
 
-// Compaction model. Haiku 4.5 during alpha for cost containment (~3x cheaper
-// than Sonnet 4.6 for this workload). The task is structured rewrite with a
-// JSON schema, multi-document context, and a supersession judgment — Haiku
-// is acceptable here with the caveat that it may over-supersede or flatten
-// trajectory on hairy multi-entry cases. Revisit once we have real-corpus
-// usage data on hand to A/B against Sonnet output quality.
-const MODEL = 'claude-haiku-4-5';
+// Compaction model. Sonnet 4.6 — alpha.11 switched this to Haiku 4.5 for
+// cost containment, alpha.13 reverts after a real-corpus test showed Haiku
+// returns content that fails `validateShape` 100% of the time on this prompt.
+// The Haiku response did not conform to the JSON schema even after a retry,
+// every entry hit the `permanently_skipped` (content-fault) sentinel, and
+// the cost saving turned into pure waste. Revisit Haiku only after the prompt
+// has been re-engineered for smaller-model output conformance (e.g. tool_use
+// for forced JSON), or a per-model output validator that tolerates Haiku's
+// quirks.
+const MODEL = 'claude-sonnet-4-6';
 const MAX_TOKENS = 600;
 const TEMPERATURE = 0.2;
 
@@ -123,9 +126,19 @@ async function attemptCompaction(
   const textBlock = response.content.find((b): b is Anthropic.TextBlock => b.type === 'text');
   if (!textBlock) return null;
 
+  // Strip optional markdown code fences before JSON.parse. Mirrors the
+  // supersession path's `stripFences`. Models — even Sonnet — occasionally
+  // wrap structured output in ``` despite the system prompt's "no code
+  // fences" instruction; tolerating it costs nothing and prevents a
+  // legitimate response from being marked `response_invalid`.
+  const cleaned = textBlock.text
+    .replace(/^```(?:json)?\s*\n?/, '')
+    .replace(/\n?```\s*$/, '')
+    .trim();
+
   let parsed: unknown;
   try {
-    parsed = JSON.parse(textBlock.text);
+    parsed = JSON.parse(cleaned);
   } catch {
     return null;
   }
