@@ -557,7 +557,7 @@ export async function runConsolidation(existingLongterm: string | null, agingMem
     options: {
       systemPrompt: CONSOLIDATION_SYSTEM_PROMPT,
       tools: [],
-      model: 'claude-sonnet-4-6',
+      model: 'claude-haiku-4-5',
       persistSession: false,
     },
   })) {

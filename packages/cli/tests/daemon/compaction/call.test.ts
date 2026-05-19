@@ -3,14 +3,11 @@
  *
  * All tests mock the Anthropic SDK — no real network calls are made.
  *
- * Coverage:
- * 1. Parses a well-formed fixture response into CompactionSuccess.
- * 2. On first invalid response, retries once and succeeds on the second call.
- * 3. On two consecutive invalid responses, returns { status: "response_invalid" }.
- * 4. Shape validation rejects responses missing required fields.
- * 5. Shape validation rejects responses where field types are wrong.
- * 6. Shape validation rejects responses where compacted_text is empty.
- * 7. LLM consent gate is enforced before any SDK call.
+ * After the tool_use migration: the API enforces input_schema server-side,
+ * so the per-attempt parse failure mode is "no tool_use block returned"
+ * (transient model non-determinism) rather than malformed text JSON.
+ * `validateShape` still catches business-rule violations the schema can't
+ * express (empty compacted_text, non-string elements that slip through).
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
@@ -33,7 +30,7 @@ const CANDIDATES = [
   },
 ];
 
-const VALID_RESPONSE_BODY = {
+const VALID_TOOL_INPUT = {
   compacted_text:
     'Client storage: returned to sqlite after indexedDb perf problems. sqlite is the durable choice.',
   supersedes: ['mem_8af2'],
@@ -44,16 +41,23 @@ const VALID_RESPONSE_BODY = {
 // SDK mock helpers
 // ---------------------------------------------------------------------------
 
-function makeSuccessResponse(body: unknown) {
+function makeToolUseResponse(input: unknown) {
   return {
-    content: [{ type: 'text', text: JSON.stringify(body) }],
-    stop_reason: 'end_turn',
+    content: [
+      {
+        type: 'tool_use',
+        id: 'toolu_test',
+        name: 'submit_compaction',
+        input,
+      },
+    ],
+    stop_reason: 'tool_use',
   };
 }
 
-function makeMalformedResponse(text: string) {
+function makeNoToolUseResponse() {
   return {
-    content: [{ type: 'text', text }],
+    content: [{ type: 'text', text: 'i forgot to call the tool' }],
     stop_reason: 'end_turn',
   };
 }
@@ -67,19 +71,11 @@ function makeEmptyContentResponse() {
 
 // ---------------------------------------------------------------------------
 // Module mocking strategy
-//
-// We mock:
-//   - '@anthropic-ai/sdk'  — so new Anthropic() returns a fake client
-//   - '../../lib/llm-consent.js' (relative from call.ts) via its module path
-//     as seen from the test runner: '../../../src/lib/llm-consent.js'
-//
-// vitest's vi.mock is hoisted so these factories run before any import.
 // ---------------------------------------------------------------------------
 
 const mockMessagesCreate = vi.fn();
 
 vi.mock('@anthropic-ai/sdk', () => {
-  // We need a class (constructor) here because the source does `new Anthropic()`.
   class MockAnthropic {
     messages = { create: mockMessagesCreate };
   }
@@ -88,7 +84,6 @@ vi.mock('@anthropic-ai/sdk', () => {
   };
 });
 
-// Mock LLM consent to always pass (individual tests override when testing the gate).
 vi.mock('../../../src/lib/llm-consent.js', () => ({
   requireLlmConsent: vi.fn(),
   LlmConsentError: class LlmConsentError extends Error {
@@ -106,7 +101,6 @@ vi.mock('../../../src/lib/llm-consent.js', () => ({
 import { runCompaction } from '../../../src/daemon/compaction/call.js';
 import { requireLlmConsent } from '../../../src/lib/llm-consent.js';
 
-// Single vi.mocked() cast — reused across all describe blocks.
 const mockConsent = vi.mocked(requireLlmConsent);
 
 // ---------------------------------------------------------------------------
@@ -119,21 +113,21 @@ describe('runCompaction — happy path', () => {
     mockConsent.mockReturnValue(undefined);
   });
 
-  it('returns status:ok with parsed fields for a valid response', async () => {
-    mockMessagesCreate.mockResolvedValueOnce(makeSuccessResponse(VALID_RESPONSE_BODY));
+  it('returns status:ok with parsed fields for a valid tool_use response', async () => {
+    mockMessagesCreate.mockResolvedValueOnce(makeToolUseResponse(VALID_TOOL_INPUT));
 
     const result = await runCompaction(NEW_ENTRY, CANDIDATES);
 
     expect(result.status).toBe('ok');
     if (result.status === 'ok') {
-      expect(result.compacted_text).toBe(VALID_RESPONSE_BODY.compacted_text);
+      expect(result.compacted_text).toBe(VALID_TOOL_INPUT.compacted_text);
       expect(result.supersedes).toEqual(['mem_8af2']);
       expect(result.topics).toEqual(['sqlite', 'storage']);
     }
   });
 
   it('passes the system prompt text to messages.create', async () => {
-    mockMessagesCreate.mockResolvedValueOnce(makeSuccessResponse(VALID_RESPONSE_BODY));
+    mockMessagesCreate.mockResolvedValueOnce(makeToolUseResponse(VALID_TOOL_INPUT));
 
     await runCompaction(NEW_ENTRY, CANDIDATES);
 
@@ -145,7 +139,7 @@ describe('runCompaction — happy path', () => {
   });
 
   it('sets cache_control: ephemeral on the system block', async () => {
-    mockMessagesCreate.mockResolvedValueOnce(makeSuccessResponse(VALID_RESPONSE_BODY));
+    mockMessagesCreate.mockResolvedValueOnce(makeToolUseResponse(VALID_TOOL_INPUT));
 
     await runCompaction(NEW_ENTRY, CANDIDATES);
 
@@ -153,19 +147,40 @@ describe('runCompaction — happy path', () => {
     expect(callArgs.system[0].cache_control).toEqual({ type: 'ephemeral' });
   });
 
-  it('uses the expected model, max_tokens, and temperature', async () => {
-    mockMessagesCreate.mockResolvedValueOnce(makeSuccessResponse(VALID_RESPONSE_BODY));
+  it('uses Haiku 4.5, max_tokens 600, temperature 0.2', async () => {
+    mockMessagesCreate.mockResolvedValueOnce(makeToolUseResponse(VALID_TOOL_INPUT));
 
     await runCompaction(NEW_ENTRY, CANDIDATES);
 
     const callArgs = mockMessagesCreate.mock.calls[0][0];
-    expect(callArgs.model).toBe('claude-sonnet-4-6');
+    expect(callArgs.model).toBe('claude-haiku-4-5');
     expect(callArgs.max_tokens).toBe(600);
     expect(callArgs.temperature).toBe(0.2);
   });
 
+  it('forces tool_use via tool_choice with the submit_compaction tool', async () => {
+    mockMessagesCreate.mockResolvedValueOnce(makeToolUseResponse(VALID_TOOL_INPUT));
+
+    await runCompaction(NEW_ENTRY, CANDIDATES);
+
+    const callArgs = mockMessagesCreate.mock.calls[0][0];
+    expect(Array.isArray(callArgs.tools)).toBe(true);
+    expect(callArgs.tools).toHaveLength(1);
+    expect(callArgs.tools[0].name).toBe('submit_compaction');
+    expect(callArgs.tools[0].input_schema.required).toEqual([
+      'compacted_text',
+      'supersedes',
+      'topics',
+    ]);
+    expect(callArgs.tool_choice).toEqual({
+      type: 'tool',
+      name: 'submit_compaction',
+      disable_parallel_tool_use: true,
+    });
+  });
+
   it('works with an empty candidates array', async () => {
-    mockMessagesCreate.mockResolvedValueOnce(makeSuccessResponse(VALID_RESPONSE_BODY));
+    mockMessagesCreate.mockResolvedValueOnce(makeToolUseResponse(VALID_TOOL_INPUT));
 
     const result = await runCompaction(NEW_ENTRY, []);
 
@@ -179,11 +194,9 @@ describe('runCompaction — retry logic', () => {
     mockConsent.mockReturnValue(undefined);
   });
 
-  it('retries once on parse failure and returns ok on second attempt', async () => {
-    // First call: malformed JSON
-    mockMessagesCreate.mockResolvedValueOnce(makeMalformedResponse('not valid json }{'));
-    // Second call: valid response
-    mockMessagesCreate.mockResolvedValueOnce(makeSuccessResponse(VALID_RESPONSE_BODY));
+  it('retries once when first response has no tool_use block, succeeds on second', async () => {
+    mockMessagesCreate.mockResolvedValueOnce(makeNoToolUseResponse());
+    mockMessagesCreate.mockResolvedValueOnce(makeToolUseResponse(VALID_TOOL_INPUT));
 
     const result = await runCompaction(NEW_ENTRY, CANDIDATES);
 
@@ -191,9 +204,9 @@ describe('runCompaction — retry logic', () => {
     expect(result.status).toBe('ok');
   });
 
-  it('returns response_invalid after two consecutive parse failures', async () => {
-    mockMessagesCreate.mockResolvedValueOnce(makeMalformedResponse('{ "wrong": "shape" }'));
-    mockMessagesCreate.mockResolvedValueOnce(makeMalformedResponse('still wrong'));
+  it('returns response_invalid after two consecutive missing tool_use blocks', async () => {
+    mockMessagesCreate.mockResolvedValueOnce(makeNoToolUseResponse());
+    mockMessagesCreate.mockResolvedValueOnce(makeNoToolUseResponse());
 
     const result = await runCompaction(NEW_ENTRY, CANDIDATES);
 
@@ -201,16 +214,7 @@ describe('runCompaction — retry logic', () => {
     expect(result.status).toBe('response_invalid');
   });
 
-  it('returns response_invalid when first is malformed and second is also malformed JSON', async () => {
-    mockMessagesCreate.mockResolvedValueOnce(makeMalformedResponse('not json at all'));
-    mockMessagesCreate.mockResolvedValueOnce(makeMalformedResponse('```json\n{}\n```'));
-
-    const result = await runCompaction(NEW_ENTRY, CANDIDATES);
-
-    expect(result.status).toBe('response_invalid');
-  });
-
-  it('returns response_invalid when response content array is empty (no text block)', async () => {
+  it('returns response_invalid when response content array is empty', async () => {
     mockMessagesCreate.mockResolvedValueOnce(makeEmptyContentResponse());
     mockMessagesCreate.mockResolvedValueOnce(makeEmptyContentResponse());
 
@@ -220,88 +224,69 @@ describe('runCompaction — retry logic', () => {
   });
 
   it('does NOT make a third attempt', async () => {
-    mockMessagesCreate.mockResolvedValue(makeMalformedResponse('bad'));
+    mockMessagesCreate.mockResolvedValue(makeNoToolUseResponse());
 
     await runCompaction(NEW_ENTRY, CANDIDATES);
 
-    // Exactly two attempts, no more
     expect(mockMessagesCreate).toHaveBeenCalledTimes(2);
   });
 });
 
-describe('runCompaction — shape validation', () => {
+describe('runCompaction — shape validation (business rules)', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockConsent.mockReturnValue(undefined);
   });
 
-  it('rejects a response where compacted_text is missing', async () => {
+  it('rejects when compacted_text is missing', async () => {
     const bad = { supersedes: [], topics: ['sqlite'] };
-    mockMessagesCreate.mockResolvedValueOnce(makeSuccessResponse(bad));
-    mockMessagesCreate.mockResolvedValueOnce(makeSuccessResponse(bad));
+    mockMessagesCreate.mockResolvedValueOnce(makeToolUseResponse(bad));
+    mockMessagesCreate.mockResolvedValueOnce(makeToolUseResponse(bad));
 
     const result = await runCompaction(NEW_ENTRY, CANDIDATES);
     expect(result.status).toBe('response_invalid');
   });
 
-  it('rejects a response where compacted_text is not a string', async () => {
+  it('rejects when compacted_text is not a string', async () => {
     const bad = { compacted_text: 42, supersedes: [], topics: [] };
-    mockMessagesCreate.mockResolvedValueOnce(makeSuccessResponse(bad));
-    mockMessagesCreate.mockResolvedValueOnce(makeSuccessResponse(bad));
+    mockMessagesCreate.mockResolvedValueOnce(makeToolUseResponse(bad));
+    mockMessagesCreate.mockResolvedValueOnce(makeToolUseResponse(bad));
 
     const result = await runCompaction(NEW_ENTRY, CANDIDATES);
     expect(result.status).toBe('response_invalid');
   });
 
-  it('rejects a response where compacted_text is an empty string', async () => {
+  it('rejects when compacted_text is an empty string', async () => {
     const bad = { compacted_text: '', supersedes: [], topics: [] };
-    mockMessagesCreate.mockResolvedValueOnce(makeSuccessResponse(bad));
-    mockMessagesCreate.mockResolvedValueOnce(makeSuccessResponse(bad));
+    mockMessagesCreate.mockResolvedValueOnce(makeToolUseResponse(bad));
+    mockMessagesCreate.mockResolvedValueOnce(makeToolUseResponse(bad));
 
     const result = await runCompaction(NEW_ENTRY, CANDIDATES);
     expect(result.status).toBe('response_invalid');
   });
 
-  it('rejects a response where compacted_text is whitespace-only', async () => {
+  it('rejects when compacted_text is whitespace-only', async () => {
     const bad = { compacted_text: '   \t\n  ', supersedes: [], topics: [] };
-    mockMessagesCreate.mockResolvedValueOnce(makeSuccessResponse(bad));
-    mockMessagesCreate.mockResolvedValueOnce(makeSuccessResponse(bad));
+    mockMessagesCreate.mockResolvedValueOnce(makeToolUseResponse(bad));
+    mockMessagesCreate.mockResolvedValueOnce(makeToolUseResponse(bad));
 
     const result = await runCompaction(NEW_ENTRY, CANDIDATES);
     expect(result.status).toBe('response_invalid');
   });
 
-  it('rejects a response where supersedes is not an array', async () => {
-    const bad = { compacted_text: 'ok', supersedes: 'not-array', topics: [] };
-    mockMessagesCreate.mockResolvedValueOnce(makeSuccessResponse(bad));
-    mockMessagesCreate.mockResolvedValueOnce(makeSuccessResponse(bad));
-
-    const result = await runCompaction(NEW_ENTRY, CANDIDATES);
-    expect(result.status).toBe('response_invalid');
-  });
-
-  it('rejects a response where supersedes contains non-string elements', async () => {
+  it('rejects when supersedes contains non-string elements', async () => {
     const bad = { compacted_text: 'ok', supersedes: [1, 2], topics: [] };
-    mockMessagesCreate.mockResolvedValueOnce(makeSuccessResponse(bad));
-    mockMessagesCreate.mockResolvedValueOnce(makeSuccessResponse(bad));
+    mockMessagesCreate.mockResolvedValueOnce(makeToolUseResponse(bad));
+    mockMessagesCreate.mockResolvedValueOnce(makeToolUseResponse(bad));
 
     const result = await runCompaction(NEW_ENTRY, CANDIDATES);
     expect(result.status).toBe('response_invalid');
   });
 
-  it('rejects a response where topics is not an array', async () => {
-    const bad = { compacted_text: 'ok', supersedes: [], topics: 'sqlite' };
-    mockMessagesCreate.mockResolvedValueOnce(makeSuccessResponse(bad));
-    mockMessagesCreate.mockResolvedValueOnce(makeSuccessResponse(bad));
-
-    const result = await runCompaction(NEW_ENTRY, CANDIDATES);
-    expect(result.status).toBe('response_invalid');
-  });
-
-  it('rejects a response where topics contains non-string elements', async () => {
+  it('rejects when topics contains non-string elements', async () => {
     const bad = { compacted_text: 'ok', supersedes: [], topics: [true, false] };
-    mockMessagesCreate.mockResolvedValueOnce(makeSuccessResponse(bad));
-    mockMessagesCreate.mockResolvedValueOnce(makeSuccessResponse(bad));
+    mockMessagesCreate.mockResolvedValueOnce(makeToolUseResponse(bad));
+    mockMessagesCreate.mockResolvedValueOnce(makeToolUseResponse(bad));
 
     const result = await runCompaction(NEW_ENTRY, CANDIDATES);
     expect(result.status).toBe('response_invalid');
@@ -309,7 +294,7 @@ describe('runCompaction — shape validation', () => {
 
   it('accepts a response with empty supersedes and topics arrays', async () => {
     const minimal = { compacted_text: 'net-new entry.', supersedes: [], topics: [] };
-    mockMessagesCreate.mockResolvedValueOnce(makeSuccessResponse(minimal));
+    mockMessagesCreate.mockResolvedValueOnce(makeToolUseResponse(minimal));
 
     const result = await runCompaction(NEW_ENTRY, CANDIDATES);
     expect(result.status).toBe('ok');
@@ -317,22 +302,6 @@ describe('runCompaction — shape validation', () => {
       expect(result.supersedes).toEqual([]);
       expect(result.topics).toEqual([]);
     }
-  });
-
-  it('rejects a null top-level response', async () => {
-    mockMessagesCreate.mockResolvedValueOnce(makeSuccessResponse(null));
-    mockMessagesCreate.mockResolvedValueOnce(makeSuccessResponse(null));
-
-    const result = await runCompaction(NEW_ENTRY, CANDIDATES);
-    expect(result.status).toBe('response_invalid');
-  });
-
-  it('rejects an array top-level response', async () => {
-    mockMessagesCreate.mockResolvedValueOnce(makeSuccessResponse([VALID_RESPONSE_BODY]));
-    mockMessagesCreate.mockResolvedValueOnce(makeSuccessResponse([VALID_RESPONSE_BODY]));
-
-    const result = await runCompaction(NEW_ENTRY, CANDIDATES);
-    expect(result.status).toBe('response_invalid');
   });
 });
 
@@ -343,11 +312,10 @@ describe('runCompaction — consent gate', () => {
 
   it('calls requireLlmConsent before any SDK call', async () => {
     mockConsent.mockReturnValue(undefined);
-    mockMessagesCreate.mockResolvedValueOnce(makeSuccessResponse(VALID_RESPONSE_BODY));
+    mockMessagesCreate.mockResolvedValueOnce(makeToolUseResponse(VALID_TOOL_INPUT));
 
     await runCompaction(NEW_ENTRY, CANDIDATES);
 
-    // Consent was checked
     expect(mockConsent).toHaveBeenCalled();
   });
 
@@ -360,7 +328,6 @@ describe('runCompaction — consent gate', () => {
 
     await expect(runCompaction(NEW_ENTRY, CANDIDATES)).rejects.toThrow('LLM consent not granted');
 
-    // No SDK calls should have been made
     expect(mockMessagesCreate).not.toHaveBeenCalled();
   });
 });
@@ -377,7 +344,6 @@ describe('runCompaction — network errors bubble up', () => {
 
     await expect(runCompaction(NEW_ENTRY, CANDIDATES)).rejects.toThrow('Connection refused');
 
-    // Only one attempt — network errors are not retried here
     expect(mockMessagesCreate).toHaveBeenCalledTimes(1);
   });
 });
