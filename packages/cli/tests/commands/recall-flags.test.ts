@@ -11,7 +11,7 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { mkdtempSync, rmSync, mkdirSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, rmSync, mkdirSync, writeFileSync, readFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Command } from 'commander';
@@ -38,13 +38,21 @@ function writeConfig(thinkHome: string, activeCortex: string): void {
 
 describe('think recall flags (AGT-319)', () => {
   let originalHome: string | undefined;
+  let originalNoEmbed: string | undefined;
   let tmpHome: string;
   let stdoutWriteSpy: ReturnType<typeof vi.spyOn>;
 
   beforeEach(() => {
     originalHome = process.env.THINK_HOME;
+    originalNoEmbed = process.env.THINK_NO_EMBED;
     tmpHome = mkdtempSync(join(tmpdir(), 'think-agt319-'));
     process.env.THINK_HOME = tmpHome;
+    // Force FTS path across every test in this file, matching the docstring
+    // intent ("All tests run against the FTS path (no daemon)"). Without this,
+    // any test whose `parseAsync` call omits the explicit `--no-embed` flag
+    // would trigger connectDaemon → spawn a real daemon in tmpHome, which is
+    // then orphaned when afterEach deletes the temp dir.
+    process.env.THINK_NO_EMBED = '1';
     closeAllCortexDbs();
     writeConfig(tmpHome, CORTEX);
     getCortexDb(CORTEX);
@@ -56,8 +64,23 @@ describe('think recall flags (AGT-319)', () => {
 
   afterEach(() => {
     closeAllCortexDbs();
+    // Defensive belt-and-braces: if a daemon was somehow spawned in tmpHome
+    // (e.g. a future test sets THINK_NO_EMBED=0 to exercise the daemon path
+    // and forgets to clean up), kill it before deleting the dir so the
+    // process doesn't orphan.
+    const pidPath = join(tmpHome, 'daemon.pid');
+    if (existsSync(pidPath)) {
+      try {
+        const pid = parseInt(readFileSync(pidPath, 'utf8').trim(), 10);
+        if (Number.isFinite(pid) && pid > 0) {
+          try { process.kill(pid, 'SIGTERM'); } catch { /* already dead */ }
+        }
+      } catch { /* unreadable pid file — nothing to do */ }
+    }
     if (originalHome === undefined) delete process.env.THINK_HOME;
     else process.env.THINK_HOME = originalHome;
+    if (originalNoEmbed === undefined) delete process.env.THINK_NO_EMBED;
+    else process.env.THINK_NO_EMBED = originalNoEmbed;
     rmSync(tmpHome, { recursive: true, force: true });
     vi.restoreAllMocks();
     process.exitCode = 0;
