@@ -329,9 +329,29 @@ subscribeCommand.addCommand(new Command('set-credential')
 const MAX_PAGES_PER_TICK = 100;
 
 subscribeCommand.addCommand(new Command('poll')
-  .description('Pull new events from the proxy and write them to engrams (single pass)')
+  .description('DEPRECATED: pre-think-proxy-events path that writes events into local engrams. Under the new model the proxy curates centrally and publishes to a team cortex; team members `think pull <team-cortex>` instead. Pass `--legacy-engrams` to keep the old path during the migration window.')
   .option('--quiet', 'Suppress non-actionable output: per-tick line on no-op, paused-state hint, no-cortex error, and offline network errors. Used by the LaunchAgent so a backgrounded poll on an offline machine stays silent.')
-  .action(async function (this: Command, opts: { quiet?: boolean }) {
+  .option('--legacy-engrams', 'Run the pre-think-proxy-events engram-write path. Kept for users still on the old per-machine ingest model; will be removed once all team members have migrated to proxy-curated team cortex pulls.')
+  .action(async function (this: Command, opts: { quiet?: boolean; legacyEngrams?: boolean }) {
+    // think-proxy-events (AGT-389): default `subscribe poll` is now a
+    // deprecation no-op pointing at `think pull <team-cortex>`. The proxy
+    // curates centrally and publishes memories to the team cortex; team
+    // members just pull. The local engram-write path stays available
+    // behind --legacy-engrams during the migration window so v2 installs
+    // don't break.
+    if (!opts.legacyEngrams) {
+      if (!opts.quiet) {
+        console.log(chalk.yellow('[subscribe poll] deprecated:') + ' external events are now team-shared via the proxy-curated team cortex.');
+        console.log(chalk.dim('  Replacement: `think pull <team-cortex>` (just like any other cortex).'));
+        console.log(chalk.dim('  To keep the old local engram-write path during migration, re-run with `--legacy-engrams`.'));
+      }
+      return;
+    }
+
+    if (!opts.quiet) {
+      console.log(chalk.yellow('[subscribe poll] --legacy-engrams:') + ' running the pre-think-proxy-events engram-write path. This path will be removed once all team members migrate to proxy-curated team cortex pulls.');
+    }
+
     const globalOpts = this.optsWithGlobals() as { cortex?: string };
     const config = getConfig();
 
