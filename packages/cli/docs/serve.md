@@ -261,6 +261,46 @@ If the dev key file gets corrupted or rotates accidentally: delete `~/.openthink
 
 For the threat model, key rotation story, and recovery story, see [`SECURITY-serve.md`](../SECURITY-serve.md) in this package.
 
+## Team-shared cortex (where proxy-curated memories land)
+
+`think serve` publishes curated memories into a git-backed cortex on disk; the existing daemon push-debouncer commits and pushes them to whatever git remote the operator has wired up. The proxy does **not** own its own cortex-remote config — it reuses the same `cortex.repo` that the rest of the CLI uses, which means the operator setup is two commands run from the box running `think serve`:
+
+```sh
+# 1. Point this host at the shared HiveDB remote (a normal git URL — ssh:// or https://).
+#    Writes `cortex.repo` into the user config and clones the repo to `~/.think/repo`.
+think cortex setup git@github.com:anglepoint/hivedb.git
+
+# 2. Create the team cortex. This pushes an empty `init: create cortex engineering`
+#    commit on a new `engineering` branch, then sets the local working tree to that
+#    branch so the push-debouncer's add/commit/push lands on it.
+think cortex create engineering
+```
+
+After those two commands every `writeMemoriesForEvent({ cortexName: 'engineering', ... })` call inside `think serve` writes one JSONL line per memory into `~/.think/repo/engineering/000001.jsonl`, and ~500 ms later the push-debouncer fires `git add -- engineering && git commit -m "auto: N entries via daemon <ts>" && git push origin -- engineering` against `origin` (the URL from step 1).
+
+> Note: `think cortex add <name> <url>` is not a real command — earlier internal docs sometimes used that phrasing as shorthand. The setup is `setup` (config-the-remote, once per host) followed by `create` (per cortex).
+
+Verification — after the proxy ingests the first terminal event for that cortex you should see, against the bare HiveDB remote:
+
+```sh
+git -C <hivedb-checkout-or-clone> fetch origin
+git -C <hivedb-checkout-or-clone> log --oneline engineering | head
+# expect: an `auto: 1 entry via daemon …` commit on top of the
+# `init: create cortex engineering` commit.
+
+git -C <hivedb-checkout-or-clone> show engineering:engineering/000001.jsonl
+# expect: one JSONL line per memory, with author="proxy" and
+# origin_peer_id=<the proxy peer-id from think serve --peer-id ... or the
+# auto-generated one in `~/.think/index/proxy_peer.db`>.
+```
+
+The end-to-end push path (cortex `setup` + `create` → `writeMemoriesForEvent` → push-debouncer → bare remote receives `auto:` commit) is pinned by `tests/serve/cortex-writer-push.integration.test.ts` (AGT-399); run it any time the push wiring is refactored:
+
+```sh
+cd packages/cli
+npx vitest run tests/serve/cortex-writer-push.integration.test.ts
+```
+
 ## Testing
 
 ```sh
