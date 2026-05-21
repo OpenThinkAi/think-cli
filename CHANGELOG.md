@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+### Added
+- **Notion source connector** (AGT-395, think-proxy-events Phase 4). `think serve` now ships a `notion` connector that emits a terminal event each time a subscribed Notion page is observed with a configured "canonical" property asserted (default: a checkbox named `canonical` set to `true`). Subscription pattern accepts `db:<database-uuid>` (recommended; uses `databases.query` with a `last_edited_time` filter) or `ws:<alias>` (workspace-scoped search). Re-canonicalization after an edit emits a fresh terminal event under the same `episodeKey`, so each settled version becomes its own curated memory while recall groups them. Credential is a Notion internal-integration token stored via the existing vault surface (`THINK_NOTION_PAT` env var or stdin). See `packages/cli/docs/serve.md` for the canonical-page team convention and pattern grammar.
+
 ### Deprecated
 - **`think subscribe poll` default behavior is now a deprecation no-op** (AGT-389, think-proxy-events Phase 3). The pre-think-proxy-events model had every machine poll the proxy and write external events into its own local engrams table, then individually curate them. The new model: the proxy curates centrally and publishes memories to a team cortex; team members `git pull` like any other cortex. The local engram-write path stays available behind a `--legacy-engrams` flag during the migration window so v2 installs don't break.
 

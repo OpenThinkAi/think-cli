@@ -2,6 +2,7 @@ import { createGitHubConnector } from './github.js';
 import { createLinearConnector } from './linear.js';
 import { createMeetingConnector } from './meeting.js';
 import { mockConnector } from './mock.js';
+import { createNotionConnector } from './notion.js';
 import type { SourceConnector } from './types.js';
 
 /**
@@ -17,22 +18,27 @@ import type { SourceConnector } from './types.js';
  * `meeting` (AGT-393) emits one terminal event per finalized meeting
  * transcript; v1 ships the Granola provider against a `<provider>`
  * pattern.
+ * `notion` (AGT-395) emits a terminal event per observation of a page
+ * with the team's canonical property asserted (default: a checkbox
+ * named `canonical` set to `true`).
  */
 export type ConnectorRegistry = Map<string, SourceConnector>;
 
 export function buildDefaultRegistry(): ConnectorRegistry {
   const registry: ConnectorRegistry = new Map();
   registry.set(mockConnector.kind, mockConnector);
-  // The github, linear, and meeting connectors take no runtime dependencies
-  // at construction — they pull their credential from `ctx.credential` on
-  // each poll. One default instance per kind services every subscription
-  // of that kind.
+  // The github, linear, meeting, and notion connectors take no runtime
+  // dependencies at construction — they pull their credentials from
+  // `ctx.credential` on each poll. One default instance per kind services
+  // every subscription of that kind.
   const github = createGitHubConnector();
   registry.set(github.kind, github);
   const linear = createLinearConnector();
   registry.set(linear.kind, linear);
   const meeting = createMeetingConnector();
   registry.set(meeting.kind, meeting);
+  const notion = createNotionConnector();
+  registry.set(notion.kind, notion);
   return registry;
 }
 
