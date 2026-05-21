@@ -141,6 +141,10 @@ serveCommand
         console.log(
           `note: add a Linear personal API key with \`think serve creds add linear ${pattern}\` (reads from stdin or $THINK_LINEAR_PAT). Generate one at https://linear.app/settings/account/security.`,
         );
+      } else if (kind === 'meeting') {
+        console.log(
+          `note: add a Granola API key with \`think serve creds add meeting ${pattern}\` (reads from stdin or $THINK_MEETING_PAT). Generate one at https://app.granola.ai/settings (Developer / API).`,
+        );
       }
     } finally {
       db.close();
