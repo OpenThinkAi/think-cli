@@ -206,7 +206,7 @@ async function waitForAutoCommit(bareRepo: string, cortex: string, timeoutMs: nu
         encoding: 'utf-8',
         stdio: ['pipe', 'pipe', 'pipe'],
       });
-      if (/auto:\s+\d+\s+entry|entries/.test(log)) return;
+      if (/auto:\s+\d+\s+(?:entry|entries)/.test(log)) return;
     } catch {
       // Branch may not exist yet; keep polling.
     }
