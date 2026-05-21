@@ -6,6 +6,8 @@ import type {
   VerifyCredentialResult,
 } from './types.js';
 
+const USER_AGENT = 'open-think-server';
+
 /**
  * Meeting transcript connector (AGT-393). Emits **only terminal events**:
  *
@@ -195,7 +197,7 @@ export function createMeetingConnector(
       headers: {
         Authorization: `Bearer ${token}`,
         Accept: 'application/json',
-        'User-Agent': 'open-think-server',
+        'User-Agent': USER_AGENT,
       },
     });
 
@@ -242,13 +244,6 @@ export function createMeetingConnector(
     return [];
   }
 
-  function shapeAttendee(a: GranolaAttendee) {
-    return {
-      email: a.email ?? null,
-      name: a.name ?? null,
-    };
-  }
-
   function shapeHighlights(h: GranolaHighlights | null | undefined) {
     if (!h) return null;
     return {
@@ -272,7 +267,10 @@ export function createMeetingConnector(
         creator: m.creator
           ? { email: m.creator.email ?? null, name: m.creator.name ?? null }
           : null,
-        attendees: (m.attendees ?? []).map(shapeAttendee),
+        attendees: (m.attendees ?? []).map((a) => ({
+          email: a.email ?? null,
+          name: a.name ?? null,
+        })),
         started_at: m.started_at,
         ended_at: m.ended_at,
         updated_at: m.updated_at,
@@ -361,7 +359,7 @@ export function createMeetingConnector(
         headers: {
           Authorization: `Bearer ${credential}`,
           Accept: 'application/json',
-          'User-Agent': 'open-think-server',
+          'User-Agent': USER_AGENT,
         },
       });
       if (res.status === 200) return { ok: true };
@@ -398,18 +396,3 @@ export function bumpSinceBy1Ms(iso: string | undefined): string | undefined {
   return new Date(t + 1).toISOString();
 }
 
-/**
- * Webhook handler stub (AGT-393 follow-on). When a meeting provider
- * supports HMAC-signed webhooks on `meeting.finalized`, route
- * verification and EventInput construction will live here. Intentionally
- * not wired into any HTTP route — exporting the type only so the
- * follow-on PR has a clear seam.
- */
-export interface MeetingWebhookEnvelope {
-  provider: string;
-  meeting_id: string;
-  /** HMAC signature header value (Granola: `X-Granola-Signature`). */
-  signature: string;
-  /** Raw request body — required intact for HMAC verification. */
-  raw_body: string;
-}

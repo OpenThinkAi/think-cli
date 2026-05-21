@@ -143,7 +143,7 @@ serveCommand
         );
       } else if (kind === 'meeting') {
         console.log(
-          `note: add an API key with \`think serve creds add meeting ${pattern}\` (reads from stdin or $THINK_MEETING_PAT).`,
+          `note: add a Granola API key with \`think serve creds add meeting ${pattern}\` (reads from stdin or $THINK_MEETING_PAT). Generate one at https://app.granola.ai/settings (Developer / API).`,
         );
       }
     } finally {
