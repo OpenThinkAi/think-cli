@@ -200,7 +200,7 @@ async function promptDataFlowConsent(kind: string, pattern: string): Promise<boo
   }
 
   console.log(chalk.yellow(`Heads up: this subscription will pull events from a ${kind} source authored by other people`));
-  console.log(chalk.yellow(`(commenters, ticket authors, webhook senders). Each event lands as a local engram and`));
+  console.log(chalk.yellow(`(commenters, ticket authors, webhook senders). Each event lands locally and`));
   console.log(chalk.yellow(`flows through curation — if curator consent is granted (THINK_LLM_CONSENT or`));
   console.log(chalk.yellow(`cortex.llmConsent), that content reaches Anthropic.`));
   console.log();
@@ -329,7 +329,7 @@ subscribeCommand.addCommand(new Command('set-credential')
 const MAX_PAGES_PER_TICK = 100;
 
 subscribeCommand.addCommand(new Command('poll')
-  .description('DEPRECATED: pre-think-proxy-events path that writes events into local engrams. Under the new model the proxy curates centrally and publishes to a team cortex; team members `think pull <team-cortex>` instead. Pass `--legacy-engrams` to keep the old path during the migration window.')
+  .description('DEPRECATED: pre-think-proxy-events path that writes events locally. Under the new model the proxy curates centrally and publishes to a team cortex; team members `think pull <team-cortex>` instead. Pass `--legacy-engrams` to keep the old path during the migration window.')
   .option('--quiet', 'Suppress non-actionable output: per-tick line on no-op, paused-state hint, no-cortex error, and offline network errors. Used by the LaunchAgent so a backgrounded poll on an offline machine stays silent.')
   .option('--legacy-engrams', 'Run the pre-think-proxy-events engram-write path. Kept for users still on the old per-machine ingest model; will be removed once all team members have migrated to proxy-curated team cortex pulls.')
   .action(async function (this: Command, opts: { quiet?: boolean; legacyEngrams?: boolean }) {
@@ -465,7 +465,7 @@ subscribeCommand.addCommand(new Command('poll')
     });
 
     if (totalInserted > 0) {
-      console.log(chalk.green('✓') + ` [subscribe poll] inserted ${totalInserted} engram${totalInserted === 1 ? '' : 's'}`);
+      console.log(chalk.green('✓') + ` [subscribe poll] inserted ${totalInserted} event${totalInserted === 1 ? '' : 's'}`);
     } else if (!opts.quiet) {
       console.log(chalk.dim('[subscribe poll] no new events'));
     }

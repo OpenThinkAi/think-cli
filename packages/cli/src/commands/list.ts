@@ -24,7 +24,7 @@ function formatEntry(entry: Entry): string {
 
 function formatEngram(engram: Engram): string {
   const ts = engram.created_at.slice(0, 16).replace('T', ' ');
-  const badge = chalk.green('[engram]'.padEnd(12));
+  const badge = chalk.green('[event]'.padEnd(12));
   return `${chalk.gray(ts)}  ${badge} ${engram.content}`;
 }
 
@@ -51,9 +51,9 @@ export const listCommand = new Command('list')
     const cortex = globalOpts.cortex ?? config.cortex?.active;
 
     if (cortex) {
-      // Read from cortex engram DB
+      // Read from cortex event store
       if (opts.category || opts.tag) {
-        console.log(chalk.yellow('Note: --category and --tag filters are not supported for cortex engrams.'));
+        console.log(chalk.yellow('Note: --category and --tag filters are not supported for cortex events.'));
       }
 
       let since: Date | undefined;
@@ -76,12 +76,12 @@ export const listCommand = new Command('list')
       });
 
       if (engrams.length === 0) {
-        console.log(chalk.dim('No engrams found.'));
+        console.log(chalk.dim('No events found.'));
       } else {
         for (const engram of engrams) {
           console.log(formatEngram(engram));
         }
-        console.log(chalk.dim(`\n${engrams.length} engrams`));
+        console.log(chalk.dim(`\n${engrams.length} events`));
       }
 
       closeCortexDb(cortex);
