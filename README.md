@@ -2,7 +2,7 @@
 
 Local-first CLI that gives AI agents persistent, curated memory.
 
-`@openthink/think` (v1.0.3 at time of writing) — **vector recall**, **write-time compaction**, **resident daemon**. The core reframe: recall is cheap enough to call implicitly on every agent turn. Vectors come from a resident `bge-small-en-v1.5` embedding model (right entries even when vocabulary doesn't overlap). Compaction folds each new memory into a single self-contained line via an LLM call so read time stays sub-100ms. The daemon holds the model in memory and serves CLI calls over a Unix socket — no cold-start per recall. A `UserPromptSubmit` hook and MCP server both talk to the same daemon, providing automatic per-prompt orientation and agent-initiated mid-turn recall. Full design: [docs/think-v3.md](https://github.com/OpenThinkAi/think-cli/blob/main/docs/think-v3.md).
+`@openthink/think` — **vector recall**, **write-time compaction**, **resident daemon**. The core reframe: recall is cheap enough to call implicitly on every agent turn. Vectors come from a resident `bge-small-en-v1.5` embedding model (right entries even when vocabulary doesn't overlap). Compaction folds each new memory into a single self-contained line via an LLM call so read time stays sub-100ms. The daemon holds the model in memory and serves CLI calls over a Unix socket — no cold-start per recall. A `UserPromptSubmit` hook and MCP server both talk to the same daemon, providing automatic per-prompt orientation and agent-initiated mid-turn recall. Full design: [docs/think-v3.md](https://github.com/OpenThinkAi/think-cli/blob/main/docs/think-v3.md).
 
 ## Install
 
@@ -163,8 +163,8 @@ think cortex pull              Pull remote memories to local
 think cortex sync              Push + pull
 think cortex status            Show sync state
 
-think curate                   Run curation (--dry-run to preview)
-think curate --episode <key>   Curate an episode into a narrative memory
+think curate                   Run curation (--dry-run to preview); skips engrams tagged with any episode_key
+think curate --episode <key>   Curate episode-tagged engrams into a narrative memory (required for `think subscribe poll` engrams, which are tagged `subscribe:<kind>`)
 think curate --consolidate     Compress older memories into long-term summary
 think monitor                  Show promoted vs dropped engrams
 think recall <query>           Search memories + engrams
