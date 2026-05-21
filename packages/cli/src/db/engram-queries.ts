@@ -37,6 +37,13 @@ export interface InsertEngramParams {
   decisions?: string[];
 }
 
+/**
+ * @deprecated AGT-390 / think-proxy-events PE-10: the engrams-table write path
+ * is the v2 tier. v3 callers write through the daemon sync RPC (see
+ * `makeSyncCommand` in `src/commands/log.ts`); the daemon-unavailable fallback
+ * and `--episode`/`--context`/`--decision` compat fields still land here.
+ * Remains functional for back-compat. No schema change.
+ */
 export function insertEngram(cortexName: string, params: InsertEngramParams): InsertEngramResult {
   const db = getCortexDb(cortexName);
   const id = uuidv7();

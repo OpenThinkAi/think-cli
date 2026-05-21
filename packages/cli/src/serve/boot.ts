@@ -16,6 +16,17 @@ import { VAULT_KEY_ENV } from './vault/key.js';
 export interface BootConfig {
   port: number;
   pollIntervalSeconds: number;
+  /**
+   * Operator-supplied peer-id override (`think serve --peer-id <value>`).
+   * `undefined` when the flag was not passed — boot resolves to the
+   * persisted value or auto-generates. AGT-385.
+   */
+  peerIdOverride: string | undefined;
+}
+
+export interface BootGuardOptions {
+  /** Override from the `--peer-id` flag on `think serve`. AGT-385. */
+  peerIdOverride?: string;
 }
 
 // 4823 is unregistered by IANA, low-collision in dev environments, and
@@ -26,7 +37,10 @@ const DEFAULT_POLL_INTERVAL_SECONDS = 600;
 
 export class BootGuardError extends Error {}
 
-export function runBootGuards(env: NodeJS.ProcessEnv): BootConfig {
+export function runBootGuards(
+  env: NodeJS.ProcessEnv,
+  opts: BootGuardOptions = {},
+): BootConfig {
   if (!env.THINK_TOKEN) {
     throw new BootGuardError(
       'THINK_TOKEN env var is required (gates /v1/events, /v1/subscriptions, and /v1/subscriptions/:id/credential)',
@@ -46,8 +60,28 @@ export function runBootGuards(env: NodeJS.ProcessEnv): BootConfig {
 
   const port = parsePort(env.PORT);
   const pollIntervalSeconds = parsePollInterval(env.THINK_POLL_INTERVAL_SECONDS);
+  const peerIdOverride = parsePeerIdOverride(opts.peerIdOverride);
 
-  return { port, pollIntervalSeconds };
+  return { port, pollIntervalSeconds, peerIdOverride };
+}
+
+// AGT-385: validate the `--peer-id` flag value at boot rather than at the
+// sqlite write so a typo (whitespace-only, embedded newline) fails fast
+// with a clear message instead of a cryptic SQL error later.
+function parsePeerIdOverride(raw: string | undefined): string | undefined {
+  if (raw === undefined) return undefined;
+  const trimmed = raw.trim();
+  if (trimmed.length === 0) {
+    throw new BootGuardError(
+      '--peer-id must be a non-empty string (got whitespace-only value)',
+    );
+  }
+  if (/[\s\r\n\t]/.test(trimmed)) {
+    throw new BootGuardError(
+      `--peer-id must not contain whitespace, got ${JSON.stringify(raw)}`,
+    );
+  }
+  return trimmed;
 }
 
 function parsePort(raw: string | undefined): number {

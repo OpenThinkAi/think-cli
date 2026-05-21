@@ -34,6 +34,27 @@ export interface PollContext<TCursor = unknown> {
   cursor: TCursor | null;
 }
 
+/**
+ * Connectors emit **only terminal events** — events that represent a
+ * settled state on the source side (PR merged, ticket closed, transcript
+ * finalized, etc.). Closure logic is the connector's responsibility:
+ * the connector decides when its source-side artifact is "done" and only
+ * then calls back into the framework with an `EventInput`.
+ *
+ * The proxy enforces this contract at ingest. Events that arrive with
+ * `terminal !== true` are logged and dropped — not stored, not curated.
+ * The `terminal` field is a literal `true` rather than a plain boolean
+ * so a future "preview" mode (non-terminal ingest, off by default) can
+ * land as a separate discriminated variant without breaking existing
+ * callers — the current contract requires the field to be present and
+ * to be the literal `true`.
+ *
+ * `episodeKey` is the stable source-event identifier (e.g.
+ * `github:org/repo#536`, `linear:TEAM-123`, `meeting:<uuid>`) that
+ * downstream curated memories group sibling rows under. Two memories
+ * produced from the same multi-topic event share an episode key but
+ * carry distinct ids — they're siblings, not a chain.
+ */
 export interface EventInput {
   /**
    * Stable per-source id. The framework dedups via
@@ -41,6 +62,20 @@ export interface EventInput {
    * replaying a previously-emitted id is harmless.
    */
   id: string;
+  /**
+   * Stable per-source event key. Persisted on the events row and
+   * stamped onto every memory curated from this event so siblings
+   * group together at recall time. Connectors choose the namespace
+   * (`github:`, `linear:`, `meeting:`, `mock:`, …).
+   */
+  episodeKey: string;
+  /**
+   * Marker that this is a terminal event. Phase 1 of the terminal-event
+   * pivot only accepts `true`; the proxy ingest path logs and drops
+   * anything else. See module-level JSDoc for the rationale behind the
+   * literal-type choice.
+   */
+  terminal: true;
   payload: unknown;
 }
 

@@ -157,7 +157,7 @@ describe('think subscribe surface', () => {
     expect(logs.some((l) => l.toLowerCase().includes('no subscriptions'))).toBe(true);
   });
 
-  it('poll inserts events as engrams and persists the cursor', async () => {
+  it('poll --legacy-engrams inserts events as engrams and persists the cursor', async () => {
     if (!cortex) throw new Error('cortex fixture missing');
     const logs: string[] = [];
     vi.spyOn(console, 'log').mockImplementation((line: unknown) => {
@@ -174,7 +174,7 @@ describe('think subscribe surface', () => {
     await proxy.scheduler.tickOnce();
 
     logs.length = 0;
-    await run(['poll']);
+    await run(['poll', '--legacy-engrams']);
 
     // `subscribe poll` closes the cached DB handle on completion; re-open
     // a fresh handle for the assertions.
@@ -199,22 +199,64 @@ describe('think subscribe surface', () => {
     expect(ctx.subscription_id).toBe(subId);
   });
 
-  it('poll --quiet stays silent when no events arrive', async () => {
+  it('poll (default) prints a deprecation warning and does NOT write engrams', async () => {
+    if (!cortex) throw new Error('cortex fixture missing');
+    const logs: string[] = [];
+    vi.spyOn(console, 'log').mockImplementation((line: unknown) => {
+      logs.push(String(line));
+    });
+
+    await run(['add', 'mock', '2', '--accept-data-flow']);
+    const idLine = logs.find((l) => l.includes('id:'))!;
+    const subId = idLine.split('id:')[1]!.trim().replace(/\x1b\[\d+m/g, '');
+    await proxy.scheduler.tickOnce();
+
+    logs.length = 0;
+    await run(['poll']);
+
+    // Deprecation warning + suggest `think pull <team-cortex>` as the replacement.
+    expect(logs.some((l) => /deprecated/i.test(l))).toBe(true);
+    expect(logs.some((l) => /think pull/.test(l))).toBe(true);
+    expect(logs.some((l) => /--legacy-engrams/.test(l))).toBe(true);
+
+    // No engrams were written despite events being available.
+    const db = getCortexDb(cortex.name);
+    const row = db.prepare(`SELECT count(*) AS c FROM engrams WHERE episode_key = ?`).get('subscribe:mock') as { c: number };
+    expect(row.c).toBe(0);
+
+    // Cursor stays unmoved — the deprecated path is a no-op.
+    const cursor = getConfig().subscriptions?.cursors?.[subId];
+    expect(cursor ?? 0).toBe(0);
+  });
+
+  it('poll --quiet stays silent (deprecated path is a no-op under --quiet)', async () => {
+    const logs: string[] = [];
+    vi.spyOn(console, 'log').mockImplementation((line: unknown) => {
+      logs.push(String(line));
+    });
+    // Default (deprecated) path under --quiet must stay silent so the
+    // LaunchAgent doesn't spam users post-migration.
+    await run(['poll', '--quiet']);
+    expect(logs).toEqual([]);
+  });
+
+  it('poll --legacy-engrams --quiet stays silent when no events arrive', async () => {
     const logs: string[] = [];
     vi.spyOn(console, 'log').mockImplementation((line: unknown) => {
       logs.push(String(line));
     });
     // No subscriptions set up — poll has nothing to do.
-    await run(['poll', '--quiet']);
+    await run(['poll', '--legacy-engrams', '--quiet']);
     expect(logs).toEqual([]);
   });
 
-  it('poll without --quiet logs a "no new events" line on a clean run', async () => {
+  it('poll --legacy-engrams without --quiet prints a soft notice + "no new events" on a clean run', async () => {
     const logs: string[] = [];
     vi.spyOn(console, 'log').mockImplementation((line: unknown) => {
       logs.push(String(line));
     });
-    await run(['poll']);
+    await run(['poll', '--legacy-engrams']);
+    expect(logs.some((l) => /--legacy-engrams/.test(l))).toBe(true);
     expect(logs.some((l) => /no new events/.test(l))).toBe(true);
   });
 

@@ -1,5 +1,39 @@
 # Changelog
 
+## [Unreleased]
+
+### Deprecated
+- **`think subscribe poll` default behavior is now a deprecation no-op** (AGT-389, think-proxy-events Phase 3). The pre-think-proxy-events model had every machine poll the proxy and write external events into its own local engrams table, then individually curate them. The new model: the proxy curates centrally and publishes memories to a team cortex; team members `git pull` like any other cortex. The local engram-write path stays available behind a `--legacy-engrams` flag during the migration window so v2 installs don't break.
+
+### Upgrade notes — migrating from local subscribe-poll to proxy-curated cortex pulls
+
+Under the new flow, you no longer poll the proxy and write engrams locally. Instead, the proxy (running `think serve` with connectors enabled) curates terminal events from external sources and pushes memories to a team-shared cortex repo. Each team member adds that cortex to their local install once, and gets future memories via `think pull`.
+
+**One-time migration**:
+
+```sh
+# 1. Add the team cortex (URL provided by whoever runs the proxy).
+think cortex add <team-cortex-name> <git-url>
+
+# 2. Pull existing memories.
+think pull <team-cortex-name>
+
+# 3. Remove the auto-subscribe LaunchAgent that ran `subscribe poll --quiet` every 600s.
+think subscribe disable
+```
+
+**During the migration window** (while some team members are still on the old flow), the legacy path stays available:
+
+```sh
+think subscribe poll --legacy-engrams        # explicit opt-in to the old engram-write path
+```
+
+`--legacy-engrams` prints a soft notice each run so it doesn't quietly become the steady state. The flag will be removed in a future release once all team members have migrated.
+
+**The auto-subscribe LaunchAgent** (`think subscribe install-agent`) continues to invoke `think subscribe poll --quiet`. Under the new default, that's a silent no-op — so installed agents will stop ingesting events without spamming the user. Run `think subscribe disable` to remove the LaunchAgent entirely once you've moved to `think pull <team-cortex>`.
+
+---
+
 ## [1.0.3] — 2026-05-19
 
 ### Changed

@@ -17,7 +17,7 @@ const RETRO_END_MARKER = '<!-- think:retro:end -->';
 // and decisions made in conversation" with "this is not optional"
 // framing — biased toward over-collection of context that often
 // included customer names, internal architecture, and personnel
-// discussions. The privacy paragraph below names the engrams →
+// discussions. The privacy paragraph below names the events →
 // curation → Anthropic data flow so users can choose informedly.
 const WORKLOG_BLOCK = `# Work Logging
 
@@ -32,7 +32,7 @@ think sync "Decided against X because Y" --decision "Decided against X because Y
 
 **Don't log:** conversational deliberation, exploration, failed attempts, reading code, debugging dead ends, clarifying questions, anything that didn't produce a shipped outcome.
 
-**Privacy: where these entries go.** Each \`think sync\` writes a local engram. The curator (\`think curate\`) consolidates engrams into memories; with curator consent granted (\`THINK_LLM_CONSENT=1\` or \`cortex.llmConsent\` in \`~/.config/think/config.json\`), curated content is sent to Anthropic for synthesis. Choose what to log accordingly — anything about customers, internal architecture, or personnel ends up in the same pipeline as anything else. \`think pause\` suppresses engram creation if you need a pause window.
+**Privacy: where these entries go.** Each \`think sync\` writes a local event. The curator (\`think curate\`) consolidates events into memories; with curator consent granted (\`THINK_LLM_CONSENT=1\` or \`cortex.llmConsent\` in \`~/.config/think/config.json\`), curated content is sent to Anthropic for synthesis. Choose what to log accordingly — anything about customers, internal architecture, or personnel ends up in the same pipeline as anything else. \`think pause\` suppresses event creation if you need a pause window.
 
 **How to log:**
 - One entry per shipped outcome, not per tool call or file edit
@@ -56,7 +56,7 @@ When you ship a change, log the outcome:
 think sync "shipped X" --silent
 \`\`\`
 
-That's all. Don't run \`think sync\` for exploration, debugging, decisions that weren't acted on, or anything mid-conversation. Logged entries become engrams; with curator consent granted (\`THINK_LLM_CONSENT=1\`), curated content reaches Anthropic. The minimal template keeps that pipeline narrow by design — augment with the default template (\`think init --yes\`) if you decide you want richer logging later.
+That's all. Don't run \`think sync\` for exploration, debugging, decisions that weren't acted on, or anything mid-conversation. Logged entries become events; with curator consent granted (\`THINK_LLM_CONSENT=1\`), curated content reaches Anthropic. The minimal template keeps that pipeline narrow by design — augment with the default template (\`think init --yes\`) if you decide you want richer logging later.
 `;
 
 // v3 work-log template. Recall is now implicit via the hook + MCP server,
@@ -175,7 +175,7 @@ function buildBlock(oteamPresent: boolean, minimal = false, version: 'v2' | 'v3'
   return `${BEGIN_MARKER}\n${body}${END_MARKER}\n`;
 }
 
-// Pre-write disclosure of the engrams → curation → Anthropic data flow
+// Pre-write disclosure of the events → curation → Anthropic data flow
 // for interactive sessions. Returns true if the user confirms; false to
 // abort. `--yes` and `--minimal` skip this entirely (non-interactive
 // bypass). Non-interactive sessions without a bypass flag refuse with
@@ -190,7 +190,7 @@ async function promptLoggingConfirmation(): Promise<boolean> {
   }
 
   console.log(chalk.yellow(`Heads up: this writes a CLAUDE.md block instructing Claude Code to run \`think sync\` on shipped outcomes.`));
-  console.log(chalk.yellow(`Each \`think sync\` is a local engram. With curator consent (\`THINK_LLM_CONSENT=1\` or`));
+  console.log(chalk.yellow(`Each \`think sync\` is a local event. With curator consent (\`THINK_LLM_CONSENT=1\` or`));
   console.log(chalk.yellow(`\`cortex.llmConsent\`), curated content flows to Anthropic for synthesis.`));
   console.log();
   console.log(chalk.dim(`This template (the non-minimal default) logs shipped outcomes + decisions, no conversational deliberation.`));

@@ -62,4 +62,55 @@ describe('runBootGuards (AGT-029 AC #6)', () => {
       runBootGuards({ THINK_TOKEN: 't', THINK_POLL_INTERVAL_SECONDS: 'x' } as NodeJS.ProcessEnv),
     ).toThrow(/THINK_POLL_INTERVAL_SECONDS/);
   });
+
+  // AGT-385 — `--peer-id` flag plumbed through runBootGuards. The flag
+  // value itself is persisted-or-resolved in `serve/peer-id.ts`, but the
+  // boot guard validates the shape (non-empty, no whitespace) so a
+  // typo'd flag fails before sqlite is touched.
+  describe('--peer-id flag validation (AGT-385)', () => {
+    it('omits the override when the flag is not passed', () => {
+      const cfg = runBootGuards({ THINK_TOKEN: 't' } as NodeJS.ProcessEnv);
+      expect(cfg.peerIdOverride).toBeUndefined();
+    });
+
+    it('accepts a well-formed override', () => {
+      const cfg = runBootGuards(
+        { THINK_TOKEN: 't' } as NodeJS.ProcessEnv,
+        { peerIdOverride: 'proxy-anglepoint' },
+      );
+      expect(cfg.peerIdOverride).toBe('proxy-anglepoint');
+    });
+
+    it('trims surrounding whitespace on the override', () => {
+      const cfg = runBootGuards(
+        { THINK_TOKEN: 't' } as NodeJS.ProcessEnv,
+        { peerIdOverride: '  proxy-x  ' },
+      );
+      expect(cfg.peerIdOverride).toBe('proxy-x');
+    });
+
+    it('rejects a whitespace-only override', () => {
+      expect(() =>
+        runBootGuards(
+          { THINK_TOKEN: 't' } as NodeJS.ProcessEnv,
+          { peerIdOverride: '   ' },
+        ),
+      ).toThrow(/--peer-id/);
+    });
+
+    it('rejects an override with embedded whitespace', () => {
+      expect(() =>
+        runBootGuards(
+          { THINK_TOKEN: 't' } as NodeJS.ProcessEnv,
+          { peerIdOverride: 'proxy with space' },
+        ),
+      ).toThrow(/--peer-id/);
+      expect(() =>
+        runBootGuards(
+          { THINK_TOKEN: 't' } as NodeJS.ProcessEnv,
+          { peerIdOverride: 'proxy\nnewline' },
+        ),
+      ).toThrow(/--peer-id/);
+    });
+  });
 });
