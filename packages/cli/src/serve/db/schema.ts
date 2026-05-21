@@ -147,6 +147,30 @@ export function ensureSchema(db: DatabaseSync): void {
       ON events(episode_key, created_at);
   `);
 
+  // Additive migration: events.curated_at was added with the proxy
+  // event-curator wiring layer (AGT-386, think-proxy-events PE-06).
+  // It records the ISO timestamp at which a terminal event was passed
+  // through the curator + cortex-writer pipeline, and is the dedup
+  // pivot — `processTerminalEvent` no-ops when `curated_at IS NOT NULL`.
+  //
+  // Nullable by design. Existing rows pre-AGT-386 keep `curated_at = NULL`
+  // and remain eligible for a future backfill pass. Going forward, every
+  // event that ingests under the terminal-event model gets curated within
+  // a tick or two and stamps a value here. Older non-terminal rows under
+  // the legacy episode_key (`legacy:<server_seq>`) are NOT eligible for
+  // curation and stay NULL forever — this is intentional and matches the
+  // hard cut-over to terminal-event ingest in PE-02.
+  //
+  // We re-probe rather than reusing the `eventsCols` snapshot above
+  // because the AGT-381 rebuild may have run between then and now and
+  // dropped/recreated the table without `curated_at`.
+  const eventsColsAfter = db
+    .prepare("PRAGMA table_info('events')")
+    .all() as { name: string }[];
+  if (!eventsColsAfter.some((c) => c.name === 'curated_at')) {
+    db.exec('ALTER TABLE events ADD COLUMN curated_at TEXT');
+  }
+
   db.exec(`
     CREATE TABLE IF NOT EXISTS source_credentials (
       subscription_id TEXT PRIMARY KEY NOT NULL,
