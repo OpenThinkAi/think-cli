@@ -476,6 +476,70 @@ describe('createSlackConnector — terminal-event emission', () => {
       'slack:acme:C02:1716700000.000200',
     ]);
   });
+
+  it('surfaces has_more in payload when conversations.replies truncates', async () => {
+    // Slack threads longer than HISTORY_PAGE_SIZE (100) come back with
+    // has_more: true. The connector pages once and surfaces the flag so
+    // downstream consumers can flag the memory as partial.
+    const fetchImpl = makeFetch({
+      routes: [
+        {
+          match: matchMethod('users.conversations'),
+          response: {
+            body: { ok: true, channels: [{ id: 'C01', name: 'long-thread' }] },
+          },
+        },
+        {
+          match: matchMethod('conversations.history'),
+          response: {
+            body: {
+              ok: true,
+              messages: [
+                {
+                  ts: '1717000000.000100',
+                  user: 'U_X',
+                  text: 'long thread root',
+                  reactions: [{ name: 'lock', users: ['U_X'], count: 1 }],
+                },
+              ],
+            },
+          },
+        },
+        {
+          match: matchMethod('conversations.replies'),
+          response: {
+            body: {
+              ok: true,
+              has_more: true,
+              messages: [
+                {
+                  ts: '1717000000.000100',
+                  user: 'U_X',
+                  text: 'long thread root',
+                  reactions: [{ name: 'lock', users: ['U_X'], count: 1 }],
+                },
+                {
+                  ts: '1717000001.000200',
+                  thread_ts: '1717000000.000100',
+                  user: 'U_Y',
+                  text: 'first reply',
+                },
+              ],
+            },
+          },
+        },
+      ],
+    });
+    const connector = createSlackConnector({ fetchImpl, closingReaction: 'lock' });
+    const result = await connector.poll({
+      subscription: SUB,
+      credential: TOKEN,
+      cursor: null,
+    });
+    expect(result.events).toHaveLength(1);
+    const payload = JSON.parse(result.events[0].payload as string) as { has_more: boolean };
+    expect(payload.has_more).toBe(true);
+  });
 });
 
 describe('createSlackConnector — re-poll idempotency', () => {

@@ -236,8 +236,7 @@ export function createSlackConnector(
       exclude_archived: 'true',
       limit: String(CHANNELS_PAGE_SIZE),
     });
-    const channels = (json.channels as SlackChannel[]) ?? [];
-    return Array.isArray(channels) ? channels : [];
+    return (json.channels as SlackChannel[]) ?? [];
   }
 
   async function listChannelHistory(
@@ -248,8 +247,7 @@ export function createSlackConnector(
       channel: channelId,
       limit: String(HISTORY_PAGE_SIZE),
     });
-    const messages = (json.messages as SlackMessage[]) ?? [];
-    return Array.isArray(messages) ? messages : [];
+    return (json.messages as SlackMessage[]) ?? [];
   }
 
   async function listThreadReplies(
@@ -267,10 +265,7 @@ export function createSlackConnector(
     });
     const messages = (json.messages as SlackMessage[]) ?? [];
     const hasMore = json.has_more === true;
-    return {
-      messages: Array.isArray(messages) ? messages : [],
-      hasMore,
-    };
+    return { messages, hasMore };
   }
 
   function isThreadRoot(msg: SlackMessage): boolean {
@@ -357,7 +352,9 @@ export function createSlackConnector(
     ctx: PollContext<SlackCursor>,
   ): Promise<PollResult<SlackCursor>> {
     if (!ctx.credential) {
-      throw new Error('slack connector: missing credential (store a bot token via vault)');
+      throw new Error(
+        'slack connector: missing credential — run `think serve creds add slack <pattern>` to store a bot token',
+      );
     }
     const workspace = parsePattern(ctx.subscription.pattern);
     const token = ctx.credential;
@@ -400,6 +397,14 @@ export function createSlackConnector(
     // Probe `auth.test` — cheapest authenticated endpoint, returns
     // workspace/team metadata. 200 + `ok: true` → good token; any other
     // shape → surface the error code.
+    //
+    // NOTE: This path uses `fetchImpl` directly (not `slackFetch`) so a 429
+    // here falls into the generic catch below and surfaces as
+    // `ok: false, detail: 'slack verify failed: ...'` rather than as a
+    // typed `SlackRateLimitError`. Intentional — credential setup is not
+    // the poll hot path, and operators triggering this manually will see
+    // the underlying error in `detail`. Don't "fix" by routing through
+    // `slackFetch` without also reshaping the return type.
     if (credential.length === 0) {
       return { ok: false, detail: 'slack requires a non-empty bot token' };
     }
