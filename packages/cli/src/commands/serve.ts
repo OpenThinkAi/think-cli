@@ -129,13 +129,17 @@ serveCommand
           `warning: kind '${kind}' has no registered connector — subscription created but will not be polled until a matching connector is installed.`,
         );
       }
-      // Reminder hint for `github` only because it's the only kind that
-      // requires a credential to actually fetch anything. The mock
-      // connector ignores the credential, and future kinds get their
-      // own hints when they land.
+      // Reminder hints for kinds that actually need a credential. The
+      // mock connector ignores credentials so we stay quiet for it. The
+      // env-var name follows the `$THINK_<KIND>_PAT` convention enforced
+      // by `creds add` (see kind-specific env lookup below).
       if (kind === 'github') {
         console.log(
           `note: add a PAT with \`think serve creds add github ${pattern}\` (reads from stdin or $THINK_GITHUB_PAT).`,
+        );
+      } else if (kind === 'linear') {
+        console.log(
+          `note: add a Linear personal API key with \`think serve creds add linear ${pattern}\` (reads from stdin or $THINK_LINEAR_PAT). Generate one at https://linear.app/settings/account/security.`,
         );
       }
     } finally {

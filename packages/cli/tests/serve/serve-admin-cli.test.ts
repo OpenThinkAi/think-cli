@@ -108,9 +108,14 @@ describe('think serve subscribe (AGT-388 AC #2)', () => {
     db.close();
   });
 
-  it('hints at `creds add` only for github (other kinds get no hint)', async () => {
+  it('hints at `creds add` only for kinds that need a credential (mock gets no hint)', async () => {
     await findSub('subscribe').parseAsync(['node', 'subscribe', 'github', 'octo/widget']);
     expect(getOutput()).toMatch(/creds add github octo\/widget/);
+
+    logSpy.mockClear();
+    await findSub('subscribe').parseAsync(['node', 'subscribe', 'linear', 'ENG']);
+    expect(getOutput()).toMatch(/creds add linear ENG/);
+    expect(getOutput()).toMatch(/THINK_LINEAR_PAT/);
 
     logSpy.mockClear();
     await findSub('subscribe').parseAsync(['node', 'subscribe', 'mock', 'whatever']);
