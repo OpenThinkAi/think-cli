@@ -145,6 +145,13 @@ serveCommand
         console.log(
           `note: add a Granola API key with \`think serve creds add meeting ${pattern}\` (reads from stdin or $THINK_MEETING_PAT). Generate one at https://app.granola.ai/settings (Developer / API).`,
         );
+      } else if (kind === 'slack') {
+        console.log(
+          `note: add a bot token with \`think serve creds add slack ${pattern}\` (reads from stdin or $THINK_SLACK_PAT).`,
+        );
+        console.log(
+          `note: the closing-reaction convention is read from $THINK_SLACK_CLOSING_REACTION (default \`lock\`).`,
+        );
       }
     } finally {
       db.close();

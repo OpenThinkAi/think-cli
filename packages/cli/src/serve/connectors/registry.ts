@@ -2,6 +2,7 @@ import { createGitHubConnector } from './github.js';
 import { createLinearConnector } from './linear.js';
 import { createMeetingConnector } from './meeting.js';
 import { mockConnector } from './mock.js';
+import { createSlackConnector } from './slack.js';
 import type { SourceConnector } from './types.js';
 
 /**
@@ -17,22 +18,29 @@ import type { SourceConnector } from './types.js';
  * `meeting` (AGT-393) emits one terminal event per finalized meeting
  * transcript; v1 ships the Granola provider against a `<provider>`
  * pattern.
+ * `slack` (AGT-394) emits one terminal event per thread the team marks
+ * settled via a designated closing reaction on the thread root; the
+ * subscription pattern is a workspace label.
  */
 export type ConnectorRegistry = Map<string, SourceConnector>;
 
 export function buildDefaultRegistry(): ConnectorRegistry {
   const registry: ConnectorRegistry = new Map();
   registry.set(mockConnector.kind, mockConnector);
-  // The github, linear, and meeting connectors take no runtime dependencies
-  // at construction — they pull their credential from `ctx.credential` on
-  // each poll. One default instance per kind services every subscription
-  // of that kind.
+  // The github, linear, meeting, and slack connectors take no runtime
+  // dependencies at construction — they pull their credential from
+  // `ctx.credential` on each poll. One default instance per kind services
+  // every subscription of that kind. Slack additionally reads its closing-
+  // reaction convention from `THINK_SLACK_CLOSING_REACTION` at construction
+  // (default `lock`).
   const github = createGitHubConnector();
   registry.set(github.kind, github);
   const linear = createLinearConnector();
   registry.set(linear.kind, linear);
   const meeting = createMeetingConnector();
   registry.set(meeting.kind, meeting);
+  const slack = createSlackConnector();
+  registry.set(slack.kind, slack);
   return registry;
 }
 

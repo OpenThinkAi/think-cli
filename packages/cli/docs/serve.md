@@ -102,11 +102,19 @@ Polls within a tick run **serially**: `node:sqlite` is `DatabaseSync` so JS-leve
 
 `subscriptions.last_polled_at` is bumped on poll success **and** on every `GET /v1/events` read (see Storage), so it's a "most recent activity" signal rather than a "last successful poll" signal — a recent CLI read keeps the timestamp fresh even if the scheduler-side poll has been failing. Failure-only diagnosis should consult the per-tick scheduler logs (and, eventually, a tick-report endpoint when one lands).
 
-Registered connector kinds in 0.5.0:
+Registered connector kinds:
 
 - **`mock`** — synthetic event generator used by the e2e test. Pattern `"N"` where N is an integer ≥ 1 emits N events per poll with monotonic ids; anything else (non-integer, `"0"`, negatives, empty string) emits 1. Cursor is `{ count: number }`. Implements `verifyCredential` as a non-empty-string check so the credential-test endpoint has a kind to exercise without needing a live source.
+- **`github`** (AGT-387/388) — emits terminal events for PR merges, PR closes (unmerged), issue closures, and release publications against a `<owner>/<repo>` pattern. Cursor combines an `issuesSince` ISO timestamp (advanced 1ms past the newest row to avoid the GitHub `since=` boundary) and an `emittedReleaseIds` FIFO set. Implements `verifyCredential` via `/user`.
+- **`slack`** (AGT-394) — emits one terminal event per thread the team marks settled via a designated closing reaction on the thread root. Subscription `pattern` is a workspace label (free-form, used only in `episodeKey`). The closing reaction is configured via the `THINK_SLACK_CLOSING_REACTION` env var (default `lock`; bare name, no colons — `:lock:` is accepted and normalized). Per poll: `users.conversations` (channels the bot is in) → `conversations.history` (most recent page per channel) → for any thread root carrying the closing reaction, `conversations.replies` to fetch the full thread → emit `slack:<workspace>:<channel>:<thread-ts>`. Cursor is a FIFO `emittedThreadKeys` set; below the cap, dedup falls through to `events_sub_id_unique`. Implements `verifyCredential` via `auth.test`.
 
-The GitHub connector — first real-world target after `mock` — has a forward-looking design sketch at [`serve-design/connectors-github.md`](./serve-design/connectors-github.md), covering per-endpoint cursors, conditional-GET headers, rate-limit handling, and multi-endpoint fan-out. The live implementation lands in AGT-029+ alongside credential storage; until then `mock` is the only registered kind.
+### Adopting the Slack closing-emoji convention
+
+Slack threads have no native "closed" state — the team opts in by declaring a convention. After `think serve subscribe slack <workspace-label>` and `think serve creds add slack <workspace-label>` (which reads the bot token from `$THINK_SLACK_PAT` or stdin), tell the team:
+
+> When a thread is settled and you want it curated, add the **:lock:** reaction to the **root message** of the thread. The bot will fetch the whole thread on the next poll tick and curate it. (To use a different emoji, set `THINK_SLACK_CLOSING_REACTION=<bare-name>` on the proxy and restart.)
+
+The bot must be **invited to each channel** you want to capture from — Slack's permission model means `users.conversations` returns only channels the bot is a member of. Required scopes on the bot token: `channels:history`, `groups:history`, `channels:read`, `groups:read`, `reactions:read`, and `users:read` if you later enable name resolution. Teams that don't adopt the convention get nothing — no central infrastructure burden, no spurious events.
 
 Read endpoints (`GET /v1/events`, `GET /v1/subscriptions/...`) are unchanged and unaware of the scheduler — connectors and consumers stay decoupled through the events table.
 
