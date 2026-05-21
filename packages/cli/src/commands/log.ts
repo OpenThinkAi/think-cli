@@ -12,42 +12,63 @@ import { connectDaemon, DaemonUnavailableError } from '../lib/daemon-client.js';
 import type { SyncResult as DaemonSyncResult } from '../daemon/sync-handler.js';
 import { addWriteOptions, extractWriteOpts } from '../lib/write-options.js';
 
-export const logCommand = new Command('log')
-  .description('Log a note or entry')
-  .argument('<message>', 'The message to log')
-  .option('-s, --source <source>', 'Source of the entry', 'manual')
-  .option('-c, --category <category>', 'Category: note, sync, meeting, decision, idea', 'note')
-  .option('-t, --tags <tags>', 'Comma-separated tags')
-  .option('--silent', 'Suppress output')
-  .action((message: string, opts: { source: string; category: string; tags?: string; silent?: boolean }) => {
-    const validated = validateEngramContent(message);
-    message = validated.content;
-    if (!opts.silent && validated.warnings.length > 0) {
-      for (const w of validated.warnings) {
-        console.log(chalk.yellow(`  ⚠ ${w}`));
+/**
+ * @deprecated AGT-390 / think-proxy-events PE-10: `think log` is the v2-engram
+ * tier entry point. `think sync` is the v3 replacement. The command still
+ * functions and prints a deprecation notice to stderr on each invocation.
+ * Factory returns a fresh Command per call so tests can build their own
+ * program (mirrors `makeSyncCommand`).
+ */
+export function makeLogCommand(): Command {
+  return new Command('log')
+    .description('Log a note or entry (deprecated — use `think sync`)')
+    .argument('<message>', 'The message to log')
+    .option('-s, --source <source>', 'Source of the entry', 'manual')
+    .option('-c, --category <category>', 'Category: note, sync, meeting, decision, idea', 'note')
+    .option('-t, --tags <tags>', 'Comma-separated tags')
+    .option('--silent', 'Suppress output')
+    .action((message: string, opts: { source: string; category: string; tags?: string; silent?: boolean }) => {
+      // AGT-390: Surface the v2→v3 migration on every invocation. Stderr so
+      // callers capturing stdout don't embed the notice in parsed output.
+      // --silent suppresses it (matches the --no-sync deprecation pattern
+      // and keeps CLAUDE.md auto-logging quiet).
+      if (!opts.silent) {
+        process.stderr.write(
+          chalk.yellow('  warning: `think log` is deprecated; use `think sync` instead (v3 replacement)\n')
+        );
       }
-    }
 
-    const tags = opts.tags ? opts.tags.split(',').map(t => t.trim()) : undefined;
-    const entry = insertEntry({
-      content: message,
-      source: opts.source,
-      category: opts.category,
-      tags,
+      const validated = validateEngramContent(message);
+      message = validated.content;
+      if (!opts.silent && validated.warnings.length > 0) {
+        for (const w of validated.warnings) {
+          console.log(chalk.yellow(`  ⚠ ${w}`));
+        }
+      }
+
+      const tags = opts.tags ? opts.tags.split(',').map(t => t.trim()) : undefined;
+      const entry = insertEntry({
+        content: message,
+        source: opts.source,
+        category: opts.category,
+        tags,
+      });
+
+      if (!opts.silent) {
+        const catBadge = chalk.dim(`[${entry.category}]`);
+        const ts = chalk.gray(entry.timestamp.slice(0, 16).replace('T', ' '));
+        console.log(`${chalk.green('✓')} Logged ${catBadge} ${ts}`);
+        console.log(`  ${entry.content}`);
+        if (tags && tags.length > 0) {
+          console.log(`  ${chalk.cyan('tags:')} ${tags.join(', ')}`);
+        }
+      }
+
+      closeDb();
     });
+}
 
-    if (!opts.silent) {
-      const catBadge = chalk.dim(`[${entry.category}]`);
-      const ts = chalk.gray(entry.timestamp.slice(0, 16).replace('T', ' '));
-      console.log(`${chalk.green('✓')} Logged ${catBadge} ${ts}`);
-      console.log(`  ${entry.content}`);
-      if (tags && tags.length > 0) {
-        console.log(`  ${chalk.cyan('tags:')} ${tags.join(', ')}`);
-      }
-    }
-
-    closeDb();
-  });
+export const logCommand = makeLogCommand();
 
 // Factory returns a fresh Command instance per call. Tests build a new program
 // per test and need an unparented sync command; production calls it once at
