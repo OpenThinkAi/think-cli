@@ -2,7 +2,7 @@
 
 Local-first CLI that gives AI agents persistent, curated memory.
 
-`@openthink/think@1.0.0` — **vector recall**, **write-time compaction**, **resident daemon**. The core reframe: recall is cheap enough to call implicitly on every agent turn. Vectors come from a resident `bge-small-en-v1.5` embedding model (right entries even when vocabulary doesn't overlap). Compaction folds each new memory into a single self-contained line via an LLM call so read time stays sub-100ms. The daemon holds the model in memory and serves CLI calls over a Unix socket — no cold-start per recall. A `UserPromptSubmit` hook and MCP server both talk to the same daemon, providing automatic per-prompt orientation and agent-initiated mid-turn recall. Full design: [docs/think-v3.md](https://github.com/OpenThinkAi/think-cli/blob/main/docs/think-v3.md).
+`@openthink/think` (v1.0.3 at time of writing) — **vector recall**, **write-time compaction**, **resident daemon**. The core reframe: recall is cheap enough to call implicitly on every agent turn. Vectors come from a resident `bge-small-en-v1.5` embedding model (right entries even when vocabulary doesn't overlap). Compaction folds each new memory into a single self-contained line via an LLM call so read time stays sub-100ms. The daemon holds the model in memory and serves CLI calls over a Unix socket — no cold-start per recall. A `UserPromptSubmit` hook and MCP server both talk to the same daemon, providing automatic per-prompt orientation and agent-initiated mid-turn recall. Full design: [docs/think-v3.md](https://github.com/OpenThinkAi/think-cli/blob/main/docs/think-v3.md).
 
 ## Install
 
@@ -33,22 +33,29 @@ think summary --last-week --raw   # raw entries, no AI
 
 ## A nervous system for your AI brain
 
-think turns your work into sensory input for your AI brain. Engrams are the raw signals — every `think sync` is a sensory trace. The curator is consolidation: it weighs engrams, promotes what matters into memories, and drops the rest. Memories live in a folder you control.
+think turns your work into persistent memory for your AI. Every `think sync` writes a memory directly to local SQLite. Memories live in a folder you control and propagate across the machines you own via whatever file-sync tool you already use.
 
 ```
-  one machine                                  another machine you own
-  ───────────                                  ───────────────────────
-  engrams → curator → memories ⇢ ~/your/folder ⇠ memories ← curator ← engrams
-            (local AI)            (synced via                          (local AI)
-                                   iCloud / Dropbox /
-                                   Syncthing / …)
+  one machine                                              another machine you own
+  ───────────                                              ───────────────────────
+  think sync → memories ⇢ ~/your/folder ⇠ memories ← think sync
+                          (synced via
+                           iCloud / Dropbox /
+                           Syncthing / …)
 ```
 
-All reads and writes go to local SQLite. Engrams never leave the machine — only curated memories land in the folder. Point that folder at a sync tool you already use, and your AI's memory follows you across machines. No server. No relay. The folder is the propagation layer.
+Two side channels also exist for cases where you want a triage step before content reaches the memory tier:
+
+- **`think subscribe poll`** ingests events from external sources (GitHub, Linear, …) via the `think serve` proxy. Each polled event becomes an engram — a deferred-decision write that the curator can later promote into a memory.
+- **`think log`** is the v2-era write command, kept for back-compat. Like subscribe, it produces engrams that the curator triages.
+
+The curator (`think curate`) is the optional triage step that promotes worthy engrams into memories. It does NOT run on `think sync` writes — those are already memories.
+
+All reads and writes go to local SQLite. Engrams never leave the machine. Only memories land in the cortex folder and propagate across machines. No server. No relay. The folder is the propagation layer.
 
 ## Cortex — your AI's memory folder
 
-A cortex is the workspace where your AI's memories live: a local SQLite database for engrams, plus a folder of JSONL files for the consolidated memories that persist.
+A cortex is the workspace where your AI's memories live: a local SQLite database holding memories, engrams, long-term events, and sync state, plus a folder of JSONL files that serves as the propagation layer between machines.
 
 ```bash
 # Set up (once) — point cortex at any folder; created if it doesn't exist
@@ -114,7 +121,7 @@ Re-curating after new rounds updates the existing narrative rather than creating
 ### Privacy
 
 ```bash
-think pause    # suppress engram creation (silent no-op)
+think pause    # suppress all writes (sync / log / event / subscribe poll silently no-op)
 think resume   # re-enable
 ```
 
@@ -129,7 +136,7 @@ think curator show    # print current guidance
 
 ## Data
 
-- **Cortex DB:** `~/.think/engrams/<cortex>.db` (engrams, memories, sync state — all in one SQLite file)
+- **Cortex DB:** `~/.think/index/<cortex>.db` (memories, engrams, long-term events, sync state — all in one SQLite file). The directory was renamed from `engrams/` in v3; a one-time auto-migration runs on first launch if the legacy path is detected.
 - **Config:** `~/.config/think/config.json`
 - **Curator guidance:** `~/.think/curator.md`
 - **Entries (no cortex):** `~/.local/share/think/think.db`
@@ -166,8 +173,8 @@ think pull <cortex>            Read memories from another cortex
 
 think curator edit             Edit personal curator guidance
 think curator show             Show current guidance
-think pause                    Suppress engram creation
-think resume                   Re-enable engram creation
+think pause                    Suppress all writes (sync / log / event / subscribe poll silently no-op)
+think resume                   Re-enable writes
 
 think migrate-data             Import existing git memories into local SQLite
 think init                     Set up CLAUDE.md for auto-logging
@@ -201,8 +208,10 @@ think subscribe status               Show LaunchAgent state
 
 `think serve` boots an HTTP backend that connects to GitHub, Linear, etc. and
 fans their events into per-subscription queues. A local `think` install pulls
-those events with `think subscribe poll`, writing one engram per event so the
-existing curator pipeline can consolidate them.
+those events with `think subscribe poll`, writing one engram per event tagged
+with `episode_key = subscribe:${kind}`. To turn those engrams into a narrative
+memory, run `think curate --episode subscribe:<kind>` — regular `think curate`
+skips episode-tagged engrams.
 
 The proxy is optional — you only need it if you want events from external
 sources flowing into your memory. Local logging (`think sync`, `think recall`,
@@ -249,7 +258,7 @@ Full endpoint reference, threat model, and operator runbook live at
 
 See [SECURITY.md](./SECURITY.md) for the full threat model and vulnerability disclosure process. A few points worth surfacing up-front:
 
-- **Pulled engrams from peers are untrusted content.** When you pull a cortex from another peer, the memories that land in your local DB were written by them. We escape `<data>` delimiters when feeding those memories to your Claude agent, and pattern-match a short list of common injection phrasings, but this is opportunistic warning, not a security boundary. A malicious peer can trivially bypass with paraphrase, translation, or novel phrasing. **Treat a cortex peer with the same trust level you'd give any other source of data your AI agent will read — do not add a cortex peer you don't trust.**
+- **Pulled memories from peers are untrusted content.** When you pull a cortex from another peer, the memories (and retros and long-term events — engrams stay local-only and never cross peers) that land in your local DB were written by them. We escape `<data>` delimiters when feeding those memories to your Claude agent, and pattern-match a short list of common injection phrasings, but this is opportunistic warning, not a security boundary. A malicious peer can trivially bypass with paraphrase, translation, or novel phrasing. **Treat a cortex peer with the same trust level you'd give any other source of data your AI agent will read — do not add a cortex peer you don't trust.**
 - **`cortex.repo` is security-sensitive configuration.** `think cortex setup` validates the URL shape on input, but if you edit `~/.config/think/config.json` by hand (or follow a tutorial that tells you to), a malformed URL can give an attacker code execution the next time you run a cortex-syncing command. Accepted prefixes: `https://` (preferred), `ssh://`, `git://`, `<user>@<host>:<path>` (ssh shortcut — any username and hostname, e.g. `git@github.com:org/repo.git` or `gitlab@self-hosted.example:group/repo.git`), and `http://` (permitted but not recommended — traffic is unencrypted).
 - **Upgrade compatibility note.** Prior versions did not validate `cortex.repo` on read. If you configured a `file://` URL or a bare filesystem path for local testing, you'll see a clear error on the next cortex operation after upgrading — those forms are no longer accepted. Re-run `think cortex setup` with one of the supported transports, or edit `config.json` to remove the `repo` field for offline-only mode.
 - **`THINK_NO_UPDATE_CHECK`** disables the once-per-24-hours `npm view @openthink/think` call that powers the update banner. Set to any of `1`, `true`, or `yes` (case-insensitive). Useful for air-gapped machines, privacy-sensitive environments, or CI where outbound network calls aren't desirable.
