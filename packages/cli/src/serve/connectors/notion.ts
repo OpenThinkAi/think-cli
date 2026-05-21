@@ -506,23 +506,30 @@ export function createNotionConnector(
     return all.filter((p) => p.last_edited_time > lastEditedTime);
   }
 
-  async function fetchBlockChildren(token: string, blockId: string): Promise<NotionBlock[]> {
+  async function fetchBlockChildren(
+    token: string,
+    blockId: string,
+  ): Promise<{ blocks: NotionBlock[]; truncated: boolean }> {
     // TODO(pagination): Single-page fetch. Pages with >100 top-level blocks
     // get their tail dropped; the head still curates. Recurses one level for
     // blocks marked `has_children`. Deep nesting (>1 level beyond root) is
-    // followed via the recursive call.
+    // followed via the recursive call. `truncated` is surfaced upward so the
+    // caller can flag a partial event payload (downstream consumers — and the
+    // curator — get to know the page content may be incomplete).
     const json = (await notionFetch(
       token,
       `/v1/blocks/${blockId}/children?page_size=${PAGE_SIZE}`,
     )) as NotionBlockList;
     const blocks = Array.isArray(json.results) ? json.results : [];
+    let truncated = json.has_more === true;
     for (const b of blocks) {
       if (b.has_children) {
-        const kids = await fetchBlockChildren(token, b.id);
-        (b as { _children?: NotionBlock[] })._children = kids;
+        const child = await fetchBlockChildren(token, b.id);
+        (b as { _children?: NotionBlock[] })._children = child.blocks;
+        if (child.truncated) truncated = true;
       }
     }
-    return blocks;
+    return { blocks, truncated };
   }
 
   async function emitForCanonicalPage(
@@ -530,7 +537,7 @@ export function createNotionConnector(
     p: ParsedPattern,
     page: NotionPage,
   ): Promise<EventInput> {
-    const blocks = await fetchBlockChildren(token, page.id);
+    const { blocks, truncated } = await fetchBlockChildren(token, page.id);
     const content = serializeBlocks(blocks);
     return {
       id: eventIdFor(p, page),
@@ -551,6 +558,9 @@ export function createNotionConnector(
         last_edited_by: page.last_edited_by?.id ?? null,
         archived: page.archived ?? false,
         content,
+        // True if ANY block-fetch in the recursive walk hit `has_more`.
+        // Curator + downstream consumers can flag the memory as partial.
+        content_truncated: truncated,
         final_state: 'canonical',
       }),
     };
