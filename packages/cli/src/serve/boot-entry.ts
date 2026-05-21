@@ -4,10 +4,20 @@ import { createApp } from './app.js';
 import { BootGuardError, runBootGuards } from './boot.js';
 import { buildDefaultRegistry } from './connectors/registry.js';
 import { openDb } from './db.js';
+import { getProxyPeerId } from './peer-id.js';
 import { createScheduler } from './scheduler/index.js';
 import { createVault } from './vault/index.js';
 import { loadVaultKey } from './vault/key.js';
 import { VERSION } from './version.js';
+
+export interface RunServeOptions {
+  /**
+   * Operator-supplied proxy peer-id override (`think serve --peer-id <v>`).
+   * Persisted to sqlite so subsequent restarts without the flag pick up
+   * the same id. AGT-385.
+   */
+  peerIdOverride?: string;
+}
 
 /**
  * Boot entrypoint for the proxy. Imported lazily from the `think serve`
@@ -18,14 +28,14 @@ import { VERSION } from './version.js';
  * import. v0.5.0 wraps the same logic in `runServe()` so the CLI command
  * controls the boot lifecycle.
  */
-export async function runServe(): Promise<void> {
+export async function runServe(opts: RunServeOptions = {}): Promise<void> {
   const RAW_DB_PATH = process.env.THINK_DB_PATH ?? './open-think.sqlite';
   // `:memory:` is a SQLite sentinel, not a filesystem path — leave it alone.
   const DB_PATH = RAW_DB_PATH === ':memory:' ? RAW_DB_PATH : path.resolve(RAW_DB_PATH);
 
   let cfg;
   try {
-    cfg = runBootGuards(process.env);
+    cfg = runBootGuards(process.env, { peerIdOverride: opts.peerIdOverride });
   } catch (err) {
     if (err instanceof BootGuardError) {
       console.error(`boot failed: ${err.message}`);
@@ -38,11 +48,19 @@ export async function runServe(): Promise<void> {
   const vault = createVault(vaultKey);
 
   const db = openDb(DB_PATH);
+
+  // AGT-385: resolve the proxy peer-id once at boot — flag override → wins,
+  // persisted row → reuse, else generate + persist. Downstream cortex-writer
+  // / curator modules (AGT-384, PE-04) read this off the boot context
+  // instead of re-resolving per-write.
+  const peerId = getProxyPeerId(db, { override: cfg.peerIdOverride });
+
   const registry = buildDefaultRegistry();
   const app = createApp({ db, vault, registry });
   const server = serve({ fetch: app.fetch, port: cfg.port });
   console.log(`open-think serve v${VERSION} listening on :${cfg.port}`);
   console.log(`[open-think serve] sqlite at ${DB_PATH}`);
+  console.log(`[open-think serve] proxy peer-id: ${peerId}`);
 
   const scheduler = createScheduler({
     db,

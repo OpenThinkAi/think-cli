@@ -72,4 +72,22 @@ export function ensureSchema(db: DatabaseSync): void {
       FOREIGN KEY (subscription_id) REFERENCES subscriptions(id) ON DELETE CASCADE
     ) STRICT;
   `);
+
+  // `proxy_kv` (added in AGT-385) is a small key-value table for proxy-wide
+  // persisted state that doesn't fit naturally on any of the resource tables.
+  // First user: `peer_id` — the single stable identity the proxy stamps on
+  // every memory it writes into the team cortex (see `serve/peer-id.ts` and
+  // the think-proxy-events project). Future entries (e.g. cortex name once
+  // PE-00 lands) can land in the same table without another schema bump.
+  //
+  // We chose sqlite over a sidecar JSON file because (a) `THINK_DB_PATH`
+  // already covers operator override / persistence semantics, and (b) all
+  // other proxy state already lives here so backup/restore is one file.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS proxy_kv (
+      key TEXT PRIMARY KEY NOT NULL,
+      value TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    ) STRICT;
+  `);
 }
