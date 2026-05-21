@@ -52,6 +52,17 @@ Event `payload` is **connector-defined** — the server stores `payload_json` op
 
 `events.episode_key` lands with the terminal-event pivot (AGT-381). Existing DBs are migrated additively: the column lands nullable, every existing row is backfilled to `legacy:<server_seq>`, then the table is rebuilt to enforce `NOT NULL` going forward. `server_seq` values are preserved across the rebuild so existing `?since=` cursors keep paginating from where consumers left off.
 
+## Connector contract: terminal events only
+
+Connectors emit **only terminal events** — events that represent a settled state on the source side (PR merged, ticket closed, transcript finalized, release published). Closure logic lives inside each connector; the connector decides when its source-side artifact is "done" and only then calls back into the framework with an `EventInput`. Each `EventInput` carries:
+
+- `id` — stable per-source event id (dedup key with `subscription_id`).
+- `episodeKey` — stable identifier for the source event (`github:owner/repo#123`, `linear:TEAM-123`, `meeting:<uuid>`, …). Curated memories produced from the event group by this key.
+- `terminal: true` — literal marker. Phase 1 of the terminal-event pivot accepts only `true`; the proxy ingest path logs and drops anything else (`events_rejected_non_terminal` in the tick outcome). The literal-type shape leaves room for a future opt-in "preview" mode without disturbing existing callers.
+- `payload` — connector-defined JSON.
+
+Non-terminal emissions are a contract violation: the framework warns to stderr with `kind`, `subscription_id`, and `event_id`, then drops the event. It is not stored, not curated, and does not advance the per-subscription cursor on its own (the connector's reported `nextCursor` is still respected — the connector knows where it got to even if the proxy refused the payload).
+
 ## Running
 
 ```sh

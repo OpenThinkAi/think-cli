@@ -72,10 +72,20 @@ describe('mockConnector', () => {
     expect(result.events[0].payload).toEqual({ seq: 11, subscription_id: 'sub-1' });
   });
 
-  // AGT-381: the mock connector emits a synthetic episode_key
-  // namespaced by the subscription. End-to-end tests rely on this
-  // shape; if it regresses, every downstream test that fires the
-  // mock connector also breaks, so pin it explicitly here.
+  // AGT-381 / AGT-382: the mock connector emits the terminal-event
+  // contract — `terminal: true` on every event and a synthetic
+  // episode_key namespaced by the subscription. End-to-end tests
+  // rely on this shape; if it regresses, every downstream test that
+  // fires the mock connector also breaks, so pin it explicitly here.
+  it('every emitted event is flagged terminal: true', async () => {
+    const result = await mockConnector.poll({
+      subscription: SUB,
+      credential: null,
+      cursor: null,
+    });
+    expect(result.events.every((e) => e.terminal === true)).toBe(true);
+  });
+
   it('every emitted event carries a stable per-event episodeKey', async () => {
     const result = await mockConnector.poll({
       subscription: SUB,
