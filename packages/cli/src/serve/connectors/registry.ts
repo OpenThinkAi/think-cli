@@ -3,6 +3,7 @@ import { createLinearConnector } from './linear.js';
 import { createMeetingConnector } from './meeting.js';
 import { mockConnector } from './mock.js';
 import { createNotionConnector } from './notion.js';
+import { createSlackConnector } from './slack.js';
 import type { SourceConnector } from './types.js';
 
 /**
@@ -21,16 +22,21 @@ import type { SourceConnector } from './types.js';
  * `notion` (AGT-395) emits a terminal event per observation of a page
  * with the team's canonical property asserted (default: a checkbox
  * named `canonical` set to `true`).
+ * `slack` (AGT-394) emits one terminal event per thread the team marks
+ * settled via a designated closing reaction on the thread root; the
+ * subscription pattern is a workspace label.
  */
 export type ConnectorRegistry = Map<string, SourceConnector>;
 
 export function buildDefaultRegistry(): ConnectorRegistry {
   const registry: ConnectorRegistry = new Map();
   registry.set(mockConnector.kind, mockConnector);
-  // The github, linear, meeting, and notion connectors take no runtime
-  // dependencies at construction — they pull their credentials from
+  // The github, linear, meeting, notion, and slack connectors take no
+  // runtime dependencies at construction — they pull their credential from
   // `ctx.credential` on each poll. One default instance per kind services
-  // every subscription of that kind.
+  // every subscription of that kind. Slack additionally reads its closing-
+  // reaction convention from `THINK_SLACK_CLOSING_REACTION` at construction
+  // (default `lock`).
   const github = createGitHubConnector();
   registry.set(github.kind, github);
   const linear = createLinearConnector();
@@ -39,6 +45,8 @@ export function buildDefaultRegistry(): ConnectorRegistry {
   registry.set(meeting.kind, meeting);
   const notion = createNotionConnector();
   registry.set(notion.kind, notion);
+  const slack = createSlackConnector();
+  registry.set(slack.kind, slack);
   return registry;
 }
 
