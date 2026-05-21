@@ -105,14 +105,64 @@ Polls within a tick run **serially**: `node:sqlite` is `DatabaseSync` so JS-leve
 Registered connector kinds:
 
 - **`mock`** — synthetic event generator used by the e2e test. Pattern `"N"` where N is an integer ≥ 1 emits N events per poll with monotonic ids; anything else (non-integer, `"0"`, negatives, empty string) emits 1. Cursor is `{ count: number }`. Implements `verifyCredential` as a non-empty-string check so the credential-test endpoint has a kind to exercise without needing a live source.
-- **`github`** (AGT-387/388) — emits terminal events for PR merges, PR closes (unmerged), issue closures, and release publications against a `<owner>/<repo>` pattern. Cursor combines an `issuesSince` ISO timestamp (advanced 1ms past the newest row to avoid the GitHub `since=` boundary) and an `emittedReleaseIds` FIFO set. Implements `verifyCredential` via `/user`.
-- **`slack`** (AGT-394) — emits one terminal event per thread the team marks settled via a designated closing reaction on the thread root. Subscription `pattern` is a workspace label (free-form, used only in `episodeKey`). The closing reaction is configured via the `THINK_SLACK_CLOSING_REACTION` env var (default `lock`; bare name, no colons — `:lock:` is accepted and normalized). Per poll: `users.conversations` (channels the bot is in) → `conversations.history` (most recent page per channel) → for any thread root carrying the closing reaction, `conversations.replies` to fetch the thread (first 100 messages; `has_more` is surfaced in the payload when truncated) → emit `slack:<workspace>:<channel>:<thread-ts>`. Cursor is a FIFO `emittedThreadKeys` set; below the cap, dedup falls through to `events_sub_id_unique`. Implements `verifyCredential` via `auth.test`.
+- **`github`** (AGT-387) — emits a terminal event for each PR merged, PR closed-unmerged, issue closed, and release published in a subscribed `<owner>/<repo>`. Cursor tracks `updated_at`-since plus a FIFO set of emitted release ids. Credential is a GitHub PAT; `verifyCredential` probes `/user`.
+- **`notion`** (AGT-395) — emits a terminal event each time a Notion page is observed with the team's "canonical" property asserted. See dedicated section below.
+- **`slack`** (AGT-394) — emits one terminal event per thread the team marks settled via a designated closing reaction on the thread root. See dedicated section below.
 
-### Adopting the Slack closing-emoji convention
+The GitHub connector — first real-world target after `mock` — has a forward-looking design sketch at [`serve-design/connectors-github.md`](./serve-design/connectors-github.md), covering per-endpoint cursors, conditional-GET headers, rate-limit handling, and multi-endpoint fan-out.
+
+### Notion connector and the canonical-page convention (AGT-395)
+
+Notion pages are perpetually living — there's no intrinsic "closed" state the proxy can wait for. Capture is opt-in via a **team convention**: a configured page property signals "this doc represents a settled decision — curate it now." The connector polls subscribed Notion databases (or workspaces) for pages where that property is asserted, and emits one terminal event per observation. Subsequent edits that re-assert (or simply preserve) the signal emit fresh events under the same `episodeKey`, so each settled version becomes its own curated memory while recall groups them together.
+
+**Default convention**: a **checkbox property named `canonical`** on each page. Flip it to `true` to mark a doc as settled. Override the property name, type, or option value via the subscription pattern.
+
+**Subscription pattern shapes**:
+
+- `db:<database-uuid>` — query a single Notion database with a server-side `last_edited_time > cursor` filter. **Recommended** when the source-of-truth is a database. Most efficient; canonical-property checks happen on each row.
+- `ws:<alias>` — workspace-scoped search via `POST /v1/search`. `<alias>` is operator-chosen and appears in the `episodeKey` (Notion internal-integration tokens are workspace-scoped, so the token itself selects the workspace). Use when canonical docs live in many different databases or as free-floating pages.
+
+Both forms accept optional query parameters to override defaults:
+
+| Param | Meaning | Default |
+|---|---|---|
+| `prop` | Property name on each page | `canonical` |
+| `type` | One of `checkbox`, `select`, `multi_select` | `checkbox` |
+| `value` | For `select`/`multi_select`, the option name that marks canonical (required) | — |
+
+Examples:
+
+```sh
+# Default: checkbox property "canonical" on each row of a database.
+think serve subscribe notion 'db:abc123def456'
+
+# Status-driven: emit when a "Status" select is set to "Approved".
+think serve subscribe notion 'db:abc123def456?prop=Status&type=select&value=Approved'
+
+# Workspace-wide search using a custom checkbox name.
+think serve subscribe notion 'ws:engineering?prop=publish&type=checkbox'
+
+# Credential stored once per subscription. Same env-var pattern as github:
+THINK_NOTION_PAT='secret_xxx' think serve creds add notion 'db:abc123def456'
+```
+
+**Event shape**: one event per canonical observation.
+
+- `id`: `notion:<scope>:<ref>:<page-id>:<last-edited-iso>` (encodes the edit time so a later re-canonicalization yields a distinct id).
+- `episodeKey`: `notion:<scope>:<ref>:<page-id>` (stable across all canonical observations of the same page; downstream recall groups sibling memories under it).
+- `payload.kind`: `notion.page.canonical`. Includes the page title, canonical property metadata, `last_edited_time`, and a markdown-ish serialization of the page's block tree (headings, paragraphs, lists, todos, code blocks, dividers).
+
+**Cursor strategy**: `{ lastEditedTime }` advances past every page evaluated — including non-canonical ones — so a page whose canonical property never flips never re-polls until it's actually edited again. The proxy's `events_sub_id_unique` index dedups any boundary re-emission within the same edit timestamp.
+
+**Permissions reminder**: the integration token must be invited to the database (database-scoped) or the relevant top-level pages (workspace search) via Notion's "Connections" UI. A token with no shared content will silently return zero results.
+
+### Adopting the Slack closing-emoji convention (AGT-394)
+
+The `slack` connector emits one terminal event per thread the team marks settled via a designated closing reaction on the thread root. Subscription `pattern` is a workspace label (free-form, used only in `episodeKey`). The closing reaction is configured via the `THINK_SLACK_CLOSING_REACTION` env var (default `lock`; bare name, no colons — `:lock:` is accepted and normalized). Per poll: `users.conversations` (channels the bot is in) → `conversations.history` (most recent page per channel) → for any thread root carrying the closing reaction, `conversations.replies` to fetch the thread (first 100 messages; `has_more` is surfaced in the payload when truncated) → emit `slack:<workspace>:<channel>:<thread-ts>`. Cursor is a FIFO `emittedThreadKeys` set; below the cap, dedup falls through to `events_sub_id_unique`. Implements `verifyCredential` via `auth.test`.
 
 Slack threads have no native "closed" state — the team opts in by declaring a convention. After `think serve subscribe slack <workspace-label>` and `think serve creds add slack <workspace-label>` (which reads the bot token from `$THINK_SLACK_PAT` or stdin), tell the team:
 
-> When a thread is settled and you want it curated, add the **:lock:** reaction to the **root message** of the thread. The bot will fetch the whole thread on the next poll tick and curate it. (To use a different emoji, set `THINK_SLACK_CLOSING_REACTION=<bare-name>` on the proxy and restart.)
+> When a thread is settled and you want it curated, add the **:lock:** reaction to the **root message** of the thread. The bot will fetch the thread on the next poll tick and curate it. (To use a different emoji, set `THINK_SLACK_CLOSING_REACTION=<bare-name>` on the proxy and restart.)
 
 The bot must be **invited to each channel** you want to capture from — Slack's permission model means `users.conversations` returns only channels the bot is a member of. Required scopes on the bot token: `channels:history`, `groups:history`, `channels:read`, `groups:read`, `reactions:read`, and `users:read` if you later enable name resolution. Teams that don't adopt the convention get nothing — no central infrastructure burden, no spurious events.
 
