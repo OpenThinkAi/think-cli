@@ -147,7 +147,7 @@ serveCommand
         );
       } else if (kind === 'slack') {
         console.log(
-          `note: add a bot token with \`think serve creds add slack ${pattern}\` (reads from stdin or $THINK_SLACK_PAT).`,
+          `note: add a bot token with \`think serve creds add slack ${pattern}\` (reads from stdin or $THINK_SLACK_PAT). See docs/serve.md for bot setup (required scopes: channels:history, groups:history, channels:read, groups:read, reactions:read).`,
         );
         console.log(
           `note: the closing-reaction convention is read from $THINK_SLACK_CLOSING_REACTION (default \`lock\`).`,

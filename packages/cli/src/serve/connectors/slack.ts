@@ -256,14 +256,21 @@ export function createSlackConnector(
     token: string,
     channelId: string,
     threadTs: string,
-  ): Promise<SlackMessage[]> {
+  ): Promise<{ messages: SlackMessage[]; hasMore: boolean }> {
+    // TODO(pagination): Single-page fetch. Threads longer than HISTORY_PAGE_SIZE
+    // (100) get their tail dropped; `has_more` is surfaced in the payload so
+    // downstream consumers (and the curator) can flag the memory as partial.
     const json = await slackFetch(token, 'conversations.replies', {
       channel: channelId,
       ts: threadTs,
       limit: String(HISTORY_PAGE_SIZE),
     });
     const messages = (json.messages as SlackMessage[]) ?? [];
-    return Array.isArray(messages) ? messages : [];
+    const hasMore = json.has_more === true;
+    return {
+      messages: Array.isArray(messages) ? messages : [],
+      hasMore,
+    };
   }
 
   function isThreadRoot(msg: SlackMessage): boolean {
@@ -311,7 +318,7 @@ export function createSlackConnector(
     channel: SlackChannel,
     root: SlackMessage,
   ): Promise<EventInput> {
-    const thread = await listThreadReplies(token, channel.id, root.ts);
+    const { messages: thread, hasMore } = await listThreadReplies(token, channel.id, root.ts);
     // `conversations.replies` returns the root as the first element plus
     // every reply, in chronological order. Empty array would be a Slack
     // bug, but treat defensively: if empty, fall back to the root we
@@ -334,6 +341,10 @@ export function createSlackConnector(
         closing_reaction: closingReaction,
         participants,
         message_count: messages.length,
+        // True when the thread has more replies beyond `HISTORY_PAGE_SIZE`
+        // that we didn't fetch in v1. Curator + downstream consumers can
+        // flag the memory as partial when this is set.
+        has_more: hasMore,
         started_at: tsToIso(firstTs),
         ended_at: tsToIso(lastTs),
         messages: messages.map(shapeMessage),
