@@ -104,6 +104,7 @@ serveCommand
   .action(async (kind: string, pattern: string) => {
     const { openDb } = await import('../serve/db.js');
     const { addSubscription } = await import('../serve/admin.js');
+    const { buildDefaultRegistry } = await import('../serve/connectors/registry.js');
 
     const DB_PATH = resolveDbPath();
     const db = openDb(DB_PATH);
@@ -116,6 +117,16 @@ serveCommand
       } else {
         console.log(
           `already subscribed: kind=${kind} pattern=${pattern} (id=${result.subscription.id})`,
+        );
+      }
+      // Warn loudly when the kind has no registered connector. The row
+      // gets created either way (so it persists across a future plugin
+      // install), but without this hint the scheduler's per-tick warning
+      // lands in server logs the operator may never see.
+      const registry = buildDefaultRegistry();
+      if (!registry.has(kind)) {
+        console.warn(
+          `warning: kind '${kind}' has no registered connector — subscription created but will not be polled until a matching connector is installed.`,
         );
       }
       // Reminder hint for `github` only because it's the only kind that
@@ -169,7 +180,8 @@ credsCommand
   .command('add')
   .description(
     'Store (or replace) a credential for the subscription matching <kind>/<pattern>. ' +
-      'Reads plaintext from $THINK_GITHUB_PAT (for github) or stdin.',
+      'Reads from the kind-specific env var (e.g. $THINK_GITHUB_PAT for github), ' +
+      'then $THINK_CRED_PLAINTEXT, or stdin.',
   )
   .argument('<kind>', 'Connector kind')
   .argument('<pattern>', 'Subscription pattern, e.g. `<owner>/<repo>` for github')
@@ -205,7 +217,7 @@ credsCommand
       const vault = createVault(vaultKey);
       const subId = setSubscriptionCredential(db, vault, kind, pattern, plaintext);
       console.log(
-        `credential stored for kind=${kind} pattern=${pattern} (subscription_id=${subId})`,
+        `credential stored for kind=${kind} pattern=${pattern} (id=${subId})`,
       );
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);

@@ -247,6 +247,11 @@ export function createGitHubConnector(
     p: ParsedPattern,
     since: string | undefined,
   ): Promise<GitHubIssueListItem[]> {
+    // TODO(pagination): Single-page fetch (per_page=100, no Link-header loop).
+    // For repos that close >100 items between poll ticks the tail is silently
+    // deferred to the next tick (the `since` cursor advances past page 1's
+    // newest, so older items beyond position 100 are not re-fetched). Acceptable
+    // for low-volume repos; revisit when we add a connector for a busier source.
     const query: Record<string, string> = {
       state: 'closed',
       sort: 'updated',
@@ -295,6 +300,10 @@ export function createGitHubConnector(
     token: string,
     p: ParsedPattern,
   ): Promise<GitHubRelease[]> {
+    // TODO(pagination): Same single-page caveat as listClosedIssues. Releases
+    // have no `since` parameter; we dedupe via the emitted-id set instead. A
+    // repo that publishes >100 releases between ticks loses the tail until a
+    // future poll picks it up via re-emission (rare in practice for releases).
     const json = (await ghFetch(token, `/repos/${p.owner}/${p.repo}/releases`, {
       query: { per_page: '100' },
     })) as GitHubRelease[];

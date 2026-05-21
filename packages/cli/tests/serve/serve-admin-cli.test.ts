@@ -1,14 +1,13 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { randomBytes } from 'node:crypto';
-import { Readable } from 'node:stream';
 import { serveCommand } from '../../src/commands/serve.js';
 import { openDb } from '../../src/serve/db.js';
 import { createVault } from '../../src/serve/vault/index.js';
 import { addSubscription } from '../../src/serve/admin.js';
-import { DEV_VAULT_KEY_PATH, loadVaultKey } from '../../src/serve/vault/key.js';
+import { loadVaultKey } from '../../src/serve/vault/key.js';
 
 /**
  * End-to-end CLI tests for `think serve subscribe`, `unsubscribe`,

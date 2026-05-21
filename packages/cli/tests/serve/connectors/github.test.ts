@@ -60,20 +60,6 @@ const SUB = { id: 'sub-gh-1', kind: 'github', pattern: 'octo/widget' };
 const TOKEN = 'ghp_test_pat_xxx';
 const BASE = 'https://api.github.com';
 
-function matchPath(method: string, pathFragment: string) {
-  // Match URL prefix ignoring trailing query string. We compare against
-  // the full URL so two endpoints that share a prefix (e.g. `/issues`
-  // and `/issues/1/comments`) don't collide.
-  return (url: string) => {
-    if (!url.startsWith(BASE + pathFragment)) return false;
-    // Reject pathFragment matches that extend past the boundary unless
-    // a `?` or `/` follows — keeps `/issues` from matching `/issues/1`.
-    const tail = url.slice((BASE + pathFragment).length);
-    if (tail.length === 0) return true;
-    return tail.startsWith('?') || tail.startsWith('/');
-  };
-}
-
 function matchExact(pathFragment: string) {
   return (url: string) => {
     const base = BASE + pathFragment;
