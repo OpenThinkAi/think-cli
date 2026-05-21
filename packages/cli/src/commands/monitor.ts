@@ -22,7 +22,7 @@ export const monitorCommand = new Command('monitor')
     const engrams = getEngrams(cortex, { since });
 
     if (engrams.length === 0) {
-      console.log(chalk.dim(`No engrams in the last ${days} days.`));
+      console.log(chalk.dim(`No events in the last ${days} days.`));
       closeCortexDb(cortex);
       return;
     }

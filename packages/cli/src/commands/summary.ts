@@ -23,7 +23,7 @@ function formatRawEngrams(engrams: Engram[]): string {
   return engrams
     .map((e) => {
       const ts = e.created_at.slice(0, 16).replace('T', ' ');
-      return `${ts}  [engram]  ${e.content}`;
+      return `${ts}  [event]  ${e.content}`;
     })
     .join('\n');
 }
@@ -62,7 +62,7 @@ export const summaryCommand = new Command('summary')
     const cortex = globalOpts.cortex ?? config.cortex?.active;
 
     if (cortex) {
-      // Read from cortex engram DB
+      // Read from cortex event store
       let since: Date | undefined;
       if (opts.lastWeek) {
         since = startOfWeek(subWeeks(new Date(), 1), { weekStartsOn: 1 });
@@ -76,13 +76,13 @@ export const summaryCommand = new Command('summary')
 
       try {
         if (engrams.length === 0) {
-          console.log(chalk.dim('No engrams found for the specified period.'));
+          console.log(chalk.dim('No events found for the specified period.'));
           return;
         }
 
         if (opts.raw) {
           console.log(formatRawEngrams(engrams));
-          console.log(chalk.dim(`\n${engrams.length} engrams`));
+          console.log(chalk.dim(`\n${engrams.length} events`));
         } else {
           try {
             console.log(chalk.dim('Generating summary...'));

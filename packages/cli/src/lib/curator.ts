@@ -599,11 +599,11 @@ Do not include markdown, code fences, or explanation outside the JSON.`;
 
 export function assembleEpisodeCurationPrompt(params: {
   episodeKey: string;
-  pendingEngrams: Engram[];
+  pendingEvents: Engram[];
   existingMemory: MemoryEntry | null;
   author: string;
 }): StructuredPrompt {
-  const engramsText = params.pendingEngrams
+  const eventsText = params.pendingEvents
     .map(e => {
       let line = `- [${e.created_at}] ${e.content}`;
       if (e.decisions) {
@@ -626,7 +626,7 @@ export function assembleEpisodeCurationPrompt(params: {
     wrapData('episode-key', params.episodeKey),
     '',
     '## Events (chronological)',
-    wrapData('episode-engrams', engramsText),
+    wrapData('episode-events', eventsText),
   ];
 
   if (params.existingMemory) {

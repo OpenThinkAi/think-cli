@@ -23,7 +23,7 @@ import { acquireCurateLock } from '../lib/curate-lock.js';
 import { LlmConsentError } from '../lib/llm-consent.js';
 
 export const curateCommand = new Command('curate')
-  .description('Run curation: evaluate pending engrams and promote to memories')
+  .description('Run curation: evaluate pending events and promote to memories')
   .option('--dry-run', 'Preview what would be committed without saving')
   .option('--consolidate', 'Run long-term memory consolidation only (no curation)')
   .option('--episode <key>', 'Curate a specific episode into a narrative memory')
@@ -101,7 +101,7 @@ export const curateCommand = new Command('curate')
     if (opts.episode) {
       const episodeEngrams = getPendingEpisodeEngrams(cortex, opts.episode);
       if (episodeEngrams.length === 0) {
-        console.log(chalk.dim(`No pending engrams for episode: ${opts.episode}`));
+        console.log(chalk.dim(`No pending events for episode: ${opts.episode}`));
         closeCortexDb(cortex);
         return;
       }
@@ -119,11 +119,11 @@ export const curateCommand = new Command('curate')
         topics: [],
       } : null;
 
-      console.log(chalk.cyan(`Curating episode: ${opts.episode} (${episodeEngrams.length} engrams${existingMemory ? ', updating existing narrative' : ''})...`));
+      console.log(chalk.cyan(`Curating episode: ${opts.episode} (${episodeEngrams.length} events${existingMemory ? ', updating existing narrative' : ''})...`));
 
       const prompt = assembleEpisodeCurationPrompt({
         episodeKey: opts.episode,
-        pendingEngrams: episodeEngrams,
+        pendingEvents: episodeEngrams,
         existingMemory,
         author,
       });
@@ -131,7 +131,7 @@ export const curateCommand = new Command('curate')
       if (opts.dryRun) {
         console.log();
         console.log(chalk.cyan('Episode prompt would be sent to LLM:'));
-        console.log(chalk.dim(`  ${episodeEngrams.length} engrams, ${existingMemory ? 'updating' : 'creating'} narrative`));
+        console.log(chalk.dim(`  ${episodeEngrams.length} events, ${existingMemory ? 'updating' : 'creating'} narrative`));
         for (const e of episodeEngrams) {
           const ts = e.created_at.slice(0, 16).replace('T', ' ');
           console.log(chalk.dim(`  ${ts}: ${e.content.slice(0, 100)}${e.content.length > 100 ? '...' : ''}`));
@@ -195,7 +195,7 @@ export const curateCommand = new Command('curate')
 
       console.log();
       console.log(`${chalk.green('✓')} Episode curated: ${opts.episode}`);
-      console.log(`  ${episodeEngrams.length} engrams synthesized into narrative`);
+      console.log(`  ${episodeEngrams.length} events synthesized into narrative`);
       closeCortexDb(cortex);
       return;
     }
@@ -251,7 +251,7 @@ export const curateCommand = new Command('curate')
     // 3. Read pending engrams
     const pending = getPendingEngrams(cortex);
     if (pending.length === 0) {
-      console.log(chalk.dim('No pending engrams to evaluate.'));
+      console.log(chalk.dim('No pending events to evaluate.'));
       closeCortexDb(cortex);
       return;
     }
@@ -270,7 +270,7 @@ export const curateCommand = new Command('curate')
       supersedes: r.supersedes,
     }));
 
-    console.log(chalk.cyan(`Evaluating ${pending.length} engrams (${recent.length} recent memories, ${recentEventContext.length} long-term events in context)...`));
+    console.log(chalk.cyan(`Evaluating ${pending.length} events (${recent.length} recent memories, ${recentEventContext.length} long-term events in context)...`));
 
     // 4. Read curator.md
     const curatorMd = readCuratorMd();
@@ -372,7 +372,7 @@ export const curateCommand = new Command('curate')
       });
 
       if (answer === 'n' || answer === 'no') {
-        console.log(chalk.dim('  Aborted. Engrams left as pending.'));
+        console.log(chalk.dim('  Aborted. Events left as pending.'));
         closeCortexDb(cortex);
         return;
       }
@@ -472,7 +472,7 @@ export const curateCommand = new Command('curate')
       console.log(`  ${insertedEvents} long-term event${insertedEvents === 1 ? '' : 's'} recorded`);
     }
     if (pruned > 0) {
-      console.log(`  ${pruned} expired engrams pruned`);
+      console.log(`  ${pruned} expired events pruned`);
     }
 
     closeCortexDb(cortex);
