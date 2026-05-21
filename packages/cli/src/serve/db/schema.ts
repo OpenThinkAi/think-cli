@@ -11,6 +11,13 @@ import type { DatabaseSync } from 'node:sqlite';
  * replaying ids on transient errors. Per-subscription scoping: two
  * different subscriptions can legitimately share an id namespace.
  *
+ * `events.episode_key` (added in the terminal-event pivot, AGT-381) is
+ * the connector-stamped stable identifier that downstream
+ * proxy-curated memories group sibling rows under (e.g.
+ * `github:org/repo#536`, `linear:TEAM-123`, `meeting:<uuid>`).
+ * Index `events_episode_key_ts` on `(episode_key, created_at)` covers
+ * the per-episode lookup the curator and recall hydration use.
+ *
  * `subscriptions.cursor` is opaque per-connector JSON the framework
  * persists verbatim. Stored as TEXT (JSON-encoded) so each connector can
  * pick its own shape — GitHub uses a per-endpoint map, mock uses a count.
@@ -33,11 +40,16 @@ export function ensureSchema(db: DatabaseSync): void {
       cursor TEXT
     ) STRICT;
   `);
+  // Fresh DBs get `episode_key` as a NOT NULL column straight away;
+  // existing-DB migration to add it is handled by the additive ALTER
+  // below. The CREATE TABLE statement here defines the post-migration
+  // shape — pre-migration shapes are handled in the probe block.
   db.exec(`
     CREATE TABLE IF NOT EXISTS events (
       id TEXT NOT NULL,
       subscription_id TEXT NOT NULL,
       payload_json TEXT NOT NULL,
+      episode_key TEXT NOT NULL,
       server_seq INTEGER PRIMARY KEY AUTOINCREMENT,
       created_at TEXT NOT NULL,
       FOREIGN KEY (subscription_id) REFERENCES subscriptions(id) ON DELETE CASCADE
@@ -56,12 +68,84 @@ export function ensureSchema(db: DatabaseSync): void {
   // has no `ADD COLUMN IF NOT EXISTS`, so probe table_info first. Fresh
   // 0.4.0 DBs hit the CREATE TABLE above and already have the column;
   // existing 0.3.x DBs need the ALTER.
-  const cols = db
+  const subCols = db
     .prepare("PRAGMA table_info('subscriptions')")
     .all() as { name: string }[];
-  if (!cols.some((c) => c.name === 'cursor')) {
+  if (!subCols.some((c) => c.name === 'cursor')) {
     db.exec('ALTER TABLE subscriptions ADD COLUMN cursor TEXT');
   }
+
+  // Additive migration: events.episode_key was added with the terminal-
+  // event pivot (AGT-381). Fresh DBs land it via the CREATE TABLE above;
+  // pre-existing DBs need an ALTER + backfill. SQLite can't ADD a
+  // NOT NULL column without a default on a populated table, so we land
+  // the column nullable, backfill `legacy:<server_seq>` on every existing
+  // row, then promote the column to NOT NULL via a table rebuild (the
+  // 12-step ALTER TABLE recipe collapsed into one CREATE TABLE … AS
+  // SELECT for STRICT mode compatibility).
+  const eventsCols = db
+    .prepare("PRAGMA table_info('events')")
+    .all() as { name: string }[];
+  if (!eventsCols.some((c) => c.name === 'episode_key')) {
+    db.exec('ALTER TABLE events ADD COLUMN episode_key TEXT');
+    db.exec(
+      "UPDATE events SET episode_key = 'legacy:' || server_seq WHERE episode_key IS NULL",
+    );
+    // SQLite has no `ALTER COLUMN … SET NOT NULL`; we rebuild the table
+    // to enforce NOT NULL going forward. Indexes survive the rebuild via
+    // the CREATE INDEX IF NOT EXISTS calls below. The rebuild preserves
+    // server_seq values so existing GET /v1/events `since=` cursors keep
+    // working.
+    db.exec('BEGIN');
+    try {
+      // Temporarily lower foreign_keys so the rebuild can drop the old
+      // table without cascading the events away. We snapshot the user-
+      // visible setting and restore it after.
+      const fkRow = db.prepare('PRAGMA foreign_keys').get() as { foreign_keys: number };
+      db.exec('PRAGMA foreign_keys = OFF');
+      db.exec(`
+        CREATE TABLE events_new (
+          id TEXT NOT NULL,
+          subscription_id TEXT NOT NULL,
+          payload_json TEXT NOT NULL,
+          episode_key TEXT NOT NULL,
+          server_seq INTEGER PRIMARY KEY AUTOINCREMENT,
+          created_at TEXT NOT NULL,
+          FOREIGN KEY (subscription_id) REFERENCES subscriptions(id) ON DELETE CASCADE
+        ) STRICT;
+      `);
+      db.exec(`
+        INSERT INTO events_new (id, subscription_id, payload_json, episode_key, server_seq, created_at)
+          SELECT id, subscription_id, payload_json, episode_key, server_seq, created_at FROM events;
+      `);
+      db.exec('DROP TABLE events');
+      db.exec('ALTER TABLE events_new RENAME TO events');
+      // Recreate the two existing indexes; CREATE INDEX IF NOT EXISTS at
+      // the top of ensureSchema runs again on next boot but we recreate
+      // here to keep this call self-contained.
+      db.exec(`
+        CREATE INDEX IF NOT EXISTS events_sub_seq
+          ON events(subscription_id, server_seq);
+      `);
+      db.exec(`
+        CREATE UNIQUE INDEX IF NOT EXISTS events_sub_id_unique
+          ON events(subscription_id, id);
+      `);
+      db.exec(`PRAGMA foreign_keys = ${fkRow.foreign_keys ? 'ON' : 'OFF'}`);
+      db.exec('COMMIT');
+    } catch (err) {
+      db.exec('ROLLBACK');
+      throw err;
+    }
+  }
+
+  // `(episode_key, created_at)` index covers per-episode lookups
+  // ordered by time — the curator hydrates siblings by episode key, and
+  // recall expansion (PE-16) returns them in chronological order.
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS events_episode_key_ts
+      ON events(episode_key, created_at);
+  `);
 
   db.exec(`
     CREATE TABLE IF NOT EXISTS source_credentials (

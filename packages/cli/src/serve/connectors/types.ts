@@ -34,6 +34,13 @@ export interface PollContext<TCursor = unknown> {
   cursor: TCursor | null;
 }
 
+/**
+ * `episodeKey` is the stable source-event identifier (e.g.
+ * `github:org/repo#536`, `linear:TEAM-123`, `meeting:<uuid>`) that
+ * downstream curated memories group sibling rows under. Two memories
+ * produced from the same multi-topic event share an episode key but
+ * carry distinct ids — they're siblings, not a chain.
+ */
 export interface EventInput {
   /**
    * Stable per-source id. The framework dedups via
@@ -41,6 +48,13 @@ export interface EventInput {
    * replaying a previously-emitted id is harmless.
    */
   id: string;
+  /**
+   * Stable per-source event key. Persisted on the events row and
+   * stamped onto every memory curated from this event so siblings
+   * group together at recall time. Connectors choose the namespace
+   * (`github:`, `linear:`, `meeting:`, `mock:`, …).
+   */
+  episodeKey: string;
   payload: unknown;
 }
 

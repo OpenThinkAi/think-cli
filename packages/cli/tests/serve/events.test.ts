@@ -23,11 +23,12 @@ beforeEach(async () => {
 });
 
 function seedEvent(sub: string, payload: object): void {
+  const id = randomUUID();
   client.db
     .prepare(
-      'INSERT INTO events (id, subscription_id, payload_json, created_at) VALUES (?, ?, ?, ?)',
+      'INSERT INTO events (id, subscription_id, payload_json, episode_key, created_at) VALUES (?, ?, ?, ?, ?)',
     )
-    .run(randomUUID(), sub, JSON.stringify(payload), new Date().toISOString());
+    .run(id, sub, JSON.stringify(payload), `seed:${sub}:${id}`, new Date().toISOString());
 }
 
 describe('GET /v1/events', () => {

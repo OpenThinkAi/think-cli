@@ -177,13 +177,14 @@ export function createScheduler(opts: SchedulerOptions): SchedulerHandle {
         db.exec('BEGIN');
         try {
           const insertEvent = db.prepare(
-            'INSERT OR IGNORE INTO events (id, subscription_id, payload_json, created_at) VALUES (?, ?, ?, ?)',
+            'INSERT OR IGNORE INTO events (id, subscription_id, payload_json, episode_key, created_at) VALUES (?, ?, ?, ?, ?)',
           );
           for (const evt of result.events) {
             const r = insertEvent.run(
               evt.id,
               sub.id,
               JSON.stringify(evt.payload),
+              evt.episodeKey,
               eventsCreatedAt,
             );
             if (r.changes > 0) eventsInserted++;

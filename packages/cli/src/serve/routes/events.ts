@@ -15,6 +15,7 @@ interface EventRow {
   id: string;
   subscription_id: string;
   payload_json: string;
+  episode_key: string;
   server_seq: number;
   created_at: string;
 }
@@ -40,7 +41,7 @@ export function eventsRoute(db: Database): Hono {
 
     const rows = db
       .prepare(
-        `SELECT id, subscription_id, payload_json, server_seq, created_at
+        `SELECT id, subscription_id, payload_json, episode_key, server_seq, created_at
            FROM events
           WHERE subscription_id = ? AND server_seq > ?
           ORDER BY server_seq ASC
@@ -59,6 +60,7 @@ export function eventsRoute(db: Database): Hono {
       id: r.id,
       subscription_id: r.subscription_id,
       payload: JSON.parse(r.payload_json),
+      episode_key: r.episode_key,
       server_seq: r.server_seq,
       created_at: r.created_at,
     }));

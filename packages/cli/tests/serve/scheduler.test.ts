@@ -69,7 +69,14 @@ describe('scheduler — e2e (AC #7)', () => {
       async poll(ctx) {
         const next = (ctx.cursor?.count ?? 0) + 1;
         return {
-          events: [{ id: 'duplicate-id', payload: { n: next } }],
+          events: [
+            {
+              id: 'duplicate-id',
+              episodeKey: 'replay:duplicate-id',
+              terminal: true,
+              payload: { n: next },
+            },
+          ],
           nextCursor: { count: next },
         };
       },
@@ -226,5 +233,42 @@ describe('scheduler — e2e (AC #7)', () => {
       .prepare('SELECT cursor FROM subscriptions WHERE id = ?')
       .get(subId) as { cursor: string };
     expect(JSON.parse(row.cursor)).toEqual({ count: 3 });
+  });
+});
+
+describe('scheduler — episode_key on connector emissions (AGT-381)', () => {
+  beforeEach(() => {
+    client = createTestClient();
+  });
+
+  it('connector-emitted events land with the declared episode_key', async () => {
+    subId = await createSub(client, { kind: 'mock', pattern: '2' });
+    const report = await client.tickOnce();
+    expect(report.outcomes[0].status).toBe('ok');
+    expect(report.outcomes[0].events_inserted).toBe(2);
+
+    // Read the rows directly from the events table — bypassing the
+    // route — so we confirm the episode_key the connector emitted is
+    // the value persisted, not just one the route synthesises on read.
+    const rows = client.db
+      .prepare(
+        'SELECT id, episode_key FROM events WHERE subscription_id = ? ORDER BY server_seq',
+      )
+      .all(subId) as { id: string; episode_key: string }[];
+    expect(rows).toEqual([
+      { id: 'mock-1', episode_key: `mock:${subId}:1` },
+      { id: 'mock-2', episode_key: `mock:${subId}:2` },
+    ]);
+
+    // GET /v1/events surfaces episode_key on each event too — the
+    // CLI consumer downstream reads from this endpoint and uses
+    // episode_key to group sibling memories.
+    const resp = await client.request<{
+      events: { id: string; episode_key: string }[];
+    }>({ path: `/v1/events?subscription_id=${subId}` });
+    expect(resp.body.events.map((e) => ({ id: e.id, episode_key: e.episode_key }))).toEqual([
+      { id: 'mock-1', episode_key: `mock:${subId}:1` },
+      { id: 'mock-2', episode_key: `mock:${subId}:2` },
+    ]);
   });
 });
