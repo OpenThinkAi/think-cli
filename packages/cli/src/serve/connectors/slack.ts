@@ -354,7 +354,6 @@ export function createSlackConnector(
     const events: EventInput[] = [];
     const cursorIn = ctx.cursor ?? {};
     const emitted = new Set<string>(cursorIn.emittedThreadKeys ?? []);
-    const newlyEmitted: string[] = [];
 
     const channels = await listBotChannels(token);
     for (const ch of channels) {
@@ -368,7 +367,6 @@ export function createSlackConnector(
         const evt = await emitForClosedThread(token, workspace, ch, msg);
         events.push(evt);
         emitted.add(episodeKey);
-        newlyEmitted.push(episodeKey);
       }
     }
 

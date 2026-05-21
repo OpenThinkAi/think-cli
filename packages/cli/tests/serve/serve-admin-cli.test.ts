@@ -118,6 +118,12 @@ describe('think serve subscribe (AGT-388 AC #2)', () => {
     expect(getOutput()).toMatch(/THINK_LINEAR_PAT/);
 
     logSpy.mockClear();
+    await findSub('subscribe').parseAsync(['node', 'subscribe', 'slack', 'acme']);
+    expect(getOutput()).toMatch(/creds add slack acme/);
+    expect(getOutput()).toMatch(/THINK_SLACK_PAT/);
+    expect(getOutput()).toMatch(/THINK_SLACK_CLOSING_REACTION/);
+
+    logSpy.mockClear();
     await findSub('subscribe').parseAsync(['node', 'subscribe', 'mock', 'whatever']);
     expect(getOutput()).not.toMatch(/creds add/);
   });
