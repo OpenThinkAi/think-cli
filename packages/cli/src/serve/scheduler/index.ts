@@ -17,6 +17,14 @@ export interface PollOutcome {
   status: 'ok' | 'skipped' | 'error';
   events_inserted: number;
   events_emitted: number;
+  /**
+   * Count of events the connector emitted that were rejected at ingest
+   * because they were not terminal (`terminal !== true`). These are
+   * logged and dropped, not stored. Adding it to the outcome surface
+   * lets operators and tests assert on rejection volume without
+   * scraping stderr.
+   */
+  events_rejected_non_terminal: number;
   error?: string;
 }
 
@@ -135,6 +143,7 @@ export function createScheduler(opts: SchedulerOptions): SchedulerHandle {
           status: 'skipped',
           events_inserted: 0,
           events_emitted: 0,
+          events_rejected_non_terminal: 0,
         });
         continue;
       }
@@ -173,17 +182,33 @@ export function createScheduler(opts: SchedulerOptions): SchedulerHandle {
         // events_sub_id_unique index so a connector replaying ids on a
         // transient retry doesn't poison the table.
         let eventsInserted = 0;
+        let eventsRejectedNonTerminal = 0;
         const eventsCreatedAt = polledAt;
         db.exec('BEGIN');
         try {
           const insertEvent = db.prepare(
-            'INSERT OR IGNORE INTO events (id, subscription_id, payload_json, created_at) VALUES (?, ?, ?, ?)',
+            'INSERT OR IGNORE INTO events (id, subscription_id, payload_json, episode_key, created_at) VALUES (?, ?, ?, ?, ?)',
           );
           for (const evt of result.events) {
+            // Terminal-event contract: the proxy ingests only events
+            // the connector has flagged as terminal. Non-terminal
+            // emissions are a connector contract violation under
+            // Phase 1 — log + drop so they don't poison the events
+            // table or the curator downstream. Logged with the
+            // subscription_id and event id so operators can locate
+            // the offending connector when this fires.
+            if (evt.terminal !== true) {
+              eventsRejectedNonTerminal++;
+              console.warn(
+                `[open-think serve] dropping non-terminal event from kind=${sub.kind} subscription_id=${sub.id} event_id=${evt.id}: connectors must emit only terminal events`,
+              );
+              continue;
+            }
             const r = insertEvent.run(
               evt.id,
               sub.id,
               JSON.stringify(evt.payload),
+              evt.episodeKey,
               eventsCreatedAt,
             );
             if (r.changes > 0) eventsInserted++;
@@ -203,6 +228,7 @@ export function createScheduler(opts: SchedulerOptions): SchedulerHandle {
           status: 'ok',
           events_inserted: eventsInserted,
           events_emitted: result.events.length,
+          events_rejected_non_terminal: eventsRejectedNonTerminal,
         });
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
@@ -220,6 +246,7 @@ export function createScheduler(opts: SchedulerOptions): SchedulerHandle {
           status: 'error',
           events_inserted: 0,
           events_emitted: 0,
+          events_rejected_non_terminal: 0,
           error: message,
         });
       }

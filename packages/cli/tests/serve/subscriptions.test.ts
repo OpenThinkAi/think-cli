@@ -100,9 +100,9 @@ describe('subscriptions CRUD', () => {
     const id = created.body.subscription.id;
     client.db
       .prepare(
-        'INSERT INTO events (id, subscription_id, payload_json, created_at) VALUES (?, ?, ?, ?)',
+        'INSERT INTO events (id, subscription_id, payload_json, episode_key, created_at) VALUES (?, ?, ?, ?, ?)',
       )
-      .run('evt-1', id, '{}', new Date().toISOString());
+      .run('evt-1', id, '{}', `seed:${id}:evt-1`, new Date().toISOString());
     expect(client.db.prepare('SELECT COUNT(*) AS n FROM events').get()).toEqual({ n: 1 });
     await client.request({ method: 'DELETE', path: `/v1/subscriptions/${id}` });
     expect(client.db.prepare('SELECT COUNT(*) AS n FROM events').get()).toEqual({ n: 0 });

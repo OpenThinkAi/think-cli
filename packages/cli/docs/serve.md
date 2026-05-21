@@ -37,7 +37,7 @@ Comparison is constant-time (`crypto.timingSafeEqual`) — pick a long random to
 Single SQLite file. Path configurable via `THINK_DB_PATH` (default: `./open-think.sqlite` relative to the working directory). The file is created on first boot. Schema:
 
 - `subscriptions(id TEXT PK, kind, pattern, created_at, last_polled_at, cursor)` — `cursor` is opaque per-connector JSON (TEXT) the framework persists verbatim; each connector picks its own shape.
-- `events(id, subscription_id, payload_json, server_seq INTEGER PK AUTOINCREMENT, created_at)` with `FOREIGN KEY (subscription_id) → subscriptions(id) ON DELETE CASCADE` and `UNIQUE(subscription_id, id)` so `INSERT OR IGNORE` safely tolerates a connector replaying ids on transient errors.
+- `events(id, subscription_id, payload_json, episode_key, server_seq INTEGER PK AUTOINCREMENT, created_at)` with `FOREIGN KEY (subscription_id) → subscriptions(id) ON DELETE CASCADE` and `UNIQUE(subscription_id, id)` so `INSERT OR IGNORE` safely tolerates a connector replaying ids on transient errors. `episode_key` is the connector-stamped stable identifier for the source event (e.g. `github:org/repo#536`, `linear:TEAM-123`, `meeting:<uuid>`); downstream proxy-curated memories group sibling rows under it. Index `events_episode_key_ts` on `(episode_key, created_at)` covers per-episode lookups.
 - `source_credentials(subscription_id TEXT PK, ciphertext BLOB, nonce BLOB, created_at)` with the same FK cascade off `subscriptions(id)`. AES-256-GCM (12-byte nonce, 16-byte auth tag appended to `ciphertext`). One row per subscription; `PUT /v1/subscriptions/:id/credential` upserts.
 
 Cursor pagination uses `server_seq` as the monotonic cursor. Single-process / single-writer is by design (matches the v2 single-tenant decision); a multi-writer setup would need a separate sequence source.
@@ -49,6 +49,19 @@ Event `payload` is **connector-defined** — the server stores `payload_json` op
 `subscriptions.cursor` was added in 0.4.0; existing 0.3.x DBs are migrated via an idempotent `ALTER TABLE ... ADD COLUMN` on first boot. The same boot also creates `events_sub_id_unique` via `CREATE UNIQUE INDEX IF NOT EXISTS` — this could in principle fail if a 0.3.x DB already contains duplicate `(subscription_id, id)` rows, but in practice 0.3.0 had no event-write path at all (events were only ever inserted by the tests' `:memory:` fixture), so any deployed 0.3.x DB has an empty `events` table and the index always lands cleanly.
 
 `source_credentials` is new in 0.5.0; the table is created via `CREATE TABLE IF NOT EXISTS` on first boot, so the upgrade is silent for existing DBs.
+
+`events.episode_key` lands with the terminal-event pivot (AGT-381). Existing DBs are migrated additively: the column lands nullable, every existing row is backfilled to `legacy:<server_seq>`, then the table is rebuilt to enforce `NOT NULL` going forward. `server_seq` values are preserved across the rebuild so existing `?since=` cursors keep paginating from where consumers left off.
+
+## Connector contract: terminal events only
+
+Connectors emit **only terminal events** — events that represent a settled state on the source side (PR merged, ticket closed, transcript finalized, release published). Closure logic lives inside each connector; the connector decides when its source-side artifact is "done" and only then calls back into the framework with an `EventInput`. Each `EventInput` carries:
+
+- `id` — stable per-source event id (dedup key with `subscription_id`).
+- `episodeKey` — stable identifier for the source event (`github:owner/repo#123`, `linear:TEAM-123`, `meeting:<uuid>`, …). Curated memories produced from the event group by this key.
+- `terminal: true` — literal marker. Phase 1 of the terminal-event pivot accepts only `true`; the proxy ingest path logs and drops anything else (`events_rejected_non_terminal` in the tick outcome). The literal-type shape leaves room for a future opt-in "preview" mode without disturbing existing callers.
+- `payload` — connector-defined JSON.
+
+Non-terminal emissions are a contract violation: the framework warns to stderr with `kind`, `subscription_id`, and `event_id`, then drops the event. It is not stored, not curated, and does not advance the per-subscription cursor on its own (the connector's reported `nextCursor` is still respected — the connector knows where it got to even if the proxy refused the payload).
 
 ## Running
 

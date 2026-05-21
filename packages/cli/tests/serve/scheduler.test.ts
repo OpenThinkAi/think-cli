@@ -1,7 +1,7 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { createTestClient, type TestClient } from './fixtures/app-client.js';
 import { buildDefaultRegistry, registerConnector } from '../../src/serve/connectors/registry.js';
-import type { SourceConnector } from '../../src/serve/connectors/types.js';
+import type { EventInput, SourceConnector } from '../../src/serve/connectors/types.js';
 
 let client: TestClient;
 let subId: string;
@@ -69,7 +69,14 @@ describe('scheduler — e2e (AC #7)', () => {
       async poll(ctx) {
         const next = (ctx.cursor?.count ?? 0) + 1;
         return {
-          events: [{ id: 'duplicate-id', payload: { n: next } }],
+          events: [
+            {
+              id: 'duplicate-id',
+              episodeKey: 'replay:duplicate-id',
+              terminal: true,
+              payload: { n: next },
+            },
+          ],
           nextCursor: { count: next },
         };
       },
@@ -226,5 +233,195 @@ describe('scheduler — e2e (AC #7)', () => {
       .prepare('SELECT cursor FROM subscriptions WHERE id = ?')
       .get(subId) as { cursor: string };
     expect(JSON.parse(row.cursor)).toEqual({ count: 3 });
+  });
+});
+
+describe('scheduler — episode_key on connector emissions (AGT-381)', () => {
+  beforeEach(() => {
+    client = createTestClient();
+  });
+
+  it('connector-emitted events land with the declared episode_key', async () => {
+    subId = await createSub(client, { kind: 'mock', pattern: '2' });
+    const report = await client.tickOnce();
+    expect(report.outcomes[0].status).toBe('ok');
+    expect(report.outcomes[0].events_inserted).toBe(2);
+
+    // Read the rows directly from the events table — bypassing the
+    // route — so we confirm the episode_key the connector emitted is
+    // the value persisted, not just one the route synthesises on read.
+    const rows = client.db
+      .prepare(
+        'SELECT id, episode_key FROM events WHERE subscription_id = ? ORDER BY server_seq',
+      )
+      .all(subId) as { id: string; episode_key: string }[];
+    expect(rows).toEqual([
+      { id: 'mock-1', episode_key: `mock:${subId}:1` },
+      { id: 'mock-2', episode_key: `mock:${subId}:2` },
+    ]);
+
+    // GET /v1/events surfaces episode_key on each event too — the
+    // CLI consumer downstream reads from this endpoint and uses
+    // episode_key to group sibling memories.
+    const resp = await client.request<{
+      events: { id: string; episode_key: string }[];
+    }>({ path: `/v1/events?subscription_id=${subId}` });
+    expect(resp.body.events.map((e) => ({ id: e.id, episode_key: e.episode_key }))).toEqual([
+      { id: 'mock-1', episode_key: `mock:${subId}:1` },
+      { id: 'mock-2', episode_key: `mock:${subId}:2` },
+    ]);
+  });
+});
+
+describe('scheduler — terminal-event contract enforcement (AGT-382)', () => {
+  beforeEach(() => {
+    client = createTestClient();
+  });
+
+  it('drops non-terminal events; stores nothing, logs a structured warning', async () => {
+    // Bypass the EventInput type to model a misbehaving connector. The
+    // contract says `terminal: true`, but the framework must defend
+    // against runtime drift (connectors are written by third parties;
+    // TypeScript's word is not gospel at the proxy ingest boundary).
+    const misbehavingConnector: SourceConnector<{ count: number }> = {
+      kind: 'misbehaving',
+      async poll(ctx) {
+        const next = (ctx.cursor?.count ?? 0) + 1;
+        const events: EventInput[] = [
+          // One legitimate terminal event followed by a non-terminal
+          // one — confirms the rejection is per-event, not per-poll.
+          {
+            id: `ok-${next}`,
+            episodeKey: `misbehaving:${ctx.subscription.id}:${next}`,
+            terminal: true,
+            payload: { ok: true },
+          },
+          // Cast through `unknown` so the test can construct the
+          // contract-violating shape the runtime guard catches.
+          {
+            id: `bad-${next}`,
+            episodeKey: `misbehaving:${ctx.subscription.id}:${next}-preview`,
+            terminal: false as unknown as true,
+            payload: { ok: false },
+          },
+        ];
+        return { events, nextCursor: { count: next } };
+      },
+    };
+    const registry = buildDefaultRegistry();
+    registerConnector(registry, misbehavingConnector);
+    client = createTestClient({ registry });
+    const sub = await createSub(client, { kind: 'misbehaving', pattern: 'x' });
+
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const report = await client.tickOnce();
+      const outcome = report.outcomes.find((o) => o.subscription_id === sub)!;
+      expect(outcome.status).toBe('ok');
+      expect(outcome.events_emitted).toBe(2);
+      expect(outcome.events_inserted).toBe(1);
+      expect(outcome.events_rejected_non_terminal).toBe(1);
+
+      // The terminal event landed; the non-terminal one did not. We
+      // assert by event id rather than count alone so a regression
+      // that swaps the rejection direction (drops the good event,
+      // keeps the bad one) is caught.
+      const ids = (
+        client.db
+          .prepare('SELECT id FROM events WHERE subscription_id = ?')
+          .all(sub) as { id: string }[]
+      ).map((r) => r.id);
+      expect(ids).toEqual(['ok-1']);
+
+      // Structured warning carries enough context for an operator to
+      // locate the offending connector — kind, subscription id, event
+      // id. Anything weaker (just "non-terminal event dropped") would
+      // be useless in a multi-connector deployment.
+      const warning = warn.mock.calls
+        .map((c) => String(c[0]))
+        .find((m) => m.includes('non-terminal'));
+      expect(warning).toBeDefined();
+      expect(warning).toContain('kind=misbehaving');
+      expect(warning).toContain(`subscription_id=${sub}`);
+      expect(warning).toContain('event_id=bad-1');
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('rejects truthy-but-not-literal-true terminal markers (1, "true")', async () => {
+    // The contract is `terminal === true`, not "truthy". A connector
+    // returning `1` or `"true"` is still a contract violation at the
+    // runtime boundary; coercing those to true would silently paper
+    // over a connector bug.
+    const fuzzyConnector: SourceConnector<{ count: number }> = {
+      kind: 'fuzzy',
+      async poll(ctx) {
+        const next = (ctx.cursor?.count ?? 0) + 1;
+        return {
+          events: [
+            {
+              id: `evt-${next}`,
+              episodeKey: `fuzzy:${ctx.subscription.id}:${next}`,
+              terminal: 1 as unknown as true,
+              payload: { n: next },
+            },
+          ],
+          nextCursor: { count: next },
+        };
+      },
+    };
+    const registry = buildDefaultRegistry();
+    registerConnector(registry, fuzzyConnector);
+    client = createTestClient({ registry });
+    const sub = await createSub(client, { kind: 'fuzzy', pattern: 'x' });
+
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const report = await client.tickOnce();
+      const outcome = report.outcomes.find((o) => o.subscription_id === sub)!;
+      expect(outcome.events_rejected_non_terminal).toBe(1);
+      expect(outcome.events_inserted).toBe(0);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('still advances the cursor even when every event is rejected', async () => {
+    // Failure to insert is not a failure of the poll — the connector
+    // told us where it got to. Cursor advances so the same junk
+    // payload doesn't replay forever.
+    const allBadConnector: SourceConnector<{ count: number }> = {
+      kind: 'all-bad',
+      async poll(ctx) {
+        const next = (ctx.cursor?.count ?? 0) + 1;
+        return {
+          events: [
+            {
+              id: `evt-${next}`,
+              episodeKey: `all-bad:${ctx.subscription.id}:${next}`,
+              terminal: false as unknown as true,
+              payload: {},
+            },
+          ],
+          nextCursor: { count: next },
+        };
+      },
+    };
+    const registry = buildDefaultRegistry();
+    registerConnector(registry, allBadConnector);
+    client = createTestClient({ registry });
+    const sub = await createSub(client, { kind: 'all-bad', pattern: 'x' });
+
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      await client.tickOnce();
+    } finally {
+      warn.mockRestore();
+    }
+    const row = client.db
+      .prepare('SELECT cursor FROM subscriptions WHERE id = ?')
+      .get(sub) as { cursor: string };
+    expect(JSON.parse(row.cursor)).toEqual({ count: 1 });
   });
 });

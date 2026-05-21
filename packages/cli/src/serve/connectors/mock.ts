@@ -35,8 +35,20 @@ export const mockConnector: SourceConnector<MockCursor> = {
       const seq = startCount + i;
       events.push({
         id: `mock-${seq}`,
+        // Synthetic episode key namespaced by subscription so end-to-end
+        // tests can assert per-subscription grouping. Each synthetic
+        // event represents a distinct terminal source artifact, so the
+        // key includes the seq — collapsing siblings under one episode
+        // requires a real (multi-emission) connector, not this stub.
+        episodeKey: `mock:${ctx.subscription.id}:${seq}`,
+        // Mock connector emits only terminal events — that's the entire
+        // contract under the terminal-event pivot. Connectors with
+        // closure logic (GitHub merge detection, Linear workflow-state
+        // transitions, etc.) gate emission on terminal-ness; the mock
+        // hard-codes it.
+        terminal: true,
         payload: { seq, subscription_id: ctx.subscription.id },
-      });
+      } as const);
     }
     return { events, nextCursor: { count: startCount + n } };
   },
