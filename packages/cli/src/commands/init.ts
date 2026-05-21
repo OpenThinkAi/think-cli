@@ -32,7 +32,7 @@ think sync "Decided against X because Y" --decision "Decided against X because Y
 
 **Don't log:** conversational deliberation, exploration, failed attempts, reading code, debugging dead ends, clarifying questions, anything that didn't produce a shipped outcome.
 
-**Privacy: where these entries go.** Each \`think sync\` writes a local event. The curator (\`think curate\`) consolidates events into memories; with curator consent granted (\`THINK_LLM_CONSENT=1\` or \`cortex.llmConsent\` in \`~/.config/think/config.json\`), curated content is sent to Anthropic for synthesis. Choose what to log accordingly — anything about customers, internal architecture, or personnel ends up in the same pipeline as anything else. \`think pause\` suppresses memory creation if you need a pause window.
+**Privacy: where these entries go.** Each \`think sync\` writes a local event. The curator (\`think curate\`) consolidates events into memories; with curator consent granted (\`THINK_LLM_CONSENT=1\` or \`cortex.llmConsent\` in \`~/.config/think/config.json\`), curated content is sent to Anthropic for synthesis. Choose what to log accordingly — anything about customers, internal architecture, or personnel ends up in the same pipeline as anything else. \`think pause\` suppresses event creation if you need a pause window.
 
 **How to log:**
 - One entry per shipped outcome, not per tool call or file edit
