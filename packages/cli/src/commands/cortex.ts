@@ -19,6 +19,7 @@ import {
   getLogPath as getSyncLogPath,
 } from '../lib/auto-sync.js';
 import { validateRepoUrl } from '../lib/repo-url.js';
+import { cortexMigrateLayoutCommand } from './cortex-migrate-layout.js';
 
 function prompt(question: string, defaultValue?: string): Promise<string> {
   const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
@@ -678,6 +679,8 @@ cortexCommand.addCommand(new Command('migrate')
     console.log(`  ${chalk.dim('•')} ${chalk.bold('think cortex status')}  — confirm the new backend is in place`);
     console.log(`  ${chalk.dim('•')} ${chalk.bold('think sync "test"')}     — verify writes hit ${resolved}`);
   }));
+
+cortexCommand.addCommand(cortexMigrateLayoutCommand);
 
 function listLocalCortexes(): string[] {
   const dir = getIndexDir();

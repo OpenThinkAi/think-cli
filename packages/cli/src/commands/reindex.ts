@@ -23,6 +23,7 @@ import { getConfig } from '../lib/config.js';
 import {
   listBranchFiles,
   readFileFromBranch,
+  readCortexFile,
   ensureRepoCloned,
   fetchBranch,
 } from '../lib/git.js';
@@ -44,19 +45,23 @@ export function readAllL1Pages(
   cortexName: string,
   errors: string[],
 ): string[] {
+  // `listBranchFiles` returns basenames of the canonical `<cortex>/` subdir;
+  // the numbered-page filter is unchanged.
   const files = listBranchFiles(cortexName, '.jsonl')
     .filter(f => /^\d{6}\.jsonl$/.test(f))
     .sort();
 
   if (files.length === 0) {
-    // Legacy fallback: single memories.jsonl
+    // Pre-v2 legacy fallback: a single top-level `memories.jsonl`. Use the
+    // top-level read here on purpose — this file never lived in the cortex
+    // subdir.
     const raw = readFileFromBranch(cortexName, 'memories.jsonl');
     return raw ? [raw] : [];
   }
 
   const pages: string[] = [];
   for (const file of files) {
-    const raw = readFileFromBranch(cortexName, file);
+    const raw = readCortexFile(cortexName, file);
     if (raw === null) {
       errors.push(`Could not read ${file} from branch ${cortexName} — skipping page`);
       continue;

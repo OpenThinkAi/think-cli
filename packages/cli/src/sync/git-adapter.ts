@@ -3,6 +3,7 @@ import {
   ensureRepoCloned,
   fetchBranch,
   readFileFromBranch,
+  readCortexFile,
   appendAndCommit,
   createOrphanBranch,
   ensureRemoteBranch,
@@ -51,6 +52,10 @@ export class GitSyncAdapter implements SyncAdapter {
   private ensureMigrated(cortex: string, branchFiles: string[]): void {
     const hasNumbered = branchFiles.some(f => /^\d{6}\.jsonl$/.test(f));
     if (!hasNumbered) {
+      // `memories.jsonl` is the pre-v2 legacy filename and only ever existed
+      // at the branch root, so this read deliberately uses the top-level
+      // `readFileFromBranch` (not `readCortexFile`). The migration helper
+      // moves it into the canonical `<cortex>/000001.jsonl` location.
       const hasLegacy = readFileFromBranch(cortex, 'memories.jsonl') !== null;
       if (hasLegacy) {
         migrateToBuckets(cortex);
@@ -270,7 +275,7 @@ export class GitSyncAdapter implements SyncAdapter {
     let touched = false;
 
     for (const file of retroFiles) {
-      const raw = readFileFromBranch(cortex, file);
+      const raw = readCortexFile(cortex, file);
       if (raw === null) {
         result.errors.push(`Could not read ${file} from branch: git read returned null`);
         continue;
@@ -391,7 +396,9 @@ export class GitSyncAdapter implements SyncAdapter {
       .sort();
 
     if (files.length === 0) {
-      // Legacy fallback: try memories.jsonl
+      // Legacy fallback: try top-level memories.jsonl (pre-v2 layout). This
+      // is the only branch where a non-canonical top-level read is correct;
+      // every other read goes through `readCortexFile`.
       const memoriesRaw = readFileFromBranch(cortex, 'memories.jsonl') ?? '';
       if (memoriesRaw) {
         this.processMemories(cortex, memoriesRaw, result);
@@ -423,7 +430,7 @@ export class GitSyncAdapter implements SyncAdapter {
     // Stop at the first read failure — don't advance cursor past a gap.
     let lastReadFile: string | null = null;
     for (const file of filesToRead) {
-      const raw = readFileFromBranch(cortex, file);
+      const raw = readCortexFile(cortex, file);
       if (raw === null) {
         // Read failure — stop here. Cursor stays at lastReadFile so this
         // file and all subsequent files get retried on next pull.
@@ -442,7 +449,7 @@ export class GitSyncAdapter implements SyncAdapter {
   }
 
   private pullLongTermEvents(cortex: string, result: SyncResult): void {
-    const raw = readFileFromBranch(cortex, LONG_TERM_FILE);
+    const raw = readCortexFile(cortex, LONG_TERM_FILE);
     if (raw === null || !raw.trim()) return; // file doesn't exist or is empty
 
     for (const line of raw.trim().split('\n')) {
