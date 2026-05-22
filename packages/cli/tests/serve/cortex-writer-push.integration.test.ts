@@ -191,6 +191,58 @@ describe('writeMemoriesForEvent — end-to-end push to a bare remote (AGT-399)',
     expect(memory.origin_peer_id).toBe(PROXY_PEER_ID);
     expect(memory.topics).toEqual(['smoke', 'agt-399']);
   });
+
+  it('writes to the correct branch even when the working tree is checked out elsewhere', async () => {
+    // Regression: the daemon/proxy write paths resolve every L1 page to
+    // `<repo>/<cortex>/<file>`, but the working tree only holds the
+    // checked-out branch's files. Before the ensureBranchCheckedOut fix, a
+    // write while the tree sat on a *different* branch would land the data on
+    // that wrong branch (and the push would no-op against the cortex branch).
+    ensureRepoCloned();
+
+    const cortexA = 'team-alpha';
+    const cortexB = 'team-beta';
+    createOrphanBranch(cortexA);
+    createOrphanBranch(cortexB);
+
+    // Simulate "wrong branch checked out": after createOrphanBranch(cortexB)
+    // the tree is on cortexB, so force it onto cortexA to set up the hazard.
+    execFileSync('git', ['-C', join(harness.thinkHome, 'repo'), 'switch', '--', cortexA], {
+      stdio: 'pipe',
+    });
+
+    const dbn = new PushDebouncer(TEST_DEBOUNCE_MS);
+
+    // Write for cortexB while the tree is on cortexA. The real appendFn path
+    // runs (no test seam), so ensureBranchCheckedOut(cortexB) must fire.
+    writeMemoriesForEvent({
+      event: { id: 'cross-branch-1', episodeKey: 'test:cross#1' },
+      memories: [{ content: 'cross-branch write — must land on team-beta', topics: ['x'] }],
+      cortexName: cortexB,
+      peerId: PROXY_PEER_ID,
+      notifyPush: (cortex) => dbn.notify(cortex),
+    });
+
+    await waitForAutoCommit(harness.bareRepo, cortexB, 5000);
+
+    // The memory must be on cortexB's branch...
+    const jsonlB = execFileSync(
+      'git',
+      ['-C', harness.bareRepo, 'show', `${cortexB}:${cortexB}/000001.jsonl`],
+      { encoding: 'utf-8' },
+    );
+    expect(jsonlB).toContain('cross-branch write — must land on team-beta');
+
+    // ...and cortexA must NOT have grown a team-beta subdir (the bug would
+    // have committed `team-beta/000001.jsonl` onto cortexA's tree).
+    let aTree = '';
+    try {
+      aTree = execFileSync('git', ['-C', harness.bareRepo, 'ls-tree', '-r', '--name-only', cortexA], {
+        encoding: 'utf-8',
+      });
+    } catch { /* cortexA may have no remote commits beyond init — fine */ }
+    expect(aTree).not.toContain(`${cortexB}/`);
+  });
 });
 
 /**

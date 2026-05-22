@@ -163,6 +163,54 @@ export function fetchBranch(branchName: string): void {
 }
 
 /**
+ * Return the currently-checked-out branch in the cortex repo, or `null` if
+ * the repo is in a detached-HEAD state (or the rev-parse fails).
+ */
+export function getCurrentBranch(): string | null {
+  try {
+    const out = runGit(['rev-parse', '--abbrev-ref', 'HEAD']);
+    return out === 'HEAD' ? null : out;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Ensure the working tree is checked out to `branchName`. No-op when already
+ * on the branch. Falls back to `git switch -c` from `origin/<branchName>`
+ * when the local branch ref is missing — same recovery as `appendAndCommit`.
+ *
+ * Why callers should always invoke this immediately before an L1 write:
+ * every L1 page resolves to `<repoPath>/<branchName>/<file>`, but the
+ * working tree at `<repoPath>` only contains the *checked-out* branch's
+ * tracked files. If another process (or an operator command like
+ * `migrate-layout`) left the tree on a different branch, the write
+ * physically lands in that other branch's tree — and the push-debouncer's
+ * `git add → commit → push` cycle then ships the data to the wrong branch
+ * on the remote. Calling this synchronously before the append keeps the
+ * write and the eventual commit on the same branch, since Node's
+ * single-threaded execution guarantees no other write can interleave
+ * between the switch and the `fs.appendFileSync`.
+ *
+ * No-ops when there's no `.git` directory under `getRepoPath()`. The L1
+ * append-only tests (and the proxy's `appendFn` test seam) write into a
+ * tmp THINK_HOME with no underlying git repo; without this guard every
+ * test path would have to either spin up a real git repo or stub the helper.
+ * The no-op is safe in production because every real cortex write
+ * presupposes a cloned repo (`ensureRepoCloned` is the entry point).
+ */
+export function ensureBranchCheckedOut(branchName: string): void {
+  assertSafePositional(branchName, 'branch name');
+  if (!fs.existsSync(path.join(getRepoPath(), '.git'))) return;
+  if (getCurrentBranch() === branchName) return;
+  try {
+    runGit(['switch', '--', branchName]);
+  } catch {
+    runGit(['switch', '-c', branchName, '--', `origin/${branchName}`]);
+  }
+}
+
+/**
  * Idempotent: if `branchName` already exists on the remote, no-op. Otherwise
  * create it as an empty orphan branch and push it.
  *

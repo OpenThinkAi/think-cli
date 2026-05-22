@@ -31,6 +31,7 @@ import { getRepoPath } from '../../lib/paths.js';
 import { getConfig, getPeerId } from '../../lib/config.js';
 import embed, { EMBEDDING_MODEL_NAME } from '../../lib/embed.js';
 import { appendToL1Page } from '../../lib/l1-page.js';
+import { ensureBranchCheckedOut } from '../../lib/git.js';
 import type { CompactionSuccess, NewEntry } from './call.js';
 
 // ---------------------------------------------------------------------------
@@ -80,6 +81,11 @@ export async function applyCompaction(
   };
 
   const cortexDir = path.join(getRepoPath(), safeCortex);
+  // Switch the working tree to the cortex's branch before appending so the
+  // compacted line lands in the right tree even when another cortex's
+  // write switched the branch out earlier in the daemon's lifetime. See
+  // `ensureBranchCheckedOut`.
+  ensureBranchCheckedOut(safeCortex);
   appendToL1Page(cortexDir, l1Entry);
 
   // ── Step 2: embed the compacted content ──────────────────────────────────
