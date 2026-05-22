@@ -2,10 +2,17 @@
 
 ## [Unreleased]
 
+## [1.3.0] — 2026-05-22
+
+### Fixed
+
+- **Daemon/proxy writes now switch to the cortex's branch before appending.** The L1 write paths (`sync-handler`, `compaction/apply`, `supersession/apply`, and the proxy `cortex-writer`) resolve every page to `<repo>/<branch>/<file>`, but the shared working tree only contains the *checked-out* branch's files. If something else had moved the tree to a different branch (an operator command, or an earlier write to another cortex), the append physically landed on that wrong branch and the push-debouncer committed it there. Each write now calls `ensureBranchCheckedOut(cortex)` first, and the push-debouncer re-establishes the branch before its `git add → commit → push` cycle in case a concurrent write switched the tree during the debounce window. No-ops when there is no `.git` repo (test fixtures).
+
 ## [1.2.0] — 2026-05-22
 
 ### Added
 
+- **`think cortex migrate-layout [cortex]` — one-time move to the nested cortex layout.** Every cortex's git files (numbered memory pages, `long-term.jsonl`, `<peer>-retros.jsonl`) now live under a single per-branch subdir: `<repo>/<branch>/<file>`. Two write paths historically disagreed — the legacy `git-adapter` wrote flat at the branch root while the daemon + proxy paths wrote nested — leaving branches with files in both places and making `reindex --force` silently drop the nested pages (it listed via a non-recursive `ls-tree`). The migration command renumbers and relocates the flat files into the canonical subdir, preserving linear history: flat pages keep their numbers, pre-existing nested pages get bumped past them, and any non-canonical sibling subdir (e.g. a `hivedb/` dir on the `cortex/hivedb` branch) folds into the canonical path. Supports `--dry-run` and `--no-push`. Restores the originally-checked-out branch when it finishes so a running daemon keeps writing to the right tree.
 - **`think serve` scheduler now drains uncurated events on every tick.** The pre-1.2.0 proxy pipeline landed terminal events in the `events` table but had no orchestrator to run `processTerminalEvent` over them — events would accumulate forever with `curated_at IS NULL`, no Claude calls would fire, and nothing would land on the team cortex. The drain pass now runs after each per-subscription poll cycle.
   - Reads up to `curateBatchSize` uncurated rows (default 10) and runs each through the existing curator → cortex-writer → mark-curated pipeline.
   - Per-event failures are isolated: one rate-limit / SDK error / malformed LLM response does not block the rest of the batch, and the failed row stays `curated_at = NULL` so the next tick retries.
@@ -15,6 +22,7 @@
 
 ### Changed
 
+- **Canonical cortex layout is now `<repo>/<branch>/<file>`.** `createOrphanBranch`, `appendAndCommit`, `migrateToBuckets`, `countBranchFileLines`, and the `git-adapter` push/pull paths all resolve cortex files through the branch subdir. `listBranchFiles` reads the union of the canonical subdir and the branch root (deduped by basename, canonical wins) so a cortex that has not yet been through `migrate-layout` stays readable instead of silently appearing empty; `readCortexFile` mirrors that with a read-side fallback (canonical first, then root). The legacy top-level `memories.jsonl` (pre-v2) remains the one intentional flat-layout read.
 - **`TickReport` shape grew three required fields:** `poll_finished_at` (the timestamp after the poll loop finishes, before drain begins — operators alerting on poll-cycle latency should subtract `started_at` from this, not from `finished_at`), `curate_outcomes` (per-event drain results, always present, possibly empty), and `curate_skip_reason` (`'disabled-no-peer-id' | 'disabled-no-cortex-resolver' | 'no-active-cortex' | 'empty-queue' | 'error' | null` — `null` means the drain ran and touched at least one event; otherwise the reason it produced no outcomes). **Direct constructors of `TickReport` will need to supply these fields**; callers that consume reports returned from `tickOnce()` see the new fields automatically and can ignore them.
 - **`finished_at` semantics widened.** Pre-1.2.0 it approximated poll-loop wall time. Post-1.2.0 it includes the drain pass, which can add up to `curateBatchSize` × LLM round-trip seconds per tick. **Operators monitoring poll latency on `finished_at - started_at` should migrate to `poll_finished_at - started_at`** to keep the prior signal. The total tick duration is now `finished_at - started_at`.
 
