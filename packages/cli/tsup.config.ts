@@ -13,7 +13,17 @@ export default defineConfig({
   // siblings intact. Same reason `@anthropic-ai/claude-agent-sdk` is external.
   external: ['@anthropic-ai/claude-agent-sdk', '@huggingface/transformers'],
   banner: {
-    js: '#!/usr/bin/env node --no-warnings=ExperimentalWarning',
+    // `env -S` is required so the kernel passes `node` and
+    // `--no-warnings=ExperimentalWarning` as separate args to env (which
+    // then splits them on its own). Without `-S`, the kernel hands env a
+    // single literal arg "node --no-warnings=ExperimentalWarning"; GNU env
+    // (Debian 12 / coreutils 9.1, used on every common Linux container
+    // base) can't find a binary by that exact name and falls back to
+    // exec'ing the next arg — which is the script itself — re-triggering
+    // the shebang dispatch and producing an infinite re-exec loop. macOS
+    // BSD env silently tolerates the missing `-S`, which is why the bug
+    // hides on dev laptops.
+    js: '#!/usr/bin/env -S node --no-warnings=ExperimentalWarning',
   },
   // tsup defaults `removeNodeProtocol` to true, which strips the `node:`
   // prefix from every builtin import. That's harmless for `node:path` (the
