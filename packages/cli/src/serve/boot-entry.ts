@@ -9,6 +9,7 @@ import { createScheduler } from './scheduler/index.js';
 import { createVault } from './vault/index.js';
 import { loadVaultKey } from './vault/key.js';
 import { VERSION } from './version.js';
+import { getConfig } from '../lib/config.js';
 
 export interface RunServeOptions {
   /**
@@ -67,6 +68,14 @@ export async function runServe(opts: RunServeOptions = {}): Promise<void> {
     registry,
     vault,
     intervalMs: cfg.pollIntervalSeconds * 1000,
+    peerId,
+    // Re-read on every tick so an operator running `think cortex
+    // switch <new>` against a live proxy takes effect on the next
+    // tick without a restart. Returning `null` (no active cortex)
+    // skips the drain for the tick instead of throwing — the
+    // operator's intent is "I haven't picked a cortex yet", not
+    // "this is an error."
+    getCortexName: () => getConfig().cortex?.active ?? null,
   });
   scheduler.start();
   console.log(`[open-think serve] scheduler tick every ${cfg.pollIntervalSeconds}s`);

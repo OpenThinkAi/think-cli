@@ -1,8 +1,30 @@
 import type { Database } from '../db.js';
 import type { ConnectorRegistry } from '../connectors/registry.js';
 import type { Vault } from '../vault/index.js';
+import {
+  processTerminalEvent,
+  selectUncuratedEvents,
+  type EventRow,
+} from '../event-curator.js';
 
 const DEFAULT_POLL_TIMEOUT_MS = 60_000;
+/**
+ * Default per-tick cap on uncurated events drained from the events
+ * table. One event = one Claude `runTerminalEventCuration` call (with up
+ * to one internal retry on malformed output), so the cap is also the
+ * per-tick LLM-spend ceiling per proxy. A 64-event backfill at the
+ * default settings drains in ceil(64/10) = 7 ticks.
+ *
+ * Picked at 10 because the prior bottleneck shapes the right ceiling: a
+ * fresh subscription's first poll fetches every closed PR in a repo
+ * (which is GitHub's no-`since` semantics, not a connector choice). For
+ * an active repo with ~50 closed PRs that's 5 ticks at 10/tick — minutes
+ * at the default 600s interval, but well under the rate at which the
+ * default sonnet-4-6 tier exhausts on the operator's Anthropic quota.
+ * Operators who want faster drain can raise the env var; operators on a
+ * tight budget can lower it.
+ */
+const DEFAULT_CURATE_BATCH_SIZE = 10;
 
 interface SubscriptionRow {
   id: string;
@@ -28,10 +50,75 @@ export interface PollOutcome {
   error?: string;
 }
 
+/**
+ * Per-event outcome from the curator drain that runs after the poll
+ * loop in each tick. One entry per uncurated row the drain pass touched
+ * (capped by `curateBatchSize`). Empty when the drain is disabled
+ * (missing `peerId`/`getCortexName`) or the active cortex resolves to
+ * `null` for this tick.
+ */
+export interface CurateOutcome {
+  event_id: string;
+  subscription_id: string;
+  status:
+    | 'curated'
+    | 'already-curated'
+    | 'error';
+  /** Set when `status === 'curated'` — uuidv7 ids of the memories written. */
+  memory_ids?: string[];
+  /** Set when `status === 'error'`; the message from the thrown error. */
+  error?: string;
+}
+
+/**
+ * Reason a tick's drain pass produced no `curate_outcomes`. Surfaced so
+ * tests + operator dashboards can distinguish "drain ran, found nothing"
+ * (`'empty-queue'`) from "drain didn't run at all" (the other four).
+ * Operators reading per-tick reports can use this to diagnose a silent
+ * proxy without scraping stderr.
+ *
+ * **Semantics:** `null` means the drain ran AND attempted at least one
+ * event — inspect `curate_outcomes` to see per-event results (which may
+ * still all be `'error'`). A string value means the drain produced zero
+ * outcomes for the named reason. `'error'` specifically means a drain
+ * *infrastructure* failure (config read, sqlite query) — distinct from
+ * a per-event curator throw, which surfaces inside `curate_outcomes` as
+ * `{ status: 'error' }` with `curate_skip_reason` still `null`.
+ */
+export type CurateSkipReason =
+  | 'disabled-no-peer-id'
+  | 'disabled-no-cortex-resolver'
+  | 'no-active-cortex'
+  | 'empty-queue'
+  | 'error'
+  | null;
+
 export interface TickReport {
   started_at: string;
+  /**
+   * Timestamp after the poll loop finishes — does NOT include the
+   * post-poll drain pass. Operators alerting on poll-cycle latency
+   * should subtract `started_at` from `poll_finished_at`, not
+   * `finished_at`; the drain can add up to `curateBatchSize` × LLM
+   * round-trip seconds of additional wall time on top of the poll
+   * window.
+   */
+  poll_finished_at: string;
+  /** Timestamp after the entire tick (polls + drain) completes. */
   finished_at: string;
   outcomes: PollOutcome[];
+  /**
+   * Per-event drain results. Always present (possibly empty) so the
+   * shape is stable across drain-on/drain-off configurations.
+   */
+  curate_outcomes: CurateOutcome[];
+  /**
+   * `null` when the drain ran and processed at least one event;
+   * otherwise the reason it produced no outcomes. Lets a tick report
+   * answer "did the drain do anything?" without inspecting array
+   * length + scheduler config.
+   */
+  curate_skip_reason: CurateSkipReason;
 }
 
 export interface SchedulerHandle {
@@ -61,6 +148,45 @@ export interface SchedulerOptions {
   pollTimeoutMs?: number;
   /** Injected for tests; defaults to `() => new Date().toISOString()`. */
   now?: () => string;
+  /**
+   * Resolved proxy peer-id from `getProxyPeerId`. Required for the
+   * post-poll curator drain to run — without an identity, memories can't
+   * be stamped. When unset, the drain is a no-op and `tickOnce()`
+   * reports `curate_skip_reason: 'disabled-no-peer-id'`. Existing tests
+   * that construct a scheduler directly (no boot) can stay drain-free
+   * by omitting this field.
+   */
+  peerId?: string;
+  /**
+   * Called once per tick to resolve the team cortex the drain should
+   * write to. Indirected behind a function so an operator
+   * `think cortex switch`-ing against a running proxy takes effect on
+   * the next tick without a restart. Return `null` to skip drain for
+   * the tick (`curate_skip_reason: 'no-active-cortex'`). Required
+   * alongside `peerId` for the drain to run.
+   */
+  getCortexName?: () => string | null;
+  /**
+   * Maximum events drained per tick. Each event is one Claude API
+   * call (plus the curator's one internal retry on malformed output),
+   * so this is the per-tick LLM-spend ceiling. Backlog drains over
+   * multiple ticks at this rate. Defaults to `DEFAULT_CURATE_BATCH_SIZE`
+   * (10). Operators who need faster drain raise it; tight-budget
+   * deployments lower it.
+   */
+  curateBatchSize?: number;
+  /**
+   * Test seam: override `processTerminalEvent` so tests can return
+   * deterministic outcomes without instantiating the SDK. Production
+   * callers leave unset.
+   */
+  processEvent?: typeof processTerminalEvent;
+  /**
+   * Test seam: override `selectUncuratedEvents` so tests can drive a
+   * specific event-row sequence into the drain without seeding the
+   * events table. Production callers leave unset.
+   */
+  selectEvents?: typeof selectUncuratedEvents;
 }
 
 function withTimeout<T>(p: Promise<T>, ms: number, kind: string, subId: string): Promise<T> {
@@ -118,10 +244,106 @@ export function createScheduler(opts: SchedulerOptions): SchedulerHandle {
   const { db, registry, vault, intervalMs } = opts;
   const pollTimeoutMs = opts.pollTimeoutMs ?? DEFAULT_POLL_TIMEOUT_MS;
   const now = opts.now ?? (() => new Date().toISOString());
+  // Clamp to >= 1: a 0 or negative limit is operator error (a typo in
+  // env-var wiring would silently disable the drain), so coerce to the
+  // smallest useful batch instead of going silent.
+  const curateBatchSize = Math.max(1, opts.curateBatchSize ?? DEFAULT_CURATE_BATCH_SIZE);
+  const processEvent = opts.processEvent ?? processTerminalEvent;
+  const selectEvents = opts.selectEvents ?? selectUncuratedEvents;
 
   let timer: NodeJS.Timeout | null = null;
   let stopped = false;
   let inFlight: Promise<TickReport> | null = null;
+
+  /**
+   * Drain up to `curateBatchSize` uncurated events from the events
+   * table. Each event runs through the full curate → write → mark
+   * pipeline via `processTerminalEvent`. Per-event failures are logged
+   * and recorded as `{ status: 'error', error }` outcomes — the row
+   * stays `curated_at = NULL` so the next tick retries.
+   *
+   * The entire body is wrapped in a top-level catch so a drain
+   * *infrastructure* failure (a thrown `getCortexName()`, a sqlite
+   * error inside `selectEvents`) cannot escape into `runTick()` and
+   * silently abort the surrounding poll loop. Infrastructure failures
+   * surface as `curate_skip_reason: 'error'` with no per-event
+   * outcomes; the next tick retries from a clean slate.
+   *
+   * Returns the outcome list plus a reason string when nothing was
+   * produced (drain disabled, no active cortex, empty queue, drain
+   * infrastructure failure). Reason is `null` when at least one event
+   * was touched.
+   */
+  async function runDrain(): Promise<{
+    curate_outcomes: CurateOutcome[];
+    curate_skip_reason: CurateSkipReason;
+  }> {
+    try {
+      if (opts.peerId === undefined) {
+        return { curate_outcomes: [], curate_skip_reason: 'disabled-no-peer-id' };
+      }
+      if (opts.getCortexName === undefined) {
+        return { curate_outcomes: [], curate_skip_reason: 'disabled-no-cortex-resolver' };
+      }
+      const cortexName = opts.getCortexName();
+      if (cortexName === null) {
+        return { curate_outcomes: [], curate_skip_reason: 'no-active-cortex' };
+      }
+
+      const events: EventRow[] = selectEvents(db, { limit: curateBatchSize });
+      if (events.length === 0) {
+        return { curate_outcomes: [], curate_skip_reason: 'empty-queue' };
+      }
+
+      const curate_outcomes: CurateOutcome[] = [];
+      for (const event of events) {
+        try {
+          const outcome = await processEvent({
+            db,
+            event,
+            peerId: opts.peerId,
+            cortexName,
+          });
+          curate_outcomes.push({
+            event_id: event.id,
+            subscription_id: event.subscription_id,
+            status: outcome.status,
+            memory_ids: outcome.status === 'curated' ? outcome.ids : undefined,
+          });
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err);
+          // Per-event failure isolation: log, record, continue.
+          // `curated_at` stays NULL on throw — `processTerminalEvent`
+          // only marks it after the writer succeeds — so the next tick
+          // will retry the row. We do NOT propagate the throw because
+          // one event's curator failure (rate-limit, malformed LLM
+          // response, transient SDK error) must not block the rest of
+          // the batch.
+          console.error(
+            `[open-think serve] curate failed for event_id=${event.id} subscription_id=${event.subscription_id}: ${message}`,
+          );
+          curate_outcomes.push({
+            event_id: event.id,
+            subscription_id: event.subscription_id,
+            status: 'error',
+            error: message,
+          });
+        }
+      }
+      return { curate_outcomes, curate_skip_reason: null };
+    } catch (err) {
+      // Drain *infrastructure* failure: getCortexName() threw, or
+      // selectEvents() threw before any event was touched, or
+      // something else unexpected blew up. We catch here so it does
+      // not propagate up into runTick() and silently abort the
+      // surrounding poll loop — polls must keep running so the proxy
+      // doesn't go dark. Per-event failures inside the for-loop are
+      // caught separately above.
+      const message = err instanceof Error ? err.message : String(err);
+      console.error(`[open-think serve] curator drain crashed: ${message}`);
+      return { curate_outcomes: [], curate_skip_reason: 'error' };
+    }
+  }
 
   async function runTick(): Promise<TickReport> {
     const started_at = now();
@@ -252,7 +474,20 @@ export function createScheduler(opts: SchedulerOptions): SchedulerHandle {
       }
     }
 
-    return { started_at, finished_at: now(), outcomes };
+    // Captured before runDrain so operators alerting on poll-cycle
+    // latency don't accidentally include drain wall time (which can
+    // add curateBatchSize × LLM round-trip seconds per tick).
+    const poll_finished_at = now();
+    const { curate_outcomes, curate_skip_reason } = await runDrain();
+
+    return {
+      started_at,
+      poll_finished_at,
+      finished_at: now(),
+      outcomes,
+      curate_outcomes,
+      curate_skip_reason,
+    };
   }
 
   async function tickOnce(): Promise<TickReport> {

@@ -1,7 +1,12 @@
+import { randomBytes } from 'node:crypto';
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { createTestClient, type TestClient } from './fixtures/app-client.js';
 import { buildDefaultRegistry, registerConnector } from '../../src/serve/connectors/registry.js';
 import type { EventInput, SourceConnector } from '../../src/serve/connectors/types.js';
+import { createScheduler } from '../../src/serve/scheduler/index.js';
+import { openDb } from '../../src/serve/db.js';
+import { createVault } from '../../src/serve/vault/index.js';
+import type { EventRow } from '../../src/serve/event-curator.js';
 
 let client: TestClient;
 let subId: string;
@@ -423,5 +428,383 @@ describe('scheduler — terminal-event contract enforcement (AGT-382)', () => {
       .prepare('SELECT cursor FROM subscriptions WHERE id = ?')
       .get(sub) as { cursor: string };
     expect(JSON.parse(row.cursor)).toEqual({ count: 1 });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Curator drain: per-tick post-poll pass that pulls uncurated events from
+// the events table, runs each through processTerminalEvent, and records
+// per-event outcomes. Uses the `processEvent` / `selectEvents` seams so
+// these tests assert the drain's control flow (skip reasons, batching,
+// failure isolation, dynamic cortex resolution) without booting the
+// claude-agent-sdk or writing JSONL to disk.
+// ---------------------------------------------------------------------------
+
+describe('scheduler — curator drain', () => {
+  function buildEventRow(opts: { id: string; subscription_id?: string }): EventRow {
+    return {
+      id: opts.id,
+      subscription_id: opts.subscription_id ?? 'sub-x',
+      payload_json: '{}',
+      episode_key: `ep:${opts.id}`,
+      created_at: '2026-05-22T00:00:00.000Z',
+      curated_at: null,
+    };
+  }
+
+  function makeNakedScheduler(opts: {
+    peerId?: string;
+    getCortexName?: () => string | null;
+    curateBatchSize?: number;
+    selectEvents?: ReturnType<typeof vi.fn>;
+    processEvent?: ReturnType<typeof vi.fn>;
+  } = {}) {
+    const db = openDb(':memory:');
+    const vault = createVault(randomBytes(32));
+    const registry = buildDefaultRegistry();
+    const scheduler = createScheduler({
+      db,
+      registry,
+      vault,
+      intervalMs: 60_000,
+      peerId: opts.peerId,
+      getCortexName: opts.getCortexName,
+      curateBatchSize: opts.curateBatchSize,
+      // `as never` because the seam types reference the real signatures —
+      // tests supply vi.fn() stubs that match shape but not exact type.
+      selectEvents: opts.selectEvents as never,
+      processEvent: opts.processEvent as never,
+    });
+    return { db, scheduler };
+  }
+
+  it('skips drain when peerId is unset (disabled-no-peer-id)', async () => {
+    const selectEvents = vi.fn();
+    const { scheduler } = makeNakedScheduler({
+      getCortexName: () => 'cortex/engineering',
+      selectEvents,
+    });
+    const report = await scheduler.tickOnce();
+    expect(report.curate_skip_reason).toBe('disabled-no-peer-id');
+    expect(report.curate_outcomes).toEqual([]);
+    expect(selectEvents).not.toHaveBeenCalled();
+  });
+
+  it('skips drain when getCortexName is unset (disabled-no-cortex-resolver)', async () => {
+    const selectEvents = vi.fn();
+    const { scheduler } = makeNakedScheduler({
+      peerId: 'proxy-test',
+      selectEvents,
+    });
+    const report = await scheduler.tickOnce();
+    expect(report.curate_skip_reason).toBe('disabled-no-cortex-resolver');
+    expect(report.curate_outcomes).toEqual([]);
+    expect(selectEvents).not.toHaveBeenCalled();
+  });
+
+  it('skips drain when getCortexName returns null (no-active-cortex)', async () => {
+    const selectEvents = vi.fn();
+    const { scheduler } = makeNakedScheduler({
+      peerId: 'proxy-test',
+      getCortexName: () => null,
+      selectEvents,
+    });
+    const report = await scheduler.tickOnce();
+    expect(report.curate_skip_reason).toBe('no-active-cortex');
+    expect(report.curate_outcomes).toEqual([]);
+    expect(selectEvents).not.toHaveBeenCalled();
+  });
+
+  it('reports empty-queue when drain runs but selectEvents returns nothing', async () => {
+    const selectEvents = vi.fn().mockReturnValue([]);
+    const processEvent = vi.fn();
+    const { scheduler } = makeNakedScheduler({
+      peerId: 'proxy-test',
+      getCortexName: () => 'cortex/engineering',
+      selectEvents,
+      processEvent,
+    });
+    const report = await scheduler.tickOnce();
+    expect(report.curate_skip_reason).toBe('empty-queue');
+    expect(report.curate_outcomes).toEqual([]);
+    expect(selectEvents).toHaveBeenCalledTimes(1);
+    expect(processEvent).not.toHaveBeenCalled();
+  });
+
+  it('processes uncurated events and records per-event outcomes in order', async () => {
+    const events: EventRow[] = [
+      buildEventRow({ id: 'evt-a' }),
+      buildEventRow({ id: 'evt-b' }),
+      buildEventRow({ id: 'evt-c' }),
+    ];
+    const selectEvents = vi.fn().mockReturnValue(events);
+    const processEvent = vi.fn(async ({ event }: { event: EventRow }) => ({
+      status: 'curated' as const,
+      ids: [`mem-${event.id}`],
+    }));
+
+    const { scheduler } = makeNakedScheduler({
+      peerId: 'proxy-test',
+      getCortexName: () => 'cortex/engineering',
+      selectEvents,
+      processEvent,
+    });
+    const report = await scheduler.tickOnce();
+
+    expect(report.curate_skip_reason).toBeNull();
+    expect(report.curate_outcomes).toHaveLength(3);
+    expect(report.curate_outcomes.map((o) => o.event_id)).toEqual(['evt-a', 'evt-b', 'evt-c']);
+    for (const outcome of report.curate_outcomes) {
+      expect(outcome.status).toBe('curated');
+      expect(outcome.memory_ids).toEqual([`mem-${outcome.event_id}`]);
+    }
+    expect(processEvent).toHaveBeenCalledTimes(3);
+    // Confirms peerId + cortexName are threaded into every call — these
+    // are the two fields the cortex-writer stamps onto every memory it
+    // writes, so a regression that drops them would silently land
+    // memories under the wrong identity or in the wrong cortex.
+    for (let i = 0; i < 3; i++) {
+      const call = processEvent.mock.calls[i][0] as {
+        peerId: string;
+        cortexName: string;
+      };
+      expect(call.peerId).toBe('proxy-test');
+      expect(call.cortexName).toBe('cortex/engineering');
+    }
+  });
+
+  it('passes curateBatchSize through to selectEvents as the row limit', async () => {
+    const selectEvents = vi.fn().mockReturnValue([]);
+    const { scheduler } = makeNakedScheduler({
+      peerId: 'proxy-test',
+      getCortexName: () => 'cortex/engineering',
+      curateBatchSize: 3,
+      selectEvents,
+    });
+    await scheduler.tickOnce();
+    expect(selectEvents).toHaveBeenCalledWith(expect.anything(), { limit: 3 });
+  });
+
+  it('isolates per-event failures: one throw does not block the rest', async () => {
+    const events: EventRow[] = [
+      buildEventRow({ id: 'evt-ok-1' }),
+      buildEventRow({ id: 'evt-boom' }),
+      buildEventRow({ id: 'evt-ok-2' }),
+    ];
+    const selectEvents = vi.fn().mockReturnValue(events);
+    const processEvent = vi.fn(async ({ event }: { event: EventRow }) => {
+      if (event.id === 'evt-boom') {
+        throw new Error('curator rate-limited');
+      }
+      return { status: 'curated' as const, ids: [`mem-${event.id}`] };
+    });
+
+    const { scheduler } = makeNakedScheduler({
+      peerId: 'proxy-test',
+      getCortexName: () => 'cortex/engineering',
+      selectEvents,
+      processEvent,
+    });
+
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    let report;
+    try {
+      report = await scheduler.tickOnce();
+    } finally {
+      errSpy.mockRestore();
+    }
+
+    expect(report.curate_skip_reason).toBeNull();
+    expect(report.curate_outcomes).toHaveLength(3);
+    const [ok1, boom, ok2] = report.curate_outcomes;
+    expect(ok1.status).toBe('curated');
+    expect(boom.status).toBe('error');
+    expect(boom.error).toContain('rate-limited');
+    expect(ok2.status).toBe('curated');
+    // All three were attempted — failure of evt-boom did not short-circuit.
+    expect(processEvent).toHaveBeenCalledTimes(3);
+  });
+
+  it('re-evaluates getCortexName on every tick (operator can switch live)', async () => {
+    let activeCortex: string | null = 'cortex/alpha';
+    const getCortexName = vi.fn(() => activeCortex);
+    const selectEvents = vi.fn().mockReturnValue([buildEventRow({ id: 'evt-1' })]);
+    const processEvent = vi.fn().mockResolvedValue({
+      status: 'curated' as const,
+      ids: ['mem-1'],
+    });
+
+    const { scheduler } = makeNakedScheduler({
+      peerId: 'proxy-test',
+      getCortexName,
+      selectEvents,
+      processEvent,
+    });
+
+    await scheduler.tickOnce();
+    expect(processEvent.mock.calls[0][0]).toMatchObject({ cortexName: 'cortex/alpha' });
+
+    // Operator switches the active cortex mid-flight; next tick picks it
+    // up without restart.
+    activeCortex = 'cortex/beta';
+    await scheduler.tickOnce();
+    expect(processEvent.mock.calls[1][0]).toMatchObject({ cortexName: 'cortex/beta' });
+
+    // And if they unset it (cortex/* deleted, or `--no-active` mode),
+    // the next tick should skip cleanly.
+    activeCortex = null;
+    const report = await scheduler.tickOnce();
+    expect(report.curate_skip_reason).toBe('no-active-cortex');
+    // selectEvents must NOT be called when there's no active cortex —
+    // the early bail order is "check cortex first, then read queue".
+    // Two calls total: one for each of the first two ticks.
+    expect(selectEvents).toHaveBeenCalledTimes(2);
+  });
+
+  it('passes through already-curated outcome without inventing memory_ids', async () => {
+    const selectEvents = vi.fn().mockReturnValue([buildEventRow({ id: 'evt-x' })]);
+    const processEvent = vi.fn().mockResolvedValue({
+      status: 'already-curated' as const,
+      ids: [],
+    });
+    const { scheduler } = makeNakedScheduler({
+      peerId: 'proxy-test',
+      getCortexName: () => 'cortex/engineering',
+      selectEvents,
+      processEvent,
+    });
+    const report = await scheduler.tickOnce();
+    expect(report.curate_outcomes).toHaveLength(1);
+    expect(report.curate_outcomes[0].status).toBe('already-curated');
+    expect(report.curate_outcomes[0].memory_ids).toBeUndefined();
+  });
+
+  it('drain infrastructure failure (getCortexName throws) returns error reason, does not abort the tick', async () => {
+    const getCortexName = vi.fn(() => {
+      throw new Error('config file corrupted');
+    });
+    const selectEvents = vi.fn();
+    const { scheduler } = makeNakedScheduler({
+      peerId: 'proxy-test',
+      getCortexName,
+      selectEvents,
+    });
+
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    let report;
+    try {
+      // The critical contract: this MUST resolve, not reject. If
+      // runDrain's throw propagated, the whole tick would abort and
+      // polls would silently stop running. Operators would see the
+      // proxy "go dark" with no diagnostic until the next tick.
+      report = await scheduler.tickOnce();
+    } finally {
+      errSpy.mockRestore();
+    }
+
+    expect(report.curate_skip_reason).toBe('error');
+    expect(report.curate_outcomes).toEqual([]);
+    expect(selectEvents).not.toHaveBeenCalled();
+    // The tick still completes — both timestamps are populated.
+    expect(report.poll_finished_at).toBeTruthy();
+    expect(report.finished_at).toBeTruthy();
+  });
+
+  it('drain infrastructure failure (selectEvents throws) returns error reason, processes no events', async () => {
+    const selectEvents = vi.fn(() => {
+      throw new Error('database is locked');
+    });
+    const processEvent = vi.fn();
+    const { scheduler } = makeNakedScheduler({
+      peerId: 'proxy-test',
+      getCortexName: () => 'cortex/engineering',
+      selectEvents,
+      processEvent,
+    });
+
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    let report;
+    try {
+      report = await scheduler.tickOnce();
+    } finally {
+      errSpy.mockRestore();
+    }
+
+    expect(report.curate_skip_reason).toBe('error');
+    expect(report.curate_outcomes).toEqual([]);
+    expect(processEvent).not.toHaveBeenCalled();
+  });
+
+  it('reports poll_finished_at separately from finished_at so drain time does not skew poll-latency metrics', async () => {
+    // Sequence the `now()` clock so we can assert ordering exactly:
+    // ts1 = started_at, ts2 = poll_finished_at (after the poll loop),
+    // ts3 = finished_at (after the drain).
+    const stamps = [
+      '2026-05-22T22:00:00.000Z',
+      '2026-05-22T22:00:01.000Z',
+      '2026-05-22T22:00:42.000Z',
+    ];
+    let i = 0;
+    const now = () => stamps[i++];
+
+    const selectEvents = vi.fn().mockReturnValue([buildEventRow({ id: 'evt-1' })]);
+    const processEvent = vi.fn().mockResolvedValue({
+      status: 'curated' as const,
+      ids: ['mem-1'],
+    });
+    const { scheduler } = makeNakedScheduler({
+      peerId: 'proxy-test',
+      getCortexName: () => 'cortex/engineering',
+      selectEvents,
+      processEvent,
+    });
+    // Override `now` by reaching into a fresh scheduler — the public
+    // `now` option flows through `createScheduler` so we re-build with
+    // it set.
+    const db = openDb(':memory:');
+    const vault = createVault(randomBytes(32));
+    const registry = buildDefaultRegistry();
+    const schedulerWithClock = createScheduler({
+      db,
+      registry,
+      vault,
+      intervalMs: 60_000,
+      now,
+      peerId: 'proxy-test',
+      getCortexName: () => 'cortex/engineering',
+      selectEvents: selectEvents as never,
+      processEvent: processEvent as never,
+    });
+
+    const report = await schedulerWithClock.tickOnce();
+    expect(report.started_at).toBe(stamps[0]);
+    expect(report.poll_finished_at).toBe(stamps[1]);
+    expect(report.finished_at).toBe(stamps[2]);
+
+    // unused to silence lint about the first scheduler we didn't end
+    // up using
+    void scheduler;
+  });
+
+  it('clamps curateBatchSize <= 0 up to 1 (operator typo should not silently disable the drain)', async () => {
+    const selectEvents = vi.fn().mockReturnValue([]);
+    const { scheduler } = makeNakedScheduler({
+      peerId: 'proxy-test',
+      getCortexName: () => 'cortex/engineering',
+      curateBatchSize: 0,
+      selectEvents,
+    });
+    await scheduler.tickOnce();
+    expect(selectEvents).toHaveBeenCalledWith(expect.anything(), { limit: 1 });
+
+    selectEvents.mockClear();
+    const { scheduler: s2 } = makeNakedScheduler({
+      peerId: 'proxy-test',
+      getCortexName: () => 'cortex/engineering',
+      curateBatchSize: -10,
+      selectEvents,
+    });
+    await s2.tickOnce();
+    expect(selectEvents).toHaveBeenCalledWith(expect.anything(), { limit: 1 });
   });
 });
