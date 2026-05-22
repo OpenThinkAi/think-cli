@@ -11,10 +11,39 @@ function getHome(): string {
 }
 
 export function sanitizeName(name: string): string {
-  if (!name || /[\/\\\.]{2}/.test(name) || /[^a-zA-Z0-9_-]/.test(name)) {
-    throw new Error(`Invalid cortex name: "${name}". Use only alphanumeric characters, hyphens, and underscores.`);
+  // Allow alphanumerics, hyphens, underscores, and forward slashes — slashes
+  // let cortex names mirror namespaced git refs (e.g. "cortex/engineering")
+  // without forcing a separate branch-name mapping. Path-traversal is still
+  // rejected: the `[\/\\\.]{2}` clause blocks `..`, `//`, and `\\`, and a
+  // leading/trailing `/` would yield an absolute path or empty segment when
+  // joined into the on-disk DB path — both rejected here so callers can keep
+  // using path.join(getIndexDir(), `${name}.db`) safely.
+  if (
+    !name ||
+    /[\/\\\.]{2}/.test(name) ||
+    /[^a-zA-Z0-9_\-/]/.test(name) ||
+    name.startsWith('/') ||
+    name.endsWith('/')
+  ) {
+    throw new Error(
+      `Invalid cortex name: "${name}". Use only alphanumeric characters, hyphens, underscores, ` +
+        `and forward slashes; no leading/trailing slash and no '..', '//', or '\\\\'.`,
+    );
   }
   return name;
+}
+
+/**
+ * Ensure the on-disk parent directories for a cortex's index DB and longterm
+ * file exist. Slash-containing cortex names (e.g. "cortex/engineering") map
+ * to nested paths like `<index>/cortex/engineering.db`; without an explicit
+ * mkdir, SQLite and `fs.writeFile` would throw ENOENT on the missing
+ * `cortex/` subdir. Idempotent — safe to call before every DB open or
+ * longterm write.
+ */
+export function ensureCortexParentDirs(cortexName: string): void {
+  fs.mkdirSync(path.dirname(getIndexDbPath(cortexName)), { recursive: true });
+  fs.mkdirSync(path.dirname(getLongtermPath(cortexName)), { recursive: true });
 }
 
 function getThinkHome(): string | null {
