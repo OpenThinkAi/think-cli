@@ -144,9 +144,15 @@ export function createOrphanBranch(branchName: string): void {
     // Empty repo — nothing to remove
   }
 
+  // Canonical layout: every cortex file lives under <repo>/<branchName>/...
+  // so the branch tree is self-contained at one subdir, which keeps a future
+  // merge-to-main from colliding across cortices. Use forward slashes for git
+  // arguments (git accepts POSIX paths on every platform).
   const repoPath = getRepoPath();
-  fs.writeFileSync(path.join(repoPath, '000001.jsonl'), '', 'utf-8');
-  runGit(['add', '000001.jsonl']);
+  const cortexDir = path.join(repoPath, branchName);
+  fs.mkdirSync(cortexDir, { recursive: true, mode: 0o700 });
+  fs.writeFileSync(path.join(cortexDir, '000001.jsonl'), '', 'utf-8');
+  runGit(['add', '--', `${branchName}/000001.jsonl`]);
   runGit(['commit', '-m', `init: create cortex ${branchName}`]);
   runGit(['push', '--set-upstream', 'origin', '--', branchName]);
 }
@@ -184,6 +190,40 @@ export function readFileFromBranch(branchName: string, filePath: string): string
   }
 }
 
+/**
+ * Read a cortex file from `branchName`, preferring the canonical subdir
+ * `<branchName>/<fileName>` and falling back to the branch root
+ * `<fileName>`. Returns null if the file exists at neither location.
+ *
+ * The fallback mirrors `listBranchFiles`'s union semantics so unmigrated
+ * cortices (flat numbered pages at root, pre-`migrate-layout`) stay readable
+ * while still pointing every fresh write at the canonical path. Callers that
+ * specifically need the legacy top-level layout (e.g. the pre-v2
+ * `memories.jsonl` recovery path) should still call `readFileFromBranch`
+ * directly so the intent is explicit at the call site.
+ */
+export function readCortexFile(branchName: string, fileName: string): string | null {
+  const nested = readFileFromBranch(branchName, `${branchName}/${fileName}`);
+  if (nested !== null) return nested;
+  return readFileFromBranch(branchName, fileName);
+}
+
+/**
+ * Append `newLines` to the canonical cortex file `<branchName>/<targetFile>`
+ * on the branch, then commit and push.
+ *
+ * `targetFile` is the basename (e.g. `"000005.jsonl"`, `"long-term.jsonl"`,
+ * `"alice-retros.jsonl"`); the function prefixes it with `<branchName>/`
+ * internally so callers stay layout-agnostic. The cortex subdir is
+ * mkdir-recursive'd before the append, so brand-new cortices (and cortices
+ * that have not yet been through `think cortex migrate-layout`) just work.
+ *
+ * `memories.jsonl` is preserved as the default for backward compatibility
+ * with the legacy v1 layout, but in the canonical layout it lives at
+ * `<branchName>/memories.jsonl`. The v1 → v2 migration in `migrateToBuckets`
+ * still operates on the top-level legacy file; `migrate-layout` moves the
+ * post-v2 results into the cortex subdir.
+ */
 export function appendAndCommit(
   branchName: string,
   newLines: string[],
@@ -193,7 +233,10 @@ export function appendAndCommit(
 ): void {
   assertSafePositional(branchName, 'branch name');
   const repoPath = getRepoPath();
-  const filePath = path.join(repoPath, targetFile);
+  // POSIX-style slash is what git wants on every platform; path.join uses the
+  // OS separator for the on-disk write, but the staged ref must be POSIX.
+  const stagedPath = `${branchName}/${targetFile}`;
+  const filePath = path.join(repoPath, branchName, targetFile);
 
   try {
     runGit(['switch', '--', branchName]);
@@ -206,10 +249,15 @@ export function appendAndCommit(
 
   pullRebaseOrAbort(branchName);
 
+  // Cortex subdir may not exist yet (first write to a cortex that has not
+  // been through `migrate-layout`, or a brand-new orphan that this process
+  // is the first to write to). Idempotent — safe on every call.
+  fs.mkdirSync(path.dirname(filePath), { recursive: true, mode: 0o700 });
+
   const content = newLines.join('\n') + '\n';
   fs.appendFileSync(filePath, content, 'utf-8');
 
-  runGit(['add', targetFile]);
+  runGit(['add', '--', stagedPath]);
   runGit(['commit', '-m', commitMessage]);
 
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
@@ -260,13 +308,84 @@ export function listLocalBranches(): string[] {
   return output.trim().split('\n').filter(Boolean);
 }
 
+/**
+ * List the cortex files on `branchName`, looking under the canonical
+ * `<branchName>/` subdir **and** the branch root, deduped by basename
+ * (canonical wins on collision). Returns basenames, e.g.
+ * `["000001.jsonl", "long-term.jsonl", "alice-retros.jsonl"]`.
+ *
+ * Why both locations? An upgrade can land on a cortex that has flat numbered
+ * pages at the branch root (post-v2, pre-`migrate-layout`). Reading only the
+ * canonical subdir would silently return `[]` and the pull path would treat
+ * the cortex as empty — actual data still on the branch, just invisible. The
+ * union keeps unmigrated cortices readable; `migrate-layout` collapses the
+ * two locations into the canonical one when an operator is ready to commit
+ * to the move.
+ *
+ * When the same basename appears at both locations (a partially-migrated
+ * cortex), canonical wins because every new write goes there; the root copy
+ * is older and `migrate-layout` will renumber it past the canonical pages.
+ * Tree entries (sub-directories at root) are excluded so callers iterating
+ * over the result for blobs do not stumble over the canonical subdir itself.
+ */
 export function listBranchFiles(branchName: string, extension?: string): string[] {
   assertSafePositional(branchName, 'branch name');
+
+  // Canonical subdir contents. `<rev>:<path>` returns basenames (no prefix),
+  // so callers' pattern matching on e.g. /^\d{6}\.jsonl$/ stays unchanged.
+  let canonical: string[] = [];
   try {
-    // `origin/${branchName}` is a composed ref, not a positional that git
-    // would parse as a flag — a ref like `origin/--foo` is a ref name, not
-    // a --foo option. assertSafePositional still guards the leading-hyphen
-    // case for defense in depth.
+    const output = runGit([
+      'ls-tree', '--name-only',
+      `origin/${branchName}:${branchName}`,
+    ]);
+    canonical = output.split('\n').filter(Boolean);
+  } catch {
+    // Subdir doesn't exist on the branch — common for unmigrated cortices.
+  }
+
+  // Root contents. `ls-tree --name-only` returns trees alongside blobs; we
+  // filter out trees via the `100644 blob` prefix path to keep this list
+  // strictly file-typed. The migration command uses `listBranchRootFiles` to
+  // see trees too.
+  let rootBlobs: string[] = [];
+  try {
+    const output = runGit(['ls-tree', `origin/${branchName}`]);
+    rootBlobs = output
+      .split('\n')
+      .filter(line => line.includes(' blob '))
+      .map(line => line.split('\t').pop() ?? '')
+      .filter(Boolean);
+  } catch {
+    // Branch missing on origin — nothing to do.
+  }
+
+  // Canonical wins on basename collision.
+  const seen = new Set(canonical);
+  const merged = canonical.concat(rootBlobs.filter(f => !seen.has(f)));
+
+  const filtered = extension
+    ? merged.filter(f => f.endsWith(extension))
+    : merged;
+  return filtered.sort();
+}
+
+/**
+ * List the immediate children of the branch root (`origin/<branchName>:`).
+ *
+ * Used by `cortex migrate-layout` to detect leftover flat-layout files
+ * (pre-AGT-XXX) — `000001.jsonl`, `long-term.jsonl`, `<peer>-retros.jsonl`,
+ * `memories.jsonl` — as well as any non-canonical sibling subdir (e.g.
+ * `hivedb/` on the `cortex/hivedb` branch when the cortex was originally
+ * created with a slashless name).
+ *
+ * Returns basenames; tree entries are returned alongside blob entries since
+ * `ls-tree --name-only` does not distinguish — callers can probe via
+ * `listBranchFiles` if a name turns out to be a tree.
+ */
+export function listBranchRootFiles(branchName: string, extension?: string): string[] {
+  assertSafePositional(branchName, 'branch name');
+  try {
     const output = runGit(['ls-tree', '--name-only', `origin/${branchName}`]);
     let files = output.split('\n').filter(Boolean);
     if (extension) {
@@ -278,12 +397,32 @@ export function listBranchFiles(branchName: string, extension?: string): string[
   }
 }
 
-export function countBranchFileLines(branchName: string, filePath: string): number {
-  const content = readFileFromBranch(branchName, filePath);
+/**
+ * Count the non-empty lines in a cortex file on the branch. `fileName` is the
+ * basename (e.g. `"000001.jsonl"`); the function resolves it under the
+ * canonical `<branchName>/` subdir. Returns 0 when the file is missing or
+ * empty.
+ */
+export function countBranchFileLines(branchName: string, fileName: string): number {
+  const content = readCortexFile(branchName, fileName);
   if (!content) return 0;
   return content.trim().split('\n').filter(Boolean).length;
 }
 
+/**
+ * v1 → v2 migration: legacy top-level `memories.jsonl` becomes the first
+ * bucketed page `000001.jsonl`. In the canonical nested layout the page lands
+ * at `<branchName>/000001.jsonl`; the legacy `memories.jsonl` is *removed*
+ * from the top level so the branch tree ends with one entry per cortex (the
+ * cortex subdir), matching what `migrate-layout` produces for every other
+ * cortex.
+ *
+ * Rollback: if the push fails after the rename+commit, we `reset --hard` to
+ * the pre-migration ref, which restores `memories.jsonl` at the top level
+ * and removes the new nested file. Any caller that needs to retry can run
+ * `cortex migrate-layout` (which is the long-term home for this kind of
+ * one-shot rewrite) instead.
+ */
 export function migrateToBuckets(branchName: string): void {
   assertSafePositional(branchName, 'branch name');
   const repoPath = getRepoPath();
@@ -298,15 +437,19 @@ export function migrateToBuckets(branchName: string): void {
   pullRebaseOrAbort(branchName);
 
   const legacyPath = path.join(repoPath, 'memories.jsonl');
-  const bucketPath = path.join(repoPath, '000001.jsonl');
+  const cortexDir = path.join(repoPath, branchName);
+  const bucketPath = path.join(cortexDir, '000001.jsonl');
 
   if (fs.existsSync(legacyPath) && !fs.existsSync(bucketPath)) {
     // Save pre-migration ref for rollback
     const preMigrationRef = runGit(['rev-parse', 'HEAD']);
 
+    fs.mkdirSync(cortexDir, { recursive: true, mode: 0o700 });
     fs.renameSync(legacyPath, bucketPath);
+    // `add -A` picks up the deleted top-level file and the new nested file
+    // in one shot, which keeps the commit atomic.
     runGit(['add', '-A']);
-    runGit(['commit', '-m', 'migrate: memories.jsonl -> 000001.jsonl']);
+    runGit(['commit', '-m', `migrate: memories.jsonl -> ${branchName}/000001.jsonl`]);
 
     for (let attempt = 1; attempt <= 3; attempt++) {
       try {
@@ -315,8 +458,9 @@ export function migrateToBuckets(branchName: string): void {
       } catch {
         if (attempt === 3) {
           // Rollback to pre-migration commit. That commit has memories.jsonl
-          // (the rename to 000001.jsonl happened after it), so --hard reset
-          // restores memories.jsonl and removes 000001.jsonl from working tree.
+          // at the top level (the move into <branch>/000001.jsonl happened
+          // after it), so --hard reset restores the top-level file and
+          // removes the nested copy.
           try { runGit(['reset', '--hard', preMigrationRef]); } catch { /* best effort */ }
           throw new Error('Migration push failed after 3 attempts — local commit rolled back');
         }

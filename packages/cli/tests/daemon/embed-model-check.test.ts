@@ -34,6 +34,7 @@ vi.mock('../../src/lib/git.js', () => ({
   fetchBranch: vi.fn(),
   listBranchFiles: vi.fn().mockReturnValue([]),
   readFileFromBranch: vi.fn().mockReturnValue(null),
+  readCortexFile: vi.fn().mockReturnValue(null),
   listLocalBranches: vi.fn().mockReturnValue([]),
 }));
 
@@ -54,16 +55,21 @@ function mockL1Pages(pages: string[]): void {
   if (pages.length === 0) {
     vi.mocked(gitLib.listBranchFiles).mockReturnValue([]);
     vi.mocked(gitLib.readFileFromBranch).mockReturnValue(null);
+    vi.mocked(gitLib.readCortexFile).mockReturnValue(null);
     return;
   }
   const fileNames = pages.map((_, i) => String(i + 1).padStart(6, '0') + '.jsonl');
   vi.mocked(gitLib.listBranchFiles).mockReturnValue(fileNames);
-  vi.mocked(gitLib.readFileFromBranch).mockImplementation(
+  // reindexOneCortex → readAllL1Pages reads via readCortexFile in the nested
+  // layout; readFileFromBranch is still mocked to null so the legacy
+  // memories.jsonl fallback path doesn't fire here.
+  vi.mocked(gitLib.readCortexFile).mockImplementation(
     (_cortex: string, file: string) => {
       const idx = fileNames.indexOf(file);
       return idx >= 0 ? pages[idx] : null;
     }
   );
+  vi.mocked(gitLib.readFileFromBranch).mockReturnValue(null);
 }
 
 /**
