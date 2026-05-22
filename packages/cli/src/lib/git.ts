@@ -191,18 +191,21 @@ export function readFileFromBranch(branchName: string, filePath: string): string
 }
 
 /**
- * Read a file from the cortex subdir on `branchName` (canonical nested layout:
- * `<branchName>/<fileName>`). Returns null if the file does not exist there.
+ * Read a cortex file from `branchName`, preferring the canonical subdir
+ * `<branchName>/<fileName>` and falling back to the branch root
+ * `<fileName>`. Returns null if the file exists at neither location.
  *
- * Use this in place of `readFileFromBranch(branchName, fileName)` for any read
- * of cortex content (memory pages, long-term, per-peer retros). The legacy
- * top-level fallback for `memories.jsonl` (v1 → v2 migration) and the
- * top-level flat layout (pre-migrate-layout) still exists; callers that need
- * the legacy fallback should call `readFileFromBranch` explicitly with the
- * top-level path.
+ * The fallback mirrors `listBranchFiles`'s union semantics so unmigrated
+ * cortices (flat numbered pages at root, pre-`migrate-layout`) stay readable
+ * while still pointing every fresh write at the canonical path. Callers that
+ * specifically need the legacy top-level layout (e.g. the pre-v2
+ * `memories.jsonl` recovery path) should still call `readFileFromBranch`
+ * directly so the intent is explicit at the call site.
  */
 export function readCortexFile(branchName: string, fileName: string): string | null {
-  return readFileFromBranch(branchName, `${branchName}/${fileName}`);
+  const nested = readFileFromBranch(branchName, `${branchName}/${fileName}`);
+  if (nested !== null) return nested;
+  return readFileFromBranch(branchName, fileName);
 }
 
 /**
@@ -306,32 +309,65 @@ export function listLocalBranches(): string[] {
 }
 
 /**
- * List the immediate children of the canonical cortex subdir
- * (`origin/<branchName>:<branchName>/`). Returns basenames, e.g.
+ * List the cortex files on `branchName`, looking under the canonical
+ * `<branchName>/` subdir **and** the branch root, deduped by basename
+ * (canonical wins on collision). Returns basenames, e.g.
  * `["000001.jsonl", "long-term.jsonl", "alice-retros.jsonl"]`.
  *
- * If the subdir does not exist on the branch (a cortex that has not yet been
- * through `migrate-layout`, or a brand-new branch), returns `[]`. Use
- * `listBranchRootFiles` to introspect the legacy top-level layout.
+ * Why both locations? An upgrade can land on a cortex that has flat numbered
+ * pages at the branch root (post-v2, pre-`migrate-layout`). Reading only the
+ * canonical subdir would silently return `[]` and the pull path would treat
+ * the cortex as empty — actual data still on the branch, just invisible. The
+ * union keeps unmigrated cortices readable; `migrate-layout` collapses the
+ * two locations into the canonical one when an operator is ready to commit
+ * to the move.
+ *
+ * When the same basename appears at both locations (a partially-migrated
+ * cortex), canonical wins because every new write goes there; the root copy
+ * is older and `migrate-layout` will renumber it past the canonical pages.
+ * Tree entries (sub-directories at root) are excluded so callers iterating
+ * over the result for blobs do not stumble over the canonical subdir itself.
  */
 export function listBranchFiles(branchName: string, extension?: string): string[] {
   assertSafePositional(branchName, 'branch name');
+
+  // Canonical subdir contents. `<rev>:<path>` returns basenames (no prefix),
+  // so callers' pattern matching on e.g. /^\d{6}\.jsonl$/ stays unchanged.
+  let canonical: string[] = [];
   try {
-    // `<rev>:<path>` lists the contents of the subdir on the branch. Returns
-    // basenames (no path prefix), so callers' existing pattern matching on
-    // e.g. /^\d{6}\.jsonl$/ continues to work unchanged.
     const output = runGit([
       'ls-tree', '--name-only',
       `origin/${branchName}:${branchName}`,
     ]);
-    let files = output.split('\n').filter(Boolean);
-    if (extension) {
-      files = files.filter(f => f.endsWith(extension));
-    }
-    return files.sort();
+    canonical = output.split('\n').filter(Boolean);
   } catch {
-    return [];
+    // Subdir doesn't exist on the branch — common for unmigrated cortices.
   }
+
+  // Root contents. `ls-tree --name-only` returns trees alongside blobs; we
+  // filter out trees via the `100644 blob` prefix path to keep this list
+  // strictly file-typed. The migration command uses `listBranchRootFiles` to
+  // see trees too.
+  let rootBlobs: string[] = [];
+  try {
+    const output = runGit(['ls-tree', `origin/${branchName}`]);
+    rootBlobs = output
+      .split('\n')
+      .filter(line => line.includes(' blob '))
+      .map(line => line.split('\t').pop() ?? '')
+      .filter(Boolean);
+  } catch {
+    // Branch missing on origin — nothing to do.
+  }
+
+  // Canonical wins on basename collision.
+  const seen = new Set(canonical);
+  const merged = canonical.concat(rootBlobs.filter(f => !seen.has(f)));
+
+  const filtered = extension
+    ? merged.filter(f => f.endsWith(extension))
+    : merged;
+  return filtered.sort();
 }
 
 /**

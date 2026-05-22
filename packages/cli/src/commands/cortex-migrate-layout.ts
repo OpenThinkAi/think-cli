@@ -206,9 +206,16 @@ function planBranchMigration(branch: string, repoPath: string): MigratePlan | nu
   }
   if (flatMemories) {
     // `memories.jsonl` only ever existed pre-v2 as a single top-level file.
-    // If there's already a `<branch>/000001.jsonl` after renumbering, append
-    // memories as the next page rather than colliding.
-    const memTarget = flatPages.length === 0 && canonicalNumberedPages.length === 0
+    // It can be safely numbered `000001.jsonl` *only* when no other source
+    // has already claimed that slot — flat pages, canonical pages, AND
+    // off-canonical pages all consume numbers from the same sequence. Miss
+    // any one of those and `applyPlan`'s `addTarget` pre-flight aborts with
+    // a confusing "duplicate migration target" error.
+    const noNumberedSources =
+      flatPages.length === 0 &&
+      canonicalNumberedPages.length === 0 &&
+      offCanonicalNumbered.length === 0;
+    const memTarget = noNumberedSources
       ? '000001.jsonl'
       : String(nextNum).padStart(6, '0') + '.jsonl';
     moves.push({ source: flatMemories, targetBasename: memTarget });
@@ -310,7 +317,12 @@ async function migrateOneBranch(
   fetchBranch(branch);
   try { git(['switch', '--', branch], repoPath); }
   catch { git(['switch', '-c', branch, '--', `origin/${branch}`], repoPath); }
-  try { git(['pull', '--rebase', 'origin', '--', branch], repoPath); }
+  // `git pull` does not accept the `--` argument separator the way `git
+  // push` does — recent git versions reject `pull --rebase origin -- main`.
+  // The branch name has been validated via the prior `git switch` path
+  // (assertSafePositional doesn't apply to this local helper) and via the
+  // listLocalBranches enumeration, so a literal positional is safe here.
+  try { git(['pull', '--rebase', 'origin', branch], repoPath); }
   catch { /* first push / unborn upstream — proceed without rebase */ }
 
   const plan = planBranchMigration(branch, repoPath);
@@ -319,14 +331,18 @@ async function migrateOneBranch(
   const fileCount = plan.moves.length + plan.canonicalRenumbers.length;
 
   if (opts.dryRun) {
-    // Print the plan and return without changing anything.
-    process.stdout.write(`\n  ${chalk.cyan(branch)} (dry run):\n`);
+    // Print the plan inline (the outer loop already wrote the branch name as
+    // a left-justified label) and return a status that the outer loop
+    // appends with a checkmark. Indent each detail line under the label so
+    // the report reads as a tree, not as two competing branch headers.
+    process.stdout.write(`\n`);
     for (const r of plan.canonicalRenumbers) {
-      process.stdout.write(`    rename  ${r.source} → ${branch}/${r.targetBasename}\n`);
+      process.stdout.write(`      rename  ${r.source} → ${branch}/${r.targetBasename}\n`);
     }
     for (const m of plan.moves) {
-      process.stdout.write(`    move    ${m.source} → ${branch}/${m.targetBasename}\n`);
+      process.stdout.write(`      move    ${m.source} → ${branch}/${m.targetBasename}\n`);
     }
+    process.stdout.write(`    `);
     return `${fileCount} file(s) ${chalk.dim('(dry run)')}`;
   }
 
