@@ -23,6 +23,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { getCortexDb } from '../../db/engrams.js';
 import { getRepoPath } from '../../lib/paths.js';
+import { ensureBranchCheckedOut } from '../../lib/git.js';
 import type { SupersessionResult } from './call.js';
 
 // ---------------------------------------------------------------------------
@@ -125,6 +126,10 @@ export function applySupersession(
       (l) => l['id'] === newEntryId,
     );
     if (original) {
+      // Switch the working tree to the cortex's branch before appending so
+      // the tombstone lands on the same branch as the original entry. See
+      // `ensureBranchCheckedOut`.
+      ensureBranchCheckedOut(safeCortex);
       appendToL1(cortexDir, {
         ...original,
         deleted_at: now,

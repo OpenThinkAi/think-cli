@@ -181,6 +181,30 @@ export class PushDebouncer {
     const git = this._gitOverride ?? runGitAsync;
 
     try {
+      // Re-establish the cortex's branch before staging. Writes earlier in
+      // this cycle already called `ensureBranchCheckedOut(safeCortex)` at
+      // the sync-handler / compaction / proxy seam, but a concurrent write
+      // to a *different* cortex (or an operator command) may have switched
+      // the tree out again during the 500ms debounce window. Without this
+      // re-switch, `git add -- <safeCortex>` would stage the diff on the
+      // wrong branch and the commit would land there. The check is a cheap
+      // `rev-parse` first to avoid a redundant switch when the branch is
+      // already correct.
+      const currentBranch = (await git(
+        ['rev-parse', '--abbrev-ref', 'HEAD'],
+        repoPath,
+      )).trim();
+      if (currentBranch !== safeCortex) {
+        try {
+          await git(['switch', '--', safeCortex], repoPath);
+        } catch {
+          await git(
+            ['switch', '-c', safeCortex, '--', `origin/${safeCortex}`],
+            repoPath,
+          );
+        }
+      }
+
       // Stage all changes in the cortex sub-directory.
       await git(['add', '--', safeCortex], repoPath);
 

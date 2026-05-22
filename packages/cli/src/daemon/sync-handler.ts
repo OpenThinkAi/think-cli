@@ -37,6 +37,7 @@ import { assignNextSeq } from '../db/activity-seq.js';
 import embed, { EMBEDDING_MODEL_NAME } from '../lib/embed.js';
 import { compactionQueue } from './compaction/queue.js';
 import { pushDebouncer } from './push-debouncer.js';
+import { ensureBranchCheckedOut } from '../lib/git.js';
 import { runSupersessionWorker } from './supersession/worker.js';
 
 // ---------------------------------------------------------------------------
@@ -328,13 +329,16 @@ export async function handleSync(params: Record<string, unknown>): Promise<SyncR
   // --- write to L1 ---
   // Cortex directory inside the shared repo working tree.
   // The repo root is `~/.think/repo/`; cortex data lives on a git branch
-  // named after the cortex. For direct filesystem writes (pre-AGT-309),
-  // we write to `<repoPath>/<cortex>/` so the push debounce can later
-  // commit and push the working-tree changes.
+  // named after the cortex. We write to `<repoPath>/<cortex>/` so the
+  // push debounce can later commit and push the working-tree changes.
   //
-  // `sanitizeName` guarantees the cortex name contains only [a-zA-Z0-9_-],
-  // which is always a single safe path component with no traversal risk.
+  // The branch-checkout call below is what keeps the write on the right
+  // branch when something else (operator command, another cortex's
+  // earlier write) has moved the tree. See `ensureBranchCheckedOut` for
+  // the contract; in particular it is synchronous so no other write can
+  // interleave between the switch and the `appendToL1` append.
   const cortexDir = path.join(getRepoPath(), safeCortex);
+  ensureBranchCheckedOut(safeCortex);
   appendToL1(cortexDir, line);
 
   // --- embed ---

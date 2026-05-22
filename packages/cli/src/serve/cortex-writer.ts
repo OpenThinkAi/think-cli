@@ -38,6 +38,7 @@ import path from 'node:path';
 import { v7 as uuidv7 } from 'uuid';
 import { appendToL1Page } from '../lib/l1-page.js';
 import { getRepoPath, sanitizeName } from '../lib/paths.js';
+import { ensureBranchCheckedOut } from '../lib/git.js';
 import { pushDebouncer } from '../daemon/push-debouncer.js';
 
 /**
@@ -201,6 +202,18 @@ export function writeMemoriesForEvent(
   const now = (opts.now ?? (() => new Date().toISOString()))();
   const append = opts.appendFn ?? appendToL1Page;
   const cortexDir = path.join(getRepoPath(), safeCortex);
+  // Switch the working tree to the team cortex's branch before appending.
+  // The proxy serves multiple team cortices and may have written to a
+  // different one earlier in the process lifetime; without this switch,
+  // the lines would land on the previous cortex's branch.
+  //
+  // Skipped when callers inject an `appendFn` (the test seam). The seam
+  // is the explicit opt-out from real-fs writes, and most callers passing
+  // `appendFn` do not set THINK_HOME — they would otherwise reach into the
+  // operator's real `~/.think/repo` looking for the cortex branch.
+  if (opts.appendFn === undefined) {
+    ensureBranchCheckedOut(safeCortex);
+  }
 
   const ids: string[] = [];
   for (const memory of memories) {
