@@ -2,6 +2,27 @@
 
 ## [Unreleased]
 
+## [1.2.0] — 2026-05-22
+
+### Added
+
+- **`think serve` scheduler now drains uncurated events on every tick.** The pre-1.2.0 proxy pipeline landed terminal events in the `events` table but had no orchestrator to run `processTerminalEvent` over them — events would accumulate forever with `curated_at IS NULL`, no Claude calls would fire, and nothing would land on the team cortex. The drain pass now runs after each per-subscription poll cycle.
+  - Reads up to `curateBatchSize` uncurated rows (default 10) and runs each through the existing curator → cortex-writer → mark-curated pipeline.
+  - Per-event failures are isolated: one rate-limit / SDK error / malformed LLM response does not block the rest of the batch, and the failed row stays `curated_at = NULL` so the next tick retries.
+  - Drain-infrastructure failures (a thrown config read, a sqlite error in `selectEvents`) are caught at the drain boundary and surfaced as `curate_skip_reason: 'error'`. They cannot escape into the surrounding tick loop or abort polls — the proxy stays alive even if curation breaks.
+- **Operator can switch the active cortex against a running proxy.** `boot-entry.ts` wires the drain with a `getCortexName` closure that re-reads `config.cortex.active` on every tick, so `think cortex switch <new>` against a live proxy takes effect on the next tick without a restart. Setting it to `null` (no active cortex) cleanly skips the drain — diagnosed as `curate_skip_reason: 'no-active-cortex'`.
+- **New `SchedulerOptions` fields:** `peerId`, `getCortexName`, `curateBatchSize`, plus `processEvent`/`selectEvents` test seams. All optional — schedulers constructed without `peerId`/`getCortexName` keep drain-off behaviour, so embedders that don't want the drain stay unaffected. `curateBatchSize` is clamped to `>= 1` so an operator typo (`0`, negative) does not silently disable the drain.
+
+### Changed
+
+- **`TickReport` shape grew three required fields:** `poll_finished_at` (the timestamp after the poll loop finishes, before drain begins — operators alerting on poll-cycle latency should subtract `started_at` from this, not from `finished_at`), `curate_outcomes` (per-event drain results, always present, possibly empty), and `curate_skip_reason` (`'disabled-no-peer-id' | 'disabled-no-cortex-resolver' | 'no-active-cortex' | 'empty-queue' | 'error' | null` — `null` means the drain ran and touched at least one event; otherwise the reason it produced no outcomes). **Direct constructors of `TickReport` will need to supply these fields**; callers that consume reports returned from `tickOnce()` see the new fields automatically and can ignore them.
+- **`finished_at` semantics widened.** Pre-1.2.0 it approximated poll-loop wall time. Post-1.2.0 it includes the drain pass, which can add up to `curateBatchSize` × LLM round-trip seconds per tick. **Operators monitoring poll latency on `finished_at - started_at` should migrate to `poll_finished_at - started_at`** to keep the prior signal. The total tick duration is now `finished_at - started_at`.
+
+### Operational impact
+
+- A properly-configured proxy (one passing `peerId` + `getCortexName` — i.e. anything booted via `runServe()`) now spends Claude tokens. First poll after a fresh subscribe fetches every closed PR/issue/release (GitHub's no-`since` semantics), so expect a one-time backfill burst of ~1 Sonnet call per item. Steady state is ~1 call per new closed item afterwards. Tighten via `curateBatchSize` if the per-tick LLM-spend ceiling matters.
+- The 9-test scheduler-drain suite covers the 5 skip reasons (including the new `'error'` infrastructure-failure path), happy-path ordering, batch-size pass-through + clamp, per-event failure isolation, dynamic cortex resolution, and the `poll_finished_at`/`finished_at` separation.
+
 ## [1.1.0] — 2026-05-22
 
 ### Added
