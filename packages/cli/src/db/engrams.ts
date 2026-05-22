@@ -1,5 +1,5 @@
 import { DatabaseSync } from 'node:sqlite';
-import { getIndexDbPath, ensureThinkDirs } from '../lib/paths.js';
+import { getIndexDbPath, ensureThinkDirs, ensureCortexParentDirs } from '../lib/paths.js';
 import { getPeerId } from '../lib/config.js';
 import { runMigrations } from './migrate.js';
 import type { Migration } from './migrate.js';
@@ -364,6 +364,7 @@ export function getCortexDb(cortexName: string): DatabaseSync {
   if (cached) return cached;
 
   ensureThinkDirs();
+  ensureCortexParentDirs(cortexName);
 
   const dbPath = getIndexDbPath(cortexName);
   const db = new DatabaseSync(dbPath);
