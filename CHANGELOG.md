@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+## [1.6.0] — 2026-05-22
+
+### Fixed
+
+- **Union merge driver is now set in `.git/info/attributes`, not just committed `.gitattributes` — fixes the rebase bootstrap deadlock from 1.5.0.** 1.5.0 committed a `.gitattributes` (`*.jsonl merge=union`) onto cortex branches, but that alone cannot bootstrap itself: during `git pull --rebase`, git reads merge attributes from the *checked-out* tree, which is the `onto` (origin) commit — and origin doesn't carry the new `.gitattributes` yet. So the very rebase trying to introduce the driver runs *without* it and still throws a conflict on a divergent page. (Observed live: the proxy logged "added union merge driver" and then "Rebase conflict" on the same cycle.) The fix is `.git/info/attributes` — git's per-repo, **non-committed** attributes file, consulted for every merge/rebase regardless of which commit is checked out. It's active immediately, so the first reconciling push succeeds.
+  - New `ensureLocalUnionMergeAttribute()` writes `*.jsonl merge=union` to `.git/info/attributes` (idempotent; no-op outside a normal `.git` directory — worktrees and test fixtures are skipped).
+  - Wired into `ensureRepoCloned` (both fresh-clone and existing-clone paths, so clones created before this self-heal), `ensureUnionMergeAttribute` (CLI/daemon write path), and the proxy's `push-debouncer`.
+  - The committed `.gitattributes` from 1.5.0 is kept and still useful: once a node's *local* driver lets the first push land, the committed file rides along to origin and propagates the mapping to every other clone (including ones running older versions — the `union` driver is built into git and honored from a pulled `.gitattributes` thereafter). Local file = bootstrap + this node; committed file = propagation to all nodes.
+  - Validated end-to-end on the Railway proxy: after `.git/info/attributes` was present, the previously-conflicting `cortex/engineering` pushes succeeded and `HiveDB Proxy`-authored commits landed on the team cortex.
+
 ## [1.5.0] — 2026-05-22
 
 ### Fixed

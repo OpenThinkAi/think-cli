@@ -27,7 +27,7 @@ import { execFile } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { getRepoPath, sanitizeName } from '../lib/paths.js';
-import { safeGitEnv, withUnionMergeAttribute } from '../lib/git.js';
+import { safeGitEnv, withUnionMergeAttribute, ensureLocalUnionMergeAttribute } from '../lib/git.js';
 import { daemonLog } from './log.js';
 
 // ---------------------------------------------------------------------------
@@ -219,6 +219,12 @@ export class PushDebouncer {
       // repo on disk) don't write a stray `.gitattributes`. Mirrors the
       // no-op-outside-a-repo behavior of `ensureUnionMergeAttribute`.
       if (fs.existsSync(path.join(repoPath, '.git'))) {
+        // Always-effective local union driver — the load-bearing half. The
+        // committed `.gitattributes` below can't bootstrap union during the
+        // rebase that introduces it (rebase reads attributes from the origin
+        // tree, which lacks the file); `.git/info/attributes` is active
+        // immediately. Pure fs, idempotent.
+        ensureLocalUnionMergeAttribute();
         const attrPath = path.join(repoPath, '.gitattributes');
         let attrCurrent = '';
         try {
