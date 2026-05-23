@@ -134,6 +134,10 @@ export function ensureUnionMergeAttribute(branchName: string): void {
   assertSafePositional(branchName, 'branch name');
   const repoPath = getRepoPath();
   if (!fs.existsSync(path.join(repoPath, '.git'))) return;
+  // Always-effective local copy first — see ensureLocalUnionMergeAttribute
+  // for why the committed .gitattributes alone cannot bootstrap the union
+  // driver during the very rebase that introduces it.
+  ensureLocalUnionMergeAttribute();
   const attrPath = path.join(repoPath, '.gitattributes');
   let current = '';
   try {
@@ -146,6 +150,52 @@ export function ensureUnionMergeAttribute(branchName: string): void {
   fs.writeFileSync(attrPath, next, 'utf-8');
   runGit(['add', '--', '.gitattributes']);
   runGit(['commit', '-m', `chore(cortex): union merge driver for *.jsonl on ${branchName}`]);
+}
+
+/**
+ * Write `*.jsonl merge=union` into `.git/info/attributes` — git's per-repo,
+ * NON-committed attributes file, consulted for EVERY merge/rebase regardless
+ * of which commit is checked out.
+ *
+ * This is the load-bearing half of the union-merge fix. A *committed*
+ * `.gitattributes` is read from the checked-out tree, but during
+ * `git pull --rebase` the checked-out tree is the `onto` (origin) commit —
+ * so a freshly-introduced `.gitattributes` can't bootstrap itself (origin
+ * doesn't carry it yet, so the conflicting rebase that's trying to push it
+ * runs WITHOUT the driver and throws). `.git/info/attributes` sidesteps the
+ * bootstrap entirely: it's active immediately, no commit required.
+ *
+ * Local-only — it does not travel to other clones, so each clone sets its
+ * own. It pairs with the committed `.gitattributes` (ensureUnionMergeAttribute):
+ * the local file lets THIS node's first push succeed; the committed file then
+ * rides along on that push and propagates the mapping to every other node.
+ *
+ * Idempotent. No-op outside a normal (non-worktree) git repo.
+ */
+export function ensureLocalUnionMergeAttribute(): void {
+  const gitDir = path.join(getRepoPath(), '.git');
+  // Only handle a real .git directory (normal clone). A worktree's `.git` is
+  // a file pointing elsewhere; the proxy/daemon always use a normal clone, and
+  // the committed .gitattributes still covers the worktree case once on origin.
+  let isDir = false;
+  try {
+    isDir = fs.statSync(gitDir).isDirectory();
+  } catch {
+    return; // no .git at all (test fixtures, local-fs backend)
+  }
+  if (!isDir) return;
+  const infoDir = path.join(gitDir, 'info');
+  const attrPath = path.join(infoDir, 'attributes');
+  let current = '';
+  try {
+    current = fs.readFileSync(attrPath, 'utf-8');
+  } catch {
+    /* absent — treated as empty */
+  }
+  const next = withUnionMergeAttribute(current);
+  if (next === null) return;
+  fs.mkdirSync(infoDir, { recursive: true });
+  fs.writeFileSync(attrPath, next, 'utf-8');
 }
 
 export function ensureRepoCloned(): void {
@@ -172,6 +222,10 @@ export function ensureRepoCloned(): void {
     if (!repoUrlsEquivalent(remote, config.cortex.repo)) {
       throw new Error(`Repo at ${repoPath} points to ${remote}, expected ${config.cortex.repo}`);
     }
+    // Existing clone: ensure the always-effective local union driver is set
+    // (self-heals clones created before this landed, including ones that have
+    // never re-cloned).
+    ensureLocalUnionMergeAttribute();
     return;
   }
 
@@ -181,6 +235,9 @@ export function ensureRepoCloned(): void {
     stdio: ['pipe', 'pipe', 'pipe'],
     env: safeGitEnv(),
   });
+  // Fresh clone: stamp the always-effective local union driver so the very
+  // first write's pull-rebase can reconcile a divergent page.
+  ensureLocalUnionMergeAttribute();
 }
 
 export function branchExists(branchName: string): boolean {
