@@ -338,3 +338,76 @@ describe('writeMemoriesForEvent — real on-disk append', () => {
     expect(parsed[1].id).toBe(result.ids[1]);
   });
 });
+
+// ---------------------------------------------------------------------------
+// ts = occurredAt ?? now()  (default-now-with-override; drives recall recency)
+// ---------------------------------------------------------------------------
+
+describe('writeMemoriesForEvent — memory ts source', () => {
+  it('stamps ts from occurredAt when provided (overrides the now seam)', () => {
+    const append = makeAppendCollector();
+    writeMemoriesForEvent({
+      event: makeEvent(),
+      memories: [{ content: 'a historical PR', topics: [] }],
+      cortexName: CORTEX,
+      peerId: PROXY_PEER_ID,
+      occurredAt: '2021-03-04T09:00:00.000Z', // a years-old source date
+      now: () => '2026-05-23T00:00:00.000Z', // would-be insertion time
+      appendFn: append.fn,
+      notifyPush: () => {},
+    });
+    // The memory carries the SOURCE date, not "now" — so a backfilled old
+    // item sorts to its real chronological position in recall.
+    expect(append.calls[0].obj.ts).toBe('2021-03-04T09:00:00.000Z');
+  });
+
+  it('falls back to now() when occurredAt is unset', () => {
+    const append = makeAppendCollector();
+    writeMemoriesForEvent({
+      event: makeEvent(),
+      memories: [{ content: 'a live PR', topics: [] }],
+      cortexName: CORTEX,
+      peerId: PROXY_PEER_ID,
+      // occurredAt intentionally omitted
+      now: () => '2026-05-23T00:00:00.000Z',
+      appendFn: append.fn,
+      notifyPush: () => {},
+    });
+    expect(append.calls[0].obj.ts).toBe('2026-05-23T00:00:00.000Z');
+  });
+
+  it('falls back to now() when occurredAt is not a parseable date (defends against bad connectors)', () => {
+    const append = makeAppendCollector();
+    writeMemoriesForEvent({
+      event: makeEvent(),
+      memories: [{ content: 'garbage-dated', topics: [] }],
+      cortexName: CORTEX,
+      peerId: PROXY_PEER_ID,
+      occurredAt: 'not-a-date', // non-parseable → guard rejects it
+      now: () => '2026-05-23T00:00:00.000Z',
+      appendFn: append.fn,
+      notifyPush: () => {},
+    });
+    expect(append.calls[0].obj.ts).toBe('2026-05-23T00:00:00.000Z');
+  });
+
+  it('applies the same occurredAt to every memory in a multi-memory event', () => {
+    const append = makeAppendCollector();
+    writeMemoriesForEvent({
+      event: makeEvent(),
+      memories: [
+        { content: 'segment one', topics: [] },
+        { content: 'segment two', topics: [] },
+      ],
+      cortexName: CORTEX,
+      peerId: PROXY_PEER_ID,
+      occurredAt: '2022-11-01T00:00:00.000Z',
+      now: () => '2026-05-23T00:00:00.000Z',
+      appendFn: append.fn,
+      notifyPush: () => {},
+    });
+    expect(append.calls).toHaveLength(2);
+    expect(append.calls[0].obj.ts).toBe('2022-11-01T00:00:00.000Z');
+    expect(append.calls[1].obj.ts).toBe('2022-11-01T00:00:00.000Z');
+  });
+});

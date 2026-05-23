@@ -52,6 +52,7 @@ export function ensureSchema(db: DatabaseSync): void {
       episode_key TEXT NOT NULL,
       server_seq INTEGER PRIMARY KEY AUTOINCREMENT,
       created_at TEXT NOT NULL,
+      occurred_at TEXT,
       FOREIGN KEY (subscription_id) REFERENCES subscriptions(id) ON DELETE CASCADE
     ) STRICT;
   `);
@@ -169,6 +170,22 @@ export function ensureSchema(db: DatabaseSync): void {
     .all() as { name: string }[];
   if (!eventsColsAfter.some((c) => c.name === 'curated_at')) {
     db.exec('ALTER TABLE events ADD COLUMN curated_at TEXT');
+  }
+
+  // Additive migration: events.occurred_at records the source artifact's
+  // real settle time (PR merged_at/closed_at, release published_at, Slack
+  // thread root time) as supplied by the connector's `EventInput.occurredAt`.
+  // It becomes the curated memory's `ts` (driving recall recency), falling
+  // back to wall-clock insertion time when null. Nullable by design:
+  // pre-existing rows and any event whose connector couldn't determine a
+  // clean source date stay NULL and fall back to insertion time. Re-probed
+  // (not reusing the snapshot above) because the AGT-381 rebuild may have
+  // rebuilt the table since.
+  const eventsColsForOccurred = db
+    .prepare("PRAGMA table_info('events')")
+    .all() as { name: string }[];
+  if (!eventsColsForOccurred.some((c) => c.name === 'occurred_at')) {
+    db.exec('ALTER TABLE events ADD COLUMN occurred_at TEXT');
   }
 
   db.exec(`

@@ -409,7 +409,7 @@ export function createScheduler(opts: SchedulerOptions): SchedulerHandle {
         db.exec('BEGIN');
         try {
           const insertEvent = db.prepare(
-            'INSERT OR IGNORE INTO events (id, subscription_id, payload_json, episode_key, created_at) VALUES (?, ?, ?, ?, ?)',
+            'INSERT OR IGNORE INTO events (id, subscription_id, payload_json, episode_key, created_at, occurred_at) VALUES (?, ?, ?, ?, ?, ?)',
           );
           for (const evt of result.events) {
             // Terminal-event contract: the proxy ingests only events
@@ -432,6 +432,9 @@ export function createScheduler(opts: SchedulerOptions): SchedulerHandle {
               JSON.stringify(evt.payload),
               evt.episodeKey,
               eventsCreatedAt,
+              // Source settle time when the connector supplied a clean one;
+              // null → the cortex-writer falls back to insertion time.
+              evt.occurredAt ?? null,
             );
             if (r.changes > 0) eventsInserted++;
           }

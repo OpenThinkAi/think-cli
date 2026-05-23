@@ -327,6 +327,15 @@ export function createSlackConnector(
       id: episodeKey + ':closed',
       episodeKey,
       terminal: true,
+      // The thread root's creation time — the chronological anchor for
+      // "when this conversation happened" (matches root.ts in episodeKey).
+      // Slack exposes no per-reaction timestamp, so the settle moment
+      // (:hive: added) isn't available; the root time is the stable,
+      // deterministic choice. `?? undefined` keeps a malformed ts from
+      // stamping the memory — the writer falls back to insertion time.
+      // This is what makes future old-Slack backfill land threads at their
+      // real dates instead of clustering at import time.
+      occurredAt: tsToIso(root.ts) ?? undefined,
       payload: JSON.stringify({
         kind: 'thread.closed',
         workspace,

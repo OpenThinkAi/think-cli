@@ -64,6 +64,13 @@ export interface EventRow {
   episode_key: string;
   created_at: string;
   curated_at: string | null;
+  /**
+   * Source artifact's real settle time (PR merge/close, release publish,
+   * Slack thread root), as supplied by the connector. `null` when the
+   * connector couldn't determine a clean date — the cortex-writer then
+   * falls back to wall-clock time. Becomes the curated memory's `ts`.
+   */
+  occurred_at: string | null;
 }
 
 export interface ProcessTerminalEventOptions {
@@ -267,6 +274,9 @@ export async function processTerminalEvent(
     memories: result.memories,
     cortexName,
     peerId,
+    // Source settle time → memory `ts` (recall recency). `null`/undefined
+    // makes the writer fall back to wall-clock insertion time.
+    occurredAt: event.occurred_at ?? undefined,
     appendFn: opts.appendFn,
     notifyPush: opts.notifyPush,
   });
@@ -308,7 +318,7 @@ export function selectUncuratedEvents(
   if (opts.subscriptionId !== undefined) {
     return db
       .prepare(
-        `SELECT id, subscription_id, payload_json, episode_key, created_at, curated_at
+        `SELECT id, subscription_id, payload_json, episode_key, created_at, curated_at, occurred_at
            FROM events
           WHERE curated_at IS NULL AND subscription_id = ?
           ORDER BY server_seq ASC${limitClause}`,
@@ -317,7 +327,7 @@ export function selectUncuratedEvents(
   }
   return db
     .prepare(
-      `SELECT id, subscription_id, payload_json, episode_key, created_at, curated_at
+      `SELECT id, subscription_id, payload_json, episode_key, created_at, curated_at, occurred_at
          FROM events
         WHERE curated_at IS NULL
         ORDER BY server_seq ASC${limitClause}`,
