@@ -2,6 +2,17 @@
 
 ## [Unreleased]
 
+## [1.5.0] — 2026-05-22
+
+### Fixed
+
+- **Cortex branches now carry a `union` merge driver for `*.jsonl`, so divergent nodes reconcile without losing data.** Page numbers (`000006.jsonl`) are assigned from the *local* highest-page-on-disk, but the page namespace is *global* (the shared cortex branch). Any node whose local view has drifted — a laptop returning from a long offline stretch, a crashed daemon, a proxy that was on the wrong branch — mints a page number that already exists on the remote with *different* content. Without a union driver the `pull --rebase` before each push conflicts, and naive resolution (`-X ours`/`theirs`) silently drops one side's lines. This change commits a `.gitattributes` (`*.jsonl merge=union`) onto every cortex branch; git's built-in `union` driver concatenates both sides on conflict, so concurrent appends reconcile losslessly (consumers already dedup by `id` and sort by `ts` on read).
+  - `createOrphanBranch` stamps `.gitattributes` into a new cortex's *first* commit, so every clone is born union-merged.
+  - Both write paths self-heal pre-existing branches: `appendAndCommit` (CLI/daemon) and the proxy's `push-debouncer` ensure the attribute is committed **before** their `pull --rebase`, so the very first reconciliation already benefits. Because the file lives on the shared branch, one node stamping it propagates to all others on pull.
+  - New exports `UNION_MERGE_ATTRIBUTE` + `withUnionMergeAttribute(current)` (pure content-shaper) so the sync and async write paths emit byte-identical `.gitattributes`.
+  - Tradeoff: a reconciled page can briefly exceed the soft `L1_PAGE_SIZE` rotation target (it now holds two nodes' lines). Cosmetic — size drives *when* to rotate, not correctness.
+  - Discovered live on a Railway proxy co-writing `cortex/engineering` with an operator's local daemon: every `pull --rebase` threw a rebase conflict on the shared page until the union driver landed.
+
 ## [1.4.0] — 2026-05-22
 
 ### Fixed

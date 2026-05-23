@@ -15,7 +15,10 @@
  * needing fake timers (which interact poorly with setImmediate chains).
  */
 
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { PushDebouncer } from '../../src/daemon/push-debouncer.js';
 
 // ---------------------------------------------------------------------------
@@ -23,6 +26,35 @@ import { PushDebouncer } from '../../src/daemon/push-debouncer.js';
 // ---------------------------------------------------------------------------
 
 const TEST_DEBOUNCE_MS = 10;
+
+// ---------------------------------------------------------------------------
+// Isolation: point THINK_HOME at a fresh temp dir so getRepoPath() never
+// resolves to the developer's real cortex repo. The repo dir is created
+// WITHOUT a `.git`, so the push-debouncer's `.gitattributes` self-heal step
+// (guarded on `.git` existing) is a no-op for the call-count tests below —
+// they assert on the git command sequence via the mock, not on real fs.
+// The dedicated `.gitattributes` test creates a `.git` to opt that step in.
+// ---------------------------------------------------------------------------
+
+let prevThinkHome: string | undefined;
+let tmpHome: string;
+
+beforeEach(() => {
+  prevThinkHome = process.env.THINK_HOME;
+  tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'think-pushdeb-'));
+  process.env.THINK_HOME = tmpHome;
+  fs.mkdirSync(path.join(tmpHome, 'repo'), { recursive: true });
+});
+
+afterEach(() => {
+  if (prevThinkHome === undefined) delete process.env.THINK_HOME;
+  else process.env.THINK_HOME = prevThinkHome;
+  try {
+    fs.rmSync(tmpHome, { recursive: true, force: true });
+  } catch {
+    /* best effort */
+  }
+});
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -291,5 +323,57 @@ describe('PushDebouncer', () => {
 
     const pushCalls = calls.filter(c => c.args[0] === 'push');
     expect(pushCalls.length).toBe(3); // capped at MAX_PUSH_ATTEMPTS, not 4
+  });
+
+  // -------------------------------------------------------------------------
+  // .gitattributes union-merge self-heal (only fires when a real .git exists)
+  // -------------------------------------------------------------------------
+
+  it('stamps .gitattributes (union merge) before the pull when the branch lacks it', async () => {
+    // Opt the self-heal step in: create a .git so the guard passes.
+    fs.mkdirSync(path.join(tmpHome, 'repo', '.git'), { recursive: true });
+    const { impl, calls } = buildGitMockWithPush(['ok']);
+    const debouncer = new PushDebouncer(TEST_DEBOUNCE_MS);
+    debouncer._gitOverride = impl;
+
+    debouncer.notify('attr-cortex');
+    await waitForCalls(calls, 1);
+    await new Promise(r => setTimeout(r, 60));
+
+    // The file was actually written with the union line.
+    const attr = fs.readFileSync(path.join(tmpHome, 'repo', '.gitattributes'), 'utf-8');
+    expect(attr).toContain('*.jsonl merge=union');
+
+    // It was staged + committed, and that happened BEFORE the pull --rebase.
+    const attrAddIdx = calls.findIndex(
+      c => c.args[0] === 'add' && c.args.includes('.gitattributes'),
+    );
+    const pullIdx = calls.findIndex(c => c.args[0] === 'pull' && c.args.includes('--rebase'));
+    expect(attrAddIdx).toBeGreaterThanOrEqual(0);
+    expect(pullIdx).toBeGreaterThanOrEqual(0);
+    expect(attrAddIdx).toBeLessThan(pullIdx); // driver committed before rebase
+  });
+
+  it('does not re-stamp .gitattributes when the union line is already present', async () => {
+    fs.mkdirSync(path.join(tmpHome, 'repo', '.git'), { recursive: true });
+    // Pre-seed an existing .gitattributes with the line.
+    fs.writeFileSync(
+      path.join(tmpHome, 'repo', '.gitattributes'),
+      '*.jsonl merge=union\n',
+      'utf-8',
+    );
+    const { impl, calls } = buildGitMockWithPush(['ok']);
+    const debouncer = new PushDebouncer(TEST_DEBOUNCE_MS);
+    debouncer._gitOverride = impl;
+
+    debouncer.notify('attr-present-cortex');
+    await waitForCalls(calls, 1);
+    await new Promise(r => setTimeout(r, 60));
+
+    // No `.gitattributes` add — the self-heal is idempotent.
+    const attrAdds = calls.filter(
+      c => c.args[0] === 'add' && c.args.includes('.gitattributes'),
+    );
+    expect(attrAdds.length).toBe(0);
   });
 });
