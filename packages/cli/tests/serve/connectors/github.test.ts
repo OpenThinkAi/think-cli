@@ -3,6 +3,7 @@ import {
   createGitHubConnector,
   GitHubRateLimitError,
   bumpSinceBy1Ms,
+  parseNextLink,
   type FetchFn,
   type GitHubCursor,
 } from '../../../src/serve/connectors/github.js';
@@ -720,6 +721,266 @@ describe('createGitHubConnector — rate limiting', () => {
     } finally {
       console.warn = origWarn;
     }
+  });
+});
+
+describe('createGitHubConnector — pagination + budget (AGT-409)', () => {
+  function jsonResp(body: unknown, headers: Record<string, string> = {}): Response {
+    const h = new Headers(headers);
+    if (!h.has('content-type')) h.set('content-type', 'application/json');
+    return new Response(body === undefined ? '' : JSON.stringify(body), {
+      status: 200,
+      headers: h,
+    });
+  }
+  function closedIssue(number: number, updatedAt: string) {
+    return {
+      number,
+      title: `issue ${number}`,
+      state: 'closed',
+      state_reason: 'completed',
+      body: 'b',
+      closed_at: updatedAt,
+      updated_at: updatedAt,
+      user: { login: 'alice' },
+      // no `pull_request` → plain issue, enrichment is just /comments
+    };
+  }
+  const isIssuesList = (u: string) => /\/repos\/octo\/widget\/issues(\?|$)/.test(u);
+  const isComments = (u: string) => /\/issues\/\d+\/comments/.test(u);
+  const isReleasesList = (u: string) => /\/repos\/octo\/widget\/releases(\?|$)/.test(u);
+  const NEXT = (path: string) => ({ Link: `<${BASE}${path}>; rel="next"` });
+
+  it('walks Link rel="next" pages and emits every closed item exactly once', async () => {
+    const fetchImpl: FetchFn = async (url) => {
+      const u = String(url);
+      if (isIssuesList(u)) {
+        return u.includes('page=2')
+          ? jsonResp([closedIssue(3, '2026-05-19T12:02:00Z')]) // page 2, no next
+          : jsonResp(
+              [
+                closedIssue(1, '2026-05-19T12:00:00Z'),
+                closedIssue(2, '2026-05-19T12:01:00Z'),
+              ],
+              NEXT('/repos/octo/widget/issues?page=2'),
+            );
+      }
+      if (isComments(u)) return jsonResp([]);
+      if (isReleasesList(u)) return jsonResp([]);
+      throw new Error(`unmatched: ${u}`);
+    };
+    const connector = createGitHubConnector({ fetchImpl });
+    const result = await connector.poll({ subscription: SUB, credential: TOKEN, cursor: null });
+
+    const ids = result.events.map((e) => e.id);
+    expect(ids).toHaveLength(3);
+    expect(new Set(ids).size).toBe(3); // no duplicates
+    expect(ids).toContain('github:octo/widget:issue:3:closed');
+    // Fully drained (last page had no next link) → cursor bumped +1ms past
+    // the newest updated_at across BOTH pages.
+    expect(result.nextCursor.issuesSince).toBe('2026-05-19T12:02:00.001Z');
+  });
+
+  it('stops at the page-budget cap and resumes inclusively next tick (no skip)', async () => {
+    // maxListPagesPerTick=1: tick 1 takes only page 1, leaves a `next` link
+    // unfollowed → must NOT bump the cursor, so tick 2's `since` re-includes
+    // the boundary second and the overflow item is not skipped.
+    const requested: string[] = [];
+    const fetchImpl: FetchFn = async (url) => {
+      const u = String(url);
+      requested.push(u);
+      if (isIssuesList(u)) {
+        // since-bearing request = tick 2's resume
+        if (u.includes('since=')) {
+          return jsonResp([
+            closedIssue(2, '2026-05-19T12:00:00Z'), // boundary re-include (same second)
+            closedIssue(3, '2026-05-19T12:00:00Z'), // the overflow that must NOT be skipped
+          ]);
+        }
+        return jsonResp(
+          [
+            closedIssue(1, '2026-05-19T12:00:00Z'),
+            closedIssue(2, '2026-05-19T12:00:00Z'),
+          ],
+          NEXT('/repos/octo/widget/issues?page=2'),
+        );
+      }
+      if (isComments(u)) return jsonResp([]);
+      if (isReleasesList(u)) return jsonResp([]);
+      throw new Error(`unmatched: ${u}`);
+    };
+    const connector = createGitHubConnector({ fetchImpl, maxListPagesPerTick: 1 });
+
+    const r1 = await connector.poll({ subscription: SUB, credential: TOKEN, cursor: null });
+    expect(r1.events.map((e) => e.id)).toEqual([
+      'github:octo/widget:issue:1:closed',
+      'github:octo/widget:issue:2:closed',
+    ]);
+    // Budget cutoff → NO +1ms bump. Cursor sits exactly on the boundary
+    // second so the same-second overflow can't be jumped.
+    expect(r1.nextCursor.issuesSince).toBe('2026-05-19T12:00:00Z');
+
+    const r2 = await connector.poll({ subscription: SUB, credential: TOKEN, cursor: r1.nextCursor });
+    const tick2Ids = r2.events.map((e) => e.id);
+    // The overflow item updated at the same second IS emitted on resume.
+    expect(tick2Ids).toContain('github:octo/widget:issue:3:closed');
+    // Union across both ticks covers every item — nothing silently skipped.
+    const union = new Set([...r1.events, ...r2.events].map((e) => e.id));
+    expect(union).toEqual(
+      new Set([
+        'github:octo/widget:issue:1:closed',
+        'github:octo/widget:issue:2:closed',
+        'github:octo/widget:issue:3:closed',
+      ]),
+    );
+  });
+
+  it('stops paginating when X-RateLimit-Remaining drops below the floor', async () => {
+    const requested: string[] = [];
+    const fetchImpl: FetchFn = async (url) => {
+      const u = String(url);
+      requested.push(u);
+      if (isIssuesList(u)) {
+        // page 1 carries a `next` link but a remaining count under the floor
+        return jsonResp([closedIssue(1, '2026-05-19T12:00:00Z')], {
+          ...NEXT('/repos/octo/widget/issues?page=2'),
+          'X-RateLimit-Remaining': '50',
+        });
+      }
+      if (isComments(u)) return jsonResp([]);
+      if (isReleasesList(u)) return jsonResp([]);
+      throw new Error(`unmatched: ${u}`);
+    };
+    const connector = createGitHubConnector({ fetchImpl, rateLimitFloor: 200 });
+    const result = await connector.poll({ subscription: SUB, credential: TOKEN, cursor: null });
+
+    expect(result.events).toHaveLength(1);
+    // page 2 must never be requested — we bailed at the floor
+    expect(requested.some((u) => u.includes('page=2'))).toBe(false);
+    // not fully drained → no bump
+    expect(result.nextCursor.issuesSince).toBe('2026-05-19T12:00:00Z');
+  });
+
+  it('returns partial progress (no throw) when a rate-limit hits mid-enrichment', async () => {
+    const reset = Math.floor(new Date('2026-05-21T13:00:00Z').getTime() / 1000);
+    const fetchImpl: FetchFn = async (url) => {
+      const u = String(url);
+      if (isIssuesList(u)) {
+        return jsonResp([
+          closedIssue(1, '2026-05-19T12:00:00Z'),
+          closedIssue(2, '2026-05-19T12:01:00Z'),
+        ]); // single page, fully drained at the list level
+      }
+      if (isComments(u)) {
+        // issue 1 enriches fine; issue 2's comments call is rate-limited
+        if (u.includes('/issues/2/comments')) {
+          return new Response(JSON.stringify({ message: 'rate limited' }), {
+            status: 403,
+            headers: {
+              'X-RateLimit-Remaining': '0',
+              'X-RateLimit-Reset': String(reset),
+              'content-type': 'application/json',
+            },
+          });
+        }
+        return jsonResp([]);
+      }
+      if (isReleasesList(u)) return jsonResp([]);
+      throw new Error(`unmatched: ${u}`);
+    };
+    const connector = createGitHubConnector({ fetchImpl });
+    // Does NOT throw — partial batch is preserved.
+    const result = await connector.poll({ subscription: SUB, credential: TOKEN, cursor: null });
+    expect(result.events.map((e) => e.id)).toEqual(['github:octo/widget:issue:1:closed']);
+    // Cursor resumes from the last fully-processed item, with no bump.
+    expect(result.nextCursor.issuesSince).toBe('2026-05-19T12:00:00Z');
+  });
+
+  it('does not follow a cross-origin Link next URL (no PAT exfiltration)', async () => {
+    const requested: string[] = [];
+    const fetchImpl: FetchFn = async (url) => {
+      const u = String(url);
+      requested.push(u);
+      if (isIssuesList(u)) {
+        // page 1's Link points at a DIFFERENT host — must not be followed.
+        return jsonResp([closedIssue(1, '2026-05-19T12:00:00Z')], {
+          Link: '<https://evil.example.com/repos/octo/widget/issues?page=2>; rel="next"',
+        });
+      }
+      if (isComments(u)) return jsonResp([]);
+      if (isReleasesList(u)) return jsonResp([]);
+      throw new Error(`unmatched: ${u}`);
+    };
+    const connector = createGitHubConnector({ fetchImpl });
+    const result = await connector.poll({ subscription: SUB, credential: TOKEN, cursor: null });
+
+    // Only page 1 was processed; the off-origin URL was never requested.
+    expect(result.events).toHaveLength(1);
+    expect(requested.some((u) => u.includes('evil.example.com'))).toBe(false);
+    // Treated as an early stop, not a full drain → no cursor bump.
+    expect(result.nextCursor.issuesSince).toBe('2026-05-19T12:00:00Z');
+  });
+
+  it('paginates releases across Link pages', async () => {
+    const fetchImpl: FetchFn = async (url) => {
+      const u = String(url);
+      if (isIssuesList(u)) return jsonResp([]);
+      if (isReleasesList(u)) {
+        return u.includes('page=2')
+          ? jsonResp([
+              {
+                id: 101,
+                tag_name: 'v1.1.0',
+                name: null,
+                body: null,
+                draft: false,
+                prerelease: false,
+                created_at: '2026-05-21T11:00:00Z',
+                published_at: '2026-05-21T11:00:00Z',
+                author: null,
+              },
+            ])
+          : jsonResp(
+              [
+                {
+                  id: 100,
+                  tag_name: 'v1.0.0',
+                  name: null,
+                  body: null,
+                  draft: false,
+                  prerelease: false,
+                  created_at: '2026-05-21T10:00:00Z',
+                  published_at: '2026-05-21T10:00:00Z',
+                  author: null,
+                },
+              ],
+              NEXT('/repos/octo/widget/releases?page=2'),
+            );
+      }
+      throw new Error(`unmatched: ${u}`);
+    };
+    const connector = createGitHubConnector({ fetchImpl });
+    const result = await connector.poll({ subscription: SUB, credential: TOKEN, cursor: null });
+    const ids = result.events.map((e) => e.id);
+    expect(ids).toEqual([
+      'github:octo/widget:release:100:published',
+      'github:octo/widget:release:101:published',
+    ]);
+    expect(result.nextCursor.emittedReleaseIds).toEqual([100, 101]);
+  });
+});
+
+describe('parseNextLink', () => {
+  it('extracts the rel="next" URL', () => {
+    const header =
+      '<https://api.github.com/repos/o/r/issues?page=2>; rel="next", ' +
+      '<https://api.github.com/repos/o/r/issues?page=9>; rel="last"';
+    expect(parseNextLink(header)).toBe('https://api.github.com/repos/o/r/issues?page=2');
+  });
+
+  it('returns null when there is no next link or no header', () => {
+    expect(parseNextLink(null)).toBeNull();
+    expect(parseNextLink('<https://api.github.com/x?page=9>; rel="last"')).toBeNull();
   });
 });
 
