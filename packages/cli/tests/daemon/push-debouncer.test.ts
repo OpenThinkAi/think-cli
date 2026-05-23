@@ -187,4 +187,109 @@ describe('PushDebouncer', () => {
     expect(commitCalls).toHaveLength(0);
     expect(pushCalls).toHaveLength(0);
   });
+
+  // -------------------------------------------------------------------------
+  // pull-rebase-before-push (shared-branch concurrency: the proxy is not the
+  // only writer to cortex/<name>, so origin can advance under it).
+  // -------------------------------------------------------------------------
+
+  /**
+   * Mock git where `push` returns the next outcome from `pushOutcomes`:
+   * `'ok'` resolves, anything else is thrown as the error message. Once the
+   * array is exhausted, push resolves. `diff --cached --quiet` throws
+   * (dirty) so the commit fires. Everything else (rev-parse, switch, add,
+   * commit, pull, rebase) resolves with ''.
+   */
+  function buildGitMockWithPush(pushOutcomes: string[]) {
+    const calls: Array<{ args: string[]; cwd: string }> = [];
+    let pushIdx = 0;
+    const impl = async (args: string[], cwd: string): Promise<string> => {
+      calls.push({ args, cwd });
+      if (args.includes('--cached') && args.includes('--quiet')) {
+        throw new Error('exit code 1'); // dirty → commit fires
+      }
+      if (args[0] === 'push') {
+        const outcome = pushOutcomes[pushIdx++] ?? 'ok';
+        if (outcome !== 'ok') throw new Error(outcome);
+      }
+      return '';
+    };
+    return { impl, calls };
+  }
+
+  it('pulls --rebase before pushing', async () => {
+    const { impl, calls } = buildGitMockWithPush(['ok']);
+    const debouncer = new PushDebouncer(TEST_DEBOUNCE_MS);
+    debouncer._gitOverride = impl;
+
+    debouncer.notify('rebase-cortex');
+    await waitForCalls(calls, 1);
+    await new Promise(r => setTimeout(r, 50));
+
+    const pullIdx = calls.findIndex(
+      c => c.args[0] === 'pull' && c.args.includes('--rebase'),
+    );
+    const pushIdx = calls.findIndex(c => c.args[0] === 'push');
+    expect(pullIdx).toBeGreaterThanOrEqual(0);
+    expect(pushIdx).toBeGreaterThanOrEqual(0);
+    // pull --rebase must precede push.
+    expect(pullIdx).toBeLessThan(pushIdx);
+    // pull targets the cortex branch explicitly.
+    expect(calls[pullIdx].args).toContain('rebase-cortex');
+  });
+
+  it('non-fast-forward rejection: re-pulls and retries, then succeeds', async () => {
+    // First push bounces (origin advanced); second succeeds.
+    const { impl, calls } = buildGitMockWithPush([
+      '! [rejected] cortex/x -> cortex/x (fetch first)',
+      'ok',
+    ]);
+    const debouncer = new PushDebouncer(TEST_DEBOUNCE_MS);
+    debouncer._gitOverride = impl;
+
+    debouncer.notify('ff-cortex');
+    await waitForCalls(calls, 2);
+    await new Promise(r => setTimeout(r, 80));
+
+    const pullCalls = calls.filter(c => c.args[0] === 'pull');
+    const pushCalls = calls.filter(c => c.args[0] === 'push');
+    // Two push attempts, each preceded by a pull --rebase.
+    expect(pushCalls.length).toBe(2);
+    expect(pullCalls.length).toBe(2);
+  });
+
+  it('non-rejection push error (auth/network) surfaces immediately without retry-spin', async () => {
+    const { impl, calls } = buildGitMockWithPush([
+      'Permission denied (publickey). fatal: Could not read from remote repository.',
+      'ok', // would be used if it (wrongly) retried
+    ]);
+    const debouncer = new PushDebouncer(TEST_DEBOUNCE_MS);
+    debouncer._gitOverride = impl;
+
+    debouncer.notify('auth-cortex');
+    await waitForCalls(calls, 1);
+    await new Promise(r => setTimeout(r, 80));
+
+    const pushCalls = calls.filter(c => c.args[0] === 'push');
+    // Exactly one push attempt — the auth error is surfaced, not spun on.
+    expect(pushCalls.length).toBe(1);
+  });
+
+  it('exhausts retries on persistent non-fast-forward and stops at the cap', async () => {
+    const { impl, calls } = buildGitMockWithPush([
+      'rejected (fetch first)',
+      'rejected (fetch first)',
+      'rejected (fetch first)',
+      'ok', // beyond the cap — must NOT be reached
+    ]);
+    const debouncer = new PushDebouncer(TEST_DEBOUNCE_MS);
+    debouncer._gitOverride = impl;
+
+    debouncer.notify('stuck-cortex');
+    await waitForCalls(calls, 1);
+    await new Promise(r => setTimeout(r, 120));
+
+    const pushCalls = calls.filter(c => c.args[0] === 'push');
+    expect(pushCalls.length).toBe(3); // capped at MAX_PUSH_ATTEMPTS, not 4
+  });
 });
