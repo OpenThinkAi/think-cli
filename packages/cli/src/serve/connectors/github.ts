@@ -130,6 +130,18 @@ export interface CreateGitHubConnectorOptions {
    * `DEFAULT_MAX_RELEASE_PAGES`.
    */
   maxReleasePagesPerTick?: number;
+  /**
+   * ISO-8601 floor for what to ingest. Applies to BOTH event families:
+   * issues/PRs use it as the `since` floor (so a fresh subscription only
+   * walks items updated on/after this, with no per-subscription cursor
+   * seeding), and releases with `published_at` before it are skipped
+   * (GitHub's `/releases` endpoint has no `since` param, so this is the
+   * only date gate releases get). A subscription whose cursor has already
+   * advanced past the floor keeps its cursor — the floor never rewinds
+   * progress. Defaults to `THINK_GITHUB_INGEST_SINCE`, else unset (ingest
+   * all history). Malformed values are ignored.
+   */
+  ingestSince?: string;
 }
 
 export class GitHubRateLimitError extends Error {
@@ -283,6 +295,18 @@ export function createGitHubConnector(
   const rateFloor =
     opts.rateLimitFloor ?? numFromEnv(process.env.THINK_GITHUB_RATE_FLOOR) ?? DEFAULT_RATE_FLOOR;
   const maxReleasePages = opts.maxReleasePagesPerTick ?? DEFAULT_MAX_RELEASE_PAGES;
+  // ISO floor for ingestion (issues/PRs `since` + releases `published_at`).
+  // Validate via Date.parse so a malformed env value is ignored rather than
+  // silently passed to GitHub or used in a string compare.
+  const ingestSinceRaw = opts.ingestSince ?? process.env.THINK_GITHUB_INGEST_SINCE;
+  // Normalize to canonical ISO-8601: the release gate compares lexicographically
+  // (`published_at < ingestSince`) and GitHub's `since=` expects ISO, but
+  // Date.parse also accepts non-ISO inputs ("Jan 1 2026") that would break the
+  // string compare. new Date(...).toISOString() canonicalizes both uses.
+  const ingestSince =
+    ingestSinceRaw && Number.isFinite(Date.parse(ingestSinceRaw))
+      ? new Date(ingestSinceRaw).toISOString()
+      : undefined;
   // Defer the global-fetch lookup to call time so test environments that
   // patch globalThis.fetch after this module loads still get picked up.
   const fetchImpl: FetchFn = opts.fetchImpl ?? ((url, init) => globalThis.fetch(url, init));
@@ -627,7 +651,9 @@ export function createGitHubConnector(
 
     const events: EventInput[] = [];
     const cursorIn = ctx.cursor ?? {};
-    let issuesSince = cursorIn.issuesSince;
+    // Floor the cursor at `ingestSince`: a fresh sub (no cursor) starts at the
+    // floor; a sub already past it keeps its progress (maxIso never rewinds).
+    let issuesSince = maxIso(cursorIn.issuesSince, ingestSince);
     const releaseIdSet = new Set(cursorIn.emittedReleaseIds ?? []);
 
     // --- Issues + PRs ---------------------------------------------------
@@ -677,6 +703,10 @@ export function createGitHubConnector(
     for (const r of releases.items) {
       if (r.draft) continue;
       if (!r.published_at) continue; // not yet published
+      // Releases have no `since` param, so the ingest floor is applied here
+      // by publish date (ISO strings compare lexically). Skips pre-cutoff
+      // history — including CI auto-tag releases — without emitting them.
+      if (ingestSince && r.published_at < ingestSince) continue;
       if (releaseIdSet.has(r.id)) continue;
       events.push(emitForPublishedRelease(pattern, r));
       releaseIdSet.add(r.id);

@@ -970,6 +970,99 @@ describe('createGitHubConnector — pagination + budget (AGT-409)', () => {
   });
 });
 
+describe('createGitHubConnector — ingestSince floor', () => {
+  const SINCE = '2026-01-01T00:00:00Z';
+  function makeLoggingFetch(log: string[], releases: unknown[] = []): FetchFn {
+    return async (url) => {
+      const u = String(url);
+      log.push(u);
+      const json = (body: unknown) =>
+        new Response(JSON.stringify(body), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        });
+      if (/\/repos\/octo\/widget\/issues(\?|$)/.test(u)) return json([]);
+      if (/\/repos\/octo\/widget\/releases(\?|$)/.test(u)) return json(releases);
+      throw new Error(`unmatched: ${u}`);
+    };
+  }
+
+  it('uses ingestSince as the `since` floor on a fresh subscription', async () => {
+    const log: string[] = [];
+    const connector = createGitHubConnector({ fetchImpl: makeLoggingFetch(log), ingestSince: SINCE });
+    await connector.poll({ subscription: SUB, credential: TOKEN, cursor: null });
+    const issuesCall = log.find((u) => u.includes('/issues?'));
+    expect(issuesCall).toContain('since=2026-01-01');
+  });
+
+  it('does not rewind a cursor already past the floor', async () => {
+    const log: string[] = [];
+    const connector = createGitHubConnector({ fetchImpl: makeLoggingFetch(log), ingestSince: SINCE });
+    await connector.poll({
+      subscription: SUB,
+      credential: TOKEN,
+      cursor: { issuesSince: '2026-03-15T00:00:00Z' },
+    });
+    const issuesCall = log.find((u) => u.includes('/issues?'));
+    expect(issuesCall).toContain('since=2026-03-15');
+    expect(issuesCall).not.toContain('2026-01-01');
+  });
+
+  it('skips releases published before the floor, emits those on/after', async () => {
+    const log: string[] = [];
+    const releases = [
+      {
+        id: 1,
+        tag_name: 'v1.0.0',
+        name: null,
+        body: null,
+        draft: false,
+        prerelease: false,
+        created_at: '2025-06-01T00:00:00Z',
+        published_at: '2025-06-01T00:00:00Z', // before floor → skipped
+        author: null,
+      },
+      {
+        id: 2,
+        tag_name: 'v2.0.0',
+        name: null,
+        body: null,
+        draft: false,
+        prerelease: false,
+        created_at: '2026-02-01T00:00:00Z',
+        published_at: '2026-02-01T00:00:00Z', // on/after floor → emitted
+        author: null,
+      },
+    ];
+    const connector = createGitHubConnector({ fetchImpl: makeLoggingFetch(log, releases), ingestSince: SINCE });
+    const result = await connector.poll({ subscription: SUB, credential: TOKEN, cursor: null });
+    expect(result.events.map((e) => e.id)).toEqual(['github:octo/widget:release:2:published']);
+  });
+
+  it('ignores a malformed ingestSince (no since param, ingests all)', async () => {
+    const log: string[] = [];
+    const connector = createGitHubConnector({ fetchImpl: makeLoggingFetch(log), ingestSince: 'not-a-date' });
+    await connector.poll({ subscription: SUB, credential: TOKEN, cursor: null });
+    const issuesCall = log.find((u) => u.includes('/issues?'));
+    expect(issuesCall).not.toContain('since=');
+  });
+
+  it('reads the floor from THINK_GITHUB_INGEST_SINCE when no option is passed', async () => {
+    const log: string[] = [];
+    const prev = process.env.THINK_GITHUB_INGEST_SINCE;
+    process.env.THINK_GITHUB_INGEST_SINCE = SINCE;
+    try {
+      const connector = createGitHubConnector({ fetchImpl: makeLoggingFetch(log) });
+      await connector.poll({ subscription: SUB, credential: TOKEN, cursor: null });
+      const issuesCall = log.find((u) => u.includes('/issues?'));
+      expect(issuesCall).toContain('since=2026-01-01');
+    } finally {
+      if (prev === undefined) delete process.env.THINK_GITHUB_INGEST_SINCE;
+      else process.env.THINK_GITHUB_INGEST_SINCE = prev;
+    }
+  });
+});
+
 describe('parseNextLink', () => {
   it('extracts the rel="next" URL', () => {
     const header =

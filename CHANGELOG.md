@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [1.8.1] — 2026-05-23
+
+### Added
+
+- **`THINK_GITHUB_INGEST_SINCE` — an ISO-8601 ingest floor for the GitHub connector.** When set, a fresh subscription only ingests issues/PRs updated on/after the cutoff (it becomes the `since` floor, so no per-subscription cursor seeding is needed) and skips releases published before it. A subscription whose cursor has already advanced past the floor keeps its progress — the floor never rewinds. Malformed values are ignored. This makes a date-limited backfill of a large org cheap and clean: it bounds the historical volume and, because GitHub's `/releases` endpoint has no `since` parameter, it's also the only date gate that keeps CI auto-tag releases (e.g. a repo that publishes `v2.x.x` on every deploy) out of the cortex. (Phase 3 / AGT-410 prep.)
+
 ## [1.8.0] — 2026-05-23
 
 ### Added
