@@ -96,7 +96,7 @@ export function listSubscriptionsByKind(
     .prepare(
       'SELECT id, kind, pattern, created_at, last_polled_at FROM subscriptions ORDER BY kind ASC, created_at ASC',
     )
-    .all() as SubscriptionRow[];
+    .all() as unknown as SubscriptionRow[];
   const grouped: Record<string, SubscriptionRow[]> = {};
   for (const r of rows) {
     if (!grouped[r.kind]) grouped[r.kind] = [];

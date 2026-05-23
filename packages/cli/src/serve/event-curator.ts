@@ -323,7 +323,7 @@ export function selectUncuratedEvents(
           WHERE curated_at IS NULL AND subscription_id = ?
           ORDER BY server_seq ASC${limitClause}`,
       )
-      .all(opts.subscriptionId) as EventRow[];
+      .all(opts.subscriptionId) as unknown as EventRow[];
   }
   return db
     .prepare(
@@ -332,5 +332,5 @@ export function selectUncuratedEvents(
         WHERE curated_at IS NULL
         ORDER BY server_seq ASC${limitClause}`,
     )
-    .all() as EventRow[];
+    .all() as unknown as EventRow[];
 }

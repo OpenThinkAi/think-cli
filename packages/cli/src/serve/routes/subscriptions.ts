@@ -55,7 +55,7 @@ export function subscriptionsRoute(db: Database): Hono {
       .prepare(
         'SELECT id, kind, pattern, created_at, last_polled_at FROM subscriptions ORDER BY created_at ASC',
       )
-      .all() as SubscriptionRow[];
+      .all() as unknown as SubscriptionRow[];
     return c.json({ subscriptions: rows });
   });
 

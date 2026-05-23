@@ -9,6 +9,8 @@ branches:
         run: npm run build
       - name: test
         run: npm test
+      - name: typecheck
+        run: npm run typecheck
 reviewers:
   security:
     prompt: .stamp/reviewers/security.md

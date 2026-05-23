@@ -19,8 +19,10 @@ import {
   buildSupersessionMessages,
 } from './prompt.js';
 
-// Re-export the input types so callers only need to import from call.ts.
-export type { RetroEntry, RetroCandidate } from './prompt.js';
+// Imported for local use in `runSupersession`'s signature; re-exported so
+// callers (e.g. worker.ts) keep importing these input types from call.ts.
+import type { RetroEntry, RetroCandidate } from './prompt.js';
+export type { RetroEntry, RetroCandidate };
 
 // ---------------------------------------------------------------------------
 // Types

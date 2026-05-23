@@ -292,7 +292,7 @@ function fetchEntriesByIds(
   const placeholders = ids.map(() => '?').join(', ');
   const rows = db
     .prepare(`SELECT ${selectCols} FROM memories WHERE id IN (${placeholders})`)
-    .all(...ids) as RawMemoryRow[];
+    .all(...ids) as unknown as RawMemoryRow[];
 
   // Preserve the requested id order, silently dropping any that weren't found.
   const rowMap = new Map<string, RawMemoryRow>(rows.map((r) => [r.id, r]));
