@@ -196,6 +196,9 @@ function runFormattedFtsRecall(
     similarity: 0,
     score: 0,
     cortex,
+    compacted_from: null,
+    supersedes: [] as string[],
+    activity_seq: null,
     fts_fallback: true as const,
   }));
 
@@ -353,6 +356,7 @@ export const recallCommand = new Command('recall')
           supersedes: string[] | null;
           compacted_from: string[] | null;
           similarity: number | null;
+          score: number | null;
           activity_seq: number | null;
           fts_fallback?: true;
         };
@@ -393,8 +397,18 @@ export const recallCommand = new Command('recall')
           return;
         }
 
-        const cortexes = entries.length > 0 ? cortexSet(entries) : new Set<string>([cortex]);
-        process.stdout.write(formatRecallOutput(entries, cortexes, { full: opts.full }) + '\n');
+        // Normalize the daemon's wire entries into RecallEntry shape for the
+        // formatter. The wire type is structurally RecallEntry with three
+        // nullable fields; default them and let the rest spread through (so a
+        // new wire field doesn't silently drop here).
+        const recallEntries = entries.map((e) => ({
+          ...e,
+          similarity: e.similarity ?? 0,
+          score: e.score ?? e.similarity ?? 0,
+          supersedes: e.supersedes ?? [],
+        }));
+        const cortexes = recallEntries.length > 0 ? cortexSet(recallEntries) : new Set<string>([cortex]);
+        process.stdout.write(formatRecallOutput(recallEntries, cortexes, { full: opts.full }) + '\n');
         closeCortexDb(cortex);
         return;
       }

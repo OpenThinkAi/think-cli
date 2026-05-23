@@ -10,6 +10,7 @@
   "scripts": {
     "build": "bun run --cwd packages/cli build",
     "test": "bun run --cwd packages/cli test",
+    "typecheck": "bun run --cwd packages/cli typecheck",
     "dev": "bun run --cwd packages/cli dev"
   },
   "homepage": "https://openthink.dev",

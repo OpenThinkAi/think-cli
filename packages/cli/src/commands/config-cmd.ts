@@ -76,7 +76,7 @@ configCommand.addCommand(new Command('set')
 
     // Set nested keys
     const parts = key.split('.');
-    let target: Record<string, unknown> = config as Record<string, unknown>;
+    let target: Record<string, unknown> = config as unknown as Record<string, unknown>;
 
     for (let i = 0; i < parts.length - 1; i++) {
       if (!target[parts[i]] || typeof target[parts[i]] !== 'object') {

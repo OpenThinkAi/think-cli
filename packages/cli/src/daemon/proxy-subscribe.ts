@@ -97,7 +97,7 @@ function stripNewlines(s: string): string {
  */
 export function startProxySubscribe(onPush: OnPushCallback): ProxySubscribeHandle {
   const config = getConfig();
-  const proxyUrl = config.proxy?.url?.trim();
+  const proxyUrl = config.proxy?.url?.trim() ?? '';
 
   if (!proxyUrl) {
     log('DEBUG', 'proxy.url not configured — proxy-subscribe disabled (polling only)');

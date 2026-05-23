@@ -351,7 +351,7 @@ export function createScheduler(opts: SchedulerOptions): SchedulerHandle {
 
     const subs = db
       .prepare('SELECT id, kind, pattern, cursor FROM subscriptions')
-      .all() as SubscriptionRow[];
+      .all() as unknown as SubscriptionRow[];
 
     for (const sub of subs) {
       const connector = registry.get(sub.kind);

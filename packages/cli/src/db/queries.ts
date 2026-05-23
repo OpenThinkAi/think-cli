@@ -44,7 +44,7 @@ export function insertEntry(params: InsertEntryParams): Entry {
 export function getEntries(params: GetEntriesParams): Entry[] {
   const db = getDb();
   const conditions: string[] = [];
-  const values: unknown[] = [];
+  const values: string[] = [];
 
   conditions.push('deleted_at IS NULL');
 
@@ -70,7 +70,7 @@ export function getEntries(params: GetEntriesParams): Entry[] {
 
   return db.prepare(
     `SELECT id, timestamp, source, category, content, tags FROM entries ${where} ORDER BY timestamp DESC LIMIT ?`
-  ).all(...values, limit) as Entry[];
+  ).all(...values, limit) as unknown as Entry[];
 }
 
 export function getEntriesByWeek(weeksAgo: number = 0): Entry[] {
@@ -95,6 +95,6 @@ export function deleteEntriesByContent(pattern: string): number {
   const result = db.prepare(
     'UPDATE entries SET deleted_at = ? WHERE content LIKE ? AND deleted_at IS NULL'
   ).run(new Date().toISOString(), `%${pattern}%`);
-  return result.changes;
+  return Number(result.changes);
 }
 

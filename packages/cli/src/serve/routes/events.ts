@@ -47,7 +47,7 @@ export function eventsRoute(db: Database): Hono {
           ORDER BY server_seq ASC
           LIMIT ?`,
       )
-      .all(subscription_id, since, limit) as EventRow[];
+      .all(subscription_id, since, limit) as unknown as EventRow[];
 
     // Side-effect on a read endpoint: cheap, idempotent, and the only signal
     // a connector has that anyone is listening to its subscription.

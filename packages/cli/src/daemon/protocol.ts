@@ -262,7 +262,7 @@ export type MethodHandler = (
   params: Record<string, unknown>,
 ) => Promise<unknown> | unknown;
 
-const builtinMethods: Map<string, MethodHandler> = new Map([
+const builtinMethods: Map<string, MethodHandler> = new Map<string, MethodHandler>([
   ['ping', () => 'pong'],
   ['recall', handleRecall],
   ['expand', handleExpand],
@@ -272,7 +272,7 @@ const builtinMethods: Map<string, MethodHandler> = new Map([
  * Shared empty methods map. Pass as the third argument to `dispatchRequest`
  * when no supplemental handlers are needed, to avoid per-call allocations.
  */
-export const NO_EXTRA_METHODS: ReadonlyMap<string, never> = new Map();
+export const NO_EXTRA_METHODS: ReadonlyMap<string, never> = new Map<string, never>();
 
 /**
  * Dispatch one parsed request to the appropriate handler and write the
