@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [1.4.0] — 2026-05-22
+
+### Fixed
+
+- **Push-debouncer now pulls `--rebase` before pushing, with bounded retry on non-fast-forward.** The cortex branch (`cortex/<name>`) is a *shared* ref — the proxy is not the only writer; an operator's local daemon (or a second proxy) commits to the same branch. The push-debouncer did a bare `git push` with no preceding pull, so the moment `origin` carried any commit the local clone lacked, every push bounced with `! [rejected] … (fetch first)` and curated memories piled up locally, never reaching the team cortex. The CLI write path (`lib/git.ts:appendAndCommit` → `pullRebaseOrAbort`) already rebased before pushing; the proxy's `push-debouncer` path did not. Now `_executePush` rebases the just-made commit onto `origin/<branch>` (append-only JSONL rebases cleanly — distinct writers append distinct lines) and pushes, retrying up to 3 times if `origin` advances again in the window between pull and push. Rebase conflicts abort cleanly (no lingering rebase-in-progress) and surface a clear error; non-rejection push errors (auth, network) are surfaced immediately rather than spun on. This is the last of a sequence of proxy-write-path divergences from the proven CLI path (shebang `env -S` → curator-drain orchestrator → git identity → branch checkout in 1.3.0 → this); the proxy's commit-and-push cycle now mirrors `appendAndCommit`'s switch → pull-rebase → commit → push end to end. Discovered live on a Railway proxy whose pushes bounced indefinitely because an operator's local daemon was co-writing `cortex/engineering`.
+
 ## [1.3.0] — 2026-05-22
 
 ### Fixed

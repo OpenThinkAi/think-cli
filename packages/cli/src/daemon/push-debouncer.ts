@@ -231,9 +231,78 @@ export class PushDebouncer {
         return;
       }
 
-      // `--` before the branch name separates it from any preceding options.
-      await git(['push', 'origin', '--', safeCortex], repoPath);
-      log(`pushed cortex '${safeCortex}' to origin`);
+      // Pull-rebase before push, with bounded retry on non-fast-forward.
+      //
+      // The cortex branch is a SHARED ref: the proxy is not the only writer
+      // — an operator's local daemon (or another proxy) commits to the same
+      // `cortex/<name>` branch. So `origin` can carry commits this clone
+      // doesn't have, and a bare `git push` bounces with "fetch first" /
+      // non-fast-forward. The CLI write path (`lib/git.ts:appendAndCommit`
+      // → `pullRebaseOrAbort`) already rebases before pushing; the
+      // push-debouncer historically did not, which made every proxy push
+      // fail the moment any other writer touched the branch.
+      //
+      // We rebase our just-made commit on top of origin (append-only JSONL
+      // rebases cleanly — distinct writers append distinct lines), then
+      // push. If origin advances again in the window between our pull and
+      // our push, the push bounces and we loop: re-pull, re-push, up to
+      // MAX_PUSH_ATTEMPTS. A non-rejection push error (auth, network) is
+      // surfaced immediately rather than spun on.
+      const MAX_PUSH_ATTEMPTS = 3;
+      let pushed = false;
+      let lastPushErr: unknown;
+      for (let attempt = 1; attempt <= MAX_PUSH_ATTEMPTS; attempt++) {
+        // pull --rebase origin <branch>; abort on conflict so the tree
+        // doesn't linger mid-rebase across attempts.
+        try {
+          await git(['pull', '--rebase', 'origin', '--', safeCortex], repoPath);
+        } catch (pullErr) {
+          const pmsg = pullErr instanceof Error ? pullErr.message : String(pullErr);
+          if (pmsg.includes('CONFLICT') || pmsg.includes('could not apply')) {
+            try {
+              await git(['rebase', '--abort'], repoPath);
+            } catch {
+              /* best effort — leave no rebase-in-progress for the next cycle */
+            }
+            throw new Error(
+              `Rebase conflict on '${safeCortex}' during push-debounce. This should not ` +
+                `happen with append-only JSONL — if it recurs, open an issue at ` +
+                `https://github.com/OpenThinkAi/think-cli/issues with the git output above.`,
+            );
+          }
+          // Otherwise acceptable: e.g. the branch has no upstream yet (the
+          // very first push of a brand-new cortex). Swallow and let the
+          // push below either succeed or surface a clearer error.
+        }
+
+        try {
+          // `--` before the branch name separates it from any preceding options.
+          await git(['push', 'origin', '--', safeCortex], repoPath);
+          pushed = true;
+          break;
+        } catch (pushErr) {
+          lastPushErr = pushErr;
+          const pmsg = pushErr instanceof Error ? pushErr.message : String(pushErr);
+          const isNonFastForward = /rejected|fetch first|non-fast-forward|stale info/i.test(pmsg);
+          if (!isNonFastForward) {
+            // Auth/network/other — don't spin, surface immediately.
+            throw pushErr;
+          }
+          log(
+            `push rejected for cortex '${safeCortex}' (attempt ${attempt}/${MAX_PUSH_ATTEMPTS}, ` +
+              `origin advanced) — re-pulling and retrying`,
+          );
+        }
+      }
+
+      if (pushed) {
+        log(`pushed cortex '${safeCortex}' to origin`);
+      } else {
+        throw (
+          lastPushErr ??
+          new Error(`push failed for cortex '${safeCortex}' after ${MAX_PUSH_ATTEMPTS} attempts`)
+        );
+      }
     } catch (err) {
       // Log the full error; event-driven retry fires on next notify() call.
       const msg = err instanceof Error ? err.message : String(err);
