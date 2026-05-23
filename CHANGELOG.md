@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+## [1.8.0] — 2026-05-23
+
+### Added
+
+- **The GitHub connector now walks every page of a repo's closed issues/PRs (and releases), so backfilling a large org no longer silently stalls or skips.** Previously each poll fetched a single page (`per_page=100`) and advanced the `since` cursor by +1ms unconditionally — a busy repo drained one page per tick, and because GitHub's `updated_at`/`since` are *second*-granularity, a run of >100 items sharing one second across a page boundary could be skipped permanently. The connector now follows `Link: rel="next"` within a tick, bounded by a per-tick page cap and an `X-RateLimit-Remaining` floor so a heavy backfill can't exhaust a PAT mid-walk. It only bumps the cursor +1ms once it has fully drained *and* enriched everything; otherwise it resumes from the exact boundary second and lets the `events` unique index dedup the harmless overlap. A rate-limit hit mid-walk now returns the partial batch with a resumable cursor instead of discarding the tick. New env knobs: `THINK_GITHUB_MAX_LIST_PAGES` (default 10), `THINK_GITHUB_RATE_FLOOR` (default 200). Paginated `Link` URLs are followed only on the same origin as the API base, so a crafted `Link` header can't forward the PAT to another host. This is the prerequisite for expanding proxy ingestion to large orgs (Phase 3). (AGT-409)
+
+### Changed
+
+- **Type errors now block merges.** The repo's `build` (tsup/esbuild) and `test` (vitest) steps never ran `tsc`, so 20 strict-mode type errors had accumulated on `main` unnoticed. All are fixed, and a `typecheck` script (`tsc --noEmit`) is now a required stamp check on `main` — type regressions can no longer land silently.
+
 ## [1.7.0] — 2026-05-22
 
 ### Added
