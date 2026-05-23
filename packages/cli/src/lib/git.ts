@@ -86,6 +86,68 @@ function pullRebaseOrAbort(branchName: string): void {
   }
 }
 
+/**
+ * The single line every cortex branch's `.gitattributes` must carry. Maps
+ * the JSONL pages to git's built-in `union` merge driver so concurrent
+ * appends from divergent nodes reconcile losslessly instead of conflicting.
+ */
+export const UNION_MERGE_ATTRIBUTE = '*.jsonl merge=union';
+
+/**
+ * Pure helper: given current `.gitattributes` content, return the content
+ * with the union-merge line appended, or `null` if the line is already
+ * present (so the caller skips the write + commit). No I/O — shared by the
+ * sync write path (`ensureUnionMergeAttribute`) and the async push-debouncer
+ * so both emit byte-identical `.gitattributes`.
+ */
+export function withUnionMergeAttribute(current: string): string | null {
+  if (current.split('\n').some((line) => line.trim() === UNION_MERGE_ATTRIBUTE)) {
+    return null;
+  }
+  if (current.length === 0 || current.endsWith('\n')) {
+    return current + UNION_MERGE_ATTRIBUTE + '\n';
+  }
+  return current + '\n' + UNION_MERGE_ATTRIBUTE + '\n';
+}
+
+/**
+ * Ensure the checked-out cortex branch carries a `.gitattributes` mapping
+ * `*.jsonl` to git's built-in `union` merge driver.
+ *
+ * Why this matters: page numbers (`000006.jsonl`) are assigned from the
+ * *local* highest-page-on-disk, but the namespace is *global* (the shared
+ * branch). Any node whose local view has drifted — a laptop back from a
+ * long offline stretch, a crashed daemon, a proxy that was on the wrong
+ * branch — will mint a page number that already exists on the remote with
+ * different content. Without a union driver the resulting `pull --rebase`
+ * conflicts, and naive resolution silently drops one side's lines. `union`
+ * concatenates both sides instead, so nothing is lost (consumers dedup by
+ * `id` and sort by `ts` on read).
+ *
+ * Idempotent: writes + commits only when the line is missing. No-op outside
+ * a git repo (test fixtures / local-fs backend). The caller is expected to
+ * have the target branch checked out; the resulting commit rides along on
+ * the next push. Must run BEFORE the cycle's `pull --rebase` so the driver
+ * is already in the working tree when the rebase replays a conflicting page.
+ */
+export function ensureUnionMergeAttribute(branchName: string): void {
+  assertSafePositional(branchName, 'branch name');
+  const repoPath = getRepoPath();
+  if (!fs.existsSync(path.join(repoPath, '.git'))) return;
+  const attrPath = path.join(repoPath, '.gitattributes');
+  let current = '';
+  try {
+    current = fs.readFileSync(attrPath, 'utf-8');
+  } catch {
+    /* absent — treated as empty */
+  }
+  const next = withUnionMergeAttribute(current);
+  if (next === null) return;
+  fs.writeFileSync(attrPath, next, 'utf-8');
+  runGit(['add', '--', '.gitattributes']);
+  runGit(['commit', '-m', `chore(cortex): union merge driver for *.jsonl on ${branchName}`]);
+}
+
 export function ensureRepoCloned(): void {
   const config = getConfig();
   if (!config.cortex?.repo) {
@@ -152,7 +214,11 @@ export function createOrphanBranch(branchName: string): void {
   const cortexDir = path.join(repoPath, branchName);
   fs.mkdirSync(cortexDir, { recursive: true, mode: 0o700 });
   fs.writeFileSync(path.join(cortexDir, '000001.jsonl'), '', 'utf-8');
-  runGit(['add', '--', `${branchName}/000001.jsonl`]);
+  // Born union-merged: stamp `.gitattributes` into the very first commit so
+  // every clone of this cortex inherits lossless concurrent-append merging
+  // without a later migration. See `ensureUnionMergeAttribute`.
+  fs.writeFileSync(path.join(repoPath, '.gitattributes'), UNION_MERGE_ATTRIBUTE + '\n', 'utf-8');
+  runGit(['add', '--', `${branchName}/000001.jsonl`, '.gitattributes']);
   runGit(['commit', '-m', `init: create cortex ${branchName}`]);
   runGit(['push', '--set-upstream', 'origin', '--', branchName]);
 }
@@ -294,6 +360,11 @@ export function appendAndCommit(
     // via assertSafePositional above.
     runGit(['switch', '-c', branchName, '--', `origin/${branchName}`]);
   }
+
+  // Stamp the union merge driver before the rebase so a divergent page
+  // reconciles losslessly instead of throwing a conflict. Self-heals any
+  // pre-existing branch that pre-dates this attribute; no-op once present.
+  ensureUnionMergeAttribute(branchName);
 
   pullRebaseOrAbort(branchName);
 

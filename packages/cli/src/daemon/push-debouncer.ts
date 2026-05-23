@@ -24,8 +24,10 @@
  */
 
 import { execFile } from 'node:child_process';
+import fs from 'node:fs';
+import path from 'node:path';
 import { getRepoPath, sanitizeName } from '../lib/paths.js';
-import { safeGitEnv } from '../lib/git.js';
+import { safeGitEnv, withUnionMergeAttribute } from '../lib/git.js';
 import { daemonLog } from './log.js';
 
 // ---------------------------------------------------------------------------
@@ -202,6 +204,37 @@ export class PushDebouncer {
             ['switch', '-c', safeCortex, '--', `origin/${safeCortex}`],
             repoPath,
           );
+        }
+      }
+
+      // Ensure the union merge driver is committed on this branch BEFORE the
+      // pull-rebase below, so a page that another node also appended to
+      // reconciles losslessly instead of throwing a rebase conflict. Mirrors
+      // `lib/git.ts:ensureUnionMergeAttribute`, inlined to use the async git
+      // seam (so the `_gitOverride` test double sees these calls). Committed
+      // as its own commit; rides along on the push. Idempotent — the
+      // `withUnionMergeAttribute` helper returns null once the line exists,
+      // so steady-state cycles skip the write+commit entirely.
+      // Guard on a real `.git` so unit tests (which mock `git` but have no
+      // repo on disk) don't write a stray `.gitattributes`. Mirrors the
+      // no-op-outside-a-repo behavior of `ensureUnionMergeAttribute`.
+      if (fs.existsSync(path.join(repoPath, '.git'))) {
+        const attrPath = path.join(repoPath, '.gitattributes');
+        let attrCurrent = '';
+        try {
+          attrCurrent = fs.readFileSync(attrPath, 'utf-8');
+        } catch {
+          /* absent — treated as empty */
+        }
+        const attrNext = withUnionMergeAttribute(attrCurrent);
+        if (attrNext !== null) {
+          fs.writeFileSync(attrPath, attrNext, 'utf-8');
+          await git(['add', '--', '.gitattributes'], repoPath);
+          await git(
+            ['commit', '-m', `chore(cortex): union merge driver for *.jsonl on ${safeCortex}`],
+            repoPath,
+          );
+          log(`added union merge driver (.gitattributes) for cortex '${safeCortex}'`);
         }
       }
 
