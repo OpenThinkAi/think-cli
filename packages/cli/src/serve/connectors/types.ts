@@ -76,6 +76,20 @@ export interface EventInput {
    * literal-type choice.
    */
   terminal: true;
+  /**
+   * Optional ISO-8601 timestamp of when the source artifact actually
+   * settled — a PR's `merged_at`/`closed_at`, an issue's `closed_at`, a
+   * release's `published_at`, a Slack thread root's message time. Becomes
+   * the curated memory's `ts`, which drives recall's recency weighting.
+   *
+   * Set it ONLY when the connector has a clean, unambiguous source date.
+   * Leave it unset on missing/garbage/conflicting dates — the writer then
+   * falls back to wall-clock insertion time. This is what lets a historical
+   * backfill (an old org's years of PRs, or imported old Slack threads)
+   * land at each item's REAL chronological position instead of all
+   * clustering at "now" and flooding recall's recent window.
+   */
+  occurredAt?: string;
   payload: unknown;
 }
 

@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+## [1.7.0] — 2026-05-22
+
+### Added
+
+- **Ingested GitHub PRs and Slack threads now land in memory at their real date, not the import time.** Previously every curated memory was stamped with the moment the proxy processed it, so backfilling a source's history would pile all of it into "now" — and because recall weights recent memories more heavily, years-old PRs would surface as if they just happened. Now a PR's merge/close date (and a Slack thread's date) becomes the memory's timestamp, so historical items sort to their true place and recall ranking stays trustworthy. Live ingestion is unchanged (still stamped at processing time); only items with a clean source date override it, and anything missing or malformed falls back to processing time. This is the prerequisite for safely backfilling an older org's PR history and, later, importing old Slack threads.
+
+  Implementation: new `EventInput.occurredAt?` (ISO-8601) populated by the GitHub connector (`merged_at ?? closed_at` for PRs, `closed_at` for issues, `published_at` for releases) and the Slack connector (thread root time); persisted on a new nullable `events.occurred_at` column (additive migration); `cortex-writer` sets `ts = occurredAt ?? now()` with a `Date.parse` validity guard so an unparseable override falls back rather than corrupting `ts`.
+
 ## [1.6.0] — 2026-05-22
 
 ### Fixed

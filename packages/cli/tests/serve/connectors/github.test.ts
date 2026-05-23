@@ -158,6 +158,8 @@ describe('createGitHubConnector — terminal-event emission', () => {
     expect(evt.id).toBe('github:octo/widget:pr:42:closed-unmerged');
     expect(evt.episodeKey).toBe('github:octo/widget#42');
     expect(evt.terminal).toBe(true);
+    // Unmerged → occurredAt falls back to closed_at (no merge moment).
+    expect(evt.occurredAt).toBe('2026-05-19T12:00:00Z');
     const payload = JSON.parse(evt.payload as string) as {
       kind: string;
       final_state: string;
@@ -241,6 +243,8 @@ describe('createGitHubConnector — terminal-event emission', () => {
     const evt = result.events[0];
     expect(evt.id).toBe('github:octo/widget:pr:101:merged');
     expect(evt.episodeKey).toBe('github:octo/widget#101');
+    // Merged → occurredAt prefers merged_at over closed_at.
+    expect(evt.occurredAt).toBe('2026-05-20T09:00:00Z');
     const payload = JSON.parse(evt.payload as string) as {
       final_state: string;
       merge_commit_sha: string;

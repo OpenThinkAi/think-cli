@@ -87,10 +87,21 @@ export interface WriteMemoriesForEventOptions {
    */
   peerId: string;
   /**
+   * Source artifact's real settle time (ISO-8601) — the PR merge/close,
+   * release publish, or Slack thread time the connector supplied via
+   * `EventInput.occurredAt`. When set, it becomes every written memory's
+   * `ts`, so a historical backfill lands at each item's real chronological
+   * position (recall weights recency by `ts`-derived sequence). When unset,
+   * `ts` falls back to `now()` — the default for live ingestion and for any
+   * event whose connector couldn't determine a clean date.
+   */
+  occurredAt?: string;
+  /**
    * Test seam: override the timestamp on the written entries. Production
    * callers leave this unset and get `new Date().toISOString()`. Tests
    * use it to assert exact field values without relying on clock
-   * proximity.
+   * proximity. NOTE: `occurredAt` takes precedence over this for the
+   * memory `ts`; `now` is the fallback clock.
    */
   now?: () => string;
   /**
@@ -199,7 +210,24 @@ export function writeMemoriesForEvent(
   }
 
   // --- write ---
+  // Memory `ts` = the source artifact's real settle time when the connector
+  // supplied one (`occurredAt`), else wall-clock insertion time. This is the
+  // default-now-with-override contract: live ingestion stamps "now"; a
+  // historical backfill stamps each item's real date so it lands at its true
+  // chronological position instead of flooding recall's recent window.
+  // (Recall weights recency by a `ts`-derived sequence position — see
+  // daemon/recall.ts.)
   const now = (opts.now ?? (() => new Date().toISOString()))();
+  // Validate the override is a parseable date before trusting it as `ts`.
+  // The contract asks connectors to leave `occurredAt` unset for
+  // garbage/ambiguous dates, but this guard enforces it rather than relying
+  // on caller discipline: a non-parseable value (e.g. a bare epoch string or
+  // a locale-formatted date a future connector might pass) falls back to
+  // insertion time instead of corrupting recall ordering with a bad `ts`.
+  const ts =
+    opts.occurredAt !== undefined && Number.isFinite(Date.parse(opts.occurredAt))
+      ? opts.occurredAt
+      : now;
   const append = opts.appendFn ?? appendToL1Page;
   const cortexDir = path.join(getRepoPath(), safeCortex);
   // Switch the working tree to the team cortex's branch before appending.
@@ -220,7 +248,7 @@ export function writeMemoriesForEvent(
     const id = uuidv7();
     const entry: CortexJsonlLine = {
       id,
-      ts: now,
+      ts,
       author: 'proxy',
       origin_peer_id: trimmedPeerId,
       episode_key: event.episodeKey,

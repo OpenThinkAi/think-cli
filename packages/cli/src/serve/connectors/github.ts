@@ -343,6 +343,9 @@ export function createGitHubConnector(
       id: `github:${p.owner}/${p.repo}:issue:${item.number}:closed`,
       episodeKey: `github:${p.owner}/${p.repo}#${item.number}`,
       terminal: true,
+      // Guarded above (`if (!item.closed_at) return null`), so this is a
+      // clean source date — the moment the issue settled.
+      occurredAt: item.closed_at,
       payload: JSON.stringify({
         kind: 'issue.closed',
         repo: `${p.owner}/${p.repo}`,
@@ -377,6 +380,10 @@ export function createGitHubConnector(
       id: `github:${p.owner}/${p.repo}:pr:${item.number}:${suffix}`,
       episodeKey: `github:${p.owner}/${p.repo}#${item.number}`,
       terminal: true,
+      // Prefer the merge moment; fall back to close for unmerged PRs.
+      // `?? undefined` so a null from the API leaves it unset (writer then
+      // falls back to insertion time) rather than stamping `ts: null`.
+      occurredAt: detail.merged_at ?? detail.closed_at ?? undefined,
       payload: JSON.stringify({
         kind: merged ? 'pull_request.merged' : 'pull_request.closed_unmerged',
         repo: `${p.owner}/${p.repo}`,
@@ -410,6 +417,10 @@ export function createGitHubConnector(
       id: `github:${p.owner}/${p.repo}:release:${release.id}:published`,
       episodeKey: `github:${p.owner}/${p.repo}@${release.tag_name}`,
       terminal: true,
+      // Only published releases reach here (drafts filtered upstream), so
+      // `published_at` is the clean settle date. `?? undefined` guards a
+      // null from the API.
+      occurredAt: release.published_at ?? undefined,
       payload: JSON.stringify({
         kind: 'release.published',
         repo: `${p.owner}/${p.repo}`,
