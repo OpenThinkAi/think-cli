@@ -19,8 +19,11 @@ export interface RetroUsageEntry {
   content: string | null;
   created_at: string | null;
   surface_count: number;
-  brief_count: number;
-  recall_count: number;
+  /** Calls broken down by surface: brief | recall | mcp | hook. */
+  by_source: { brief: number; recall: number; mcp: number; hook: number };
+  /** Session-stage split: calls that were the session's first recall vs later. */
+  session_start_count: number;
+  mid_session_count: number;
   first_surfaced: string;
   last_surfaced: string;
   /** Distinct queries that surfaced this retro, most-recent first (capped). */
@@ -52,6 +55,10 @@ interface AggRow {
   last: string;
   brief: number;
   recall: number;
+  mcp: number;
+  hook: number;
+  started: number;
+  mid: number;
 }
 
 const MAX_QUERIES_PER_RETRO = 10;
@@ -119,7 +126,11 @@ export function getRetroUsageReport(): RetroUsageReport {
               MIN(surfaced_at)                                AS first,
               MAX(surfaced_at)                                AS last,
               SUM(CASE WHEN source = 'brief'  THEN 1 ELSE 0 END) AS brief,
-              SUM(CASE WHEN source = 'recall' THEN 1 ELSE 0 END) AS recall
+              SUM(CASE WHEN source = 'recall' THEN 1 ELSE 0 END) AS recall,
+              SUM(CASE WHEN source = 'mcp'    THEN 1 ELSE 0 END) AS mcp,
+              SUM(CASE WHEN source = 'hook'   THEN 1 ELSE 0 END) AS hook,
+              SUM(CASE WHEN session_seq = 1   THEN 1 ELSE 0 END) AS started,
+              SUM(CASE WHEN session_seq > 1   THEN 1 ELSE 0 END) AS mid
        FROM retro_surfacings
        GROUP BY retro_id, cortex
        ORDER BY c DESC, last DESC`,
@@ -168,8 +179,9 @@ export function getRetroUsageReport(): RetroUsageReport {
       content: meta?.content ?? null,
       created_at: meta?.created_at ?? null,
       surface_count: r.c,
-      brief_count: r.brief,
-      recall_count: r.recall,
+      by_source: { brief: r.brief, recall: r.recall, mcp: r.mcp, hook: r.hook },
+      session_start_count: r.started,
+      mid_session_count: r.mid,
       first_surfaced: r.first,
       last_surfaced: r.last,
       queries,

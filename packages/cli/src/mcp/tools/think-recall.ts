@@ -78,7 +78,9 @@ async function handler(
   }
 
   // Build the daemon RPC params — pass only defined optional fields.
-  const rpcParams: Record<string, unknown> = { query };
+  const rpcParams: Record<string, unknown> = { query, source: 'mcp' };
+  const sessionId = process.env.CLAUDE_CODE_SESSION_ID;
+  if (sessionId) rpcParams['session_id'] = sessionId;
 
   if (typeof params['scope'] === 'string') rpcParams['scope'] = params['scope'];
   if (typeof params['limit'] === 'number') rpcParams['limit'] = params['limit'];

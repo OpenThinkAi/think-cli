@@ -457,6 +457,8 @@ export async function handleRecall(
  * Best-effort and non-throwing — recordRetroSurfacings swallows write errors
  * so telemetry can never degrade a recall response.
  */
+const KNOWN_SOURCES: ReadonlySet<string> = new Set(['brief', 'recall', 'mcp', 'hook']);
+
 function recordSurfacings(
   params: Record<string, unknown>,
   entries: RecallEntry[],
@@ -465,17 +467,23 @@ function recordSurfacings(
   if (retros.length === 0) return;
 
   const query = typeof params['query'] === 'string' ? params['query'] : '';
-  const source = params['source'] === 'brief' ? 'brief' : 'recall';
+  const sourceRaw = params['source'];
+  const source = typeof sourceRaw === 'string' && KNOWN_SOURCES.has(sourceRaw) ? sourceRaw : 'recall';
+  const session_id =
+    typeof params['session_id'] === 'string' && params['session_id'].length > 0
+      ? params['session_id']
+      : null;
 
-  recordRetroSurfacings(
-    retros.map((e) => ({
+  recordRetroSurfacings({
+    query,
+    source,
+    session_id,
+    retros: retros.map((e) => ({
       retro_id: e.id,
       cortex: e.cortex,
-      query,
       score: e.fts_fallback ? null : e.score,
-      source,
     })),
-  );
+  });
 }
 
 async function handleRecallInner(

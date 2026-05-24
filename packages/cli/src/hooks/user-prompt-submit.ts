@@ -152,6 +152,7 @@ export async function main(
 ): Promise<void> {
   // ── 1. Read + parse stdin ─────────────────────────────────────────────────
   let userPrompt: string;
+  let sessionId: string | null = null;
   try {
     const raw = await readStdin(stdin);
     const parsed = JSON.parse(raw) as Record<string, unknown>;
@@ -161,6 +162,9 @@ export async function main(
       return;
     }
     userPrompt = prompt.trim();
+    if (typeof parsed['session_id'] === 'string' && parsed['session_id'].length > 0) {
+      sessionId = parsed['session_id'];
+    }
   } catch {
     // Malformed stdin — fail open, don't block the prompt.
     writeEmpty(stdout);
@@ -190,7 +194,13 @@ export async function main(
   try {
     const result = await client.call(
       'recall',
-      { query: userPrompt, scope: 'accessible', limit: RECALL_LIMIT },
+      {
+        query: userPrompt,
+        scope: 'accessible',
+        limit: RECALL_LIMIT,
+        source: 'hook',
+        ...(sessionId ? { session_id: sessionId } : {}),
+      },
       RECALL_TIMEOUT_MS,
     );
     entries = result as RecallEntry[];

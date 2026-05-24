@@ -338,7 +338,9 @@ export const recallCommand = new Command('recall')
           ));
         }
 
-        const rpcParams: Record<string, unknown> = { query, limit, scope };
+        const rpcParams: Record<string, unknown> = { query, limit, scope, source: 'recall' };
+        const sessionId = process.env.CLAUDE_CODE_SESSION_ID;
+        if (sessionId) rpcParams['session_id'] = sessionId;
         if (scope === 'active') rpcParams['cortex'] = cortex;
         if (opts.kind !== undefined) rpcParams['kind'] = opts.kind;
         if (opts.topic !== undefined) rpcParams['topic'] = opts.topic;

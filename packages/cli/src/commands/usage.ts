@@ -121,6 +121,8 @@ function mountView(viewsRoot: string, data: unknown): Promise<void> {
       version: '1',
       view: VIEW_NAME,
       viewsRoot,
+      title: 'think command summary',
+      shell: 'app',
       data,
       port: 0,
     };

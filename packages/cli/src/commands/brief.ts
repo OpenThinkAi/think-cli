@@ -90,6 +90,7 @@ Examples:
 
     const limit = parseInt(opts.limit, 10);
     const effectiveQuery = query ?? "task start context";
+    const sessionId = process.env.CLAUDE_CODE_SESSION_ID;
 
     let client;
     try {
@@ -118,6 +119,7 @@ Examples:
         query: effectiveQuery,
         limit,
         source: "brief",
+        ...(sessionId ? { session_id: sessionId } : {}),
       });
 
       const personalEntries = isRecallEntryArray(personalRaw) ? personalRaw : [];
@@ -149,6 +151,7 @@ Examples:
         limit,
         kind: "retro",
         source: "brief",
+        ...(sessionId ? { session_id: sessionId } : {}),
       });
 
       const repoEntries = isRecallEntryArray(repoRaw) ? repoRaw : [];
