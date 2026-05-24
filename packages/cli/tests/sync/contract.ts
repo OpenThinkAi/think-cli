@@ -9,6 +9,7 @@ import {
   getSyncCursor,
 } from '../../src/db/memory-queries.js';
 import { insertRetro } from '../../src/db/retro-queries.js';
+import { insertLongTermEvent } from '../../src/db/long-term-queries.js';
 import { deterministicId } from '../../src/lib/deterministic-id.js';
 import { getPeerId } from '../../src/lib/config.js';
 import type { SyncAdapter } from '../../src/sync/types.js';
@@ -292,6 +293,42 @@ export function runSyncAdapterContractTests<TRemote>(
 
       asPeer(p.peerA, () => {
         insertRetro(p.cortexName, { content: 'no re-emit retro' });
+      });
+
+      p.peerA.activate();
+      const aPush = await adapter.push(p.cortexName);
+      expect(aPush.pushed).toBeGreaterThanOrEqual(1);
+
+      p.peerB.activate();
+      const bPull = await adapter.pull(p.cortexName);
+      expect(bPull.pulled).toBeGreaterThanOrEqual(1);
+
+      // The bug: B's next push would re-emit the row A authored.
+      const bPush = await adapter.push(p.cortexName);
+      expect(bPush.errors).toEqual([]);
+      expect(bPush.pushed).toBe(0);
+
+      // And A's next pull sees nothing new — B never wrote anything.
+      p.peerA.activate();
+      const aPull2 = await adapter.pull(p.cortexName);
+      expect(aPull2.pulled).toBe(0);
+    });
+
+    it('pulled long-term events do not re-emit on the next push (AGT-253)', async () => {
+      // A pushes one long-term event; B pulls it; B's next push must report
+      // pushed=0 — pulled rows are not the puller's to re-publish. Without
+      // this guard, the row would be re-emitted into B's long-term file and
+      // come back to A as a duplicate on A's next pull.
+      const { pair: p, adapter } = await setup();
+
+      asPeer(p.peerA, () => {
+        insertLongTermEvent(p.cortexName, {
+          ts: '2026-05-24T12:00:00Z',
+          author: 'a',
+          kind: 'decision',
+          title: 'no re-emit lt',
+          content: 'long-term event that should not re-emit',
+        });
       });
 
       p.peerA.activate();

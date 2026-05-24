@@ -1,5 +1,6 @@
 import { getCortexDb } from './engrams.js';
 import { deterministicEventId } from '../lib/deterministic-id.js';
+import { getPeerId } from '../lib/config.js';
 
 export type LongTermEventKind =
   | 'adoption'
@@ -22,6 +23,7 @@ export interface LongTermEventRow {
   created_at: string;
   deleted_at: string | null;
   sync_version: number;
+  origin_peer_id: string | null;
 }
 
 export interface InsertLongTermEventParams {
@@ -35,6 +37,7 @@ export interface InsertLongTermEventParams {
   supersedes?: string | null;
   source_memory_ids?: string[];
   deleted_at?: string | null;
+  origin_peer_id?: string | null;
 }
 
 export interface InsertLongTermEventResult {
@@ -60,14 +63,17 @@ export function insertLongTermEvent(
   const now = new Date().toISOString();
   const topics = JSON.stringify(params.topics ?? []);
   const sourceIds = JSON.stringify(params.source_memory_ids ?? []);
+  // `=== undefined` (not `??`) so callers can opt into NULL via explicit
+  // `origin_peer_id: null` — used for legacy JSONL lines with no signal.
+  const originPeerId = params.origin_peer_id === undefined ? getPeerId() : params.origin_peer_id;
 
   // OR IGNORE so re-inserting a deterministic-id duplicate is a no-op.
   // `changes` tells us whether the insert actually added a row or was a
   // dedup no-op.
   const runResult = db.prepare(
     `INSERT OR IGNORE INTO long_term_events
-       (id, ts, author, kind, title, content, topics, supersedes, source_memory_ids, created_at, deleted_at, sync_version)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, (SELECT COALESCE(MAX(sync_version), 0) + 1 FROM long_term_events))`,
+       (id, ts, author, kind, title, content, topics, supersedes, source_memory_ids, created_at, deleted_at, sync_version, origin_peer_id)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, (SELECT COALESCE(MAX(sync_version), 0) + 1 FROM long_term_events), ?)`,
   ).run(
     id,
     params.ts,
@@ -80,6 +86,7 @@ export function insertLongTermEvent(
     sourceIds,
     now,
     params.deleted_at ?? null,
+    originPeerId,
   );
 
   const row = db.prepare('SELECT * FROM long_term_events WHERE id = ?').get(id) as unknown as LongTermEventRow;
