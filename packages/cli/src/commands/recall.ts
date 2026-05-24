@@ -248,6 +248,20 @@ export const recallCommand = new Command('recall')
       .choices(['active', 'accessible', 'all'])
       .default('accessible'),
   )
+  .addHelpText(
+    'after',
+    `
+Ranking:
+  By default, semantic results are recency-weighted: an entry written more
+  recently scores higher than a semantically similar but older one (the boost
+  decays exponentially the further an entry is from the newest). To rank by
+  pure cosine similarity instead, turn the weighting off:
+
+    think config set recall.recencyDecay 0
+
+  (default 0.05; higher values bias harder toward recent entries). This applies
+  to the semantic path only — --no-embed (full-text search) is unaffected.`,
+  )
   .action(async function (this: Command, query: string, opts: { engrams?: boolean; all?: boolean; days: string; limit: string; full?: boolean; json?: boolean; includeSuperseded?: boolean; scope: string; embed: boolean; kind?: string; topic?: string; since?: string }) {
     const config = getConfig();
     const cortex = config.cortex?.active;
