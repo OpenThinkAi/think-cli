@@ -117,6 +117,7 @@ Examples:
         scope: "active",
         query: effectiveQuery,
         limit,
+        source: "brief",
       });
 
       const personalEntries = isRecallEntryArray(personalRaw) ? personalRaw : [];
@@ -147,6 +148,7 @@ Examples:
         query: effectiveQuery,
         limit,
         kind: "retro",
+        source: "brief",
       });
 
       const repoEntries = isRecallEntryArray(repoRaw) ? repoRaw : [];

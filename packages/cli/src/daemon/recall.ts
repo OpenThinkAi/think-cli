@@ -56,6 +56,7 @@ import { getConfig } from '../lib/config.js';
 import { listLocalBranches } from '../lib/git.js';
 import { reindexingCortexes, reindexFailedCortexes } from './embed-model-check.js';
 import { sanitizeName } from '../lib/paths.js';
+import { recordRetroSurfacings } from '../db/usage-db.js';
 
 /**
  * User-facing note printed when recall falls back to FTS ranking due to
@@ -437,6 +438,47 @@ function recallOneCortexWithFts(
  * @returns       Array of {@link RecallEntry} sorted by recency-weighted score desc.
  */
 export async function handleRecall(
+  params: Record<string, unknown>,
+): Promise<RecallEntry[]> {
+  const entries = await handleRecallInner(params);
+  recordSurfacings(params, entries);
+  return entries;
+}
+
+/**
+ * Append a usage-telemetry row for every retro in the recall result.
+ *
+ * This is the single capture point for retro-surfacing analytics: every
+ * `think recall`, MCP `think_recall`, and both of `think brief`'s internal
+ * recall calls flow through here. Source defaults to 'recall'; `brief` tags
+ * its calls with source='brief' so the report can separate task-start
+ * orientation from ad-hoc recall.
+ *
+ * Best-effort and non-throwing — recordRetroSurfacings swallows write errors
+ * so telemetry can never degrade a recall response.
+ */
+function recordSurfacings(
+  params: Record<string, unknown>,
+  entries: RecallEntry[],
+): void {
+  const retros = entries.filter((e) => e.kind === 'retro');
+  if (retros.length === 0) return;
+
+  const query = typeof params['query'] === 'string' ? params['query'] : '';
+  const source = params['source'] === 'brief' ? 'brief' : 'recall';
+
+  recordRetroSurfacings(
+    retros.map((e) => ({
+      retro_id: e.id,
+      cortex: e.cortex,
+      query,
+      score: e.fts_fallback ? null : e.score,
+      source,
+    })),
+  );
+}
+
+async function handleRecallInner(
   params: Record<string, unknown>,
 ): Promise<RecallEntry[]> {
   // ── validate scope ─────────────────────────────────────────────────────────

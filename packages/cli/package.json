@@ -7,7 +7,8 @@
     "think": "dist/index.js"
   },
   "files": [
-    "dist"
+    "dist",
+    "views"
   ],
   "scripts": {
     "build": "tsup && find dist -name '*.js' -exec perl -i -pe 's/from \"sqlite\"/from \"node:sqlite\"/g' {} +",
