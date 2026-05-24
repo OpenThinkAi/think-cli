@@ -458,6 +458,7 @@ describe('scheduler — curator drain', () => {
     curateBatchSize?: number;
     selectEvents?: ReturnType<typeof vi.fn>;
     processEvent?: ReturnType<typeof vi.fn>;
+    notifyPush?: ReturnType<typeof vi.fn>;
   } = {}) {
     const db = openDb(':memory:');
     const vault = createVault(randomBytes(32));
@@ -474,9 +475,57 @@ describe('scheduler — curator drain', () => {
       // tests supply vi.fn() stubs that match shape but not exact type.
       selectEvents: opts.selectEvents as never,
       processEvent: opts.processEvent as never,
+      notifyPush: opts.notifyPush,
     });
     return { db, scheduler };
   }
+
+  it('#66: coalesces a curate batch into ONE push, not one per event', async () => {
+    const events = [
+      buildEventRow({ id: 'e1' }),
+      buildEventRow({ id: 'e2' }),
+      buildEventRow({ id: 'e3' }),
+    ];
+    const selectEvents = vi.fn().mockReturnValueOnce(events).mockReturnValue([]);
+    const processEvent = vi.fn().mockResolvedValue({ status: 'curated', ids: ['m'] });
+    const notifyPush = vi.fn();
+    const { scheduler } = makeNakedScheduler({
+      peerId: 'proxy-test',
+      getCortexName: () => 'cortex/engineering',
+      selectEvents,
+      processEvent,
+      notifyPush,
+    });
+
+    const report = await scheduler.tickOnce();
+
+    expect(report.curate_outcomes).toHaveLength(3);
+    expect(processEvent).toHaveBeenCalledTimes(3);
+    // The whole point of #66: exactly ONE batch push, not three per-event pushes.
+    expect(notifyPush).toHaveBeenCalledTimes(1);
+    expect(notifyPush).toHaveBeenCalledWith('cortex/engineering');
+    // And each per-event write got the suppressor, NOT the batch-level push.
+    expect(processEvent.mock.calls[0][0].notifyPush).not.toBe(notifyPush);
+  });
+
+  it('#66: fires no push when nothing was curated (all events errored)', async () => {
+    const events = [buildEventRow({ id: 'e1' }), buildEventRow({ id: 'e2' })];
+    const selectEvents = vi.fn().mockReturnValueOnce(events).mockReturnValue([]);
+    const processEvent = vi.fn().mockRejectedValue(new Error('boom'));
+    const notifyPush = vi.fn();
+    const { scheduler } = makeNakedScheduler({
+      peerId: 'proxy-test',
+      getCortexName: () => 'cortex/engineering',
+      selectEvents,
+      processEvent,
+      notifyPush,
+    });
+
+    const report = await scheduler.tickOnce();
+
+    expect(report.curate_outcomes.every((o) => o.status === 'error')).toBe(true);
+    expect(notifyPush).not.toHaveBeenCalled();
+  });
 
   it('skips drain when peerId is unset (disabled-no-peer-id)', async () => {
     const selectEvents = vi.fn();

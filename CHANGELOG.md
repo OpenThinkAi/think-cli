@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [1.9.1] — 2026-05-24
+
+### Fixed
+
+- **Proxy curation now pushes once per curate-batch instead of once per event (#66).** The `think serve` curate drain processes a batch of events, each writing memories and (previously) notifying the push-debouncer individually. Because curation writes are spaced by LLM latency (seconds), they always outran the debouncer's 500 ms window, so the proxy did a full `git pull --rebase` + commit + push round-trip to the shared cortex branch **per event** — those serialized git ops dominated each scheduler tick and throttled curation to ~10× below its ceiling on large backfills. The drain now suppresses the per-event push and fires a single batch push after the whole batch (one `git add -- <cortex>` stages everything written during the drain), cutting git round-trips ~Nx and shrinking cortex commit history to one commit per batch. Surfaced during the Phase 3 anglepoint-engineering backfill.
+
 ## [1.8.2] — 2026-05-23
 
 ### Added

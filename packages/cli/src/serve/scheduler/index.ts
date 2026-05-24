@@ -6,6 +6,7 @@ import {
   selectUncuratedEvents,
   type EventRow,
 } from '../event-curator.js';
+import { pushDebouncer } from '../../daemon/push-debouncer.js';
 
 const DEFAULT_POLL_TIMEOUT_MS = 60_000;
 /**
@@ -187,6 +188,16 @@ export interface SchedulerOptions {
    * events table. Production callers leave unset.
    */
   selectEvents?: typeof selectUncuratedEvents;
+  /**
+   * Batch-level push trigger, called ONCE per drain after the whole curate
+   * batch rather than once per event (#66). Per-event pushes otherwise
+   * dominate tick time on large backfills: each is a rebase+commit+push
+   * round-trip to the shared cortex branch, and curation writes are spaced
+   * by LLM latency, so the push-debouncer's 500ms window never coalesces
+   * them. Defaults to the module push-debouncer singleton. Injectable for
+   * tests.
+   */
+  notifyPush?: (cortex: string) => void;
 }
 
 function withTimeout<T>(p: Promise<T>, ms: number, kind: string, subId: string): Promise<T> {
@@ -250,6 +261,10 @@ export function createScheduler(opts: SchedulerOptions): SchedulerHandle {
   const curateBatchSize = Math.max(1, opts.curateBatchSize ?? DEFAULT_CURATE_BATCH_SIZE);
   const processEvent = opts.processEvent ?? processTerminalEvent;
   const selectEvents = opts.selectEvents ?? selectUncuratedEvents;
+  const notifyPush = opts.notifyPush ?? ((cortex: string) => pushDebouncer.notify(cortex));
+  // No-op handed to each per-event write so writeMemoriesForEvent does NOT
+  // push per event; the drain fires a single batch push at the end (#66).
+  const suppressPerEventPush = (): void => {};
 
   let timer: NodeJS.Timeout | null = null;
   let stopped = false;
@@ -296,6 +311,7 @@ export function createScheduler(opts: SchedulerOptions): SchedulerHandle {
       }
 
       const curate_outcomes: CurateOutcome[] = [];
+      let curatedAny = false;
       for (const event of events) {
         try {
           const outcome = await processEvent({
@@ -303,7 +319,13 @@ export function createScheduler(opts: SchedulerOptions): SchedulerHandle {
             event,
             peerId: opts.peerId,
             cortexName,
+            // Suppress the per-event push; we coalesce into one batch push
+            // after the loop (#66). The batch push's `git add -- <cortex>`
+            // stages the whole cortex dir, so it still captures every memory
+            // written during this drain.
+            notifyPush: suppressPerEventPush,
           });
+          if (outcome.status === 'curated') curatedAny = true;
           curate_outcomes.push({
             event_id: event.id,
             subscription_id: event.subscription_id,
@@ -330,6 +352,11 @@ export function createScheduler(opts: SchedulerOptions): SchedulerHandle {
           });
         }
       }
+      // One push for the whole batch (#66) — coalesces what would otherwise
+      // be one rebase+commit+push per event. Skipped when nothing was
+      // curated (all events errored or were already-curated) so we don't
+      // fire an empty cycle.
+      if (curatedAny) notifyPush(cortexName);
       return { curate_outcomes, curate_skip_reason: null };
     } catch (err) {
       // Drain *infrastructure* failure: getCortexName() threw, or
