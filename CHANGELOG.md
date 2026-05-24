@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [1.9.3] — 2026-05-24
+
+### Added
+
+- **`think serve` scheduler telemetry — per-tick and per-curation timing.** The scheduler already measured each tick's poll vs curate phases (the `TickReport` timestamps) but never surfaced them, leaving the proxy a black box for performance. It now logs a structured line per tick — `[open-think serve] [tick] total_ms=… poll_ms=… curate_ms=… polled=… curated=… errored=… curate_backend=api|agent-sdk curate_skip=…` — and one per curated event — `[open-think serve] [curate] event=… backend=… ms=… status=… memories=…`. This makes where a tick's wall-clock actually goes (poll vs curation vs idle) and each curation's real latency + backend directly readable from `railway logs`, instead of inferred. Pure observability; no behavior change.
+
 ## [1.9.2] — 2026-05-24
 
 ### Added

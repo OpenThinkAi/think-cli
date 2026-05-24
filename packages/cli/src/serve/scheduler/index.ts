@@ -7,6 +7,7 @@ import {
   type EventRow,
 } from '../event-curator.js';
 import { pushDebouncer } from '../../daemon/push-debouncer.js';
+import { useDirectApiCuration } from '../../lib/curator.js';
 
 const DEFAULT_POLL_TIMEOUT_MS = 60_000;
 /**
@@ -289,7 +290,7 @@ export function createScheduler(opts: SchedulerOptions): SchedulerHandle {
    * infrastructure failure). Reason is `null` when at least one event
    * was touched.
    */
-  async function runDrain(): Promise<{
+  async function runDrain(backend: 'api' | 'agent-sdk'): Promise<{
     curate_outcomes: CurateOutcome[];
     curate_skip_reason: CurateSkipReason;
   }> {
@@ -313,6 +314,10 @@ export function createScheduler(opts: SchedulerOptions): SchedulerHandle {
       const curate_outcomes: CurateOutcome[] = [];
       let curatedAny = false;
       for (const event of events) {
+        // Per-event timing telemetry: the dominant cost in a curation is the
+        // LLM call inside processEvent, so wall-time around it is the number we
+        // need to reason about throughput. Logged per event (serve-only).
+        const ev_started = Date.now();
         try {
           const outcome = await processEvent({
             db,
@@ -332,8 +337,14 @@ export function createScheduler(opts: SchedulerOptions): SchedulerHandle {
             status: outcome.status,
             memory_ids: outcome.status === 'curated' ? outcome.ids : undefined,
           });
+          console.log(
+            `[open-think serve] [curate] event=${event.id} backend=${backend} ms=${Date.now() - ev_started} status=${outcome.status} memories=${outcome.status === 'curated' ? outcome.ids.length : 0}`,
+          );
         } catch (err) {
           const message = err instanceof Error ? err.message : String(err);
+          console.log(
+            `[open-think serve] [curate] event=${event.id} backend=${backend} ms=${Date.now() - ev_started} status=error memories=0`,
+          );
           // Per-event failure isolation: log, record, continue.
           // `curated_at` stays NULL on throw — `processTerminalEvent`
           // only marks it after the writer succeeds — so the next tick
@@ -508,12 +519,29 @@ export function createScheduler(opts: SchedulerOptions): SchedulerHandle {
     // latency don't accidentally include drain wall time (which can
     // add curateBatchSize × LLM round-trip seconds per tick).
     const poll_finished_at = now();
-    const { curate_outcomes, curate_skip_reason } = await runDrain();
+    const curate_backend = useDirectApiCuration() ? 'api' : 'agent-sdk';
+    const { curate_outcomes, curate_skip_reason } = await runDrain(curate_backend);
+    const finished_at = now();
+
+    // Tick phase-breakdown telemetry (serve-only). The timestamps were already
+    // computed for TickReport; this just surfaces them so operators can READ
+    // where a tick's wall-clock goes (poll vs curate) instead of inferring it.
+    const poll_ms = Date.parse(poll_finished_at) - Date.parse(started_at);
+    const curate_ms = Date.parse(finished_at) - Date.parse(poll_finished_at);
+    const n_curated = curate_outcomes.filter((o) => o.status === 'curated').length;
+    const n_errored = curate_outcomes.filter((o) => o.status === 'error').length;
+    console.log(
+      `[open-think serve] [tick] total_ms=${poll_ms + curate_ms} ` +
+        `poll_ms=${poll_ms} curate_ms=${curate_ms} polled=${outcomes.length} ` +
+        `curated=${n_curated} errored=${n_errored} ` +
+        `curate_backend=${curate_backend} ` +
+        `curate_skip=${curate_skip_reason ?? 'none'}`,
+    );
 
     return {
       started_at,
       poll_finished_at,
-      finished_at: now(),
+      finished_at,
       outcomes,
       curate_outcomes,
       curate_skip_reason,

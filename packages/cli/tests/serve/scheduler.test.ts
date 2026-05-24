@@ -527,6 +527,63 @@ describe('scheduler — curator drain', () => {
     expect(notifyPush).not.toHaveBeenCalled();
   });
 
+  it('emits [tick] phase-breakdown and [curate] per-event telemetry (1.9.3)', async () => {
+    const logs: string[] = [];
+    const spy = vi.spyOn(console, 'log').mockImplementation((...a: unknown[]) => {
+      logs.push(a.join(' '));
+    });
+    try {
+      const { scheduler } = makeNakedScheduler({
+        peerId: 'proxy-test',
+        getCortexName: () => 'cortex/engineering',
+        selectEvents: vi.fn().mockReturnValueOnce([buildEventRow({ id: 'e1' })]).mockReturnValue([]),
+        processEvent: vi.fn().mockResolvedValue({ status: 'curated', ids: ['m1', 'm2'] }),
+        notifyPush: vi.fn(),
+      });
+      await scheduler.tickOnce();
+
+      const tickLine = logs.find((l) => l.includes('[tick]'));
+      expect(tickLine).toBeDefined();
+      expect(tickLine).toMatch(/total_ms=\d+ poll_ms=\d+ curate_ms=\d+/);
+      expect(tickLine).toMatch(/curated=1/);
+      expect(tickLine).toMatch(/curate_backend=(api|agent-sdk)/);
+
+      const curateLine = logs.find((l) => l.includes('[curate] event=e1'));
+      expect(curateLine).toBeDefined();
+      expect(curateLine).toMatch(/ms=\d+ status=curated memories=2/);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it('emits [curate] status=error telemetry when an event throws (1.9.3)', async () => {
+    const logs: string[] = [];
+    const spy = vi.spyOn(console, 'log').mockImplementation((...a: unknown[]) => {
+      logs.push(a.join(' '));
+    });
+    try {
+      const { scheduler } = makeNakedScheduler({
+        peerId: 'proxy-test',
+        getCortexName: () => 'cortex/engineering',
+        selectEvents: vi.fn().mockReturnValueOnce([buildEventRow({ id: 'e-boom' })]).mockReturnValue([]),
+        processEvent: vi.fn().mockRejectedValue(new Error('boom')),
+        notifyPush: vi.fn(),
+      });
+      await scheduler.tickOnce();
+
+      const curateLine = logs.find((l) => l.includes('[curate] event=e-boom'));
+      expect(curateLine).toBeDefined();
+      // Field count matches the success path so a parser can read both uniformly.
+      expect(curateLine).toMatch(/ms=\d+ status=error memories=0/);
+
+      const tickLine = logs.find((l) => l.includes('[tick]'));
+      expect(tickLine).toMatch(/curated=0/);
+      expect(tickLine).toMatch(/errored=1/);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
   it('skips drain when peerId is unset (disabled-no-peer-id)', async () => {
     const selectEvents = vi.fn();
     const { scheduler } = makeNakedScheduler({
