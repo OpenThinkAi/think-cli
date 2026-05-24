@@ -220,3 +220,19 @@ See [SECURITY.md](./SECURITY.md) for the full threat model and vulnerability dis
 - **`cortex.repo` is security-sensitive configuration.** `think cortex setup` validates the URL shape on input, but if you edit `~/.config/think/config.json` by hand (or follow a tutorial that tells you to), a malformed URL can give an attacker code execution the next time you run a cortex-syncing command. Accepted prefixes: `https://` (preferred), `ssh://`, `git://`, `<user>@<host>:<path>` (ssh shortcut — any username and hostname, e.g. `git@github.com:org/repo.git` or `gitlab@self-hosted.example:group/repo.git`), and `http://` (permitted but not recommended — traffic is unencrypted).
 - **Upgrade compatibility note.** Prior versions did not validate `cortex.repo` on read. If you configured a `file://` URL or a bare filesystem path for local testing, you'll see a clear error on the next cortex operation after upgrading — those forms are no longer accepted. Re-run `think cortex setup` with one of the supported transports, or edit `config.json` to remove the `repo` field for offline-only mode.
 - **`THINK_NO_UPDATE_CHECK`** disables the once-per-24-hours `npm view @openthink/think` call that powers the update banner. Set to any of `1`, `true`, or `yes` (case-insensitive). Useful for air-gapped machines, privacy-sensitive environments, or CI where outbound network calls aren't desirable.
+
+## API curation backend (`think serve` / proxy)
+
+`think serve` runs a proxy that ingests events from connected sources and curates them into memories. By default it uses the Claude Agent SDK — the same subscription-billed path your local `think` uses — so no API key is required. An opt-in raw Messages API backend is available for proxy deployments that have their own API billing (it is ~4–5× faster for curation because it skips the agent runtime overhead).
+
+### Environment variables
+
+| Variable | Required | Description |
+|---|---|---|
+| `THINK_ANTHROPIC_KEY` | **Preferred** when `THINK_CURATION_BACKEND=api` is set | Anthropic API key used exclusively by think. **Recommended over `ANTHROPIC_API_KEY`** because it is scoped to think only: other Anthropic SDK tools in the same shell (e.g. Claude Code) read `ANTHROPIC_API_KEY`, and exporting that variable to satisfy think would silently re-route them from subscription billing to API billing. With `THINK_ANTHROPIC_KEY` set, `ANTHROPIC_API_KEY` is absent from the environment, so Claude Code and other tools keep their subscription path. |
+| `THINK_CURATION_BACKEND` | No | Set to `api` to enable the raw Messages API curation backend. Requires `THINK_ANTHROPIC_KEY` (or the deprecated `ANTHROPIC_API_KEY`). Default: Agent SDK. |
+| `ANTHROPIC_API_KEY` | **Deprecated fallback** | Accepted for backward compatibility when `THINK_ANTHROPIC_KEY` is absent. Emits a one-time warning to stderr and will stop being supported in a future release. Set `THINK_ANTHROPIC_KEY` instead. |
+
+> **Daemon restart required.** The daemon inherits env at spawn time. If you add or change `THINK_ANTHROPIC_KEY` in your shell rc, restart the daemon for it to take effect.
+
+> **AC #6 — billing isolation.** A machine with only `THINK_ANTHROPIC_KEY` set and no `ANTHROPIC_API_KEY` can run Claude Code in the same shell session: Claude Code reads `ANTHROPIC_API_KEY` (not `THINK_ANTHROPIC_KEY`) and continues to use its subscription billing path. The two tools do not share a key.

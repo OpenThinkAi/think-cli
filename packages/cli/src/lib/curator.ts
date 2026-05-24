@@ -826,14 +826,70 @@ function validateTerminalEventResult(raw: unknown): TerminalEventCurationResult 
 const TERMINAL_EVENT_MODEL = 'claude-sonnet-4-6';
 
 /**
+ * Resolve the API key think should use for its own raw Anthropic SDK calls.
+ *
+ * Resolution order:
+ * 1. `THINK_ANTHROPIC_KEY` — the think-namespaced key. Preferred. Using this
+ *    keeps think's billing isolated from other Anthropic SDK tools in the same
+ *    shell (e.g. Claude Code), which read `ANTHROPIC_API_KEY` and would
+ *    silently switch from subscription to API billing if that var is exported
+ *    just to satisfy think's key requirement.
+ * 2. `ANTHROPIC_API_KEY` — legacy fallback. Accepted for backward compatibility
+ *    with existing deployments (e.g. hivedb `setup.sh` exports this var).
+ *    **Deprecated**: prefer `THINK_ANTHROPIC_KEY` for new setups. When only
+ *    `ANTHROPIC_API_KEY` is present a one-time warning is emitted to stderr so
+ *    operators know to migrate. The warning is stderr-only — never stdout —
+ *    because the daemon/proxy paths may have stdout consumers.
+ *
+ * @internal Use this helper everywhere think constructs an `Anthropic` client
+ * so there is exactly one resolution site and the deprecation warning fires
+ * at most once per process.
+ */
+let _deprecationWarningEmitted = false;
+
+/** Reset the deprecation-warning guard. **For use in tests only.** */
+export function _resetDeprecationWarningForTests(): void {
+  _deprecationWarningEmitted = false;
+}
+
+export function resolveThinkApiKey(): string {
+  const thinkKey = process.env.THINK_ANTHROPIC_KEY;
+  if (thinkKey) return thinkKey;
+
+  const anthropicKey = process.env.ANTHROPIC_API_KEY;
+  if (anthropicKey) {
+    if (!_deprecationWarningEmitted) {
+      _deprecationWarningEmitted = true;
+      process.stderr.write(
+        '[think] Warning: ANTHROPIC_API_KEY is set but THINK_ANTHROPIC_KEY is not. ' +
+        'Using ANTHROPIC_API_KEY as a fallback — this is deprecated and will stop ' +
+        'working in a future release. Set THINK_ANTHROPIC_KEY instead to isolate ' +
+        'think\'s billing from other Anthropic SDK tools in the same shell ' +
+        '(e.g. Claude Code).\n',
+      );
+    }
+    return anthropicKey;
+  }
+
+  throw new Error(
+    'No Anthropic API key found for think. Set THINK_ANTHROPIC_KEY (preferred) ' +
+    'or ANTHROPIC_API_KEY (deprecated fallback). See README for details.',
+  );
+}
+
+/**
  * True only when curation should use the raw Messages API instead of the Agent
- * SDK: opt-in via `THINK_CURATION_BACKEND=api`, and only when an
- * `ANTHROPIC_API_KEY` is also present. The default (no flag) keeps the Agent
- * SDK so a user's local `think` stays on their Claude subscription rather than
- * per-token billing. Full billing rationale in CHANGELOG 1.9.2.
+ * SDK: opt-in via `THINK_CURATION_BACKEND=api`, and only when a think API key
+ * is resolvable (`THINK_ANTHROPIC_KEY` preferred, `ANTHROPIC_API_KEY` as
+ * deprecated fallback). The default (no flag) keeps the Agent SDK so a user's
+ * local `think` stays on their Claude subscription rather than per-token
+ * billing. Full billing rationale in CHANGELOG 1.9.2.
  */
 export function useDirectApiCuration(): boolean {
-  return process.env.THINK_CURATION_BACKEND === 'api' && !!process.env.ANTHROPIC_API_KEY;
+  return (
+    process.env.THINK_CURATION_BACKEND === 'api' &&
+    !!(process.env.THINK_ANTHROPIC_KEY || process.env.ANTHROPIC_API_KEY)
+  );
 }
 
 /** Internal: issue one curation call against the terminal-event prompt and
@@ -883,11 +939,12 @@ export interface MessagesClient {
 
 /** Internal: curate via the raw Anthropic Messages API (opt-in backend). One
  * request, no agent runtime — mirrors `daemon/supersession/call.ts`. `client`
- * is injectable for tests; production constructs the real SDK (which reads
+ * is injectable for tests; production constructs the real SDK using
+ * `resolveThinkApiKey()` (prefers `THINK_ANTHROPIC_KEY`, falls back to
  * `ANTHROPIC_API_KEY`). @internal */
 export async function callTerminalEventCuratorViaApi(
   prompt: StructuredPrompt,
-  client: MessagesClient = new Anthropic() as unknown as MessagesClient,
+  client: MessagesClient = new Anthropic({ apiKey: resolveThinkApiKey() }) as unknown as MessagesClient,
 ): Promise<TerminalEventCurationResult> {
   requireLlmConsent();
 
