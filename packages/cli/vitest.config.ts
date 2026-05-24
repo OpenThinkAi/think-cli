@@ -5,5 +5,6 @@ export default defineConfig({
     include: ['tests/**/*.test.ts'],
     testTimeout: 15000,
     pool: 'forks',
+    maxWorkers: 4,
   },
 });
