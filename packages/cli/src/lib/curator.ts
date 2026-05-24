@@ -1,5 +1,7 @@
 import fs from 'node:fs';
 import { query } from './claude-sdk.js';
+import Anthropic from '@anthropic-ai/sdk';
+import { requireLlmConsent } from './llm-consent.js';
 import { getCuratorMdPath } from './paths.js';
 import { wrapData } from './sanitize.js';
 import type { Engram } from '../db/engram-queries.js';
@@ -821,10 +823,28 @@ function validateTerminalEventResult(raw: unknown): TerminalEventCurationResult 
   return { memories };
 }
 
-/** Internal: issue one SDK call against the terminal-event prompt and parse
- * the response. Throws on no-result, malformed JSON, or shape-validation
- * failure. The outer `runTerminalEventCuration` catches and retries once. */
+const TERMINAL_EVENT_MODEL = 'claude-sonnet-4-6';
+
+/**
+ * True only when curation should use the raw Messages API instead of the Agent
+ * SDK: opt-in via `THINK_CURATION_BACKEND=api`, and only when an
+ * `ANTHROPIC_API_KEY` is also present. The default (no flag) keeps the Agent
+ * SDK so a user's local `think` stays on their Claude subscription rather than
+ * per-token billing. Full billing rationale in CHANGELOG 1.9.2.
+ */
+export function useDirectApiCuration(): boolean {
+  return process.env.THINK_CURATION_BACKEND === 'api' && !!process.env.ANTHROPIC_API_KEY;
+}
+
+/** Internal: issue one curation call against the terminal-event prompt and
+ * parse the response. Routes to the raw Messages API when opted in (see
+ * `useDirectApiCuration`), else the Agent SDK. Throws on no-result, malformed
+ * JSON, or shape-validation failure. `runTerminalEventCuration` retries once. */
 async function callTerminalEventCurator(prompt: StructuredPrompt): Promise<TerminalEventCurationResult> {
+  if (useDirectApiCuration()) {
+    return callTerminalEventCuratorViaApi(prompt);
+  }
+
   let result = '';
 
   for await (const message of query({
@@ -832,7 +852,7 @@ async function callTerminalEventCurator(prompt: StructuredPrompt): Promise<Termi
     options: {
       systemPrompt: prompt.systemPrompt,
       tools: [],
-      model: 'claude-sonnet-4-6',
+      model: TERMINAL_EVENT_MODEL,
       persistSession: false,
     },
   })) {
@@ -845,6 +865,54 @@ async function callTerminalEventCurator(prompt: StructuredPrompt): Promise<Termi
     throw new Error('No result returned from terminal-event curation');
   }
 
+  return parseTerminalEventResult(result);
+}
+
+/** Minimal shape of the Anthropic Messages client this module needs — lets
+ * tests inject a stub without constructing the real SDK. @internal */
+export interface MessagesClient {
+  messages: {
+    create(args: {
+      model: string;
+      max_tokens: number;
+      system: string;
+      messages: Array<{ role: 'user'; content: string }>;
+    }): Promise<{ content: Array<{ type: string; text?: string }> }>;
+  };
+}
+
+/** Internal: curate via the raw Anthropic Messages API (opt-in backend). One
+ * request, no agent runtime — mirrors `daemon/supersession/call.ts`. `client`
+ * is injectable for tests; production constructs the real SDK (which reads
+ * `ANTHROPIC_API_KEY`). @internal */
+export async function callTerminalEventCuratorViaApi(
+  prompt: StructuredPrompt,
+  client: MessagesClient = new Anthropic() as unknown as MessagesClient,
+): Promise<TerminalEventCurationResult> {
+  requireLlmConsent();
+
+  const resp = await client.messages.create({
+    model: TERMINAL_EVENT_MODEL,
+    max_tokens: 8192,
+    system: prompt.systemPrompt,
+    messages: [{ role: 'user', content: prompt.userMessage }],
+  });
+
+  const result = resp.content
+    .filter((b) => b.type === 'text' && typeof b.text === 'string')
+    .map((b) => b.text as string)
+    .join('');
+
+  if (!result) {
+    throw new Error('No result returned from terminal-event curation (api backend)');
+  }
+
+  return parseTerminalEventResult(result);
+}
+
+/** Shared parse+validate for both curation backends: strip any fence, JSON
+ * parse, shape-validate. Throws on malformed/invalid output. */
+function parseTerminalEventResult(result: string): TerminalEventCurationResult {
   const cleaned = extractFirstFencedBlock(result);
 
   let raw: unknown;

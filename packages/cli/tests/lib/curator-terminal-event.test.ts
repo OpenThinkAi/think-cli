@@ -15,7 +15,7 @@ vi.mock('@anthropic-ai/claude-agent-sdk', () => ({
 }));
 
 // Import AFTER the mock so module-level imports of `query` bind to the spy.
-const { runTerminalEventCuration, assembleTerminalEventPrompt } = await import('../../src/lib/curator.js');
+const { runTerminalEventCuration, assembleTerminalEventPrompt, useDirectApiCuration, callTerminalEventCuratorViaApi } = await import('../../src/lib/curator.js');
 
 /** Build an async generator that yields one synthetic "result" message,
  * matching the shape the curator code reads (it pulls `message.result`). */
@@ -268,5 +268,72 @@ describe('assembleTerminalEventPrompt (AGT-383)', () => {
     expect(userMessage).toContain('discussion of cortex-naming convention');
     expect(userMessage).toContain('source_tags: linear, decision');
     expect(userMessage).toContain('"author":"matt"');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Curation backend selection + raw Messages API path (#66 follow-up).
+// The opt-in `api` backend skips the Agent SDK's agent-runtime overhead; it
+// must stay OFF by default (so subscription users keep subscription billing)
+// and only engage when BOTH the flag and an API key are present (the proxy).
+// ---------------------------------------------------------------------------
+describe('curation backend selection (THINK_CURATION_BACKEND)', () => {
+  const saved: Record<string, string | undefined> = {};
+  beforeEach(() => {
+    for (const k of ['THINK_CURATION_BACKEND', 'ANTHROPIC_API_KEY', 'THINK_LLM_CONSENT']) saved[k] = process.env[k];
+    process.env.THINK_LLM_CONSENT = '1';
+    querySpy.mockReset();
+  });
+  afterEach(() => {
+    for (const k of ['THINK_CURATION_BACKEND', 'ANTHROPIC_API_KEY', 'THINK_LLM_CONSENT']) {
+      if (saved[k] === undefined) delete process.env[k];
+      else process.env[k] = saved[k];
+    }
+    vi.restoreAllMocks();
+  });
+
+  it('defaults to the Agent SDK (subscription-safe): api backend off unless flag AND key', () => {
+    delete process.env.THINK_CURATION_BACKEND;
+    delete process.env.ANTHROPIC_API_KEY;
+    expect(useDirectApiCuration()).toBe(false); // neither
+
+    process.env.ANTHROPIC_API_KEY = 'sk-ant-x';
+    expect(useDirectApiCuration()).toBe(false); // key but no flag — subscription user with a key stays on Agent SDK
+
+    process.env.THINK_CURATION_BACKEND = 'api';
+    delete process.env.ANTHROPIC_API_KEY;
+    expect(useDirectApiCuration()).toBe(false); // flag but no key — falls back
+
+    process.env.ANTHROPIC_API_KEY = 'sk-ant-x';
+    expect(useDirectApiCuration()).toBe(true); // both — proxy
+  });
+
+  it('raw-API backend parses a valid response into memories (no Agent SDK)', async () => {
+    const create = vi.fn().mockResolvedValue({
+      content: [{ type: 'text', text: JSON.stringify({ memories: [{ content: 'A PR landed.', topics: ['ci'] }] }) }],
+    });
+    const result = await callTerminalEventCuratorViaApi(
+      { systemPrompt: 'sys', userMessage: 'usr' },
+      { messages: { create } },
+    );
+    expect(result.memories).toEqual([{ content: 'A PR landed.', topics: ['ci'] }]);
+    expect(create).toHaveBeenCalledTimes(1);
+    expect(create.mock.calls[0][0].model).toBe('claude-sonnet-4-6');
+    // The Agent SDK was NOT used on this path.
+    expect(querySpy).not.toHaveBeenCalled();
+  });
+
+  it('raw-API backend throws on malformed JSON (so runTerminalEventCuration retries)', async () => {
+    const create = vi.fn().mockResolvedValue({ content: [{ type: 'text', text: 'not json' }] });
+    await expect(
+      callTerminalEventCuratorViaApi({ systemPrompt: 's', userMessage: 'u' }, { messages: { create } }),
+    ).rejects.toThrow(/malformed JSON/);
+  });
+
+  it('raw-API backend throws when the response has no text', async () => {
+    const create = vi.fn().mockResolvedValue({ content: [] });
+    await expect(
+      callTerminalEventCuratorViaApi({ systemPrompt: 's', userMessage: 'u' }, { messages: { create } }),
+    ).rejects.toThrow(/No result/);
   });
 });
