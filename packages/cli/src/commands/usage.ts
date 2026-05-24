@@ -1,5 +1,5 @@
 /**
- * `think usage` — retro-usage report.
+ * `think retro-usage` — retro-usage report.
  *
  * Reads the local surfacing log (usage.db) joined against live retros and
  * renders it as a browser view via ui-leaf. ui-leaf is an *external* runtime
@@ -38,7 +38,7 @@ function resolveViewsRoot(): string | null {
   return null;
 }
 
-export const usageCommand = new Command('usage')
+export const usageCommand = new Command('retro-usage')
   .description('Open a report of how your retros surface in recall/brief')
   .option('--json', 'Print the raw report as JSON instead of opening the view')
   .addHelpText(
@@ -55,8 +55,8 @@ Requirements:
   Use --json to read the data without ui-leaf.
 
 Examples:
-  think usage
-  think usage --json | jq '.surfaced[0]'
+  think retro-usage
+  think retro-usage --json | jq '.surfaced[0]'
 `,
   )
   .action(async function (this: Command, opts: { json?: boolean }) {
@@ -79,7 +79,7 @@ Examples:
 
     const viewsRoot = resolveViewsRoot();
     if (!viewsRoot) {
-      console.error(chalk.red(`think usage: could not locate the ${VIEW_NAME} view.`));
+      console.error(chalk.red(`think retro-usage: could not locate the ${VIEW_NAME} view.`));
       console.error(chalk.dim('Falling back to --json:'));
       process.stdout.write(JSON.stringify(report, null, 2) + '\n');
       closeUsageDb();
@@ -107,14 +107,14 @@ function mountView(viewsRoot: string, data: unknown): Promise<void> {
 
     child.on('error', (err: NodeJS.ErrnoException) => {
       if (err.code === 'ENOENT') {
-        console.error(chalk.red('think usage: the `ui-leaf` binary was not found on your PATH.'));
+        console.error(chalk.red('think retro-usage: the `ui-leaf` binary was not found on your PATH.'));
         console.error(chalk.yellow('  Install it:  npm install -g @openthink/ui-leaf'));
-        console.error(chalk.dim('  Or read the data without it:  think usage --json'));
+        console.error(chalk.dim('  Or read the data without it:  think retro-usage --json'));
       } else {
-        console.error(chalk.red(`think usage: failed to launch ui-leaf — ${err.message}`));
+        console.error(chalk.red(`think retro-usage: failed to launch ui-leaf — ${err.message}`));
       }
       process.exitCode = 1;
-      resolve();
+      done();
     });
 
     const config = {
@@ -148,15 +148,15 @@ function mountView(viewsRoot: string, data: unknown): Promise<void> {
           console.log(`${chalk.green('✓')} retro usage report open at ${chalk.cyan(event.url ?? '')}`);
           console.log(chalk.dim('  Close the browser tab and press Ctrl-C here to exit.'));
         } else if (event.type === 'error') {
-          console.error(chalk.red(`think usage: ui-leaf error — ${event.message ?? 'unknown'}`));
+          console.error(chalk.red(`think retro-usage: ui-leaf error — ${event.message ?? 'unknown'}`));
           process.exitCode = 1;
         } else if (event.type === 'closed') {
-          resolve();
+          done();
         }
       }
     });
 
-    child.on('exit', () => resolve());
+    child.on('exit', () => done());
 
     // Forward Ctrl-C as a graceful close so the browser/server shut down cleanly.
     const onSigint = () => {
@@ -167,5 +167,14 @@ function mountView(viewsRoot: string, data: unknown): Promise<void> {
       }
     };
     process.once('SIGINT', onSigint);
+
+    // Resolve once, removing the SIGINT handler so it can't leak past a clean exit.
+    let settled = false;
+    function done(): void {
+      if (settled) return;
+      settled = true;
+      process.removeListener('SIGINT', onSigint);
+      resolve();
+    }
   });
 }
