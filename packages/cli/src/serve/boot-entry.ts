@@ -68,6 +68,10 @@ export async function runServe(opts: RunServeOptions = {}): Promise<void> {
     registry,
     vault,
     intervalMs: cfg.pollIntervalSeconds * 1000,
+    // undefined → createScheduler's built-in DEFAULT_POLL_TIMEOUT_MS (60s).
+    // Raise via THINK_POLL_TIMEOUT_SECONDS for large backfills whose per-poll
+    // enrichment exceeds 60s (else the poll times out with no progress).
+    pollTimeoutMs: cfg.pollTimeoutMs,
     peerId,
     // Re-read on every tick so an operator running `think cortex
     // switch <new>` against a live proxy takes effect on the next

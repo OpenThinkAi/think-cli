@@ -17,6 +17,16 @@ export interface BootConfig {
   port: number;
   pollIntervalSeconds: number;
   /**
+   * Per-poll wall-clock budget (ms) for a single connector poll, parsed from
+   * `THINK_POLL_TIMEOUT_SECONDS` (seconds, matching `THINK_POLL_INTERVAL_SECONDS`)
+   * and converted to ms here. The connector enriches each fetched item with
+   * several sequential API calls, so a repo with many items in the ingest
+   * window can exceed the 60s default and time out (discarding the whole
+   * poll with no progress). Raising this lets large backfills complete.
+   * `undefined` → the scheduler's built-in default.
+   */
+  pollTimeoutMs: number | undefined;
+  /**
    * Operator-supplied peer-id override (`think serve --peer-id <value>`).
    * `undefined` when the flag was not passed — boot resolves to the
    * persisted value or auto-generates. AGT-385.
@@ -60,9 +70,10 @@ export function runBootGuards(
 
   const port = parsePort(env.PORT);
   const pollIntervalSeconds = parsePollInterval(env.THINK_POLL_INTERVAL_SECONDS);
+  const pollTimeoutMs = parsePollTimeoutMs(env.THINK_POLL_TIMEOUT_SECONDS);
   const peerIdOverride = parsePeerIdOverride(opts.peerIdOverride);
 
-  return { port, pollIntervalSeconds, peerIdOverride };
+  return { port, pollIntervalSeconds, pollTimeoutMs, peerIdOverride };
 }
 
 // AGT-385: validate the `--peer-id` flag value at boot rather than at the
@@ -102,4 +113,19 @@ function parsePollInterval(raw: string | undefined): number {
     );
   }
   return n;
+}
+
+// Reads THINK_POLL_TIMEOUT_SECONDS (seconds, for consistency with
+// THINK_POLL_INTERVAL_SECONDS) and returns milliseconds. `undefined` (unset)
+// lets the scheduler apply its own default; a set value must be a positive
+// integer number of seconds.
+function parsePollTimeoutMs(raw: string | undefined): number | undefined {
+  if (raw === undefined || raw === '') return undefined;
+  const n = Number(raw);
+  if (!Number.isInteger(n) || n < 1) {
+    throw new BootGuardError(
+      `THINK_POLL_TIMEOUT_SECONDS must be a positive integer (seconds), got ${JSON.stringify(raw)}`,
+    );
+  }
+  return n * 1000;
 }

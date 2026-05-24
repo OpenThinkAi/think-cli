@@ -63,6 +63,21 @@ describe('runBootGuards (AGT-029 AC #6)', () => {
     ).toThrow(/THINK_POLL_INTERVAL_SECONDS/);
   });
 
+  it('THINK_POLL_TIMEOUT_SECONDS: unset → undefined, valid → ms, malformed → throws', () => {
+    expect(runBootGuards({ THINK_TOKEN: 't' } as NodeJS.ProcessEnv).pollTimeoutMs).toBeUndefined();
+    // seconds in, milliseconds out
+    expect(
+      runBootGuards({ THINK_TOKEN: 't', THINK_POLL_TIMEOUT_SECONDS: '300' } as NodeJS.ProcessEnv)
+        .pollTimeoutMs,
+    ).toBe(300000);
+    expect(() =>
+      runBootGuards({ THINK_TOKEN: 't', THINK_POLL_TIMEOUT_SECONDS: '0' } as NodeJS.ProcessEnv),
+    ).toThrow(/THINK_POLL_TIMEOUT_SECONDS/);
+    expect(() =>
+      runBootGuards({ THINK_TOKEN: 't', THINK_POLL_TIMEOUT_SECONDS: 'nope' } as NodeJS.ProcessEnv),
+    ).toThrow(/THINK_POLL_TIMEOUT_SECONDS/);
+  });
+
   // AGT-385 — `--peer-id` flag plumbed through runBootGuards. The flag
   // value itself is persisted-or-resolved in `serve/peer-id.ts`, but the
   // boot guard validates the shape (non-empty, no whitespace) so a

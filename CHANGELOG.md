@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [1.8.2] — 2026-05-23
+
+### Added
+
+- **`THINK_POLL_TIMEOUT_SECONDS` — configurable per-poll timeout for `think serve`.** The scheduler aborts any single connector poll after a fixed budget (default 60s). Because the GitHub connector enriches every fetched closed item with several sequential API calls, a repo with many items in the ingest window can blow past 60s, and a timeout discards the entire poll with **no** cursor progress — so such a repo never backfills (it times out identically every tick). Operators can now raise the budget (e.g. `THINK_POLL_TIMEOUT_SECONDS=300`) so large backfills complete; unset preserves the 60s default. Unit is seconds, matching `THINK_POLL_INTERVAL_SECONDS`; validated as a positive integer at boot. (Phase 3 / AGT-410 — needed for repos with >100 closed PRs since the ingest cutoff.)
+
 ## [1.8.1] — 2026-05-23
 
 ### Added
