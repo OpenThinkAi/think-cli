@@ -314,7 +314,13 @@ describe('main() stdin→stdout integration (mocked daemon)', () => {
 
     expect(mockCall).toHaveBeenCalledWith(
       'recall',
-      { query: 'anything worth recalling today?', scope: 'accessible', limit: RECALL_LIMIT },
+      {
+        query: 'anything worth recalling today?',
+        scope: 'accessible',
+        limit: RECALL_LIMIT,
+        source: 'hook',
+        session_id: 's7',
+      },
       RECALL_TIMEOUT_MS,
     );
   });

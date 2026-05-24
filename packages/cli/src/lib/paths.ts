@@ -82,6 +82,17 @@ export function getRepoPath(): string {
   return path.join(getThinkDir(), 'repo');
 }
 
+/**
+ * Local-only usage-telemetry DB. Sits beside the cortex index DBs under the
+ * think home but is NEVER synced — it records how often retros surface in
+ * recall/brief, which is a purely local analytics signal. Kept out of the
+ * cortex index DBs deliberately so the sync adapters never see it and the
+ * "memories are immutable via sync" invariant is untouched.
+ */
+export function getUsageDbPath(): string {
+  return path.join(getThinkDir(), 'usage.db');
+}
+
 export function getLongtermDir(): string {
   return path.join(getThinkDir(), 'longterm');
 }

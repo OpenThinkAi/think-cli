@@ -174,13 +174,19 @@ describe('think_recall MCP tool', () => {
       arguments: { query: 'auth', scope: 'active', limit: 3, kind: 'retro', cortex: 'fx-tracker' },
     });
 
-    expect(mockCall).toHaveBeenCalledWith('recall', {
-      query: 'auth',
-      scope: 'active',
-      limit: 3,
-      kind: 'retro',
-      cortex: 'fx-tracker',
-    });
+    // source is always tagged 'mcp'; session_id is added only when
+    // CLAUDE_CODE_SESSION_ID is set, so match on a superset to stay env-robust.
+    expect(mockCall).toHaveBeenCalledWith(
+      'recall',
+      expect.objectContaining({
+        query: 'auth',
+        scope: 'active',
+        limit: 3,
+        kind: 'retro',
+        cortex: 'fx-tracker',
+        source: 'mcp',
+      }),
+    );
 
     await client.close();
     await server.close();
