@@ -150,6 +150,9 @@ function mountView(viewsRoot: string, data: unknown): Promise<void> {
         } else if (event.type === 'error') {
           console.error(chalk.red(`think retro-usage: ui-leaf error — ${event.message ?? 'unknown'}`));
           process.exitCode = 1;
+          // A protocol error may not be followed by a 'closed' event — settle
+          // now so the CLI never hangs waiting for one.
+          done();
         } else if (event.type === 'closed') {
           done();
         }
