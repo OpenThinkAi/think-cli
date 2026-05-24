@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [1.9.2] — 2026-05-24
+
+### Added
+
+- **`THINK_CURATION_BACKEND=api` — opt-in raw Messages API curation backend for `think serve` (proxy).** By default, terminal-event curation runs through the Claude Agent SDK (`query`), which on a user's machine authenticates via their Claude Code login/subscription — so local `think` usage stays covered by the subscription and is **not** billed per-token. That default is unchanged. The Agent SDK, however, spins up the full agent runtime per call (~12s of harness overhead for a zero-tool single-shot generation); measured against the raw Anthropic Messages API the same curation is ~4s. An operator can now set `THINK_CURATION_BACKEND=api` (which engages only when an `ANTHROPIC_API_KEY` is also present) to curate via the raw Messages API instead — ~4–5× faster, on the same pay-as-you-go billing the proxy already uses. Subscription users never set the flag and are completely unaffected; if the flag is set without a key it falls back to the Agent SDK. This is the real throughput fix for large backfills (the per-event push coalescing in 1.9.1 was a genuine but secondary inefficiency).
+
 ## [1.9.1] — 2026-05-24
 
 ### Fixed
