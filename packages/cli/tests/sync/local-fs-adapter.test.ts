@@ -574,3 +574,120 @@ describe('local-fs retro push dedup (AGT-254)', () => {
     expect(occurrences.get(idB)).toBe(1);
   });
 });
+
+// AGT-253: pulled long-term events must never be re-emitted into the puller's
+// long-term bucket file. The contract suite already asserts the
+// SyncResult-level behaviour; this block asserts the on-disk artefact directly.
+describe('local-fs long-term push dedup (AGT-253)', () => {
+  let pair: ReturnType<typeof import('../fixtures/peer-pair.js').createPeerPair> | null = null;
+  let remote: FsRemote | null = null;
+
+  afterEach(() => {
+    if (remote) factory.teardownRemote!(remote);
+    pair?.cleanup();
+    pair = null;
+    remote = null;
+  });
+
+  it('pull-only peer writes zero long-term bucket lines on subsequent push', async () => {
+    const { createPeerPair } = await import('../fixtures/peer-pair.js');
+    const { insertLongTermEvent } = await import('../../src/db/long-term-queries.js');
+    const { readdirSync } = await import('node:fs');
+    const { join } = await import('node:path');
+
+    pair = createPeerPair();
+    remote = factory.setupRemote(pair.cortexName) as FsRemote;
+    pair.peerA.activate();
+    factory.configurePeer(pair.peerA, pair.cortexName, remote);
+    pair.peerB.activate();
+    factory.configurePeer(pair.peerB, pair.cortexName, remote);
+    const adapter = factory.createAdapter();
+
+    pair.peerA.activate();
+    insertLongTermEvent(pair.cortexName, {
+      ts: '2026-05-24T12:00:00Z',
+      author: 'a',
+      kind: 'decision',
+      title: 'lt authored by A',
+      content: 'long-term event authored by A',
+    });
+    await adapter.sync(pair.cortexName);
+
+    pair.peerB.activate();
+    await adapter.sync(pair.cortexName); // B pulls A's LT event, then runs its push pass
+
+    // B never authored anything locally — it should have written no long-term
+    // file of its own. The cortex dir contains exactly one long-term file
+    // (A's) and nothing from B.
+    const cortexDir = join(remote.rootPath, pair.cortexName);
+    const ltFiles = readdirSync(cortexDir)
+      .filter(f => f.includes('-long-term') && f.endsWith('.jsonl'));
+    expect(ltFiles).toHaveLength(1);
+  });
+
+  it('two-peer round-trip leaves exactly one long-term line per event id', async () => {
+    const { createPeerPair } = await import('../fixtures/peer-pair.js');
+    const { insertLongTermEvent } = await import('../../src/db/long-term-queries.js');
+    const { deterministicEventId } = await import('../../src/lib/deterministic-id.js');
+    const { readdirSync, readFileSync } = await import('node:fs');
+    const { join } = await import('node:path');
+
+    pair = createPeerPair();
+    remote = factory.setupRemote(pair.cortexName) as FsRemote;
+    pair.peerA.activate();
+    factory.configurePeer(pair.peerA, pair.cortexName, remote);
+    pair.peerB.activate();
+    factory.configurePeer(pair.peerB, pair.cortexName, remote);
+    const adapter = factory.createAdapter();
+
+    pair.peerA.activate();
+    const rowA = insertLongTermEvent(pair.cortexName, {
+      ts: '2026-05-24T12:00:00Z',
+      author: 'a',
+      kind: 'decision',
+      title: 'lt from A',
+      content: 'lt event from A',
+    });
+    pair.peerB.activate();
+    const rowB = insertLongTermEvent(pair.cortexName, {
+      ts: '2026-05-24T12:01:00Z',
+      author: 'b',
+      kind: 'milestone',
+      title: 'lt from B',
+      content: 'lt event from B',
+    });
+
+    const idA = rowA.row.id;
+    const idB = rowB.row.id;
+
+    // Three sync rounds converges two peers — the third round is where a
+    // buggy implementation would re-emit pulled rows into the local file.
+    pair.peerA.activate();
+    await adapter.sync(pair.cortexName);
+    pair.peerB.activate();
+    await adapter.sync(pair.cortexName);
+    pair.peerA.activate();
+    await adapter.sync(pair.cortexName);
+    pair.peerB.activate();
+    await adapter.sync(pair.cortexName);
+
+    const cortexDir = join(remote.rootPath, pair.cortexName);
+    const ltFiles = readdirSync(cortexDir)
+      .filter(f => f.includes('-long-term') && f.endsWith('.jsonl'));
+
+    // Count occurrences of each event id across all long-term files.
+    const occurrences = new Map<string, number>();
+    for (const file of ltFiles) {
+      const raw = readFileSync(join(cortexDir, file), 'utf-8');
+      for (const line of raw.split('\n')) {
+        if (line.length === 0) continue;
+        const parsed = JSON.parse(line) as { ts: string; author: string; title: string; content: string };
+        const id = deterministicEventId(parsed.ts, parsed.author, parsed.title, parsed.content);
+        occurrences.set(id, (occurrences.get(id) ?? 0) + 1);
+      }
+    }
+
+    expect(occurrences.get(idA)).toBe(1);
+    expect(occurrences.get(idB)).toBe(1);
+  });
+});

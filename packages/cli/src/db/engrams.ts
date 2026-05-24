@@ -356,6 +356,27 @@ export const migrations: Migration[] = [
       db.exec('CREATE INDEX IF NOT EXISTS idx_memories_compaction_status ON memories(compaction_status);');
     },
   },
+  {
+    version: 16,
+    up: (db) => {
+      // Mirrors the v7 origin_peer_id rollout for memories and v10 for retros.
+      // AGT-253: adds attribution to long_term_events so the push filter can
+      // prevent pulled rows from being re-emitted into the local peer's
+      // long-term bucket on the next push.
+      db.exec('ALTER TABLE long_term_events ADD COLUMN origin_peer_id TEXT;');
+      db.exec('CREATE INDEX IF NOT EXISTS idx_lte_origin_peer_id ON long_term_events(origin_peer_id);');
+
+      // Eager backfill of pre-v16 rows to the local peer. Pre-v16 there was
+      // no cross-peer ingestion signal for long_term_events, so every existing
+      // row is genuinely-local and this assignment is correct. Any peer that
+      // had already pulled foreign LT events before v16 will have those rows
+      // mis-attributed to local — the next push will re-emit them once, then
+      // the origin_peer_id filter clamps re-emission to zero. v7 (memories)
+      // and v10 (retros) both accepted this single-burst as unavoidable.
+      const peerId = getPeerId();
+      db.prepare('UPDATE long_term_events SET origin_peer_id = ? WHERE origin_peer_id IS NULL').run(peerId);
+    },
+  },
 ];
 
 /** Returns the per-cortex SQLite connection (holds engrams, memories, longterm_summary, and sync_cursors tables) */

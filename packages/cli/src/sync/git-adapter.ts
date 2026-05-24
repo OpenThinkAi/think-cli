@@ -192,33 +192,50 @@ export class GitSyncAdapter implements SyncAdapter {
     const newEvents = getLongTermEventsBySyncVersion(cortex, lastVersion);
     if (newEvents.length === 0) return;
 
-    const newLines = newEvents.map(ev => {
-      let topics: string[] = [];
-      let sourceMemoryIds: string[] = [];
-      try { topics = JSON.parse(ev.topics) as string[]; } catch { /* skip malformed */ }
-      try { sourceMemoryIds = JSON.parse(ev.source_memory_ids) as string[]; } catch { /* skip malformed */ }
-      return JSON.stringify({
-        ts: ev.ts,
-        author: ev.author,
-        kind: ev.kind,
-        title: ev.title,
-        content: ev.content,
-        topics,
-        ...(ev.supersedes ? { supersedes: ev.supersedes } : {}),
-        source_memory_ids: sourceMemoryIds,
-        ...(ev.deleted_at ? { deleted_at: ev.deleted_at } : {}),
+    // The origin_peer_id guard prevents pulled rows from being re-emitted
+    // into this peer's long-term file (AGT-253). Pull-side insertLongTermEventIfNotExists
+    // bumps sync_version, so foreign-authored rows would otherwise come back
+    // through getLongTermEventsBySyncVersion and get committed to this peer's
+    // long-term file, accumulating duplicates across devices.
+    const localPeer = getPeerId();
+    const newLines = newEvents
+      .filter(ev => ev.origin_peer_id === localPeer)
+      .map(ev => {
+        let topics: string[] = [];
+        let sourceMemoryIds: string[] = [];
+        try { topics = JSON.parse(ev.topics) as string[]; } catch { /* skip malformed */ }
+        try { sourceMemoryIds = JSON.parse(ev.source_memory_ids) as string[]; } catch { /* skip malformed */ }
+        return JSON.stringify({
+          ts: ev.ts,
+          author: ev.author,
+          kind: ev.kind,
+          title: ev.title,
+          content: ev.content,
+          topics,
+          ...(ev.supersedes ? { supersedes: ev.supersedes } : {}),
+          source_memory_ids: sourceMemoryIds,
+          ...(ev.deleted_at ? { deleted_at: ev.deleted_at } : {}),
+          ...(ev.origin_peer_id ? { origin_peer_id: ev.origin_peer_id } : {}),
+        });
       });
-    });
+
+    // Advance the cursor past all scanned rows (including foreign ones) so
+    // they are not re-examined on the next push pass.
+    const maxVersion = Math.max(...newEvents.map(e => e.sync_version));
+
+    if (newLines.length === 0) {
+      setSyncCursor(cortex, 'git', 'push_lt', String(maxVersion));
+      return;
+    }
 
     const config = getConfig();
-    const commitMsg = `long-term: ${config.cortex?.author ?? 'unknown'}, ${newEvents.length} event${newEvents.length === 1 ? '' : 's'}`;
-    const maxVersion = Math.max(...newEvents.map(e => e.sync_version));
+    const commitMsg = `long-term: ${config.cortex?.author ?? 'unknown'}, ${newLines.length} event${newLines.length === 1 ? '' : 's'}`;
 
     // Advance cursor only after commit succeeds (see memory push rationale).
     try {
       appendAndCommit(cortex, newLines, commitMsg, 3, LONG_TERM_FILE);
       setSyncCursor(cortex, 'git', 'push_lt', String(maxVersion));
-      result.pushed += newEvents.length;
+      result.pushed += newLines.length;
     } catch (err) {
       result.errors.push(err instanceof Error ? err.message : String(err));
     }
@@ -490,6 +507,8 @@ export class GitSyncAdapter implements SyncAdapter {
         result.errors.push(`Pulled long-term event from ${author} flagged: ${warnings.join(', ')}`);
       }
 
+      const originPeerId = typeof parsed.origin_peer_id === 'string' ? parsed.origin_peer_id : null;
+
       const inserted = insertLongTermEventIfNotExists(cortex, {
         id,
         ts,
@@ -500,6 +519,7 @@ export class GitSyncAdapter implements SyncAdapter {
         topics,
         supersedes,
         source_memory_ids: sourceMemoryIds,
+        origin_peer_id: originPeerId,
       });
       if (inserted) result.pulled++;
     }

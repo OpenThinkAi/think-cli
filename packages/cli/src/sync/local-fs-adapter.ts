@@ -261,33 +261,52 @@ export class LocalFsSyncAdapter implements SyncAdapter {
     const newEvents = getLongTermEventsBySyncVersion(cortex, lastVersion);
     if (newEvents.length === 0) return;
 
+    // The origin_peer_id guard prevents pulled rows from being re-emitted
+    // into this peer's long-term bucket files (AGT-253). Pull-side
+    // `insertLongTermEventIfNotExists` bumps `sync_version`, so a row authored
+    // by peer B and ingested here would otherwise come back through
+    // `getLongTermEventsBySyncVersion` on the next push. Filtering on
+    // `origin_peer_id === localPeer` keeps each peer's file containing only
+    // the rows it actually authored.
+    //
+    // maxVersion spans all scanned rows (local and foreign) so the cursor
+    // always advances past every row in this batch — mirroring pushRetros.
+    const localPeer = getPeerId();
     // topics and source_memory_ids are both written by us via JSON.stringify
-    // on insert (long-term-queries.ts:60-62), so parse without try/catch.
-    const newLines = newEvents.map(ev => {
-      const topics = JSON.parse(ev.topics) as string[];
-      const sourceMemoryIds = JSON.parse(ev.source_memory_ids) as string[];
-      return JSON.stringify({
-        ts: ev.ts,
-        author: ev.author,
-        kind: ev.kind,
-        title: ev.title,
-        content: ev.content,
-        topics,
-        ...(ev.supersedes ? { supersedes: ev.supersedes } : {}),
-        source_memory_ids: sourceMemoryIds,
-        ...(ev.deleted_at ? { deleted_at: ev.deleted_at } : {}),
+    // on insert (long-term-queries.ts), so parse without try/catch.
+    const newLines = newEvents
+      .filter(ev => ev.origin_peer_id === localPeer)
+      .map(ev => {
+        const topics = JSON.parse(ev.topics) as string[];
+        const sourceMemoryIds = JSON.parse(ev.source_memory_ids) as string[];
+        return JSON.stringify({
+          ts: ev.ts,
+          author: ev.author,
+          kind: ev.kind,
+          title: ev.title,
+          content: ev.content,
+          topics,
+          ...(ev.supersedes ? { supersedes: ev.supersedes } : {}),
+          source_memory_ids: sourceMemoryIds,
+          ...(ev.deleted_at ? { deleted_at: ev.deleted_at } : {}),
+          ...(ev.origin_peer_id ? { origin_peer_id: ev.origin_peer_id } : {}),
+        });
       });
-    });
-
     const maxVersion = Math.max(...newEvents.map(e => e.sync_version));
+
+    if (newLines.length === 0) {
+      setSyncCursor(cortex, this.name, 'push_lt', String(maxVersion));
+      return;
+    }
+
     const dir = this.cortexDir(cortex);
     fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
-    const file = path.join(dir, getPeerId() + LONG_TERM_SUFFIX);
+    const file = path.join(dir, localPeer + LONG_TERM_SUFFIX);
 
     try {
       fs.appendFileSync(file, newLines.join('\n') + '\n');
       setSyncCursor(cortex, this.name, 'push_lt', String(maxVersion));
-      result.pushed += newEvents.length;
+      result.pushed += newLines.length;
     } catch (err) {
       result.errors.push(err instanceof Error ? err.message : String(err));
     }
@@ -546,11 +565,18 @@ export class LocalFsSyncAdapter implements SyncAdapter {
         if (warnings.length > 0) {
           result.errors.push(`Pulled long-term event from ${author} flagged: ${warnings.join(', ')}`);
         }
+        // Read origin_peer_id from the wire line; fall back to the writer peer
+        // inferred from the filename (canonical: `<peer>-long-term.jsonl`).
+        // Conflict-renamed copies fall through to null (honest-unknown).
+        const wireOriginPeerId = typeof parsed.origin_peer_id === 'string' ? parsed.origin_peer_id : null;
+        const writerPeer = inferLtPeerFromFilename(file);
+        const originPeerId = wireOriginPeerId ?? writerPeer ?? null;
         const inserted = insertLongTermEventIfNotExists(cortex, {
           id, ts, author, kind, title,
           content: sanitizedContent,
           topics, supersedes,
           source_memory_ids: sourceMemoryIds,
+          origin_peer_id: originPeerId,
         });
         if (inserted) result.pulled++;
       }
@@ -621,6 +647,18 @@ function listPeerBuckets(dir: string, peer: string): number[] {
 function inferPeerFromFilename(name: string): string | null {
   const m = BUCKET_RE.exec(name);
   return m ? m[1] : null;
+}
+
+// Captures the writer peer-id from a long-term event filename. The canonical
+// form is `<peer>-long-term.jsonl`; strip the fixed suffix to recover the
+// peer id. Conflict-renamed copies (e.g. `<peer>-long-term (conflict).jsonl`)
+// don't match the canonical suffix and return null (honest-unknown), matching
+// the memory/retro behaviour for conflict files.
+function inferLtPeerFromFilename(name: string): string | null {
+  if (name.endsWith(LONG_TERM_SUFFIX)) {
+    return name.slice(0, -LONG_TERM_SUFFIX.length) || null;
+  }
+  return null;
 }
 
 function countNonBlankLines(file: string): number {
