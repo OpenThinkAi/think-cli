@@ -235,4 +235,4 @@ See [SECURITY.md](./SECURITY.md) for the full threat model and vulnerability dis
 
 > **Daemon restart required.** The daemon inherits env at spawn time. If you add or change `THINK_ANTHROPIC_KEY` in your shell rc, restart the daemon for it to take effect.
 
-> **AC #6 — billing isolation.** A machine with only `THINK_ANTHROPIC_KEY` set and no `ANTHROPIC_API_KEY` can run Claude Code in the same shell session: Claude Code reads `ANTHROPIC_API_KEY` (not `THINK_ANTHROPIC_KEY`) and continues to use its subscription billing path. The two tools do not share a key.
+> **Billing isolation.** A machine with only `THINK_ANTHROPIC_KEY` set and no `ANTHROPIC_API_KEY` can run Claude Code in the same shell session: Claude Code reads `ANTHROPIC_API_KEY` (not `THINK_ANTHROPIC_KEY`) and continues to use its subscription billing path. The two tools do not share a key.

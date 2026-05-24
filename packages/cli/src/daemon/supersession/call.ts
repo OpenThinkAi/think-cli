@@ -14,7 +14,7 @@
 import Anthropic from '@anthropic-ai/sdk';
 import type { Tool } from '@anthropic-ai/sdk/resources/messages/messages.js';
 import { requireLlmConsent } from '../../lib/llm-consent.js';
-import { resolveThinkApiKey } from '../../lib/curator.js';
+import { resolveThinkApiKey } from '../../lib/api-key.js';
 import {
   SUPERSESSION_SYSTEM_PROMPT,
   buildSupersessionMessages,

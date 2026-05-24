@@ -18,7 +18,7 @@ import {
 } from './prompt.js';
 import type { NewEntry, CandidateEntry } from './prompt.js';
 import { requireLlmConsent } from '../../lib/llm-consent.js';
-import { resolveThinkApiKey } from '../../lib/curator.js';
+import { resolveThinkApiKey } from '../../lib/api-key.js';
 
 // ---------------------------------------------------------------------------
 // Types
