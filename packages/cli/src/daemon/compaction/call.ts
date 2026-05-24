@@ -18,6 +18,7 @@ import {
 } from './prompt.js';
 import type { NewEntry, CandidateEntry } from './prompt.js';
 import { requireLlmConsent } from '../../lib/llm-consent.js';
+import { resolveThinkApiKey } from '../../lib/api-key.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -180,7 +181,7 @@ export async function runCompaction(
 ): Promise<CompactionResult> {
   requireLlmConsent();
 
-  const client = new Anthropic();
+  const client = new Anthropic({ apiKey: resolveThinkApiKey() });
 
   const first = await attemptCompaction(client, newEntry, candidates);
   if (first !== null) return first;

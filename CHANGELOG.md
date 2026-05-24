@@ -2,6 +2,22 @@
 
 ## [Unreleased]
 
+## [1.9.4] — 2026-05-24
+
+### Added
+
+- **`THINK_ANTHROPIC_KEY` — think-namespaced Anthropic API key (AGT-436).** The proxy's raw Messages API curation backend (`THINK_CURATION_BACKEND=api`) previously required exporting `ANTHROPIC_API_KEY`. Because every Anthropic SDK tool in the same shell reads that variable, setting it to satisfy think's curation backend would silently re-route tools like Claude Code from their subscription billing path to per-token API billing — with no indication to the user. The fix: think now reads a namespaced key `THINK_ANTHROPIC_KEY` first and falls back to `ANTHROPIC_API_KEY` only as a deprecated legacy path (emitting a one-time warning to stderr). With `THINK_ANTHROPIC_KEY` set and `ANTHROPIC_API_KEY` absent, Claude Code and other tools in the same shell keep their subscription billing unaffected. All three raw-API sites are fixed (`curator.ts:890`, `daemon/supersession/call.ts`, `daemon/compaction/call.ts`) via a single shared `resolveThinkApiKey()` helper.
+
+### Changed
+
+- **`ANTHROPIC_API_KEY` is now a deprecated fallback for think's API calls.** Existing deployments continue to work without any changes (back-compat). A one-time warning is emitted to stderr (never stdout — the daemon/proxy paths may have stdout consumers) when `ANTHROPIC_API_KEY` is the only key available. Migrate to `THINK_ANTHROPIC_KEY` at your next convenient opportunity.
+
+### Upgrade notes
+
+- **New installs:** set `THINK_ANTHROPIC_KEY` (not `ANTHROPIC_API_KEY`) in your proxy environment. This is the only key think needs; it stays scoped to think and does not interfere with other Anthropic tools.
+- **Existing installs:** no immediate action required. `ANTHROPIC_API_KEY` still works; you'll see a one-time deprecation warning in daemon logs. To suppress the warning and isolate billing, rename `ANTHROPIC_API_KEY` → `THINK_ANTHROPIC_KEY` in your deployment config and remove `ANTHROPIC_API_KEY` from the daemon's environment.
+- **Daemon restart required** after changing env vars, as always (the daemon inherits env at spawn time).
+
 ## [1.9.3] — 2026-05-24
 
 ### Added
@@ -12,7 +28,7 @@
 
 ### Added
 
-- **`THINK_CURATION_BACKEND=api` — opt-in raw Messages API curation backend for `think serve` (proxy).** By default, terminal-event curation runs through the Claude Agent SDK (`query`), which on a user's machine authenticates via their Claude Code login/subscription — so local `think` usage stays covered by the subscription and is **not** billed per-token. That default is unchanged. The Agent SDK, however, spins up the full agent runtime per call (~12s of harness overhead for a zero-tool single-shot generation); measured against the raw Anthropic Messages API the same curation is ~4s. An operator can now set `THINK_CURATION_BACKEND=api` (which engages only when an `ANTHROPIC_API_KEY` is also present) to curate via the raw Messages API instead — ~4–5× faster, on the same pay-as-you-go billing the proxy already uses. Subscription users never set the flag and are completely unaffected; if the flag is set without a key it falls back to the Agent SDK. This is the real throughput fix for large backfills (the per-event push coalescing in 1.9.1 was a genuine but secondary inefficiency).
+- **`THINK_CURATION_BACKEND=api` — opt-in raw Messages API curation backend for `think serve` (proxy).** By default, terminal-event curation runs through the Claude Agent SDK (`query`), which on a user's machine authenticates via their Claude Code login/subscription — so local `think` usage stays covered by the subscription and is **not** billed per-token. That default is unchanged. The Agent SDK, however, spins up the full agent runtime per call (~12s of harness overhead for a zero-tool single-shot generation); measured against the raw Anthropic Messages API the same curation is ~4s. An operator can now set `THINK_CURATION_BACKEND=api` (which engages only when `THINK_ANTHROPIC_KEY` or `ANTHROPIC_API_KEY` is also present) to curate via the raw Messages API instead — ~4–5× faster, on the same pay-as-you-go billing the proxy already uses. Subscription users never set the flag and are completely unaffected; if the flag is set without a key it falls back to the Agent SDK. **Note:** prefer `THINK_ANTHROPIC_KEY` over `ANTHROPIC_API_KEY` — see 1.9.4 for the billing-isolation rationale. This is the real throughput fix for large backfills (the per-event push coalescing in 1.9.1 was a genuine but secondary inefficiency).
 
 ## [1.9.1] — 2026-05-24
 
@@ -163,7 +179,7 @@ think subscribe poll --legacy-engrams        # explicit opt-in to the old engram
 
 ### Upgrade notes
 - **Behavior change, not interface change.** No code that calls the affected modules needs to update. The `CompactionResult` / `SupersessionResult` types are unchanged.
-- **Daemon must have `ANTHROPIC_API_KEY` in its env.** Unchanged from prior releases, but worth re-stating: the daemon process inherits env at spawn time. If your shell exports `ANTHROPIC_API_KEY` only conditionally (e.g. via a wrapper function), restart the daemon under that wrapper so it picks up the key.
+- **Daemon must have `THINK_ANTHROPIC_KEY` (or the deprecated `ANTHROPIC_API_KEY`) in its env.** The daemon process inherits env at spawn time. As of 1.9.4, `THINK_ANTHROPIC_KEY` is the preferred key (it keeps think's billing isolated from other Anthropic tools in the same shell); `ANTHROPIC_API_KEY` is accepted as a deprecated fallback. If your shell exports either key conditionally (e.g. via a wrapper function), restart the daemon under that wrapper so it picks up the new variable.
 
 ---
 

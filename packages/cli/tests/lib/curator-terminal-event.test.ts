@@ -15,7 +15,7 @@ vi.mock('@anthropic-ai/claude-agent-sdk', () => ({
 }));
 
 // Import AFTER the mock so module-level imports of `query` bind to the spy.
-const { runTerminalEventCuration, assembleTerminalEventPrompt, useDirectApiCuration, callTerminalEventCuratorViaApi } = await import('../../src/lib/curator.js');
+const { runTerminalEventCuration, assembleTerminalEventPrompt, useDirectApiCuration, callTerminalEventCuratorViaApi, resolveThinkApiKey, _resetDeprecationWarningForTests } = await import('../../src/lib/curator.js');
 
 /** Build an async generator that yields one synthetic "result" message,
  * matching the shape the curator code reads (it pulls `message.result`). */
@@ -277,15 +277,77 @@ describe('assembleTerminalEventPrompt (AGT-383)', () => {
 // must stay OFF by default (so subscription users keep subscription billing)
 // and only engage when BOTH the flag and an API key are present (the proxy).
 // ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// resolveThinkApiKey — key resolution + deprecation warning (AGT-436)
+// AC #1: THINK_ANTHROPIC_KEY alone works
+// AC #2: THINK_ANTHROPIC_KEY wins when both are set
+// AC #3: ANTHROPIC_API_KEY-only still works (back-compat)
+// AC #4: neither key set throws clear error naming THINK_ANTHROPIC_KEY
+// ---------------------------------------------------------------------------
+describe('resolveThinkApiKey (AGT-436)', () => {
+  const KEY_VARS = ['THINK_ANTHROPIC_KEY', 'ANTHROPIC_API_KEY'] as const;
+  const saved: Record<string, string | undefined> = {};
+
+  beforeEach(() => {
+    for (const k of KEY_VARS) saved[k] = process.env[k];
+    for (const k of KEY_VARS) delete process.env[k];
+    // Reset the module-level deprecation-warning guard so each test gets a
+    // clean slate. Without this the one-time warning fires at most once per
+    // process, making the "warning fires" assertion flaky if another test
+    // triggered the warning first.
+    _resetDeprecationWarningForTests();
+  });
+
+  afterEach(() => {
+    for (const k of KEY_VARS) {
+      if (saved[k] === undefined) delete process.env[k];
+      else process.env[k] = saved[k];
+    }
+    _resetDeprecationWarningForTests();
+  });
+
+  it('AC #1 — returns THINK_ANTHROPIC_KEY when only it is set', () => {
+    process.env.THINK_ANTHROPIC_KEY = 'sk-think-only';
+    expect(resolveThinkApiKey()).toBe('sk-think-only');
+  });
+
+  it('AC #2 — THINK_ANTHROPIC_KEY wins when both keys are set', () => {
+    process.env.THINK_ANTHROPIC_KEY = 'sk-think-wins';
+    process.env.ANTHROPIC_API_KEY = 'sk-anthropic-ignored';
+    expect(resolveThinkApiKey()).toBe('sk-think-wins');
+  });
+
+  it('AC #3 — falls back to ANTHROPIC_API_KEY when THINK_ANTHROPIC_KEY is absent (back-compat)', () => {
+    process.env.ANTHROPIC_API_KEY = 'sk-anthropic-only';
+    expect(resolveThinkApiKey()).toBe('sk-anthropic-only');
+  });
+
+  it('AC #3 — deprecation warning goes to stderr when falling back to ANTHROPIC_API_KEY', () => {
+    process.env.ANTHROPIC_API_KEY = 'sk-ant-dep';
+    const stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    resolveThinkApiKey();
+    const calls = stderrSpy.mock.calls.flatMap(c => c).join('');
+    expect(calls).toMatch(/THINK_ANTHROPIC_KEY/);
+    expect(calls).toMatch(/deprecated/i);
+    stderrSpy.mockRestore();
+  });
+
+  it('AC #4 — throws a clear error naming THINK_ANTHROPIC_KEY when neither key is set', () => {
+    delete process.env.THINK_ANTHROPIC_KEY;
+    delete process.env.ANTHROPIC_API_KEY;
+    expect(() => resolveThinkApiKey()).toThrow(/THINK_ANTHROPIC_KEY/);
+  });
+});
+
 describe('curation backend selection (THINK_CURATION_BACKEND)', () => {
   const saved: Record<string, string | undefined> = {};
   beforeEach(() => {
-    for (const k of ['THINK_CURATION_BACKEND', 'ANTHROPIC_API_KEY', 'THINK_LLM_CONSENT']) saved[k] = process.env[k];
+    for (const k of ['THINK_CURATION_BACKEND', 'THINK_ANTHROPIC_KEY', 'ANTHROPIC_API_KEY', 'THINK_LLM_CONSENT']) saved[k] = process.env[k];
     process.env.THINK_LLM_CONSENT = '1';
     querySpy.mockReset();
   });
   afterEach(() => {
-    for (const k of ['THINK_CURATION_BACKEND', 'ANTHROPIC_API_KEY', 'THINK_LLM_CONSENT']) {
+    for (const k of ['THINK_CURATION_BACKEND', 'THINK_ANTHROPIC_KEY', 'ANTHROPIC_API_KEY', 'THINK_LLM_CONSENT']) {
       if (saved[k] === undefined) delete process.env[k];
       else process.env[k] = saved[k];
     }
@@ -294,6 +356,7 @@ describe('curation backend selection (THINK_CURATION_BACKEND)', () => {
 
   it('defaults to the Agent SDK (subscription-safe): api backend off unless flag AND key', () => {
     delete process.env.THINK_CURATION_BACKEND;
+    delete process.env.THINK_ANTHROPIC_KEY;
     delete process.env.ANTHROPIC_API_KEY;
     expect(useDirectApiCuration()).toBe(false); // neither
 
@@ -305,7 +368,11 @@ describe('curation backend selection (THINK_CURATION_BACKEND)', () => {
     expect(useDirectApiCuration()).toBe(false); // flag but no key — falls back
 
     process.env.ANTHROPIC_API_KEY = 'sk-ant-x';
-    expect(useDirectApiCuration()).toBe(true); // both — proxy
+    expect(useDirectApiCuration()).toBe(true); // flag + ANTHROPIC_API_KEY — proxy (legacy path)
+
+    delete process.env.ANTHROPIC_API_KEY;
+    process.env.THINK_ANTHROPIC_KEY = 'sk-think-x';
+    expect(useDirectApiCuration()).toBe(true); // flag + THINK_ANTHROPIC_KEY — proxy (preferred path)
   });
 
   it('raw-API backend parses a valid response into memories (no Agent SDK)', async () => {

@@ -825,15 +825,24 @@ function validateTerminalEventResult(raw: unknown): TerminalEventCurationResult 
 
 const TERMINAL_EVENT_MODEL = 'claude-sonnet-4-6';
 
+// Re-export from the dedicated key-resolution module so callers that import
+// curator.ts (e.g. tests) can reach these without a second import path.
+export { resolveThinkApiKey, _resetDeprecationWarningForTests } from './api-key.js';
+import { resolveThinkApiKey } from './api-key.js';
+
 /**
  * True only when curation should use the raw Messages API instead of the Agent
- * SDK: opt-in via `THINK_CURATION_BACKEND=api`, and only when an
- * `ANTHROPIC_API_KEY` is also present. The default (no flag) keeps the Agent
- * SDK so a user's local `think` stays on their Claude subscription rather than
- * per-token billing. Full billing rationale in CHANGELOG 1.9.2.
+ * SDK: opt-in via `THINK_CURATION_BACKEND=api`, and only when a think API key
+ * is resolvable (`THINK_ANTHROPIC_KEY` preferred, `ANTHROPIC_API_KEY` as
+ * deprecated fallback). The default (no flag) keeps the Agent SDK so a user's
+ * local `think` stays on their Claude subscription rather than per-token
+ * billing. Full billing rationale in CHANGELOG 1.9.2.
  */
 export function useDirectApiCuration(): boolean {
-  return process.env.THINK_CURATION_BACKEND === 'api' && !!process.env.ANTHROPIC_API_KEY;
+  return (
+    process.env.THINK_CURATION_BACKEND === 'api' &&
+    !!(process.env.THINK_ANTHROPIC_KEY || process.env.ANTHROPIC_API_KEY)
+  );
 }
 
 /** Internal: issue one curation call against the terminal-event prompt and
@@ -883,11 +892,12 @@ export interface MessagesClient {
 
 /** Internal: curate via the raw Anthropic Messages API (opt-in backend). One
  * request, no agent runtime — mirrors `daemon/supersession/call.ts`. `client`
- * is injectable for tests; production constructs the real SDK (which reads
+ * is injectable for tests; production constructs the real SDK using
+ * `resolveThinkApiKey()` (prefers `THINK_ANTHROPIC_KEY`, falls back to
  * `ANTHROPIC_API_KEY`). @internal */
 export async function callTerminalEventCuratorViaApi(
   prompt: StructuredPrompt,
-  client: MessagesClient = new Anthropic() as unknown as MessagesClient,
+  client: MessagesClient = new Anthropic({ apiKey: resolveThinkApiKey() }) as unknown as MessagesClient,
 ): Promise<TerminalEventCurationResult> {
   requireLlmConsent();
 
