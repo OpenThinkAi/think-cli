@@ -27,7 +27,7 @@ import { execFile } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { getRepoPath, sanitizeName } from '../lib/paths.js';
-import { safeGitEnv, withUnionMergeAttribute, ensureLocalUnionMergeAttribute } from '../lib/git.js';
+import { safeGitEnv, withUnionMergeAttribute, ensureLocalUnionMergeAttribute, GIT_FF_ONLY_NO_REMOTE_REF, GIT_FF_ONLY_NOT_MERGEABLE } from '../lib/git.js';
 import { daemonLog } from './log.js';
 
 // ---------------------------------------------------------------------------
@@ -196,10 +196,35 @@ export class PushDebouncer {
         ['rev-parse', '--abbrev-ref', 'HEAD'],
         repoPath,
       )).trim();
+      // Idempotent branch setup — mirrors ensureOnBranch in lib/git.ts but
+      // uses the async `git` seam so the `_gitOverride` test double sees
+      // these calls. The old `try { switch -- } catch { switch -c }` pattern
+      // was fragile: any transient `switch --` failure on an *existing* branch
+      // fell through to `switch -c` → "fatal: a branch named '<x>' already
+      // exists". Replace with an explicit local-ref check (rev-parse) so the
+      // decision is deterministic regardless of transient errors.
       if (currentBranch !== safeCortex) {
-        try {
+        const localRefExists = await git(
+          ['rev-parse', '--verify', '--quiet', `refs/heads/${safeCortex}`],
+          repoPath,
+        ).then(() => true, () => false);
+        if (localRefExists) {
           await git(['switch', '--', safeCortex], repoPath);
-        } catch {
+          // Fast-forward toward origin if behind; swallow "unborn upstream"
+          // and "not possible to fast-forward" — the subsequent pull-rebase
+          // reconciles divergence via the union driver.
+          try {
+            await git(['merge', '--ff-only', `origin/${safeCortex}`], repoPath);
+          } catch (ffErr) {
+            const ffMsg = ffErr instanceof Error ? ffErr.message : String(ffErr);
+            if (
+              !ffMsg.includes(GIT_FF_ONLY_NO_REMOTE_REF) &&
+              !ffMsg.includes(GIT_FF_ONLY_NOT_MERGEABLE)
+            ) {
+              throw ffErr;
+            }
+          }
+        } else {
           await git(
             ['switch', '-c', safeCortex, '--', `origin/${safeCortex}`],
             repoPath,

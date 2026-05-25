@@ -94,6 +94,20 @@ function pullRebaseOrAbort(branchName: string): void {
 export const UNION_MERGE_ATTRIBUTE = '*.jsonl merge=union';
 
 /**
+ * Error-message substrings emitted by `git merge --ff-only` when the fast-
+ * forward cannot proceed. Used as catch-block sentinels so error-handling
+ * code can distinguish an ff-only refusal from an unrelated git failure.
+ * Centralised here so every caller (sync helper + async inline sites)
+ * imports the same constant and stays in sync with any future git wording
+ * changes.
+ */
+export const GIT_FF_ONLY_NO_REMOTE_REF =
+  "couldn't find remote ref";
+
+export const GIT_FF_ONLY_NOT_MERGEABLE =
+  'Not possible to fast-forward';
+
+/**
  * Pure helper: given current `.gitattributes` content, return the content
  * with the union-merge line appended, or `null` if the line is already
  * present (so the caller skips the write + commit). No I/O — shared by the
@@ -250,6 +264,89 @@ export function branchExists(branchName: string): boolean {
   }
 }
 
+/**
+ * Return true if `refs/heads/<branchName>` exists in the LOCAL repository
+ * (i.e. the branch has been created or checked out in this clone).
+ *
+ * Distinct from `branchExists()`, which queries the *remote* via `ls-remote`.
+ * The distinction matters for the branch-prep idiom: we need to know whether
+ * the local ref is present before deciding to `switch` vs `switch -c`, because
+ * `switch -c` on an already-present local branch throws
+ * "fatal: a branch named '<name>' already exists".
+ */
+export function localBranchExists(branchName: string): boolean {
+  assertSafePositional(branchName, 'branch name');
+  try {
+    runGit(['rev-parse', '--verify', '--quiet', `refs/heads/${branchName}`]);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Attempt `git merge --ff-only origin/<branchName>`. Swallows the two
+ * expected non-fatal cases:
+ *  - "couldn't find remote ref" — brand-new cortex, no upstream yet.
+ *  - "Not possible to fast-forward" — histories diverged; the subsequent
+ *    `pullRebaseOrAbort` reconciles losslessly via the union driver.
+ * Any other error propagates so we never silently swallow a real git failure.
+ */
+function tryFfOnly(branchName: string): void {
+  try {
+    runGit(['merge', '--ff-only', `origin/${branchName}`]);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    if (
+      !msg.includes(GIT_FF_ONLY_NO_REMOTE_REF) &&
+      !msg.includes(GIT_FF_ONLY_NOT_MERGEABLE)
+    ) {
+      throw err;
+    }
+  }
+}
+
+/**
+ * Idempotently switch the working tree to `branchName` and fast-forward it
+ * toward `origin/<branchName>` when the local ref is behind.
+ *
+ * Logic:
+ *  - If the local branch ref exists: `git switch <branch>`, then attempt a
+ *    `git merge --ff-only origin/<branch>` to advance it. The ff-only step
+ *    is a no-op when already up to date and fails loudly (rather than
+ *    clobbering) when histories have diverged — satisfying AC 4 (behind) and
+ *    AC 6 (no data loss on divergence). The error is swallowed only for the
+ *    "unborn upstream" and "not possible to fast-forward" cases; an unrelated
+ *    git failure still propagates.
+ *  - If the local branch ref does NOT exist: `git switch -c <branch> --
+ *    origin/<branch>` (the original create path).
+ *
+ * Guards:
+ *  - No-op when the working tree is already on the target branch (fast path).
+ *  - No-op when there is no `.git` directory (test fixtures / local-fs backend).
+ *  - `assertSafePositional` is called before any git command.
+ */
+export function ensureOnBranch(branchName: string): void {
+  assertSafePositional(branchName, 'branch name');
+  if (!fs.existsSync(path.join(getRepoPath(), '.git'))) return;
+  if (getCurrentBranch() === branchName) {
+    // Already on the correct branch — still try to ff-only in case we drifted
+    // behind origin during a long daemon session.
+    tryFfOnly(branchName);
+    return;
+  }
+  if (localBranchExists(branchName)) {
+    runGit(['switch', '--', branchName]);
+    tryFfOnly(branchName);
+  } else {
+    // Branch absent locally — create it from origin.
+    // `git switch -c <new> <start-point>`: -c consumes the next arg as the
+    // new branch name. We can't put `--` between -c and its arg. Validated
+    // via assertSafePositional above.
+    runGit(['switch', '-c', branchName, '--', `origin/${branchName}`]);
+  }
+}
+
 export function createOrphanBranch(branchName: string): void {
   assertSafePositional(branchName, 'branch name');
   // Note: `git checkout --orphan` consumes its branch-name argument directly
@@ -321,16 +418,14 @@ export function getCurrentBranch(): string | null {
  * test path would have to either spin up a real git repo or stub the helper.
  * The no-op is safe in production because every real cortex write
  * presupposes a cloned repo (`ensureRepoCloned` is the entry point).
+ *
+ * Note: unlike the old implementation, this now delegates to `ensureOnBranch`
+ * and will attempt a `merge --ff-only` even when the branch is already
+ * checked out. The extra git I/O is intentional — it keeps long-lived daemon
+ * sessions from falling behind `origin` silently between retro writes.
  */
 export function ensureBranchCheckedOut(branchName: string): void {
-  assertSafePositional(branchName, 'branch name');
-  if (!fs.existsSync(path.join(getRepoPath(), '.git'))) return;
-  if (getCurrentBranch() === branchName) return;
-  try {
-    runGit(['switch', '--', branchName]);
-  } catch {
-    runGit(['switch', '-c', branchName, '--', `origin/${branchName}`]);
-  }
+  ensureOnBranch(branchName);
 }
 
 /**
@@ -409,14 +504,7 @@ export function appendAndCommit(
   const stagedPath = `${branchName}/${targetFile}`;
   const filePath = path.join(repoPath, branchName, targetFile);
 
-  try {
-    runGit(['switch', '--', branchName]);
-  } catch {
-    // `git switch -c <new> <start-point>`: -c consumes the next arg as the
-    // new branch name. We can't put `--` between -c and its arg. Validated
-    // via assertSafePositional above.
-    runGit(['switch', '-c', branchName, '--', `origin/${branchName}`]);
-  }
+  ensureOnBranch(branchName);
 
   // Stamp the union merge driver before the rebase so a divergent page
   // reconciles losslessly instead of throwing a conflict. Self-heals any
@@ -603,8 +691,7 @@ export function migrateToBuckets(branchName: string): void {
   assertSafePositional(branchName, 'branch name');
   const repoPath = getRepoPath();
 
-  try { runGit(['switch', '--', branchName]); }
-  catch { runGit(['switch', '-c', branchName, '--', `origin/${branchName}`]); }
+  ensureOnBranch(branchName);
 
   // pull --rebase updates local branch pointer + working tree from remote.
   // Caller already called fetchBranch (updates remote refs), so this pull
