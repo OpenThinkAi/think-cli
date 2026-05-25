@@ -57,6 +57,8 @@ import {
   listLocalBranches,
   listBranchRootFiles,
   safeGitEnv,
+  GIT_FF_ONLY_NO_REMOTE_REF,
+  GIT_FF_ONLY_NOT_MERGEABLE,
 } from '../lib/git.js';
 import { getRepoPath } from '../lib/paths.js';
 
@@ -315,8 +317,33 @@ async function migrateOneBranch(
   // the latest remote state, otherwise a peer who pushed between fetch and
   // migrate would lose their writes during the rebase.
   fetchBranch(branch);
-  try { git(['switch', '--', branch], repoPath); }
-  catch { git(['switch', '-c', branch, '--', `origin/${branch}`], repoPath); }
+  // Idempotent branch setup — mirrors ensureOnBranch in lib/git.ts but uses
+  // the local synchronous `git` seam so the same safeGitEnv/hooksPath config
+  // applies throughout this file. The old `try { switch -- } catch { switch -c }`
+  // pattern was fragile: any transient `switch --` failure on an *existing*
+  // branch fell through to `switch -c` → "fatal: a branch named '<x>' already
+  // exists". Replace with an explicit local-ref check (rev-parse) so the
+  // decision is deterministic regardless of transient errors.
+  const localRefExists = (() => {
+    try { git(['rev-parse', '--verify', '--quiet', `refs/heads/${branch}`], repoPath); return true; }
+    catch { return false; }
+  })();
+  if (localRefExists) {
+    git(['switch', '--', branch], repoPath);
+    // Fast-forward toward origin if behind; swallow "unborn upstream" and
+    // "not possible to fast-forward" — the subsequent pull-rebase reconciles.
+    // NOTE: do NOT "fix" the bare `pull --rebase origin <branch>` below (no `--`);
+    // recent git rejects `--` after `pull`. The validated branch name is safe here.
+    try { git(['merge', '--ff-only', `origin/${branch}`], repoPath); }
+    catch (ffErr) {
+      const ffMsg = ffErr instanceof Error ? ffErr.message : String(ffErr);
+      if (!ffMsg.includes(GIT_FF_ONLY_NO_REMOTE_REF) && !ffMsg.includes(GIT_FF_ONLY_NOT_MERGEABLE)) {
+        throw ffErr;
+      }
+    }
+  } else {
+    git(['switch', '-c', branch, '--', `origin/${branch}`], repoPath);
+  }
   // `git pull` does not accept the `--` argument separator the way `git
   // push` does — recent git versions reject `pull --rebase origin -- main`.
   // The branch name has been validated via the prior `git switch` path
