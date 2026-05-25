@@ -204,7 +204,7 @@ describe('MCP server — subprocess stdio', () => {
           const timer = setTimeout(() => {
             child.kill('SIGKILL');
             reject(new Error(`timed out waiting for tools/list response.\nstderr: ${stderr}`));
-          }, 10_000);
+          }, 30_000);
 
           function scan(): void {
             for (const line of stdout.split('\n')) {
@@ -251,6 +251,9 @@ describe('MCP server — subprocess stdio', () => {
         rmSync(thinkHome, { recursive: true, force: true });
       }
     },
-    15_000,
+    // Generous budget: a cold MCP subprocess (loads node:sqlite + the daemon
+    // module graph from dist) under parallel fork-pool load can need well over
+    // the old 15s. 15s daemon-ready + 30s tools/list worst case → 45s.
+    45_000,
   );
 });

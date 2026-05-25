@@ -10,7 +10,7 @@
  * express (empty compacted_text, non-string elements that slip through).
  */
 
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 // ---------------------------------------------------------------------------
 // Fixtures
@@ -106,6 +106,21 @@ const mockConsent = vi.mocked(requireLlmConsent);
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
+
+// Every test here mocks the Anthropic SDK, so no real key is ever used — but
+// runCompaction resolves a key (resolveThinkApiKey) before constructing the
+// mocked client and throws if none is set. Set a dummy at the file level so the
+// suite is hermetic: it passes in a keyless env (CI publish) instead of only in
+// a shell that happens to export THINK_ANTHROPIC_KEY/ANTHROPIC_API_KEY.
+let _savedThinkKey: string | undefined;
+beforeEach(() => {
+  _savedThinkKey = process.env['THINK_ANTHROPIC_KEY'];
+  process.env['THINK_ANTHROPIC_KEY'] = 'test-key';
+});
+afterEach(() => {
+  if (_savedThinkKey === undefined) delete process.env['THINK_ANTHROPIC_KEY'];
+  else process.env['THINK_ANTHROPIC_KEY'] = _savedThinkKey;
+});
 
 describe('runCompaction — happy path', () => {
   beforeEach(() => {
