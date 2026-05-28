@@ -39,6 +39,8 @@ import { parseLineFraming, dispatchRequest } from './protocol.js';
 import { handleSync } from './sync-handler.js';
 import { handleStatus } from './status.js';
 import { compactionQueue, scanAndEnqueueUncompacted } from './compaction/queue.js';
+import { pushDebouncer } from './push-debouncer.js';
+import { getCortexDb, listKnownCortexes } from '../db/engrams.js';
 import { backfillActivitySeqIfNeeded } from '../db/activity-seq.js';
 import { runEmbedModelChecks } from './embed-model-check.js';
 import { warmupEmbedModel, EMBEDDING_MODEL_NAME } from '../lib/embed.js';
@@ -388,6 +390,40 @@ export async function runDaemon(options: DaemonOptions): Promise<void> {
   // ---------------------------------------------------------------------------
 
   compactionQueue.start();
+
+  // ---------------------------------------------------------------------------
+  // L1 outbox replay on boot
+  //
+  // handleSync inserts L2 row + `l1_outbox` row transactionally; the
+  // push-debouncer drains the outbox under a global mutex (see
+  // push-debouncer.ts:_executeLock for the cross-cortex race the outbox
+  // pattern eliminates). If the daemon crashed between an outbox insert and
+  // the debouncer's next fire, the L1 file write never happened — the entry
+  // exists in L2 but is missing from the JSONL page that cross-machine sync
+  // replicates.
+  //
+  // Fire one `notify()` per cortex with pending rows so the debouncer drains
+  // them at startup. Empty outboxes skip the cycle cheaply (the `git add`
+  // step finds nothing staged and the function returns early).
+  //
+  // Best-effort: any DB error during the scan is logged but does not block
+  // daemon startup. The next regular write to that cortex would trigger a
+  // notify() and drain the stragglers along with the new entry.
+  // ---------------------------------------------------------------------------
+
+  for (const cortex of listKnownCortexes()) {
+    try {
+      const db = getCortexDb(cortex);
+      const row = db.prepare('SELECT COUNT(*) AS n FROM l1_outbox').get() as { n: number };
+      if (row.n > 0) {
+        writeLine(`outbox: ${row.n} pending row(s) for cortex '${cortex}' — scheduling drain`);
+        pushDebouncer.notify(cortex);
+      }
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      writeLine(`outbox replay: could not scan cortex '${cortex}': ${msg}`);
+    }
+  }
 
   const activeCortex = getConfig().cortex?.active;
 

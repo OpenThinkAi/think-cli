@@ -74,3 +74,17 @@ export function appendToL1Page(cortexDir: string, obj: Record<string, unknown>):
   const pagePath = getActivePage(cortexDir);
   fs.appendFileSync(pagePath, JSON.stringify(obj) + '\n', 'utf-8');
 }
+
+/**
+ * Append an already-serialized JSONL line to the active L1 page. Used by the
+ * outbox drain in `push-debouncer.ts`, which stores the wire-format line in
+ * `l1_outbox.line` and writes it verbatim — bypassing a redundant JSON
+ * round-trip and preserving the exact bytes the producer enqueued.
+ *
+ * The `line` argument must NOT end with a newline; this helper appends one.
+ */
+export function appendRawLineToL1Page(cortexDir: string, line: string): void {
+  fs.mkdirSync(cortexDir, { recursive: true, mode: 0o700 });
+  const pagePath = getActivePage(cortexDir);
+  fs.appendFileSync(pagePath, line + '\n', 'utf-8');
+}

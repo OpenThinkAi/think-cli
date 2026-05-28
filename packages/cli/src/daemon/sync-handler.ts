@@ -28,16 +28,14 @@
  */
 
 import fs from 'node:fs';
-import path from 'node:path';
 import { v7 as uuidv7 } from 'uuid';
 import { getConfig, getPeerId } from '../lib/config.js';
-import { getIndexDbPath, getRepoPath, sanitizeName } from '../lib/paths.js';
+import { getIndexDbPath, sanitizeName } from '../lib/paths.js';
 import { getCortexDb } from '../db/engrams.js';
 import { assignNextSeq } from '../db/activity-seq.js';
 import embed, { EMBEDDING_MODEL_NAME } from '../lib/embed.js';
 import { compactionQueue } from './compaction/queue.js';
 import { pushDebouncer } from './push-debouncer.js';
-import { ensureBranchCheckedOut } from '../lib/git.js';
 import { runSupersessionWorker } from './supersession/worker.js';
 
 // ---------------------------------------------------------------------------
@@ -46,9 +44,6 @@ import { runSupersessionWorker } from './supersession/worker.js';
 
 const ALLOWED_KINDS = ['memory', 'retro', 'event'] as const;
 type EntryKind = (typeof ALLOWED_KINDS)[number];
-
-/** Rotate to a new page after this many lines. */
-const L1_PAGE_SIZE = 1000;
 
 /**
  * Maximum accepted byte length for `content`. Prevents DoS via oversized
@@ -201,79 +196,6 @@ function cortexExists(cortexName: string): boolean {
 }
 
 // ---------------------------------------------------------------------------
-// L1 page helpers
-// ---------------------------------------------------------------------------
-
-/**
- * Returns the absolute path to the active L1 JSONL page for the given cortex
- * within the shared git repo working tree. Rotates to a new page when the
- * current page has reached {@link L1_PAGE_SIZE} lines.
- *
- * File naming mirrors git-adapter: `000001.jsonl`, `000002.jsonl`, …
- *
- * The repo working tree must already exist (created by `think cortex create`
- * or a prior sync). Does NOT commit or push — that is AGT-309's job.
- *
- * NOTE: this read-then-write is not atomic under concurrent `sync` calls.
- * A per-cortex write queue (mutex) should wrap L1 writes in a future
- * ticket before the daemon handles real concurrency.
- *
- * Line counting reads the entire page file. At 1000-entry × ~1 KB average
- * entries this is ~1 MB synchronous I/O per sync call near rotation. A
- * future improvement is an in-memory per-cortex line counter reset on
- * page rotation — acceptable latency at current traffic levels.
- */
-function getActivePage(cortexDir: string): string {
-  // List existing numbered page files, sorted ascending.
-  let files: string[] = [];
-  try {
-    files = fs.readdirSync(cortexDir)
-      .filter(f => /^\d{6}\.jsonl$/.test(f))
-      .sort();
-  } catch {
-    // Directory doesn't exist yet — will be created below.
-    files = [];
-  }
-
-  if (files.length === 0) {
-    return path.join(cortexDir, '000001.jsonl');
-  }
-
-  const latestFile = files[files.length - 1];
-  const latestPath = path.join(cortexDir, latestFile);
-
-  // Count non-empty lines to decide whether to rotate.
-  // Valid JSONL lines never have leading whitespace, so `line.length > 0`
-  // is sufficient and avoids per-line string allocation from `.trim()`.
-  let lineCount = 0;
-  try {
-    const raw = fs.readFileSync(latestPath, 'utf-8');
-    for (const line of raw.split('\n')) {
-      if (line.length > 0) lineCount++;
-    }
-  } catch {
-    lineCount = 0;
-  }
-
-  if (lineCount >= L1_PAGE_SIZE) {
-    const nextNum = parseInt(latestFile, 10) + 1;
-    return path.join(cortexDir, String(nextNum).padStart(6, '0') + '.jsonl');
-  }
-
-  return latestPath;
-}
-
-/**
- * Append a single JSONL line to the active page for the cortex.
- * Creates the cortex directory and page file if they do not yet exist.
- */
-function appendToL1(cortexDir: string, line: string): void {
-  fs.mkdirSync(cortexDir, { recursive: true, mode: 0o700 });
-  const pagePath = getActivePage(cortexDir);
-  fs.appendFileSync(pagePath, line + '\n', 'utf-8');
-}
-
-// ---------------------------------------------------------------------------
 // Main handler
 // ---------------------------------------------------------------------------
 
@@ -326,24 +248,12 @@ export async function handleSync(params: Record<string, unknown>): Promise<SyncR
 
   const line = JSON.stringify(entry);
 
-  // --- write to L1 ---
-  // Cortex directory inside the shared repo working tree.
-  // The repo root is `~/.think/repo/`; cortex data lives on a git branch
-  // named after the cortex. We write to `<repoPath>/<cortex>/` so the
-  // push debounce can later commit and push the working-tree changes.
-  //
-  // The branch-checkout call below is what keeps the write on the right
-  // branch when something else (operator command, another cortex's
-  // earlier write) has moved the tree. See `ensureBranchCheckedOut` for
-  // the contract; in particular it is synchronous so no other write can
-  // interleave between the switch and the `appendToL1` append.
-  const cortexDir = path.join(getRepoPath(), safeCortex);
-  ensureBranchCheckedOut(safeCortex);
-  appendToL1(cortexDir, line);
-
   // --- embed ---
-  // NOTE: if embed() throws here, L1 has the entry but L2 does not.
-  // AGT-299 compaction replay is responsible for reconciling L1 → L2.
+  // NOTE: if embed() throws here, neither L1 nor L2 has the entry — the
+  // outbox row below is the only durable record, and we never insert it
+  // when embed throws. Equivalent to the previous "embed errors lose the
+  // L2 row" failure mode but cleaner — there is no half-written L1 to
+  // reconcile via compaction replay.
   const embeddingVec = await embed(content);
   // Use byteOffset + byteLength so we only store the Float32Array's view
   // of the backing buffer — safe even when the HuggingFace pipeline returns
@@ -358,27 +268,54 @@ export async function handleSync(params: Record<string, unknown>): Promise<SyncR
   const activitySeq = assignNextSeq(safeCortex);
   const db = getCortexDb(safeCortex);
 
-  db.prepare(`
+  // L2 memory row + l1_outbox row land atomically. Either both writes
+  // happen or neither — if the transaction rolls back, the caller sees
+  // the error and no half-written state survives.
+  //
+  // Why outbox instead of writing L1 directly: the L1 page file lives in
+  // the shared cortex repo's working tree, which can only have one branch
+  // checked out at a time. A concurrent sync to a *different* cortex would
+  // race on `git switch` (see push-debouncer's `_executeLock` for the full
+  // explanation). The outbox row is the durable hand-off; the push-debouncer
+  // drains the queue under a global mutex, so cross-cortex writes serialize
+  // on the tree instead of trampling each other.
+  const insertMemory = db.prepare(`
     INSERT OR IGNORE INTO memories
       (id, ts, author, content, source_ids, created_at, deleted_at,
        sync_version, origin_peer_id, embedding, embedding_model, activity_seq,
        kind, topics_json)
     VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?)
-  `).run(
-    id,
-    ts,
-    author,
-    content,
-    JSON.stringify([]),
-    ts,
-    null,
-    origin_peer_id,
-    embeddingBytes,
-    EMBEDDING_MODEL_NAME,
-    activitySeq,
-    kind,
-    JSON.stringify(topics ?? []),
+  `);
+  const insertOutbox = db.prepare(
+    'INSERT INTO l1_outbox (entry_id, line, created_at) VALUES (?, ?, ?)',
   );
+
+  const writeBoth = db.prepare('BEGIN');
+  const commitBoth = db.prepare('COMMIT');
+  const rollbackBoth = db.prepare('ROLLBACK');
+  writeBoth.run();
+  try {
+    insertMemory.run(
+      id,
+      ts,
+      author,
+      content,
+      JSON.stringify([]),
+      ts,
+      null,
+      origin_peer_id,
+      embeddingBytes,
+      EMBEDDING_MODEL_NAME,
+      activitySeq,
+      kind,
+      JSON.stringify(topics ?? []),
+    );
+    insertOutbox.run(id, line, ts);
+    commitBoth.run();
+  } catch (err) {
+    try { rollbackBoth.run(); } catch { /* best effort */ }
+    throw err;
+  }
 
   // Fire-and-forget: enqueue compaction job after L1+L2 write completes.
   // Only `kind=memory` entries are compacted (retro/event are not — per v3 design).

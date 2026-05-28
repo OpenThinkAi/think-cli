@@ -80,20 +80,26 @@ afterEach(async () => {
 // Helpers
 // ---------------------------------------------------------------------------
 
-/** Read all non-blank JSONL lines from all page files in the L1 cortex dir. */
-function readL1Lines(home: string, cortex: string): Record<string, unknown>[] {
-  const cortexDir = join(home, 'repo', cortex);
-  if (!fs.existsSync(cortexDir)) return [];
-
-  const lines: Record<string, unknown>[] = [];
-  for (const file of fs.readdirSync(cortexDir).filter(f => /^\d{6}\.jsonl$/.test(f)).sort()) {
-    const raw = fs.readFileSync(join(cortexDir, file), 'utf-8');
-    for (const line of raw.split('\n')) {
-      if (line.trim().length === 0) continue;
-      lines.push(JSON.parse(line) as Record<string, unknown>);
-    }
-  }
-  return lines;
+/**
+ * Read the L1-bound entries for a cortex.
+ *
+ * Post-outbox-refactor, handleSync no longer writes the L1 page file directly
+ * — it inserts a row into `l1_outbox` and the push-debouncer's serialized
+ * drain writes the file. The drain requires a working git repo (real or
+ * mocked), which these unit tests deliberately don't set up. So we assert
+ * against the outbox instead: it carries the exact JSONL line that the drain
+ * would write to the page file, in the same order. The drain-to-file path is
+ * exercised end-to-end in tests/daemon/outbox-drain.test.ts with a git mock.
+ *
+ * `home` is unused now (kept in the signature so existing call sites don't
+ * need rewriting) — the cortex DB path is derived from THINK_HOME inside
+ * `getCortexDb`.
+ */
+async function readL1Lines(_home: string, cortex: string): Promise<Record<string, unknown>[]> {
+  const { getCortexDb } = await import('../../src/db/engrams.js');
+  const db = getCortexDb(cortex);
+  const rows = db.prepare('SELECT line FROM l1_outbox ORDER BY id ASC').all() as { line: string }[];
+  return rows.map((r) => JSON.parse(r.line) as Record<string, unknown>);
 }
 
 // ---------------------------------------------------------------------------
@@ -118,7 +124,7 @@ describe('sync handler (AGT-286)', () => {
     expect(result.warnings).toBeUndefined();
 
     // Verify L1: entry appears in the JSONL page.
-    const l1Lines = readL1Lines(thinkHome, cortexName);
+    const l1Lines = await readL1Lines(thinkHome, cortexName);
     expect(l1Lines.length).toBe(1);
     const l1Entry = l1Lines[0];
     expect(l1Entry['id']).toBe(result.entry_id);
@@ -163,7 +169,7 @@ describe('sync handler (AGT-286)', () => {
     // No warnings — kind and topics are now written to L2 directly
     expect(result.warnings).toBeUndefined();
 
-    const l1Lines = readL1Lines(thinkHome, cortexName);
+    const l1Lines = await readL1Lines(thinkHome, cortexName);
     expect(l1Lines.length).toBe(1);
     expect(l1Lines[0]['kind']).toBe('retro');
     expect(l1Lines[0]['topics']).toEqual(['testing', 'validation']);
@@ -239,7 +245,21 @@ describe('sync handler (AGT-286)', () => {
   });
 
   it('rotates to a new L1 page after L1_PAGE_SIZE lines', async () => {
+    // Page rotation is driven by `getActivePage` inside the push-debouncer
+    // drain, not handleSync (which only enqueues to l1_outbox). The test
+    // therefore drives the full path: enqueue → flush(cortex) → file write.
     const { handleSync } = await import('../../src/daemon/sync-handler.js');
+    const { pushDebouncer } = await import('../../src/daemon/push-debouncer.js');
+
+    // Stub git so the drain's branch-switch and commit/push subprocesses
+    // never fire. `diff --cached --quiet` must "fail" so the commit step
+    // proceeds; everything else resolves with ''.
+    pushDebouncer._gitOverride = async (args: string[]): Promise<string> => {
+      if (args.includes('--cached') && args.includes('--quiet')) {
+        throw new Error('exit code 1');
+      }
+      return '';
+    };
 
     const cortexDir = join(thinkHome, 'repo', cortexName);
     fs.mkdirSync(cortexDir, { recursive: true, mode: 0o700 });
@@ -257,6 +277,9 @@ describe('sync handler (AGT-286)', () => {
     });
 
     expect(result.status).toBe('stored');
+
+    // Drain the outbox synchronously to materialize the L1 file write.
+    await pushDebouncer.flush(cortexName);
 
     const files = fs.readdirSync(cortexDir).filter(f => /^\d{6}\.jsonl$/.test(f)).sort();
     expect(files).toContain('000002.jsonl');
