@@ -28,6 +28,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { getRepoPath, sanitizeName } from '../lib/paths.js';
 import { safeGitEnv, withUnionMergeAttribute, ensureLocalUnionMergeAttribute, GIT_FF_ONLY_NO_REMOTE_REF, GIT_FF_ONLY_NOT_MERGEABLE } from '../lib/git.js';
+import { appendRawLineToL1Page } from '../lib/l1-page.js';
+import { getCortexDb } from '../db/engrams.js';
 import { daemonLog } from './log.js';
 
 // ---------------------------------------------------------------------------
@@ -87,6 +89,25 @@ function log(msg: string): void {
 export class PushDebouncer {
   private readonly states = new Map<string, CortexState>();
   private readonly debounceMs: number;
+
+  /**
+   * Global async mutex serializing `_executePush` across all cortices.
+   *
+   * Reason: the cortex repo at `<repoPath>` is a shared working tree — only
+   * one branch is checked out at a time, and every push cycle does
+   * `git switch <branch> + git add + git commit + git pull --rebase + git push`.
+   * Two concurrent `_executePush` calls for different cortices would race on
+   * the working tree: the second cortex's `git switch` runs while the first
+   * cortex's tree is still dirty (mid-commit or mid-pull-rebase), producing
+   * the original AGT-437 / #65 error:
+   *   "Your local changes to the following files would be overwritten by
+   *    checkout: <other-cortex>/000001.jsonl"
+   *
+   * The promise chain pattern below preserves FIFO ordering of acquirers
+   * without any external dependency. Each `_withExecuteLock` call awaits the
+   * previous holder's release before running its callback.
+   */
+  private _executeLock: Promise<void> = Promise.resolve();
 
   /**
    * Optional git-execution override for testing. When set, this function is
@@ -163,22 +184,118 @@ export class PushDebouncer {
     }, this.debounceMs);
   }
 
+  /**
+   * Flush any pending writes for `cortex` immediately, bypassing the debounce
+   * timer. Returns when the push cycle has completed (or failed and logged).
+   *
+   * Test seam: handleSync no longer writes L1 directly — it inserts into
+   * `l1_outbox` and notifies this debouncer. Tests that previously asserted
+   * "L1 page contains the entry right after handleSync returns" can call
+   * `await pushDebouncer.flush(cortex)` to deterministically drain the queue.
+   *
+   * Production callers can also use this for synchronous semantics when the
+   * debounce window is too long for the operation in flight (e.g. a CLI
+   * command that wants the write durable in L1 before returning to the user).
+   */
+  async flush(cortex: string, skipPush = false): Promise<void> {
+    let safeCortex: string;
+    try {
+      safeCortex = sanitizeName(cortex);
+    } catch (err) {
+      log(`flush skipped — invalid cortex name "${cortex}": ${err instanceof Error ? err.message : String(err)}`);
+      return;
+    }
+
+    const state = this.states.get(safeCortex);
+    if (state?.timer) {
+      clearTimeout(state.timer);
+      state.timer = null;
+    }
+    const count = state?.pendingCount ?? 0;
+    if (state) state.pendingCount = 0;
+
+    await this._executePush(safeCortex, count, skipPush);
+  }
+
   // ---------------------------------------------------------------------------
   // Internal push execution
   // ---------------------------------------------------------------------------
 
   /**
+   * Acquire the global execute lock, run `fn`, release. FIFO ordering is
+   * preserved by chaining each acquirer onto the prior holder's promise.
+   *
+   * Why a single mutex across all cortices: see `_executeLock` field comment.
+   * Briefly — the shared working tree at `<repoPath>` can only have one
+   * branch checked out at a time, so two cortices' push cycles must not
+   * interleave or the second's `git switch` will trip on the first's dirty
+   * tree.
+   */
+  private async _withExecuteLock<T>(fn: () => Promise<T>): Promise<T> {
+    const prev = this._executeLock;
+    let release!: () => void;
+    this._executeLock = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    await prev;
+    try {
+      return await fn();
+    } finally {
+      release();
+    }
+  }
+
+  /**
    * Run the git add → commit → push sequence for a single cortex.
    * Logs the full error on any failure; does NOT retry (the next `notify()`
    * triggers a fresh cycle — event-driven, no background retry loop).
+   *
+   * Serialized globally via `_withExecuteLock` — two cortices' executions
+   * never interleave on the shared working tree.
+   *
+   * As of the outbox refactor, the L1 file append happens here (not in
+   * handleSync). After switching to the cortex branch, we drain pending
+   * `l1_outbox` rows for the cortex, append each row's serialized JSONL
+   * line to the active L1 page, stage + commit, then `DELETE` the rows.
+   * If anything throws before the DELETE the rows survive and a later cycle
+   * picks them up — provides durability against daemon crashes.
    */
   private async _executePush(
     safeCortex: string,
     count: number,
     skipPush: boolean,
   ): Promise<void> {
+    return this._withExecuteLock(() => this._executePushLocked(safeCortex, count, skipPush));
+  }
+
+  /**
+   * Delete the named outbox rows for a cortex. Errors are logged but not
+   * re-thrown — we've already committed locally, so a failed DELETE is
+   * cosmetic (next cycle would re-append, producing duplicate lines in L1).
+   * L2's `INSERT OR IGNORE` and downstream sync's deduplication absorb any
+   * resulting JSONL duplicates without corrupting recall results.
+   */
+  private _deleteOutboxRows(safeCortex: string, ids: number[]): void {
+    if (ids.length === 0) return;
+    try {
+      const db = getCortexDb(safeCortex);
+      const placeholders = ids.map(() => '?').join(',');
+      db.prepare(`DELETE FROM l1_outbox WHERE id IN (${placeholders})`).run(...ids);
+    } catch (err) {
+      log(
+        `failed to delete ${ids.length} outbox row(s) for cortex '${safeCortex}' ` +
+          `(rows will be retried — may produce duplicate L1 lines): ` +
+          (err instanceof Error ? err.message : String(err)),
+      );
+    }
+  }
+
+  private async _executePushLocked(
+    safeCortex: string,
+    count: number,
+    skipPush: boolean,
+  ): Promise<void> {
     const repoPath = getRepoPath();
-    const commitMsg = `auto: ${count} ${count === 1 ? 'entry' : 'entries'} via daemon ${new Date().toISOString()}`;
 
     const git = this._gitOverride ?? runGitAsync;
 
@@ -269,6 +386,46 @@ export class PushDebouncer {
         }
       }
 
+      // --- drain l1_outbox ---
+      // handleSync enqueues each retro/memory/event as a row in this cortex's
+      // `l1_outbox` table; the actual L1 file append happens here, inside the
+      // global execute lock, so no concurrent cortex can dirty the tree
+      // mid-switch. The rows are read in FIFO order (autoincrement id) and
+      // their serialized JSONL lines are written verbatim. We capture the
+      // ids so the DELETE after the commit only removes rows we actually
+      // processed — new rows that landed during the append+commit window
+      // stay pending for the next cycle.
+      let drainedIds: number[] = [];
+      try {
+        const db = getCortexDb(safeCortex);
+        const rows = db.prepare(
+          'SELECT id, line FROM l1_outbox ORDER BY id ASC',
+        ).all() as { id: number; line: string }[];
+        if (rows.length > 0) {
+          const cortexDir = path.join(repoPath, safeCortex);
+          for (const row of rows) {
+            appendRawLineToL1Page(cortexDir, row.line);
+          }
+          drainedIds = rows.map((r) => r.id);
+          log(`drained ${rows.length} outbox ${rows.length === 1 ? 'row' : 'rows'} for cortex '${safeCortex}'`);
+        }
+      } catch (drainErr) {
+        // Don't swallow — propagate so the outer catch logs it and the rows
+        // stay in the outbox for the next cycle. Re-throwing here aborts
+        // before any DELETE so durability is preserved.
+        throw new Error(
+          `outbox drain failed for cortex '${safeCortex}': ` +
+            (drainErr instanceof Error ? drainErr.message : String(drainErr)),
+        );
+      }
+
+      // Use the larger of the drain count and the legacy `notify()` count —
+      // pre-outbox writers (event-curator, scheduler) still call notify()
+      // with pendingCount and dirty the tree directly; they aren't reflected
+      // in `drainedIds`. Either source contributes to the commit message.
+      const effectiveCount = Math.max(drainedIds.length, count);
+      const commitMsg = `auto: ${effectiveCount} ${effectiveCount === 1 ? 'entry' : 'entries'} via daemon ${new Date().toISOString()}`;
+
       // Stage all changes in the cortex sub-directory.
       await git(['add', '--', safeCortex], repoPath);
 
@@ -284,11 +441,30 @@ export class PushDebouncer {
 
       if (!hasStagedChanges) {
         log(`nothing to commit for cortex '${safeCortex}' (staged area is clean)`);
+        // Even with nothing staged, if we drained rows (and somehow the append
+        // produced no diff — corrupt state) leaving them in the outbox would
+        // cause re-append on every cycle. We didn't enter this branch in
+        // practice because appendRawLineToL1Page always changes the file, but
+        // the early-return must still clean up the outbox to avoid an
+        // accumulating queue. Safe to DELETE: the rows were either committed
+        // by an earlier cycle (and the file's content already reflects them)
+        // or the drain wrote them and a subsequent op reverted — in either
+        // case the L1 file is the source of truth from here forward.
+        if (drainedIds.length > 0) {
+          this._deleteOutboxRows(safeCortex, drainedIds);
+        }
         return;
       }
 
       await git(['commit', '-m', commitMsg], repoPath);
-      log(`committed ${count} ${count === 1 ? 'entry' : 'entries'} for cortex '${safeCortex}'`);
+      log(`committed ${effectiveCount} ${effectiveCount === 1 ? 'entry' : 'entries'} for cortex '${safeCortex}'`);
+
+      // The local commit is durable in git history — the data is now safe
+      // even if the upcoming push fails. Drop the outbox rows so the next
+      // cycle doesn't re-append them.
+      if (drainedIds.length > 0) {
+        this._deleteOutboxRows(safeCortex, drainedIds);
+      }
 
       if (skipPush) {
         log(`push suppressed for cortex '${safeCortex}' (skipPush=true)`);

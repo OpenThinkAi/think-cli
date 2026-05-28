@@ -1,5 +1,7 @@
+import fs from 'node:fs';
+import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
-import { getIndexDbPath, ensureThinkDirs, ensureCortexParentDirs } from '../lib/paths.js';
+import { getIndexDbPath, getIndexDir, ensureThinkDirs, ensureCortexParentDirs } from '../lib/paths.js';
 import { getPeerId } from '../lib/config.js';
 import { runMigrations } from './migrate.js';
 import type { Migration } from './migrate.js';
@@ -377,6 +379,46 @@ export const migrations: Migration[] = [
       db.prepare('UPDATE long_term_events SET origin_peer_id = ? WHERE origin_peer_id IS NULL').run(peerId);
     },
   },
+  {
+    version: 17,
+    up: (db) => {
+      // Per-cortex write-ahead log for L1 (JSONL on the cortex branch).
+      //
+      // Background: handleSync used to append directly to the working tree
+      // (`<repoPath>/<cortex>/000NNN.jsonl`) and rely on the push-debouncer
+      // to commit 500ms later. That left the tree dirty across the debounce
+      // window, and a concurrent sync to a *different* cortex would fail in
+      // `git switch -- <other>` with "Your local changes to the following
+      // files would be overwritten by checkout". AGT-437 fixed the
+      // surface-level `switch -c` non-idempotence but the underlying race
+      // (#65 root cause) remained.
+      //
+      // The fix moves all working-tree mutation into the push-debouncer
+      // behind a global async mutex. handleSync now records the JSONL line
+      // here transactionally with the L2 memories insert; the debouncer
+      // drains pending rows per cortex, appends to the page file, commits,
+      // pushes, then deletes the rows.
+      //
+      // Crash safety: rows persist across daemon restarts, so an entry that
+      // landed in L2 but never made it to L1 (daemon died mid-debounce) is
+      // replayed at boot.
+      //
+      // Schema:
+      //   id          AUTOINCREMENT — FIFO ordering for the drain.
+      //   entry_id    The uuidv7 of the entry. Kept for debug/log only;
+      //               the line itself is the source of truth for L1.
+      //   line        Full JSONL line as written to L1 (no trailing newline).
+      //   created_at  ISO-8601 timestamp the row was enqueued. Debug-only.
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS l1_outbox (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          entry_id TEXT NOT NULL,
+          line TEXT NOT NULL,
+          created_at TEXT NOT NULL
+        ) STRICT;
+      `);
+    },
+  },
 ];
 
 /** Returns the per-cortex SQLite connection (holds engrams, memories, longterm_summary, and sync_cursors tables) */
@@ -411,4 +453,34 @@ export function closeAllCortexDbs(): void {
     db.close();
     dbs.delete(name);
   }
+}
+
+/**
+ * Enumerate cortex names by listing `<indexDir>/*.db` on disk. Used at daemon
+ * boot to discover which cortices need an outbox-drain notify (see
+ * `daemon/index.ts`); also useful anywhere that needs a name list without
+ * opening every DB.
+ *
+ * Returns names in stable lexical order (sorted basename without the `.db`
+ * suffix). Returns `[]` if the index directory doesn't exist yet (fresh
+ * install before any `cortex create`).
+ *
+ * Assumption: `getIndexDir()` contains ONLY per-cortex DB files written via
+ * `getIndexDbPath()`. SQLite WAL sidecars (`*.db-wal`, `*.db-shm`) end with
+ * `-wal`/`-shm` so the `.db` extension check already excludes them. No
+ * non-cortex artifacts are written into this directory by the codebase as
+ * of this writing — if that changes, tighten this filter accordingly.
+ */
+export function listKnownCortexes(): string[] {
+  const indexDir = getIndexDir();
+  let entries: string[];
+  try {
+    entries = fs.readdirSync(indexDir);
+  } catch {
+    return [];
+  }
+  return entries
+    .filter((e) => e.endsWith('.db'))
+    .map((e) => path.basename(e, '.db'))
+    .sort();
 }
