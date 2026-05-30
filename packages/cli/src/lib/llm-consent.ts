@@ -33,12 +33,23 @@ function isTruthy(value: string | undefined): boolean {
  * install previously began doing so silently on first `think curate`.
  */
 export function requireLlmConsent(): void {
-  if (isTruthy(process.env[ENV_VAR])) return;
-
-  const config = getConfig();
-  if (config.cortex?.llmConsent === true) return;
-
+  if (hasLlmConsent()) return;
   throw new LlmConsentError(formatConsentFailure());
+}
+
+/**
+ * Non-throwing consent check. Returns true when consent has been granted via
+ * either `THINK_LLM_CONSENT` env var or `cortex.llmConsent: true` in config.
+ *
+ * Used by the local-first router (lib/llm/router.ts): when a task is too big
+ * for the local model, the router falls back to Anthropic ONLY if consent is
+ * granted; otherwise it skips-and-warns rather than shipping content the user
+ * never agreed to send. The throwing `requireLlmConsent` is the right call at
+ * a hard gate; this is the right call when "no consent" has a graceful path.
+ */
+export function hasLlmConsent(): boolean {
+  if (isTruthy(process.env[ENV_VAR])) return true;
+  return getConfig().cortex?.llmConsent === true;
 }
 
 /**

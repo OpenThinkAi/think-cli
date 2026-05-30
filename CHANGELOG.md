@@ -2,6 +2,21 @@
 
 ## [Unreleased]
 
+## [1.11.0] — 2026-05-29
+
+### Added
+
+- **Local-first LLM curation (opt-in) — route `think curate` to a local model, fall back to Claude only on size.** think can now run curation on a local, OpenAI-compatible model server (oMLX/Qwen — the same kind of endpoint hal9k's local review targets) instead of Anthropic. A new `lib/llm/` adapter introduces a single `LlmClient` interface with two backends — `LocalLlmClient` (on-device, `/chat/completions`) and `AnthropicLlmClient` (the existing gated Claude Agent SDK path) — behind a `RouterLlmClient` that implements the policy: **default to local when configured, fall back to Anthropic only when a task overflows the local context budget _and_ LLM consent is granted.** Local calls never leave the machine, so they bypass the consent gate entirely; consent now gates only the cloud path. Configure via `cortex.llmProvider` (`auto` | `local` | `anthropic`, default `auto`) and `cortex.local.{endpoint, model, apiKey, ctxBudget}`, or the `THINK_LOCAL_ENDPOINT` / `THINK_LOCAL_MODEL` / `THINK_LOCAL_API_KEY` / `THINK_LLM_PROVIDER` env vars.
+- **Two-pass local curation closes the event-detection gap.** Small local models do engram→memory triage well but drop long-term-event detection when both run in one prompt; given a focused prompt they match Claude on events. So when curation routes local, think splits it into two passes — tier A (engrams → memories + purges) then tier B (memories → long-term events) — both on the local model. Anthropic-only curation keeps the single combined pass (no behaviour change, no doubled call).
+
+### Changed
+
+- **Configured-but-unreachable local server now skips gracefully instead of failing.** If `cortex.local` is set but the server is down, `think curate` skips the run (engrams stay pending for the next run), prints `can't reach your local LLM server at <endpoint> — is it running?` plus how to switch to Claude, and exits cleanly — it does **not** hard-fail and does **not** silently reroute to the cloud (availability is treated differently from size overflow). Size-overflow fallback to Claude (with consent) is unchanged.
+
+### Upgrade notes
+
+- **No action required; inert by default.** With no local endpoint configured — i.e. every existing install and fresh install — curation behaves exactly as in 1.10.x (Claude via the Agent SDK). The local-first path activates only when you explicitly set `cortex.local.endpoint`.
+
 ## [1.9.4] — 2026-05-24
 
 ### Added
