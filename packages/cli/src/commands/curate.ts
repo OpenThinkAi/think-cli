@@ -13,14 +13,17 @@ import {
   assembleEpisodeCurationPrompt,
   filterRecentMemories,
   runCuration,
+  runLocalTwoPassCuration,
   runEpisodeCuration,
   runConsolidation,
 } from '../lib/curator.js';
+import { getDefaultLlmClient, isLocalCurationActive } from '../lib/llm/router.js';
 import { getSyncAdapter } from '../sync/registry.js';
 import { formatSyncError } from '../sync/errors.js';
 import type { MemoryEntry } from '../lib/curator.js';
 import { acquireCurateLock } from '../lib/curate-lock.js';
 import { LlmConsentError } from '../lib/llm-consent.js';
+import { LlmSkippedError } from '../lib/llm/client.js';
 
 export const curateCommand = new Command('curate')
   .description('Run curation: evaluate pending events and promote to memories')
@@ -294,10 +297,27 @@ export const curateCommand = new Command('curate')
       ));
     }
 
+    // Local-first routes through the two-pass split (tier A engrams→memories,
+    // tier B memories→events) so small local models don't drop event detection;
+    // Anthropic-only keeps the single combined pass (unchanged behaviour, one
+    // call). Both share one client instance so both passes route consistently.
+    const llmClient = getDefaultLlmClient();
     let curationResult;
     try {
-      curationResult = await runCuration(curationPrompt);
+      curationResult = isLocalCurationActive(config.cortex)
+        ? await runLocalTwoPassCuration(curationPrompt, recentEventContext, llmClient)
+        : await runCuration(curationPrompt, llmClient);
     } catch (err) {
+      // Local-first skip: the task was too big for the local model and the
+      // Anthropic fallback wasn't available (no consent, or provider pinned
+      // to local). This is the deliberate "skip + warn" path — leave the
+      // engrams pending for a later run rather than failing the command.
+      if (err instanceof LlmSkippedError) {
+        console.error(chalk.yellow(`Curation skipped: ${err.message}`));
+        console.error(chalk.yellow('  Pending events were left untouched and will be reconsidered next run.'));
+        closeCortexDb(cortex);
+        process.exit(0);
+      }
       // AGT-065: surface the consent failure with the actionable message
       // verbatim — no `Curation failed:` prefix that would obscure the
       // env/config snippet the user needs to copy.
