@@ -15,6 +15,7 @@ import { join } from 'node:path';
 import { getCortexDb, closeAllCortexDbs } from '../../src/db/engrams.js';
 import { insertMemory } from '../../src/db/memory-queries.js';
 import { handleRecall } from '../../src/daemon/recall.js';
+import { saveConfig, getConfig } from '../../src/lib/config.js';
 import * as embedModule from '../../src/lib/embed.js';
 
 // ---------------------------------------------------------------------------
@@ -103,7 +104,12 @@ describe('handleRecall (AGT-285)', () => {
 
   // ── limit param ──────────────────────────────────────────────────────────
 
+  // These two tests exercise the limit param against the orthogonal-vector
+  // fixture set; disable the AGT-456 relevance floor (config relevanceFloor=-1)
+  // so the floor doesn't drop the cosine≈0 fixtures and confound the count
+  // assertions. The floor itself is covered by recall-relevance-floor.test.ts.
   it('respects the limit param', async () => {
+    saveConfig({ ...getConfig(), recall: { relevanceFloor: -1 } });
     vi.spyOn(embedModule, 'default').mockResolvedValue(axis(0));
 
     const results = await handleRecall({ cortex: CORTEX, query: 'test', limit: 2 });
@@ -111,6 +117,7 @@ describe('handleRecall (AGT-285)', () => {
   });
 
   it('defaults to limit=20 when limit is not provided', async () => {
+    saveConfig({ ...getConfig(), recall: { relevanceFloor: -1 } });
     vi.spyOn(embedModule, 'default').mockResolvedValue(axis(0));
 
     // 5 fixtures — all should come back (5 < 20)
@@ -189,7 +196,10 @@ describe('handleRecall (AGT-285)', () => {
 
     vi.spyOn(embedModule, 'default').mockResolvedValue(axis(0)); // query ≈ fixture[0]
 
-    // Query for 'ocean' — only fixture[1] has that topic.
+    // Query for 'ocean' — only fixture[1] has that topic. fixture[1] is
+    // orthogonal to the axis(0) query vector (cosine≈0), so disable the
+    // AGT-456 relevance floor to isolate the topic-filter assertion.
+    saveConfig({ ...getConfig(), recall: { relevanceFloor: -1 } });
     const results = await handleRecall({ cortex: CORTEX, query: 'apple', topic: 'ocean' });
     expect(results.length).toBe(1);
     expect(results[0].id).toBe(fixtureIds[1]);
