@@ -289,6 +289,47 @@ describe('ensureOnBranch / localBranchExists — idempotent branch prep (AGT-437
   });
 
   // -------------------------------------------------------------------------
+  // #69: a dirty tracked engram left on cortex-B must NOT wedge a switch to
+  //      cortex-A. ensureOnBranch self-heals by salvaging the dirt onto B
+  //      (no data loss) so the switch starts from a clean tree.
+  // -------------------------------------------------------------------------
+  it('#69: ensureOnBranch self-heals a dirty worktree instead of wedging the switch', () => {
+    const fs = require('node:fs') as typeof import('node:fs');
+    const repoPath = join(harness.thinkHome, 'repo');
+
+    createOrphanBranch('cortexa');
+    createOrphanBranch('cortexb');
+    // We are now on cortexb (last created). Dirty a TRACKED engram on it — this
+    // is the exact state a crashed cycle leaves: an uncommitted append.
+    expect(getCurrentBranch()).toBe('cortexb');
+    const pagePath = join(repoPath, 'cortexb', '000001.jsonl');
+    fs.appendFileSync(pagePath, '{"id":"uncommitted-leftover"}\n', 'utf-8');
+
+    // Sanity: a raw `git switch` to cortexa would refuse on this dirty tree.
+    expect(() =>
+      execFileSync(
+        'git',
+        ['-c', 'core.hooksPath=/dev/null', 'switch', '--', 'cortexa'],
+        { cwd: repoPath, stdio: 'pipe' },
+      ),
+    ).toThrow();
+
+    // ensureOnBranch must self-heal and switch cleanly — no wedge.
+    expect(() => ensureOnBranch('cortexa')).not.toThrow();
+    expect(getCurrentBranch()).toBe('cortexa');
+
+    // The leftover line must be preserved on cortexb (committed, not discarded).
+    execFileSync('git', ['-C', repoPath, 'switch', '--', 'cortexb'], { stdio: 'pipe' });
+    const contents = fs.readFileSync(pagePath, 'utf-8');
+    expect(contents).toContain('uncommitted-leftover');
+    // ...and the tree is clean (the salvage committed it).
+    const status = execFileSync('git', ['-C', repoPath, 'status', '--porcelain'], {
+      encoding: 'utf-8',
+    }).trim();
+    expect(status).toBe('');
+  });
+
+  // -------------------------------------------------------------------------
   // localBranchExists: basic contract
   // -------------------------------------------------------------------------
   it('localBranchExists returns false for an absent branch and true after creation', () => {

@@ -129,7 +129,8 @@ Examples:
           if (daemonErr && !(daemonErr instanceof DaemonUnavailableError) && !opts.silent) {
             const msg = daemonErr instanceof Error ? daemonErr.message : String(daemonErr);
             const cleaned = stripControls(msg);
-            const display = cleaned.length > 200 ? cleaned.slice(0, 200) + '...' : cleaned;
+            // Generous cap (#69) so git remediation hints survive untruncated.
+            const display = cleaned.length > 1000 ? cleaned.slice(0, 1000) + '...' : cleaned;
             process.stderr.write(chalk.yellow(`  daemon error: ${display}; falling back to local write\n`));
           }
 
