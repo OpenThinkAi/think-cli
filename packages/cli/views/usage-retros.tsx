@@ -16,6 +16,8 @@ interface RetroUsageEntry {
   by_source: BySource;
   session_start_count: number;
   mid_session_count: number;
+  occurrences: number;
+  value_signal: number;
   first_surfaced: string;
   last_surfaced: string;
   queries: string[];
@@ -64,8 +66,13 @@ const td: React.CSSProperties = { padding: "10px 12px", borderBottom: BORDER, ve
 const num: React.CSSProperties = { ...td, fontVariantNumeric: "tabular-nums", fontWeight: 700, textAlign: "right" };
 
 export default function UsageRetros({ data }: ViewProps<RetroUsageReport>) {
+  // Rank by the composite value signal (AGT-460), not raw surface-count — junk
+  // surfaces a lot, good niche retros surface rarely. Tie-break on raw count.
   const rows = useMemo(
-    () => [...data.surfaced].sort((a, b) => b.surface_count - a.surface_count),
+    () =>
+      [...data.surfaced].sort(
+        (a, b) => b.value_signal - a.value_signal || b.surface_count - a.surface_count,
+      ),
     [data.surfaced],
   );
 
@@ -76,6 +83,7 @@ export default function UsageRetros({ data }: ViewProps<RetroUsageReport>) {
       <table style={{ borderCollapse: "collapse", width: "100%", maxWidth: 1100, fontSize: 14 }}>
         <thead>
           <tr>
+            <th style={{ ...th, textAlign: "right" }}>Value</th>
             <th style={{ ...th, textAlign: "right" }}>Called</th>
             <th style={th}>Retro</th>
             <th style={th}>Repo</th>
@@ -87,6 +95,7 @@ export default function UsageRetros({ data }: ViewProps<RetroUsageReport>) {
         <tbody>
           {rows.map((e) => (
             <tr key={`${e.cortex}/${e.retro_id}`}>
+              <td style={num} title="composite value signal (AGT-460)">{e.value_signal.toFixed(1)}</td>
               <td style={num}>{e.surface_count}</td>
               <td style={{ ...td, maxWidth: 520 }}>
                 {e.content ?? <em style={{ color: "#999" }}>(deleted)</em>}
@@ -113,7 +122,7 @@ export default function UsageRetros({ data }: ViewProps<RetroUsageReport>) {
           ))}
           {rows.length === 0 && (
             <tr>
-              <td style={td} colSpan={6}>
+              <td style={td} colSpan={7}>
                 No retros have been called yet.
               </td>
             </tr>

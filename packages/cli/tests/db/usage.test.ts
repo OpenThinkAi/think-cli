@@ -16,6 +16,15 @@ function insertRetroMemory(id: string, content: string, createdAt: string): void
   ).run(id, createdAt, content, createdAt);
 }
 
+/** Insert a curator `retros` row so the composite picks up `occurrences`. */
+function insertRetroCuratorRow(id: string, occurrences: number): void {
+  const db = getCortexDb(cortex);
+  db.prepare(
+    `INSERT INTO retros (id, content, kind, cortex_name, created_at, occurrences, sync_version)
+     VALUES (?, 'x', NULL, ?, '2026-05-20T10:00:00.000Z', ?, 0)`,
+  ).run(id, cortex, occurrences);
+}
+
 /** Insert a surfacing row directly so all fields are deterministic. */
 function insertSurfacing(opts: {
   retroId: string;
@@ -127,6 +136,10 @@ describe('usage telemetry', () => {
       expect(e.by_source).toEqual({ brief: 1, recall: 1, mcp: 0, hook: 1 });
       expect(e.session_start_count).toBe(2); // two calls were seq=1
       expect(e.mid_session_count).toBe(1);
+      // No curator `retros` row → occurrences defaults to 1; composite is
+      // present and positive (deliberate brief + session-start surfacings).
+      expect(e.occurrences).toBe(1);
+      expect(e.value_signal).toBeGreaterThan(0);
       expect(e.first_surfaced).toBe('2026-05-21T10:00:00.000Z');
       expect(e.last_surfaced).toBe('2026-05-22T09:00:00.000Z');
       expect(e.queries).toEqual(['schema changes', 'migrations']);
@@ -146,6 +159,38 @@ describe('usage telemetry', () => {
 
       const report = getRetroUsageReport();
       expect(report.surfaced.map((e) => e.retro_id)).toEqual(['r2', 'r1']);
+    });
+
+    it('ranks by composite value signal, not raw surface-count (AGT-460)', () => {
+      // junk: surfaces 5× but only ever as mid-session vector noise, 1 occurrence.
+      insertRetroMemory('junk', 'vector-noise junk', '2026-05-20T10:00:00.000Z');
+      for (let i = 0; i < 5; i++) {
+        insertSurfacing({
+          retroId: 'junk',
+          surfacedAt: `2026-05-21T10:0${i}:00.000Z`,
+          source: 'recall',
+          sessionId: 's-junk',
+          sessionSeq: i + 2, // all mid-session (seq > 1)
+          score: 0.3,
+        });
+      }
+      // gem: surfaces only 2×, but both deliberate (brief + session-start) and
+      // it has 3 independent occurrences. Lower raw count, higher value.
+      insertRetroMemory('gem', 'good niche lesson', '2026-05-20T10:00:00.000Z');
+      insertRetroCuratorRow('gem', 3);
+      insertSurfacing({ retroId: 'gem', surfacedAt: '2026-05-22T10:00:00.000Z', source: 'brief', sessionId: 's-gem', sessionSeq: 1, score: 0.9 });
+      insertSurfacing({ retroId: 'gem', surfacedAt: '2026-05-23T10:00:00.000Z', source: 'recall', sessionId: 's-gem2', sessionSeq: 1, score: 0.8 });
+
+      const report = getRetroUsageReport();
+      const ids = report.surfaced.map((e) => e.retro_id);
+      // gem outranks junk despite junk's higher surface_count.
+      expect(ids.indexOf('gem')).toBeLessThan(ids.indexOf('junk'));
+
+      const gem = report.surfaced.find((e) => e.retro_id === 'gem')!;
+      const junk = report.surfaced.find((e) => e.retro_id === 'junk')!;
+      expect(gem.surface_count).toBeLessThan(junk.surface_count);
+      expect(gem.value_signal).toBeGreaterThan(junk.value_signal);
+      expect(gem.occurrences).toBe(3);
     });
 
     it('reports retros that exist but were never called as dead', () => {

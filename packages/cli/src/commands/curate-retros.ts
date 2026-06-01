@@ -17,6 +17,13 @@ import {
 } from '../lib/retro-curator.js';
 import { acquireCurateLock } from '../lib/curate-lock.js';
 import { LlmConsentError } from '../lib/llm-consent.js';
+import { getRetroSurfacingTelemetry } from '../db/usage-queries.js';
+import { closeUsageDb } from '../db/usage-db.js';
+import {
+  computeRetroValueSignal,
+  resolveRetroValueWeights,
+  type ResolvedRetroValueWeights,
+} from '../lib/retro-value-signal.js';
 
 const DEFAULT_RELEGATE_AFTER_RUNS = 50;
 
@@ -32,9 +39,13 @@ Storage contract:
            becomes canonical (occurrences++), the newer is tombstoned with
            tombstone_reason="merged_into:<id>". Both rows remain in storage.
 
-  promote — a retro with occurrences >= 2 is marked promoted=1, making it
-           eligible for surfacing in retro recall paths. Promotion is purely
-           frequency-driven; no LLM judgment is applied.
+  promote — a retro whose composite value signal clears the promote
+           threshold is marked promoted=1, making it eligible for surfacing
+           in retro recall paths. The signal (AGT-460) folds independent
+           re-reports (occurrences), deliberate brief/session-start
+           surfacings, and recency of high-similarity surfacings into one
+           score; no LLM judgment is applied. With no surfacing telemetry it
+           reduces to the legacy "occurrences >= 2" behaviour by default.
 
   relegate — a promoted retro whose last_recalled_at is older than N
            curator runs has promoted=0 set. The row is NOT deleted. A
@@ -54,6 +65,13 @@ Configuration:
                                  before relegation fires (default: 50).
   Set via: think config set cortex.retroRelegateAfterRuns <n>
 
+  cortex.retroValueSignal        Weights/thresholds for the composite value
+                                 signal that gates promotion (AGT-460).
+                                 Notable: promoteThreshold (default 5.0),
+                                 occurrenceWeight (3.0), briefWeight (2.0),
+                                 sessionStartWeight (2.0), midSessionWeight
+                                 (0.25). See retro-value-signal.ts.
+
 Examples:
   think -C fx-tracker curate-retros
   think curate-retros --cortex my-repo --dry-run
@@ -71,6 +89,7 @@ Examples:
 
     const config = getConfig();
     const relegateAfterRuns = config.cortex?.retroRelegateAfterRuns ?? DEFAULT_RELEGATE_AFTER_RUNS;
+    const valueWeights = resolveRetroValueWeights(config.cortex?.retroValueSignal);
 
     let releaseLock: () => void = () => {};
     if (!opts.dryRun) {
@@ -83,14 +102,20 @@ Examples:
     }
 
     try {
-      await runRetroCuration(cortex, opts.dryRun ?? false, relegateAfterRuns);
+      await runRetroCuration(cortex, opts.dryRun ?? false, relegateAfterRuns, valueWeights);
     } finally {
       releaseLock();
       closeCortexDb(cortex);
+      closeUsageDb();
     }
   });
 
-async function runRetroCuration(cortex: string, dryRun: boolean, relegateAfterRuns: number): Promise<void> {
+async function runRetroCuration(
+  cortex: string,
+  dryRun: boolean,
+  relegateAfterRuns: number,
+  valueWeights: ResolvedRetroValueWeights,
+): Promise<void> {
   // 1. Dedupe pass: FTS-candidate pairs → LLM equivalence judgment → merge
   const candidatePairs = getCandidatePairs(cortex);
   let mergeCount = 0;
@@ -156,13 +181,34 @@ async function runRetroCuration(cortex: string, dryRun: boolean, relegateAfterRu
   }
 
   // 2. Promotion pass: re-fetch after dedupe (occurrences may have changed), then promote
-  //    deterministically. A retro is eligible only if it hasn't already earned relegation —
-  //    i.e., its last_recalled_at is either absent or recent enough. This prevents the
+  //    deterministically. Promotion is gated on the composite value signal (AGT-460 /
+  //    design doc §5 M5) instead of raw occurrences: it folds independent re-reports,
+  //    deliberate brief/session-start surfacings, and recency of high-similarity surfacings
+  //    into one score, so a recurring real lesson promotes even when its raw surface-count
+  //    is low, and vector-noise surfacings don't push junk over on their own.
+  //
+  //    A retro is still eligible only if it hasn't already earned relegation — i.e. its
+  //    last_recalled_at is either absent or recent enough. This prevents the
   //    promote-then-relegate cycle where a previously-relegated retro oscillates between
   //    states every run without any new recall or occurrence evidence.
   const afterDedupe = getPendingRetros(cortex);
+  const telemetry = getRetroSurfacingTelemetry(cortex, valueWeights.highSimilarityThreshold);
+  const now = new Date();
   const toPromote = afterDedupe.filter(r => {
-    if (r.occurrences < 2 || r.promoted !== 0) return false;
+    if (r.promoted !== 0) return false;
+    const t = telemetry.get(r.id);
+    const signal = computeRetroValueSignal(
+      {
+        occurrences: r.occurrences,
+        briefCount: t?.briefCount ?? 0,
+        sessionStartCount: t?.sessionStartCount ?? 0,
+        midSessionCount: t?.midSessionCount ?? 0,
+        lastHighSimilarityAt: t?.lastHighSimilarityAt ?? null,
+      },
+      valueWeights,
+      now,
+    );
+    if (signal < valueWeights.promoteThreshold) return false;
     if (r.last_recalled_at === null) return true;
     return runsSince(cortex, r.last_recalled_at) < relegateAfterRuns;
   });

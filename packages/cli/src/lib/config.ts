@@ -13,6 +13,43 @@ export interface FsBackendConfig {
   path: string;
 }
 
+/**
+ * Tunable weights and thresholds for the composite retro value signal
+ * (AGT-460 / design doc §5 M5). Every field is optional; omitted fields fall
+ * back to the `DEFAULT_RETRO_VALUE_SIGNAL_*` constants in
+ * `retro-value-signal.ts`. The composite is a weighted sum of deliberate-use
+ * signals (independent re-reports, brief/session-start surfacings) plus a
+ * recency bonus, with mid-session vector surfacings weighted well below them.
+ */
+export interface RetroValueSignalConfig {
+  /** Weight per independent re-report (`occurrences`). The strongest signal. */
+  occurrenceWeight?: number;
+  /** Weight per `source='brief'` surfacing (deliberate task-start load). */
+  briefWeight?: number;
+  /** Weight per session-start surfacing (`session_seq=1`). */
+  sessionStartWeight?: number;
+  /** Weight per mid-session surfacing (`session_seq>1`) — vector noise. */
+  midSessionWeight?: number;
+  /**
+   * Maximum bonus added when the last high-similarity surfacing is fresh. The
+   * bonus decays exponentially with the age (in days) of that surfacing.
+   */
+  recencyWeight?: number;
+  /** Exponential decay constant (per day) for the recency bonus. */
+  recencyDecayPerDay?: number;
+  /**
+   * Score (`retro_surfacings.score`, the recency-weighted cosine) at or above
+   * which a surfacing counts as "high-similarity" for the recency bonus.
+   */
+  highSimilarityThreshold?: number;
+  /**
+   * Composite-signal value at or above which the curator promotes a retro.
+   * Replaces the old raw `occurrences >= 2` gate. The default is tuned so a
+   * retro with two independent occurrences still promotes with no telemetry.
+   */
+  promoteThreshold?: number;
+}
+
 export interface CortexConfig {
   /** Git remote URL. Optional — only used by the git sync backend. */
   repo?: string;
@@ -43,6 +80,13 @@ export interface CortexConfig {
    * (AGT-455). Default 0.95 (see `DEFAULT_RETRO_NEAR_DUP_THRESHOLD`).
    */
   retroNearDupThreshold?: number;
+  /**
+   * Weights and thresholds for the composite retro value signal (AGT-460 /
+   * design doc §5 M5). The composite replaces raw surface-count as the value
+   * proxy in promotion logic and the `think retro-usage` ranking. See
+   * `retro-value-signal.ts` for the formula and the per-field defaults.
+   */
+  retroValueSignal?: RetroValueSignalConfig;
   /**
    * Persistent opt-in to ship cortex content to Anthropic via the Claude
    * Agent SDK (`think curate`, `think long-term backfill`, episode
