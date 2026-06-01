@@ -13,6 +13,7 @@ import {
   runsSince,
 } from '../../src/db/retro-queries.js';
 import * as retroCurator from '../../src/lib/retro-curator.js';
+import { saveConfig, getConfig } from '../../src/lib/config.js';
 
 function makeProgram(): Command {
   const prog = new Command();
@@ -239,6 +240,38 @@ describe('think curate-retros command', () => {
     // last_recalled_at IS NULL → should NOT appear in relegation candidates
     const candidates = getPromotedRetrosForRelegation(cortex);
     expect(candidates.map(c => c.id)).not.toContain(r.id);
+  });
+
+  it('relegation fires via the command for a stale promoted retro (AGT-457, AC #5)', async () => {
+    // End-to-end through the command: a promoted retro whose last_recalled_at is
+    // older than `retroRelegateAfterRuns` curator runs gets demoted. Uses a low
+    // configured threshold so the default of 50 isn't impractical in a test.
+    const cortex = 'relegate-command-test';
+    getCortexDb(cortex);
+    saveConfig({ ...getConfig(), cortex: { ...getConfig().cortex, retroRelegateAfterRuns: 2 } });
+
+    const r = insertRetro(cortex, { content: 'prefer prepared statements over string interpolation' });
+    const db = getCortexDb(cortex);
+    const pastTs = new Date(Date.now() - 10000).toISOString();
+    db.prepare(
+      'UPDATE retros SET occurrences = 2, promoted = 1, last_recalled_at = ? WHERE id = ?'
+    ).run(pastTs, r.id);
+    // Two curator runs since the retro was last recalled → meets threshold 2.
+    insertTwoCuratorRuns(cortex, pastTs);
+
+    vi.spyOn(retroCurator, 'getCandidatePairs').mockReturnValue([]);
+
+    const prog = makeProgram();
+    await prog.parseAsync(['node', 'think', '-C', cortex, 'curate-retros']);
+
+    const freshDb = getCortexDb(cortex);
+    const row = freshDb.prepare('SELECT promoted, tombstoned_at FROM retros WHERE id = ?').get(r.id) as {
+      promoted: number;
+      tombstoned_at: string | null;
+    };
+    // Demoted, not deleted (reversible — AC #5/#6).
+    expect(row.promoted).toBe(0);
+    expect(row.tombstoned_at).toBeNull();
   });
 
   it('--dry-run does not commit any changes', async () => {

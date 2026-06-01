@@ -40,10 +40,11 @@ Storage contract:
            curator runs has promoted=0 set. The row is NOT deleted. A
            subsequent recall or new occurrence can re-promote it.
 
-           Note: relegation requires last_recalled_at to be set, which
-           happens when retros are recalled. Reader commands that set
-           last_recalled_at ship in a future release; until then the
-           relegated count will always be 0.
+           Note: relegation requires last_recalled_at to be set. As of
+           AGT-457 the recall path writes it back on every surfacing, so a
+           promoted retro that stops being recalled will eventually relegate.
+           Retros that have never been recalled (last_recalled_at IS NULL)
+           are never relegated.
 
   --cortex is required. Retros are scoped to a specific codebase or tool,
   not the user's current working context.
@@ -183,10 +184,12 @@ async function runRetroCuration(cortex: string, dryRun: boolean, relegateAfterRu
     }
   }
 
-  // 3. Relegation pass: promoted retros not recalled in N runs → demote (row stays)
+  // 3. Relegation pass: promoted retros not recalled in N runs → demote (row stays).
+  //    Active as of AGT-457 — the recall path writes last_recalled_at back on
+  //    every surfacing, so a promoted retro that stops being recalled relegates.
   const relegationCandidates = getPromotedRetrosForRelegation(cortex);
   if (relegationCandidates.length === 0 && afterDedupe.some(r => r.promoted === 1)) {
-    console.log(chalk.dim('  (relegation inactive: no retros have been recalled yet — last_recalled_at wires up in a future release)'));
+    console.log(chalk.dim('  (no relegation candidates: every promoted retro has been recalled recently or never recalled at all)'));
   }
   const toRelegate = relegationCandidates.filter(r => {
     return runsSince(cortex, r.last_recalled_at!) >= relegateAfterRuns;
