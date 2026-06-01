@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+## [1.11.1] — 2026-05-31
+
+### Fixed
+
+- **Dirty shared worktree no longer wedges branch switching for every cortex (#69).** The daemon time-shares one git worktree across all cortex branches (one orphan branch per cortex). A cycle that crashed or aborted after appending to an L1 page but before committing could leave that worktree dirty; from then on, every `git switch`/`git merge --ff-only` for **any** cortex aborted with "Your local changes to the following files would be overwritten by checkout", wedging read/write across all cortexes with no self-heal until a human cleaned the tree by hand. think now self-heals before switching/merging: it salvages the leftover with a commit on the current branch (every tracked path belongs to the checked-out cortex by the orphan-branch invariant, so the data is preserved — not discarded as `git reset --hard` would). Applied to both git seams (the synchronous CLI/compaction path and the async push-debouncer). Staging is tracked-only (`git add -u`), so stray untracked files are never swept into cortex history.
+- **Daemon error messages are no longer truncated mid-sentence.** The `retro`, `log`, and `event` commands capped daemon-sourced errors at 200 characters, clipping git's remediation hint (e.g. "Please commit your changes or stash them…") exactly when the user needed it. The cap is now 1000 characters so the actionable part of the message survives.
+
 ## [1.11.0] — 2026-05-29
 
 ### Added
