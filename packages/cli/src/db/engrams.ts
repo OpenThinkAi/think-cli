@@ -419,6 +419,28 @@ export const migrations: Migration[] = [
       `);
     },
   },
+  {
+    version: 18,
+    up: (db) => {
+      // AGT-455: retro near-duplicate fold counter on the L2 memories table.
+      //
+      // The write-time quality gate (M1 of iterative-learning-v2) folds a new
+      // retro whose embedding is >= 0.95 cosine to an existing retro in the
+      // same cortex into the existing row by incrementing this counter, rather
+      // than inserting a near-identical row. This mirrors the `occurrences`
+      // column on the separate `retros` table (cross-peer dedup, migration 8),
+      // but applies to the sync-write path where retros land in `memories`
+      // with kind='retro'.
+      //
+      // Nullable, no default: only retro rows ever carry a value. A retro row
+      // is created with occurrences=1 by the sync handler; memory/event rows
+      // leave it NULL and are unaffected. Idempotent via PRAGMA table_info.
+      const cols = db.prepare('PRAGMA table_info(memories)').all() as { name: string }[];
+      if (!cols.some(c => c.name === 'occurrences')) {
+        db.exec('ALTER TABLE memories ADD COLUMN occurrences INTEGER;');
+      }
+    },
+  },
 ];
 
 /** Returns the per-cortex SQLite connection (holds engrams, memories, longterm_summary, and sync_cursors tables) */
