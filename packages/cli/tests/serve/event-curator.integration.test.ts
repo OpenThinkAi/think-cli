@@ -38,7 +38,7 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { mkdtempSync, rmSync, readFileSync, readdirSync, existsSync } from 'node:fs';
+import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
@@ -54,6 +54,7 @@ const { processTerminalEvent, selectUncuratedEvents } = await import(
   '../../src/serve/event-curator.js'
 );
 const { getProxyPeerId } = await import('../../src/serve/peer-id.js');
+const { getCortexDb } = await import('../../src/db/engrams.js');
 
 const CORTEX = 'anglepoint-team';
 
@@ -65,20 +66,21 @@ function generatorYielding(result: string): AsyncGenerator<{ result: string }> {
   })();
 }
 
-/** Read all JSONL lines from the active cortex page under THINK_HOME. */
-function readCortexJsonl(thinkHome: string, cortex: string): Array<Record<string, unknown>> {
-  const cortexDir = path.join(thinkHome, 'repo', cortex);
-  if (!existsSync(cortexDir)) return [];
-  const files = readdirSync(cortexDir).filter((f) => f.endsWith('.jsonl')).sort();
-  const lines: Array<Record<string, unknown>> = [];
-  for (const f of files) {
-    const raw = readFileSync(path.join(cortexDir, f), 'utf-8');
-    for (const ln of raw.split('\n')) {
-      if (ln.length === 0) continue;
-      lines.push(JSON.parse(ln) as Record<string, unknown>);
-    }
-  }
-  return lines;
+/**
+ * Read the JSONL lines the proxy enqueued for a cortex.
+ *
+ * Post-AGT-458 (#70 Option B) the cortex-writer enqueues each curated memory
+ * to the cortex's `l1_outbox` rather than writing the shared worktree — the
+ * push-debouncer's plumbing drain appends them to the branch ref. These tests
+ * pass `notifyPush: () => {}` (no drain), so the lines stay in the outbox; we
+ * read them there. The line bytes are identical to what the drain would write
+ * to L1, so every downstream field assertion is unchanged.
+ */
+function readCortexJsonl(_thinkHome: string, cortex: string): Array<Record<string, unknown>> {
+  const db = getCortexDb(cortex);
+  const rows = db.prepare('SELECT line FROM l1_outbox ORDER BY id ASC').all() as
+    { line: string }[];
+  return rows.map((r) => JSON.parse(r.line) as Record<string, unknown>);
 }
 
 /**
@@ -108,16 +110,23 @@ describe('AGT-386 — end-to-end pipeline smoke test', () => {
   let originalHome: string | undefined;
   let originalConsent: string | undefined;
 
-  beforeEach(() => {
+  beforeEach(async () => {
     originalHome = process.env.THINK_HOME;
     thinkHome = mkdtempSync(path.join(tmpdir(), 'think-agt-386-'));
     process.env.THINK_HOME = thinkHome;
     originalConsent = process.env.THINK_LLM_CONSENT;
     process.env.THINK_LLM_CONSENT = '1';
     querySpy.mockReset();
+    // Drop any cortex DB handle cached from a previous test so the per-cortex
+    // `l1_outbox` (now the proxy's write sink — AGT-458) resolves to THIS
+    // test's fresh THINK_HOME rather than a stale path.
+    const { closeAllCortexDbs } = await import('../../src/db/engrams.js');
+    closeAllCortexDbs();
   });
 
-  afterEach(() => {
+  afterEach(async () => {
+    const { closeAllCortexDbs } = await import('../../src/db/engrams.js');
+    closeAllCortexDbs();
     if (originalHome === undefined) delete process.env.THINK_HOME;
     else process.env.THINK_HOME = originalHome;
     if (originalConsent === undefined) delete process.env.THINK_LLM_CONSENT;

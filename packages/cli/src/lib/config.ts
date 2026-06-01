@@ -75,6 +75,19 @@ export interface CortexConfig {
   llmProvider?: 'auto' | 'local' | 'anthropic';
   /** Local OpenAI-compatible LLM backend (oMLX/Qwen). See `LocalLlmConfig`. */
   local?: LocalLlmConfig;
+  /**
+   * Use git plumbing (hash-object / read-tree / commit-tree / update-ref) to
+   * append cross-cortex L1 writes directly to the cortex branch ref, instead
+   * of checking that branch out into the shared worktree first (#70 Option B,
+   * iterative-learning-v2 §6 / AGT-458).
+   *
+   * The plumbing path never runs `git switch` on the shared worktree, which
+   * removes the cross-cortex switch race that was the root of the
+   * #70/#65/#69 fragility class. Default `true`. Set to `false` to fall back
+   * to the legacy switch+commit worktree path (kept as a reversible escape
+   * hatch while the plumbing path soaks).
+   */
+  plumbingWrites?: boolean;
 }
 
 /**
