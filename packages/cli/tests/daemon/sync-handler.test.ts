@@ -64,9 +64,20 @@ beforeEach(async () => {
   // Touch the L2 database so cortexExists() returns true.
   getCortexDb(cortexName);
   closeAllCortexDbs();
+
+  // handleSync calls `pushDebouncer.notify()` (the singleton), which schedules
+  // a debounced drain that would otherwise spawn a real `git` subprocess
+  // against this test's torn-down THINK_HOME after the test returns — a
+  // leftover child + timer that can wedge the vitest fork-pool worker. Stub the
+  // git seam to a no-op by default; the rotation test overrides it with its own
+  // mock that drives the legacy worktree drain.
+  const { pushDebouncer } = await import('../../src/daemon/push-debouncer.js');
+  pushDebouncer._gitOverride = async () => '';
 });
 
 afterEach(async () => {
+  const { pushDebouncer } = await import('../../src/daemon/push-debouncer.js');
+  pushDebouncer._gitOverride = undefined;
   // Always close DB handles — even if a test assertion threw — to avoid leaks.
   const { closeAllCortexDbs } = await import('../../src/db/engrams.js');
   closeAllCortexDbs();
@@ -244,7 +255,22 @@ describe('sync handler (AGT-286)', () => {
     ).rejects.toThrow(/topics/);
   });
 
-  it('rotates to a new L1 page after L1_PAGE_SIZE lines', async () => {
+  it('rotates to a new L1 page after L1_PAGE_SIZE lines (legacy worktree drain)', async () => {
+    // Page rotation in the LEGACY worktree drain is driven by `getActivePage`
+    // reading the worktree page file. (The plumbing drain's rotation — reading
+    // the branch tree — is covered in git-plumbing-write.test.ts.) This test
+    // exercises the legacy path with a no-op git mock, so opt into the escape
+    // hatch: rewrite the config with plumbingWrites:false.
+    fs.writeFileSync(
+      join(thinkHome, 'config', 'config.json'),
+      JSON.stringify({
+        peerId: 'test-peer-id-agt-286',
+        syncPort: 9999,
+        cortex: { author: 'test-author', plumbingWrites: false },
+      }) + '\n',
+      { mode: 0o600 },
+    );
+
     // Page rotation is driven by `getActivePage` inside the push-debouncer
     // drain, not handleSync (which only enqueues to l1_outbox). The test
     // therefore drives the full path: enqueue → flush(cortex) → file write.

@@ -28,8 +28,10 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { getRepoPath, sanitizeName } from '../lib/paths.js';
 import { safeGitEnv, withUnionMergeAttribute, ensureLocalUnionMergeAttribute, GIT_FF_ONLY_NO_REMOTE_REF, GIT_FF_ONLY_NOT_MERGEABLE } from '../lib/git.js';
+import { appendLinesViaPlumbing } from '../lib/git-plumbing.js';
 import { appendRawLineToL1Page } from '../lib/l1-page.js';
 import { getCortexDb } from '../db/engrams.js';
+import { getConfig } from '../lib/config.js';
 import { daemonLog } from './log.js';
 
 // ---------------------------------------------------------------------------
@@ -54,8 +56,19 @@ interface CortexState {
 // Helpers
 // ---------------------------------------------------------------------------
 
-/** Run a git subcommand asynchronously in the given directory. */
-function runGitAsync(args: string[], cwd: string): Promise<string> {
+/**
+ * Run a git subcommand asynchronously in the given directory.
+ *
+ * `opts.stdin` feeds bytes to the child's stdin (used by the plumbing path's
+ * `git hash-object --stdin`). `opts.env` layers extra environment on top of
+ * the hardened `safeGitEnv()` base (used to thread a scratch `GIT_INDEX_FILE`
+ * so plumbing tree-builds never touch the shared index/worktree).
+ */
+function runGitAsync(
+  args: string[],
+  cwd: string,
+  opts?: { stdin?: string; env?: NodeJS.ProcessEnv },
+): Promise<string> {
   return new Promise((resolve, reject) => {
     // Apply the canonical security posture from lib/git.ts: disable hooks,
     // fsmonitor, and use the shared env-strip helper.
@@ -65,15 +78,24 @@ function runGitAsync(args: string[], cwd: string): Promise<string> {
       ...args,
     ];
 
-    execFile('git', fullArgs, { cwd, encoding: 'utf-8', env: safeGitEnv() }, (err, stdout, stderr) => {
-      if (err) {
-        const message = (err instanceof Error ? err.message : String(err)) +
-          (stderr ? `\n${stderr}` : '');
-        reject(new Error(message));
-      } else {
-        resolve((stdout ?? '').trim());
-      }
-    });
+    const env = opts?.env ? { ...safeGitEnv(), ...opts.env } : safeGitEnv();
+    const child = execFile(
+      'git',
+      fullArgs,
+      { cwd, encoding: 'utf-8', env },
+      (err, stdout, stderr) => {
+        if (err) {
+          const message = (err instanceof Error ? err.message : String(err)) +
+            (stderr ? `\n${stderr}` : '');
+          reject(new Error(message));
+        } else {
+          resolve((stdout ?? '').trim());
+        }
+      },
+    );
+    if (opts?.stdin !== undefined) {
+      child.stdin?.end(opts.stdin);
+    }
   });
 }
 
@@ -116,7 +138,11 @@ export class PushDebouncer {
    *
    * @internal Not part of the public API.
    */
-  _gitOverride?: (args: string[], cwd: string) => Promise<string>;
+  _gitOverride?: (
+    args: string[],
+    cwd: string,
+    opts?: { stdin?: string; env?: NodeJS.ProcessEnv },
+  ) => Promise<string>;
 
   /**
    * @param debounceMs  Override debounce delay in milliseconds. Defaults to
@@ -290,7 +316,154 @@ export class PushDebouncer {
     }
   }
 
+  /**
+   * Maximum push attempts before giving up for this cycle. The next `notify()`
+   * (triggered by the next write) fires a fresh cycle.
+   */
+  private static readonly MAX_PUSH_ATTEMPTS = 3;
+
   private async _executePushLocked(
+    safeCortex: string,
+    count: number,
+    skipPush: boolean,
+  ): Promise<void> {
+    const usePlumbing = getConfig().cortex?.plumbingWrites !== false;
+    if (usePlumbing) {
+      return this._executePlumbingLocked(safeCortex, count, skipPush);
+    }
+    return this._executeLegacyLocked(safeCortex, count, skipPush);
+  }
+
+  /**
+   * Plumbing write path (#70 Option B / AGT-458). Appends drained outbox rows
+   * to the cortex branch via git plumbing (`hash-object`/`read-tree`/
+   * `commit-tree`/`update-ref`) WITHOUT a `git switch` on the shared worktree,
+   * then pushes the branch ref. Because the worktree is never touched, a
+   * concurrent write to a different cortex can never trip on this cortex's
+   * dirty tree — the #70/#65/#69 switch-race class is structurally gone.
+   *
+   * On a non-fast-forward push rejection the local ref is reset back to the
+   * (re-fetched) remote tip and the append is rebuilt on top of it, mirroring
+   * the legacy pull-rebase-then-retry loop without a checkout. Outbox rows are
+   * deleted only after a successful push (or, with `skipPush`, after the local
+   * ref advance) so a crash mid-cycle leaves them for the next drain.
+   */
+  private async _executePlumbingLocked(
+    safeCortex: string,
+    count: number,
+    skipPush: boolean,
+  ): Promise<void> {
+    const repoPath = getRepoPath();
+    const git = this._gitOverride ?? runGitAsync;
+    const hasRealGit = fs.existsSync(path.join(repoPath, '.git'));
+
+    try {
+      // --- read l1_outbox (FIFO) ---
+      let rows: { id: number; line: string }[] = [];
+      try {
+        const db = getCortexDb(safeCortex);
+        rows = db.prepare('SELECT id, line FROM l1_outbox ORDER BY id ASC').all() as
+          { id: number; line: string }[];
+      } catch (drainErr) {
+        throw new Error(
+          `outbox read failed for cortex '${safeCortex}': ` +
+            (drainErr instanceof Error ? drainErr.message : String(drainErr)),
+        );
+      }
+
+      if (rows.length === 0) {
+        // Pre-outbox direct writers (event-curator, scheduler) previously
+        // dirtied the worktree and relied on this cycle's `git add`. With the
+        // plumbing path every writer enqueues to the outbox instead, so an
+        // empty outbox genuinely means nothing to do — even when the legacy
+        // `count` is non-zero (a notify() with no enqueued row).
+        log(`nothing to commit for cortex '${safeCortex}' (outbox empty)`);
+        return;
+      }
+
+      const drainedIds = rows.map((r) => r.id);
+      const lines = rows.map((r) => r.line);
+      const effectiveCount = Math.max(lines.length, count);
+      const commitMsg = `auto: ${effectiveCount} ${effectiveCount === 1 ? 'entry' : 'entries'} via daemon ${new Date().toISOString()}`;
+
+      // Append + advance the branch ref via plumbing, retrying on a non-FF
+      // push by resetting our local ref to the re-fetched remote tip and
+      // rebuilding on top of it.
+      const MAX = PushDebouncer.MAX_PUSH_ATTEMPTS;
+      let lastErr: unknown;
+      for (let attempt = 1; attempt <= MAX; attempt++) {
+        const { commit, parent } = await appendLinesViaPlumbing(
+          git,
+          repoPath,
+          safeCortex,
+          lines,
+          commitMsg,
+          // Skip the network fetch when there is no real repo (unit tests with
+          // a mocked git seam) — the mock's `fetch` is a harmless no-op, but
+          // skipping keeps the recorded call sequence focused on the write.
+          { fetchFirst: hasRealGit && !this._gitOverride },
+        );
+        log(`appended ${lines.length} ${lines.length === 1 ? 'entry' : 'entries'} to '${safeCortex}' via plumbing (commit ${commit.slice(0, 12)})`);
+
+        if (skipPush) {
+          log(`push suppressed for cortex '${safeCortex}' (skipPush=true)`);
+          this._deleteOutboxRows(safeCortex, drainedIds);
+          return;
+        }
+
+        try {
+          await git(['push', 'origin', `refs/heads/${safeCortex}:refs/heads/${safeCortex}`], repoPath);
+          log(`pushed cortex '${safeCortex}' to origin`);
+          this._deleteOutboxRows(safeCortex, drainedIds);
+          return;
+        } catch (pushErr) {
+          lastErr = pushErr;
+          const pmsg = pushErr instanceof Error ? pushErr.message : String(pushErr);
+          const isNonFastForward = /rejected|fetch first|non-fast-forward|stale info/i.test(pmsg);
+          if (!isNonFastForward) {
+            // Auth/network/other — surface immediately, don't spin.
+            throw pushErr;
+          }
+          log(
+            `push rejected for cortex '${safeCortex}' (attempt ${attempt}/${MAX}, ` +
+              `origin advanced) — re-fetching and rebuilding the append`,
+          );
+          // Discard our just-built local commit so the next attempt rebuilds
+          // on the re-fetched remote tip. `resolveTip` inside the next
+          // `appendLinesViaPlumbing` fast-forwards the local ref to origin
+          // after the fetch, so a plain reset back to `parent` (the tip we
+          // built on) is enough to undo this attempt's commit; the fetch in
+          // the next iteration advances it past `parent`.
+          if (parent !== null) {
+            await git(['update-ref', `refs/heads/${safeCortex}`, parent, commit], repoPath)
+              .catch(() => {
+                // Ref already moved — best effort; the next resolveTip reconciles.
+              });
+          }
+          // The next iteration must fetch even under _gitOverride-less real
+          // git to pick up origin's advance.
+        }
+      }
+
+      throw (
+        lastErr ??
+        new Error(`push failed for cortex '${safeCortex}' after ${MAX} attempts`)
+      );
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      log(`push failed for cortex '${safeCortex}' (will retry on next write): ${msg}`);
+    }
+  }
+
+  /**
+   * Legacy worktree write path (pre-AGT-458). Kept behind
+   * `cortex.plumbingWrites: false` as a reversible escape hatch while the
+   * plumbing path soaks. Switches the shared worktree to the cortex branch,
+   * drains the outbox by appending to the worktree page file, then
+   * `git add`/`commit`/`pull --rebase`/`push`. This path carries the #69
+   * dirty-worktree self-heal because the switch can be wedged by a leftover.
+   */
+  private async _executeLegacyLocked(
     safeCortex: string,
     count: number,
     skipPush: boolean,
@@ -300,14 +473,14 @@ export class PushDebouncer {
     const git = this._gitOverride ?? runGitAsync;
 
     try {
-      // Re-establish the cortex's branch before staging. Writes earlier in
-      // this cycle already called `ensureBranchCheckedOut(safeCortex)` at
-      // the sync-handler / compaction / proxy seam, but a concurrent write
-      // to a *different* cortex (or an operator command) may have switched
-      // the tree out again during the 500ms debounce window. Without this
-      // re-switch, `git add -- <safeCortex>` would stage the diff on the
-      // wrong branch and the commit would land there. The check is a cheap
-      // `rev-parse` first to avoid a redundant switch when the branch is
+      // Re-establish the cortex's branch before staging. (Legacy path only —
+      // post-AGT-458 every writer enqueues to `l1_outbox` and the default
+      // plumbing drain needs no checkout.) A concurrent write to a *different*
+      // cortex (or an operator command) may have switched the tree out during
+      // the debounce window. Without this re-switch, `git add -- <safeCortex>`
+      // would stage the diff on the wrong branch and the commit would land
+      // there. The check is a cheap `rev-parse` first to avoid a redundant
+      // switch when the branch is
       // already correct.
       const currentBranch = (await git(
         ['rev-parse', '--abbrev-ref', 'HEAD'],

@@ -10,9 +10,36 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
+import type { DatabaseSync } from 'node:sqlite';
 
 /** Maximum number of JSONL lines per page before rotating to a new file. */
 export const L1_PAGE_SIZE = 1000;
+
+/**
+ * Enqueue a serialized JSONL line into a cortex's `l1_outbox` for the push-
+ * debouncer to drain into L1. This is the single hand-off every L1 writer uses
+ * once the plumbing write path (#70 Option B / AGT-458) is in effect: writers
+ * no longer touch the shared worktree (which can only have one branch checked
+ * out at a time), they just enqueue and `notify()`. The debouncer's serialized
+ * drain appends to the cortex branch via git plumbing.
+ *
+ * `line` must be the full JSONL line WITHOUT a trailing newline (the drain adds
+ * it). `db` is the caller's cortex DB handle — passing it in lets callers run
+ * the enqueue inside an existing transaction so the L2 row and the outbox row
+ * land atomically.
+ */
+export function enqueueL1Outbox(
+  db: DatabaseSync,
+  entryId: string,
+  line: string,
+  createdAt: string = new Date().toISOString(),
+): void {
+  db.prepare('INSERT INTO l1_outbox (entry_id, line, created_at) VALUES (?, ?, ?)').run(
+    entryId,
+    line,
+    createdAt,
+  );
+}
 
 /**
  * Returns the absolute path to the active L1 JSONL page for the given cortex

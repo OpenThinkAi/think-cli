@@ -44,6 +44,17 @@ beforeEach(() => {
   tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'think-pushdeb-'));
   process.env.THINK_HOME = tmpHome;
   fs.mkdirSync(path.join(tmpHome, 'repo'), { recursive: true });
+  // These tests assert the LEGACY worktree write sequence (switch → add →
+  // commit → pull --rebase → push). The plumbing path (#70 Option B / AGT-458)
+  // is the default, so opt these into the legacy escape hatch explicitly.
+  // (The dedicated plumbing-path tests live in git-plumbing-write.test.ts.)
+  const cfgDir = path.join(tmpHome, 'config');
+  fs.mkdirSync(cfgDir, { recursive: true, mode: 0o700 });
+  fs.writeFileSync(
+    path.join(cfgDir, 'config.json'),
+    JSON.stringify({ peerId: 'pushdeb-test', cortex: { author: 'test', plumbingWrites: false } }),
+    { mode: 0o600 },
+  );
 });
 
 afterEach(() => {
