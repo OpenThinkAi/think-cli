@@ -14,6 +14,7 @@ import {
 } from '../../src/db/retro-queries.js';
 import * as retroCurator from '../../src/lib/retro-curator.js';
 import { saveConfig, getConfig } from '../../src/lib/config.js';
+import { getUsageDb, closeUsageDb } from '../../src/db/usage-db.js';
 
 function makeProgram(): Command {
   const prog = new Command();
@@ -40,6 +41,7 @@ describe('think curate-retros command', () => {
     tmpHome = mkdtempSync(join(tmpdir(), 'think-curate-retros-test-'));
     process.env.THINK_HOME = tmpHome;
     closeAllCortexDbs();
+    closeUsageDb();
     vi.spyOn(console, 'log').mockImplementation(() => {});
     vi.spyOn(console, 'error').mockImplementation(() => {});
     // Default: mock runRetroDedupe to return no equivalences (no network call)
@@ -48,6 +50,7 @@ describe('think curate-retros command', () => {
 
   afterEach(() => {
     closeAllCortexDbs();
+    closeUsageDb();
     if (originalHome === undefined) delete process.env.THINK_HOME;
     else process.env.THINK_HOME = originalHome;
     rmSync(tmpHome, { recursive: true, force: true });
@@ -173,6 +176,62 @@ describe('think curate-retros command', () => {
     getCortexDb(cortex);
 
     const r = insertRetro(cortex, { content: 'single occurrence retro should not be promoted' });
+
+    vi.spyOn(retroCurator, 'getCandidatePairs').mockReturnValue([]);
+
+    const prog = makeProgram();
+    await prog.parseAsync(['node', 'think', '-C', cortex, 'curate-retros']);
+
+    const freshDb = getCortexDb(cortex);
+    const row = freshDb.prepare('SELECT promoted FROM retros WHERE id = ?').get(r.id) as { promoted: number };
+    expect(row.promoted).toBe(0);
+  });
+
+  it('promotion: single-occurrence retro with deliberate brief surfacings promotes via the composite signal (AGT-460)', async () => {
+    const cortex = 'composite-brief-promote-test';
+    getCortexDb(cortex);
+
+    // A single-occurrence retro — under the legacy occurrences>=2 gate it would
+    // NOT promote. With a brief + session-start surfacing it clears the composite.
+    const r = insertRetro(cortex, { content: 'good niche lesson surfaced deliberately at task start' });
+
+    const usage = getUsageDb();
+    usage
+      .prepare(
+        `INSERT INTO retro_surfacings (retro_id, cortex, query, surfaced_at, score, source, session_id, session_seq)
+         VALUES (?, ?, 'q', ?, ?, 'brief', 's1', 1)`,
+      )
+      .run(r.id, cortex, new Date().toISOString(), 0.9);
+
+    vi.spyOn(retroCurator, 'getCandidatePairs').mockReturnValue([]);
+
+    const prog = makeProgram();
+    await prog.parseAsync(['node', 'think', '-C', cortex, 'curate-retros']);
+
+    const freshDb = getCortexDb(cortex);
+    const row = freshDb.prepare('SELECT occurrences, promoted FROM retros WHERE id = ?').get(r.id) as {
+      occurrences: number;
+      promoted: number;
+    };
+    expect(row.occurrences).toBe(1); // still a single occurrence
+    expect(row.promoted).toBe(1); // promoted on telemetry, not frequency
+  });
+
+  it('promotion: mid-session vector noise alone does not promote a single-occurrence retro (AGT-460)', async () => {
+    const cortex = 'composite-mid-noise-test';
+    getCortexDb(cortex);
+
+    const r = insertRetro(cortex, { content: 'retro that only ever surfaces as mid-session vector noise' });
+
+    const usage = getUsageDb();
+    const stmt = usage.prepare(
+      `INSERT INTO retro_surfacings (retro_id, cortex, query, surfaced_at, score, source, session_id, session_seq)
+       VALUES (?, ?, 'q', ?, ?, 'recall', 's1', ?)`,
+    );
+    // Six mid-session surfacings (seq>1), low score — pure noise.
+    for (let i = 0; i < 6; i++) {
+      stmt.run(r.id, cortex, new Date().toISOString(), 0.3, i + 2);
+    }
 
     vi.spyOn(retroCurator, 'getCandidatePairs').mockReturnValue([]);
 
