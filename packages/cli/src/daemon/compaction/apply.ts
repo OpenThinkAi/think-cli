@@ -23,15 +23,13 @@
  * unsanitized cortex name is a programmer error.
  */
 
-import path from 'node:path';
 import { v7 as uuidv7 } from 'uuid';
 import { getCortexDb } from '../../db/engrams.js';
 import { assignNextSeq } from '../../db/activity-seq.js';
-import { getRepoPath } from '../../lib/paths.js';
 import { getConfig, getPeerId } from '../../lib/config.js';
 import embed, { EMBEDDING_MODEL_NAME } from '../../lib/embed.js';
-import { appendToL1Page } from '../../lib/l1-page.js';
-import { ensureBranchCheckedOut } from '../../lib/git.js';
+import { enqueueL1Outbox } from '../../lib/l1-page.js';
+import { pushDebouncer } from '../push-debouncer.js';
 import type { CompactionSuccess, NewEntry } from './call.js';
 
 // ---------------------------------------------------------------------------
@@ -64,7 +62,10 @@ export async function applyCompaction(
   const author = config.cortex?.author ?? 'unknown';
   const origin_peer_id = getPeerId();
 
-  // ── Step 1: write new compacted entry to L1 ──────────────────────────────
+  // ── Step 1: build the new compacted L1 entry ─────────────────────────────
+  // The line is enqueued to `l1_outbox` (inside the L2 transaction below) and
+  // appended to the cortex branch by the push-debouncer's serialized drain —
+  // via git plumbing, with no worktree `git switch` (#70 Option B / AGT-458).
   const l1Entry: Record<string, unknown> = {
     id: compactedId,
     ts,
@@ -79,14 +80,7 @@ export async function applyCompaction(
     source_ids: [],
     deleted_at: null,
   };
-
-  const cortexDir = path.join(getRepoPath(), safeCortex);
-  // Switch the working tree to the cortex's branch before appending so the
-  // compacted line lands in the right tree even when another cortex's
-  // write switched the branch out earlier in the daemon's lifetime. See
-  // `ensureBranchCheckedOut`.
-  ensureBranchCheckedOut(safeCortex);
-  appendToL1Page(cortexDir, l1Entry);
+  const l1Line = JSON.stringify(l1Entry);
 
   // ── Step 2: embed the compacted content ──────────────────────────────────
   const embeddingVec = await embed(llmResult.compacted_text);
@@ -144,11 +138,19 @@ export async function applyCompaction(
       }
     }
 
+    // 3d. Enqueue the compacted L1 line for the push-debouncer drain. Inside
+    // the same transaction as the L2 row so the two land atomically — a crash
+    // between them can't leave the L1 page and L2 index disagreeing.
+    enqueueL1Outbox(db, compactedId, l1Line, ts);
+
     db.exec('COMMIT');
   } catch (err) {
     db.exec('ROLLBACK');
     throw err;
   }
+
+  // Schedule the debounced plumbing append + push for the enqueued line.
+  pushDebouncer.notify(safeCortex);
 
   log(
     `compaction applied (raw=${rawEntry.id}, compacted=${compactedId}, cortex=${safeCortex}): ` +

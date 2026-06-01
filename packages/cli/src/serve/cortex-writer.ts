@@ -34,11 +34,11 @@
  *     `serve/peer-id.ts:getProxyPeerId`.
  */
 
-import path from 'node:path';
+import type { DatabaseSync } from 'node:sqlite';
 import { v7 as uuidv7 } from 'uuid';
-import { appendToL1Page } from '../lib/l1-page.js';
-import { getRepoPath, sanitizeName } from '../lib/paths.js';
-import { ensureBranchCheckedOut } from '../lib/git.js';
+import { enqueueL1Outbox } from '../lib/l1-page.js';
+import { sanitizeName } from '../lib/paths.js';
+import { getCortexDb } from '../db/engrams.js';
 import { pushDebouncer } from '../daemon/push-debouncer.js';
 
 /**
@@ -105,11 +105,14 @@ export interface WriteMemoriesForEventOptions {
    */
   now?: () => string;
   /**
-   * Test seam: override the JSONL appender. Production callers leave
-   * this unset and get `appendToL1Page`. Tests use it to redirect writes
-   * to a tmp directory without touching the user's real `~/.think/repo`.
+   * Test seam: override the JSONL sink. Production callers leave this unset
+   * and each memory is enqueued to the cortex's `l1_outbox` for the push-
+   * debouncer's plumbing drain (#70 Option B / AGT-458) — no worktree switch.
+   * Unit tests pass a stub to capture the written objects without touching a
+   * DB or the user's real `~/.think/repo`. When provided, this takes
+   * precedence over the outbox enqueue.
    */
-  appendFn?: (cortexDir: string, obj: Record<string, unknown>) => void;
+  appendFn?: (obj: Record<string, unknown>) => void;
   /**
    * Test seam: override the push-debouncer notify. Production callers
    * leave this unset and the module-level `pushDebouncer` singleton is
@@ -181,15 +184,11 @@ export interface WriteMemoriesResult {
  *     `origin_peer_id` would silently break audit and recall hits.
  *
  * Failure model:
- *   - File-system I/O errors from `appendToL1Page` propagate up
- *     synchronously. There is no partial-write recovery: if the writer
- *     throws after appending memory[0] but before memory[1], the first
- *     line is persisted and the caller sees the throw. This matches the
- *     existing daemon sync handler's behaviour and is acceptable because
- *     the JSONL is append-only — a second invocation with the same
- *     event would produce *new* sibling memories (new uuidv7s) under the
- *     same `episode_key`, which is a harmless duplication that the
- *     consuming side dedups on read.
+ *   - The outbox enqueue for all memories runs in one SQLite transaction, so a
+ *     throw mid-fan-out rolls back every row (no partial episode). DB errors
+ *     propagate synchronously. A retried invocation produces *new* sibling
+ *     memories (new uuidv7s) under the same `episode_key`, a harmless
+ *     duplication the consuming side dedups on read.
  */
 export function writeMemoriesForEvent(
   opts: WriteMemoriesForEventOptions,
@@ -228,38 +227,53 @@ export function writeMemoriesForEvent(
     opts.occurredAt !== undefined && Number.isFinite(Date.parse(opts.occurredAt))
       ? opts.occurredAt
       : now;
-  const append = opts.appendFn ?? appendToL1Page;
-  const cortexDir = path.join(getRepoPath(), safeCortex);
-  // Switch the working tree to the team cortex's branch before appending.
-  // The proxy serves multiple team cortices and may have written to a
-  // different one earlier in the process lifetime; without this switch,
-  // the lines would land on the previous cortex's branch.
+  // Each curated memory becomes one JSONL line. Production enqueues the line
+  // to the cortex's `l1_outbox`; the push-debouncer's serialized drain appends
+  // it to the cortex branch via git plumbing — never switching the shared
+  // worktree, so a write for team-beta lands on team-beta even while the tree
+  // sits on team-alpha (#70 Option B / AGT-458). Unit tests pass `appendFn` to
+  // capture the objects without a DB.
   //
-  // Skipped when callers inject an `appendFn` (the test seam). The seam
-  // is the explicit opt-out from real-fs writes, and most callers passing
-  // `appendFn` do not set THINK_HOME — they would otherwise reach into the
-  // operator's real `~/.think/repo` looking for the cortex branch.
-  if (opts.appendFn === undefined) {
-    ensureBranchCheckedOut(safeCortex);
-  }
+  // Bind the seam to a local so the production-vs-test branch is a single
+  // `appendFn === undefined` check that TypeScript narrows cleanly (no
+  // non-null assertions): when it's undefined we open `db`; otherwise we use
+  // the captured `appendFn`.
+  const { appendFn } = opts;
+  const db = appendFn === undefined ? getCortexDb(safeCortex) : null;
 
   const ids: string[] = [];
-  for (const memory of memories) {
-    const id = uuidv7();
-    const entry: CortexJsonlLine = {
-      id,
-      ts,
-      author: 'proxy',
-      origin_peer_id: trimmedPeerId,
-      episode_key: event.episodeKey,
-      source_ids: [event.id],
-      topics: memory.topics,
-      content: memory.content,
-      supersedes: [],
-      compacted_from: null,
-    };
-    append(cortexDir, entry as unknown as Record<string, unknown>);
-    ids.push(id);
+  // When enqueuing for real, do it in one transaction so a mid-loop throw
+  // doesn't leave a partial fan-out of sibling memories in the outbox.
+  if (db) db.exec('BEGIN');
+  try {
+    for (const memory of memories) {
+      const id = uuidv7();
+      const entry: CortexJsonlLine = {
+        id,
+        ts,
+        author: 'proxy',
+        origin_peer_id: trimmedPeerId,
+        episode_key: event.episodeKey,
+        source_ids: [event.id],
+        topics: memory.topics,
+        content: memory.content,
+        supersedes: [],
+        compacted_from: null,
+      };
+      if (appendFn === undefined) {
+        // Production path: db is non-null exactly when appendFn is undefined.
+        enqueueL1Outbox(db as DatabaseSync, id, JSON.stringify(entry), ts);
+      } else {
+        appendFn(entry as unknown as Record<string, unknown>);
+      }
+      ids.push(id);
+    }
+    if (db) db.exec('COMMIT');
+  } catch (err) {
+    if (db) {
+      try { db.exec('ROLLBACK'); } catch { /* best effort */ }
+    }
+    throw err;
   }
 
   // --- notify push-debouncer ---
