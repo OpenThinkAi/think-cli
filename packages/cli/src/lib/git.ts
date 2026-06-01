@@ -307,6 +307,53 @@ function tryFfOnly(branchName: string): void {
 }
 
 /**
+ * Self-heal (#69): bring the shared worktree to a clean state before a
+ * `git switch` or `git merge --ff-only` — both hard-fail when the tree carries
+ * uncommitted changes. The daemon time-shares ONE worktree across every cortex
+ * branch, so a single leftover uncommitted engram — from a cycle that
+ * crashed/aborted after appending to an L1 page but before committing — wedges
+ * branch switching for ALL cortexes ("local changes would be overwritten by
+ * checkout") until a human cleans it by hand.
+ *
+ * Recovery is by COMMIT, not discard: by the orphan-branch-per-cortex
+ * invariant (`createOrphanBranch`) every tracked path in the worktree belongs
+ * to the currently checked-out cortex branch, so an uncommitted change is
+ * always legitimate, in-flight data for THAT branch. A salvage commit preserves
+ * it and lets it push on the next cycle (the union merge driver reconciles any
+ * divergence). `git reset --hard` would be simpler but would silently drop
+ * writes from the direct (non-outbox) writers — the event-curator and scheduler
+ * append straight to the L1 page — so it is not safe here.
+ *
+ * Stages only TRACKED modifications/deletions (`git add -u`): those are what
+ * make `git switch`/`merge --ff-only` refuse. Untracked files don't block
+ * either operation, so we deliberately leave them rather than sweeping stray
+ * files into cortex history — an in-flight new page survives on disk and is
+ * committed by the next cycle's scoped `git add -- <cortex>`.
+ *
+ * No-op on a clean (or untracked-only) tree — the steady state — and outside a
+ * git repo. Best-effort on detached HEAD: the salvage commit is created anyway
+ * so the switch can proceed; it stays reachable via the reflog.
+ */
+function salvageDirtyWorktree(): void {
+  if (!fs.existsSync(path.join(getRepoPath(), '.git'))) return;
+  runGit(['add', '-u']);
+  // `diff --cached --quiet` exits 0 when nothing is staged (clean or
+  // untracked-only → no wedge) and non-zero when tracked changes are staged.
+  try {
+    runGit(['diff', '--cached', '--quiet']);
+    return;
+  } catch {
+    /* tracked changes staged — salvage them below */
+  }
+  const current = getCurrentBranch();
+  runGit([
+    'commit',
+    '-m',
+    `chore(cortex): salvage uncommitted worktree changes${current ? ` on ${current}` : ''} (self-heal #69)`,
+  ]);
+}
+
+/**
  * Idempotently switch the working tree to `branchName` and fast-forward it
  * toward `origin/<branchName>` when the local ref is behind.
  *
@@ -330,11 +377,18 @@ export function ensureOnBranch(branchName: string): void {
   assertSafePositional(branchName, 'branch name');
   if (!fs.existsSync(path.join(getRepoPath(), '.git'))) return;
   if (getCurrentBranch() === branchName) {
-    // Already on the correct branch — still try to ff-only in case we drifted
-    // behind origin during a long daemon session.
+    // Already on the correct branch — salvage any leftover dirt first so the
+    // ff-only below isn't blocked by a tree a prior cycle left uncommitted
+    // ("local changes would be overwritten by merge"), then try to ff-only in
+    // case we drifted behind origin during a long daemon session.
+    salvageDirtyWorktree();
     tryFfOnly(branchName);
     return;
   }
+  // A dirty tree here belongs to the branch we're about to leave; commit it
+  // before switching so `git switch` doesn't refuse the checkout. Without this,
+  // one stuck file wedges branch switching for every cortex (#69).
+  salvageDirtyWorktree();
   if (localBranchExists(branchName)) {
     runGit(['switch', '--', branchName]);
     tryFfOnly(branchName);

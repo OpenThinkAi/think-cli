@@ -243,6 +243,58 @@ describe('writeMemoriesForEvent — end-to-end push to a bare remote (AGT-399)',
     } catch { /* cortexA may have no remote commits beyond init — fine */ }
     expect(aTree).not.toContain(`${cortexB}/`);
   });
+
+  it('#69: self-heals a dirty worktree left on another cortex instead of wedging the push', async () => {
+    // Repro of issue #69 via the reported path: a prior cycle left the shared
+    // worktree dirty on cortexB (uncommitted engram append). A subsequent
+    // write to cortexA must `git switch` to cortexB→cortexA — which a raw
+    // switch refuses ("local changes would be overwritten by checkout"),
+    // wedging the push for cortexA (and every other cortex). The salvage
+    // self-heal must commit cortexB's leftover and let the cortexA push land.
+    const fs = require('node:fs') as typeof import('node:fs');
+    ensureRepoCloned();
+
+    const cortexA = 'wedge-alpha';
+    const cortexB = 'wedge-beta';
+    createOrphanBranch(cortexA);
+    createOrphanBranch(cortexB);
+    // Tree is now on cortexB. Dirty its tracked engram — the exact state a
+    // crashed/aborted cycle leaves behind.
+    const repoPath = join(harness.thinkHome, 'repo');
+    const leftover = '{"id":"wedge-leftover","content":"uncommitted from a crashed cycle"}';
+    fs.appendFileSync(join(repoPath, cortexB, '000001.jsonl'), leftover + '\n', 'utf-8');
+
+    const dbn = new PushDebouncer(TEST_DEBOUNCE_MS);
+
+    // Write for cortexA while the tree sits dirty on cortexB.
+    writeMemoriesForEvent({
+      event: { id: 'wedge-1', episodeKey: 'test:wedge#1' },
+      memories: [{ content: 'must land despite the dirty cortexB tree', topics: ['x'] }],
+      cortexName: cortexA,
+      peerId: PROXY_PEER_ID,
+      notifyPush: (cortex) => dbn.notify(cortex),
+    });
+
+    // Without the self-heal this push wedges and never lands → timeout.
+    await waitForAutoCommit(harness.bareRepo, cortexA, 5000);
+
+    const jsonlA = execFileSync(
+      'git',
+      ['-C', harness.bareRepo, 'show', `${cortexA}:${cortexA}/000001.jsonl`],
+      { encoding: 'utf-8' },
+    );
+    expect(jsonlA).toContain('must land despite the dirty cortexB tree');
+
+    // The leftover on cortexB must be preserved (salvaged by commit, not
+    // discarded) and the local tree must be clean.
+    execFileSync('git', ['-C', repoPath, 'switch', '--', cortexB], { stdio: 'pipe' });
+    const localB = fs.readFileSync(join(repoPath, cortexB, '000001.jsonl'), 'utf-8');
+    expect(localB).toContain('wedge-leftover');
+    const status = execFileSync('git', ['-C', repoPath, 'status', '--porcelain'], {
+      encoding: 'utf-8',
+    }).trim();
+    expect(status).toBe('');
+  });
 });
 
 /**

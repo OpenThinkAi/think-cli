@@ -206,10 +206,12 @@ Examples:
             const msg = daemonErr instanceof Error ? daemonErr.message : String(daemonErr);
             // Strip controls on the daemon-sourced error message — Error.message
             // is also an IPC-trust boundary surface. Append an ellipsis when
-            // the cleaned message exceeds the 200-char display cap so the user
-            // can tell the diagnostic was truncated.
+            // the cleaned message exceeds the display cap so the user can tell
+            // the diagnostic was truncated. Cap is generous (1000) so git's
+            // remediation hint (e.g. "Please commit your changes or stash
+            // them…") survives rather than being cut mid-sentence (#69).
             const cleaned = stripControls(msg);
-            const display = cleaned.length > 200 ? cleaned.slice(0, 200) + '…' : cleaned;
+            const display = cleaned.length > 1000 ? cleaned.slice(0, 1000) + '…' : cleaned;
             process.stderr.write(chalk.yellow(`  daemon error: ${display}; falling back to local write\n`));
           }
 
