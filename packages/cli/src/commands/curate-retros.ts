@@ -25,7 +25,48 @@ import {
   type ResolvedRetroValueWeights,
 } from '../lib/retro-value-signal.js';
 
-const DEFAULT_RELEGATE_AFTER_RUNS = 50;
+/**
+ * Default number of curator runs without recall before relegation fires. The
+ * daemon-scheduled curation loop (AGT-462) imports this so the manual command
+ * and the scheduled pass share a single source of truth.
+ */
+export const DEFAULT_RELEGATE_AFTER_RUNS = 50;
+
+/**
+ * Sink for the human-readable progress lines the curation passes emit. The CLI
+ * command supplies a chalk/console-backed logger; the daemon curation loop
+ * (AGT-462) supplies one that routes to `daemonLog`. Factoring the logging out
+ * of the curation body is what lets the daemon reuse the exact same merge →
+ * promote → relegate work without dragging in Commander or stdout formatting.
+ */
+export interface CurationLogger {
+  /** Section / progress line (cyan in the CLI). */
+  info(msg: string): void;
+  /** A pair was merged (label-only cyan in the CLI, matching promoted/relegated). */
+  merged(msg: string): void;
+  /** A retro was promoted (green in the CLI). */
+  promoted(msg: string): void;
+  /** A retro was relegated (yellow in the CLI). */
+  relegated(msg: string): void;
+  /** Dimmed/secondary detail line. */
+  detail(msg: string): void;
+}
+
+/** Counts returned by a single curation pass. */
+export interface CurationResult {
+  merged: number;
+  promoted: number;
+  relegated: number;
+}
+
+/** Default logger used by the manual CLI command — preserves the prior output. */
+const cliLogger: CurationLogger = {
+  info: (msg) => console.log(chalk.cyan(msg)),
+  merged: (msg) => console.log(chalk.cyan('  merged:') + msg),
+  promoted: (msg) => console.log(chalk.green('  promoted:') + msg),
+  relegated: (msg) => console.log(chalk.yellow('  relegated:') + msg),
+  detail: (msg) => console.log(chalk.dim(msg)),
+};
 
 export const curateRetrosCommand = new Command('curate-retros')
   .description('Run retro curator: dedupe, promote, and relegate retros (no deletion)')
@@ -117,29 +158,64 @@ async function runRetroCuration(
   relegateAfterRuns: number,
   valueWeights: ResolvedRetroValueWeights,
 ): Promise<void> {
+  let result: CurationResult;
+  try {
+    result = await runCurationPasses(cortex, dryRun, relegateAfterRuns, valueWeights, cliLogger);
+  } catch (err) {
+    if (err instanceof LlmConsentError) {
+      console.error(chalk.red(err.message));
+      process.exitCode = 1;
+      return;
+    }
+    const message = err instanceof Error ? err.message : String(err);
+    console.error(chalk.red(`Retro dedupe failed: ${message}`));
+    console.error(chalk.dim('  (no changes made; promotion and relegation passes skipped)'));
+    process.exitCode = 1;
+    return;
+  }
+
+  // Report
+  console.log();
+  if (dryRun) {
+    console.log(`${chalk.cyan('✓')} Retro curator dry run complete`);
+  } else {
+    console.log(`${chalk.green('✓')} Retro curation complete`);
+  }
+  console.log(`  ${result.merged} merged, ${result.promoted} promoted, ${result.relegated} relegated`);
+  if (!dryRun) {
+    const total = getPendingRetros(cortex).length;
+    console.log(`  ${total} retro${total === 1 ? '' : 's'} in cortex (none deleted)`);
+  }
+}
+
+/**
+ * Run the three curation passes (merge → promote → relegate) for one cortex and
+ * return the per-pass counts. This is the reusable core shared by the manual
+ * `think curate-retros` command and the daemon-scheduled curation loop
+ * (AGT-462 / design doc §5 M6): both drive the identical logic, differing only
+ * in the injected {@link CurationLogger}.
+ *
+ * Throws on a dedupe failure (including {@link LlmConsentError}) so callers can
+ * decide how to surface it — the CLI prints a red error and sets a non-zero
+ * exit code; the daemon logs a WARN and retries on the next cadence. When the
+ * dedupe step throws, no promotion/relegation runs (matching prior behaviour).
+ */
+export async function runCurationPasses(
+  cortex: string,
+  dryRun: boolean,
+  relegateAfterRuns: number,
+  valueWeights: ResolvedRetroValueWeights,
+  logger: CurationLogger,
+): Promise<CurationResult> {
   // 1. Dedupe pass: FTS-candidate pairs → LLM equivalence judgment → merge
   const candidatePairs = getCandidatePairs(cortex);
   let mergeCount = 0;
 
   if (candidatePairs.length > 0) {
-    console.log(chalk.cyan(`Evaluating ${candidatePairs.length} candidate pair${candidatePairs.length === 1 ? '' : 's'} for deduplication...`));
+    logger.info(`Evaluating ${candidatePairs.length} candidate pair${candidatePairs.length === 1 ? '' : 's'} for deduplication...`);
 
     const prompt = assembleRetroDedupePrompt(candidatePairs);
-    let judgments;
-    try {
-      judgments = await runRetroDedupe(prompt);
-    } catch (err) {
-      if (err instanceof LlmConsentError) {
-        console.error(chalk.red(err.message));
-        process.exitCode = 1;
-        return;
-      }
-      const message = err instanceof Error ? err.message : String(err);
-      console.error(chalk.red(`Retro dedupe failed: ${message}`));
-      console.error(chalk.dim('  (no changes made; promotion and relegation passes skipped)'));
-      process.exitCode = 1;
-      return;
-    }
+    const judgments = await runRetroDedupe(prompt);
 
     // Track in-memory occurrence deltas so a canonical absorbing multiple duplicates
     // in one pass logs the correct count even before the DB is re-read.
@@ -164,17 +240,14 @@ async function runRetroCuration(
       const delta = occurrenceDelta.get(canonical.id) ?? 0;
 
       if (dryRun) {
-        console.log(
-          chalk.dim(
-            `  [dry-run] would merge: "${merged.content.slice(0, 60)}${merged.content.length > 60 ? '...' : ''}" → canonical`,
-          ),
+        logger.detail(
+          `  [dry-run] would merge: "${merged.content.slice(0, 60)}${merged.content.length > 60 ? '...' : ''}" → canonical`,
         );
       } else {
         mergeRetro(cortex, canonical.id, merged.id);
         occurrenceDelta.set(canonical.id, delta + 1);
-        console.log(
-          chalk.cyan('  merged:') +
-            ` "${merged.content.slice(0, 60)}${merged.content.length > 60 ? '...' : ''}" → canonical (occurrences now ${canonical.occurrences + 1 + delta})`,
+        logger.merged(
+          ` "${merged.content.slice(0, 60)}${merged.content.length > 60 ? '...' : ''}" → canonical (occurrences now ${canonical.occurrences + 1 + delta})`,
         );
       }
       mergeCount++;
@@ -217,16 +290,13 @@ async function runRetroCuration(
 
   for (const r of toPromote) {
     if (dryRun) {
-      console.log(
-        chalk.dim(
-          `  [dry-run] would promote: "${r.content.slice(0, 60)}${r.content.length > 60 ? '...' : ''}" (occurrences=${r.occurrences})`,
-        ),
+      logger.detail(
+        `  [dry-run] would promote: "${r.content.slice(0, 60)}${r.content.length > 60 ? '...' : ''}" (occurrences=${r.occurrences})`,
       );
     } else {
       setRetroPromoted(cortex, [r.id], 1);
-      console.log(
-        chalk.green('  promoted:') +
-          ` "${r.content.slice(0, 60)}${r.content.length > 60 ? '...' : ''}" (occurrences=${r.occurrences})`,
+      logger.promoted(
+        ` "${r.content.slice(0, 60)}${r.content.length > 60 ? '...' : ''}" (occurrences=${r.occurrences})`,
       );
     }
   }
@@ -236,7 +306,7 @@ async function runRetroCuration(
   //    every surfacing, so a promoted retro that stops being recalled relegates.
   const relegationCandidates = getPromotedRetrosForRelegation(cortex);
   if (relegationCandidates.length === 0 && afterDedupe.some(r => r.promoted === 1)) {
-    console.log(chalk.dim('  (no relegation candidates: every promoted retro has been recalled recently or never recalled at all)'));
+    logger.detail('  (no relegation candidates: every promoted retro has been recalled recently or never recalled at all)');
   }
   const toRelegate = relegationCandidates.filter(r => {
     return runsSince(cortex, r.last_recalled_at!) >= relegateAfterRuns;
@@ -245,16 +315,13 @@ async function runRetroCuration(
 
   for (const r of toRelegate) {
     if (dryRun) {
-      console.log(
-        chalk.dim(
-          `  [dry-run] would relegate: "${r.content.slice(0, 60)}${r.content.length > 60 ? '...' : ''}" (last_recalled_at=${r.last_recalled_at})`,
-        ),
+      logger.detail(
+        `  [dry-run] would relegate: "${r.content.slice(0, 60)}${r.content.length > 60 ? '...' : ''}" (last_recalled_at=${r.last_recalled_at})`,
       );
     } else {
       setRetroPromoted(cortex, [r.id], 0);
-      console.log(
-        chalk.yellow('  relegated:') +
-          ` "${r.content.slice(0, 60)}${r.content.length > 60 ? '...' : ''}" (last_recalled_at=${r.last_recalled_at})`,
+      logger.relegated(
+        ` "${r.content.slice(0, 60)}${r.content.length > 60 ? '...' : ''}" (last_recalled_at=${r.last_recalled_at})`,
       );
     }
   }
@@ -264,16 +331,5 @@ async function runRetroCuration(
     recordCuratorRun(cortex);
   }
 
-  // 5. Report
-  console.log();
-  if (dryRun) {
-    console.log(`${chalk.cyan('✓')} Retro curator dry run complete`);
-  } else {
-    console.log(`${chalk.green('✓')} Retro curation complete`);
-  }
-  console.log(`  ${mergeCount} merged, ${promoteCount} promoted, ${relegateCount} relegated`);
-  if (!dryRun) {
-    const total = getPendingRetros(cortex).length;
-    console.log(`  ${total} retro${total === 1 ? '' : 's'} in cortex (none deleted)`);
-  }
+  return { merged: mergeCount, promoted: promoteCount, relegated: relegateCount };
 }
