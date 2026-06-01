@@ -1,0 +1,98 @@
+[
+  {
+    "id": "e-001",
+    "content": "Shipped the local-first LLM adapter pilot: new lib/llm/ module (LlmClient interface, LocalLlmClient for oMLX/Qwen, AnthropicLlmClient, RouterLlmClient) wired into think curate. Default-local with Anthropic fallback on size overflow.",
+    "created_at": "2026-05-26T15:10:00Z",
+    "expires_at": "2026-06-25T15:10:00Z",
+    "evaluated_at": null,
+    "promoted": null,
+    "deleted_at": null,
+    "episode_key": null,
+    "context": "Pilot only wires the curate path; other 7 call sites unchanged.",
+    "decisions": "[\"Default to local LLM, fall back to Anthropic only on size overflow or explicit opt-in\", \"Local calls bypass the consent gate since data stays on device\"]"
+  },
+  {
+    "id": "e-002",
+    "content": "Decided to keep the Claude Agent SDK as the Anthropic backend rather than switching to the raw Messages API, to preserve subscription billing and keep the pilot a zero-behavior-change diff until a user configures a local endpoint.",
+    "created_at": "2026-05-26T15:40:00Z",
+    "expires_at": "2026-06-25T15:40:00Z",
+    "evaluated_at": null,
+    "promoted": null,
+    "deleted_at": null,
+    "episode_key": null,
+    "context": null,
+    "decisions": "[\"Keep Agent SDK for the Anthropic path in the local-first pilot\"]"
+  },
+  {
+    "id": "e-003",
+    "content": "test entry please ignore",
+    "created_at": "2026-05-26T16:00:00Z",
+    "expires_at": "2026-06-25T16:00:00Z",
+    "evaluated_at": null,
+    "promoted": null,
+    "deleted_at": null,
+    "episode_key": null,
+    "context": null,
+    "decisions": null
+  },
+  {
+    "id": "e-004",
+    "content": "Fast-forwarded think-cli main 603 commits to match github/main; repo restructured into packages/cli workspace with CI publish/test workflows and a Dockerfile.",
+    "created_at": "2026-05-26T14:00:00Z",
+    "expires_at": "2026-06-25T14:00:00Z",
+    "evaluated_at": null,
+    "promoted": null,
+    "deleted_at": null,
+    "episode_key": null,
+    "context": null,
+    "decisions": null
+  },
+  {
+    "id": "e-005",
+    "content": "Investigated hal9k's local LLM adapter as the model for think's: env-var-selected OpenAI-compatible /chat/completions to oMLX/Qwen, no automatic fallback, special-token stripping. think will add the fallback policy hal9k lacks.",
+    "created_at": "2026-05-26T13:30:00Z",
+    "expires_at": "2026-06-25T13:30:00Z",
+    "evaluated_at": null,
+    "promoted": null,
+    "deleted_at": null,
+    "episode_key": null,
+    "context": null,
+    "decisions": null
+  },
+  {
+    "id": "e-006",
+    "content": "debug: console.log left in router.ts, removed before commit",
+    "created_at": "2026-05-26T16:20:00Z",
+    "expires_at": "2026-06-25T16:20:00Z",
+    "evaluated_at": null,
+    "promoted": null,
+    "deleted_at": null,
+    "episode_key": null,
+    "context": null,
+    "decisions": null
+  },
+  {
+    "id": "e-007",
+    "content": "Added 34 unit tests for the LLM adapter using injected fake clients (no network, no SDK): router policy table, LocalLlmClient overflow/token-stripping, runCuration with fakes. Full suite 454 passing, typecheck clean.",
+    "created_at": "2026-05-26T17:00:00Z",
+    "expires_at": "2026-06-25T17:00:00Z",
+    "evaluated_at": null,
+    "promoted": null,
+    "deleted_at": null,
+    "episode_key": null,
+    "context": null,
+    "decisions": null
+  },
+  {
+    "id": "e-008",
+    "content": "Considering hosting the Qwen model on a shared server (Railway hivedb) so server-side think curation can route locally instead of to the Anthropic API. Open question: MLX builds are Apple-Silicon only; Railway has no GPU.",
+    "created_at": "2026-05-26T17:30:00Z",
+    "expires_at": "2026-06-25T17:30:00Z",
+    "evaluated_at": null,
+    "promoted": null,
+    "deleted_at": null,
+    "episode_key": null,
+    "context": null,
+    "decisions": null
+  }
+]

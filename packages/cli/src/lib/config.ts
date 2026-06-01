@@ -44,6 +44,59 @@ export interface CortexConfig {
    * recent-memories oldest-first and prints a warning. AGT-065 INFO #20.
    */
   curatorPromptCharCap?: number;
+  /**
+   * Which LLM backend think's curation calls should use.
+   *
+   * - `'auto'` (default) — local-first: route to the local model when one is
+   *   configured (`local.endpoint` set) and the task fits its context budget;
+   *   fall back to Anthropic only when the task is too big AND LLM consent is
+   *   granted. With no `local.endpoint` set, `'auto'` behaves exactly as
+   *   pre-local-first think did (Anthropic via the Claude Agent SDK) — so the
+   *   feature is inert until a user opts in by configuring an endpoint.
+   * - `'local'` — local only. Never ships to Anthropic; if a task overflows the
+   *   local context budget the call is skipped with a warning (engrams stay
+   *   pending for a later run).
+   * - `'anthropic'` — Anthropic only (the legacy path).
+   *
+   * Env override: `THINK_LLM_PROVIDER`.
+   */
+  llmProvider?: 'auto' | 'local' | 'anthropic';
+  /** Local OpenAI-compatible LLM backend (oMLX/Qwen). See `LocalLlmConfig`. */
+  local?: LocalLlmConfig;
+}
+
+/**
+ * Configuration for the local, OpenAI-compatible LLM backend (oMLX/Qwen, the
+ * same server hal9k's `localqwen up` drives). think POSTs to
+ * `<endpoint>/chat/completions` with a Bearer token. Every field has an env
+ * override so CI/agents can point at a different server without editing config.
+ */
+export interface LocalLlmConfig {
+  /**
+   * OpenAI-compatible base URL, e.g. `http://localhost:8080/v1`. When unset,
+   * local routing is disabled and `llmProvider: 'auto'` falls back to the
+   * Anthropic path. Env override: `THINK_LOCAL_ENDPOINT`.
+   */
+  endpoint?: string;
+  /**
+   * Model id served at the endpoint (e.g. a Qwen id from `GET <endpoint>/models`).
+   * Required when `endpoint` is set. Env override: `THINK_LOCAL_MODEL`.
+   */
+  model?: string;
+  /**
+   * Bearer token for the local endpoint. Defaults to `"lm-studio"` (matching
+   * hal9k's default for local servers that ignore auth). Env override:
+   * `THINK_LOCAL_API_KEY`.
+   */
+  apiKey?: string;
+  /**
+   * Token budget used to decide whether a task fits the local model. The router
+   * estimates the prompt at ~chars/4 tokens; if the estimate exceeds this
+   * budget it routes to Anthropic (auto) or skips (local). Leave headroom below
+   * the model's true context window for the response. Default: 28_000.
+   * Env override: `THINK_LOCAL_CTX_BUDGET`.
+   */
+  ctxBudget?: number;
 }
 
 export interface SubscriptionsConfig {
