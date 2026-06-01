@@ -2,7 +2,9 @@
  * Tests for applyCompaction (AGT-301)
  *
  * AC coverage:
- *   1. Compacted entry is inserted into L1 (JSONL page) with the correct fields.
+ *   1. Compacted entry is enqueued to l1_outbox with the correct fields (the
+ *      push-debouncer's plumbing drain appends it to the cortex branch — #70
+ *      Option B / AGT-458 — so applyCompaction no longer writes the worktree).
  *   2. Compacted entry is inserted into L2 (memories table) with embedding +
  *      activity_seq.
  *   3. compaction_links row (raw_id, compacted_id) is inserted.
@@ -17,7 +19,7 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, rmSync, mkdirSync, writeFileSync, existsSync, readFileSync } from 'node:fs';
+import { mkdtempSync, rmSync, mkdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -63,9 +65,20 @@ beforeEach(async () => {
   // Trigger migrations so all tables (including superseded_at, compaction_links) exist.
   getCortexDb(CORTEX);
   closeAllCortexDbs();
+
+  // applyCompaction enqueues the compacted line and calls
+  // `pushDebouncer.notify()` (the singleton), which schedules a debounced
+  // drain that would otherwise spawn a real `git` subprocess against this
+  // test's torn-down THINK_HOME after the test returns — a leftover child +
+  // timer that can wedge the vitest fork-pool worker. Stub the git seam to a
+  // no-op so the scheduled drain stays in-process and harmless.
+  const { pushDebouncer } = await import('../../src/daemon/push-debouncer.js');
+  pushDebouncer._gitOverride = async () => '';
 });
 
 afterEach(async () => {
+  const { pushDebouncer } = await import('../../src/daemon/push-debouncer.js');
+  pushDebouncer._gitOverride = undefined;
   const { closeAllCortexDbs } = await import('../../src/db/engrams.js');
   closeAllCortexDbs();
   if (originalHome === undefined) delete process.env.THINK_HOME;
@@ -89,27 +102,6 @@ async function insertRawEntry(id: string, content: string): Promise<void> {
   `).run(id, now, content, now);
 }
 
-function writeL1RawEntry(id: string, content: string): void {
-  const cortexDir = join(thinkHome, 'repo', CORTEX);
-  mkdirSync(cortexDir, { recursive: true });
-  const entry = {
-    id,
-    ts: new Date().toISOString(),
-    author: 'test-author',
-    kind: 'memory',
-    content,
-    topics: [],
-    supersedes: [],
-    compacted_from: null,
-    decisions: [],
-    source_ids: [],
-    deleted_at: null,
-  };
-  const page = join(cortexDir, '000001.jsonl');
-  const existing = existsSync(page) ? readFileSync(page, 'utf-8') : '';
-  writeFileSync(page, existing + JSON.stringify(entry) + '\n', 'utf-8');
-}
-
 async function getMemoryRow(id: string): Promise<Record<string, unknown> | undefined> {
   const { getCortexDb } = await import('../../src/db/engrams.js');
   const db = getCortexDb(CORTEX);
@@ -126,18 +118,13 @@ async function getCompactionLink(rawId: string, compactedId: string): Promise<bo
   return row !== undefined;
 }
 
-function readL1Lines(cortexDir: string): Record<string, unknown>[] {
-  if (!existsSync(cortexDir)) return [];
-  const lines: Record<string, unknown>[] = [];
-  const files = existsSync(join(cortexDir, '000001.jsonl')) ? ['000001.jsonl'] : [];
-  for (const file of files) {
-    const raw = readFileSync(join(cortexDir, file), 'utf-8');
-    for (const line of raw.split('\n')) {
-      if (line.trim().length === 0) continue;
-      lines.push(JSON.parse(line) as Record<string, unknown>);
-    }
-  }
-  return lines;
+/** Read the enqueued l1_outbox lines (FIFO) for the cortex, parsed. */
+async function readOutboxLines(): Promise<Record<string, unknown>[]> {
+  const { getCortexDb } = await import('../../src/db/engrams.js');
+  const db = getCortexDb(CORTEX);
+  const rows = db.prepare('SELECT line FROM l1_outbox ORDER BY id ASC').all() as
+    { line: string }[];
+  return rows.map((r) => JSON.parse(r.line) as Record<string, unknown>);
 }
 
 // ---------------------------------------------------------------------------
@@ -145,9 +132,8 @@ function readL1Lines(cortexDir: string): Record<string, unknown>[] {
 // ---------------------------------------------------------------------------
 
 describe('applyCompaction (AGT-301)', () => {
-  it('inserts the compacted entry into L1 with correct fields', async () => {
+  it('enqueues the compacted entry to l1_outbox with correct fields', async () => {
     const rawId = 'raw-l1-001';
-    writeL1RawEntry(rawId, 'Initial thought on sqlite.');
     await insertRawEntry(rawId, 'Initial thought on sqlite.');
 
     const { applyCompaction } = await import('../../src/daemon/compaction/apply.js');
@@ -162,11 +148,10 @@ describe('applyCompaction (AGT-301)', () => {
       CORTEX,
     );
 
-    const cortexDir = join(thinkHome, 'repo', CORTEX);
-    const lines = readL1Lines(cortexDir);
-    // raw entry + compacted entry
-    expect(lines.length).toBe(2);
-    const compacted = lines[1];
+    const lines = await readOutboxLines();
+    // Only the compacted entry is enqueued (the raw entry is not re-enqueued).
+    expect(lines.length).toBe(1);
+    const compacted = lines[0];
     expect(compacted['kind']).toBe('memory');
     expect(compacted['content']).toBe('sqlite: chosen for local storage after indexedDb perf issues.');
     expect(compacted['compacted_from']).toEqual([rawId]);
@@ -177,7 +162,6 @@ describe('applyCompaction (AGT-301)', () => {
 
   it('inserts the compacted entry into L2 with activity_seq and kind', async () => {
     const rawId = 'raw-l2-001';
-    writeL1RawEntry(rawId, 'Auth uses JWT.');
     await insertRawEntry(rawId, 'Auth uses JWT.');
 
     const { applyCompaction } = await import('../../src/daemon/compaction/apply.js');
@@ -214,7 +198,6 @@ describe('applyCompaction (AGT-301)', () => {
 
   it('inserts a compaction_links row', async () => {
     const rawId = 'raw-link-001';
-    writeL1RawEntry(rawId, 'pnpm is the package manager.');
     await insertRawEntry(rawId, 'pnpm is the package manager.');
 
     const { applyCompaction } = await import('../../src/daemon/compaction/apply.js');
@@ -229,9 +212,8 @@ describe('applyCompaction (AGT-301)', () => {
       CORTEX,
     );
 
-    // Find the compacted id from L1
-    const cortexDir = join(thinkHome, 'repo', CORTEX);
-    const lines = readL1Lines(cortexDir);
+    // Find the compacted id from the outbox
+    const lines = await readOutboxLines();
     const compacted = lines.find(l => Array.isArray(l['compacted_from']) && (l['compacted_from'] as string[]).includes(rawId));
     expect(compacted).toBeDefined();
     const compactedId = compacted!['id'] as string;
@@ -243,8 +225,6 @@ describe('applyCompaction (AGT-301)', () => {
   it('marks superseded entries in L2 with superseded_at and superseded_by', async () => {
     const rawId = 'raw-supersede-001';
     const oldId = 'old-supersede-001';
-    writeL1RawEntry(rawId, 'indexedDb has perf problems.');
-    writeL1RawEntry(oldId, 'indexedDb is the chosen storage.');
     await insertRawEntry(rawId, 'indexedDb has perf problems.');
     await insertRawEntry(oldId, 'indexedDb is the chosen storage.');
 
@@ -265,8 +245,7 @@ describe('applyCompaction (AGT-301)', () => {
     expect(oldRow!['superseded_at']).not.toBeNull();
 
     // Find compacted entry id to verify superseded_by
-    const cortexDir = join(thinkHome, 'repo', CORTEX);
-    const lines = readL1Lines(cortexDir);
+    const lines = await readOutboxLines();
     const compacted = lines.find(l => Array.isArray(l['supersedes']) && (l['supersedes'] as string[]).includes(oldId));
     expect(compacted).toBeDefined();
     expect(oldRow!['superseded_by']).toBe(compacted!['id']);
@@ -275,8 +254,6 @@ describe('applyCompaction (AGT-301)', () => {
   it('is idempotent: applying supersession twice does not change superseded_at', async () => {
     const rawId = 'raw-idempotent-001';
     const oldId = 'old-idempotent-001';
-    writeL1RawEntry(rawId, 'new approach.');
-    writeL1RawEntry(oldId, 'old approach.');
     await insertRawEntry(rawId, 'new approach.');
     await insertRawEntry(oldId, 'old approach.');
 
@@ -297,7 +274,6 @@ describe('applyCompaction (AGT-301)', () => {
     // Insert a second raw entry to use as the new rawEntry (can't re-use rawId
     // since INSERT OR IGNORE on L2; we just need the supersedes side to stay stable).
     const rawId2 = 'raw-idempotent-002';
-    writeL1RawEntry(rawId2, 'another update.');
     await insertRawEntry(rawId2, 'another update.');
     await applyCompaction(
       { id: rawId2, ts: new Date().toISOString(), content: 'another update.' },
@@ -312,7 +288,6 @@ describe('applyCompaction (AGT-301)', () => {
 
   it('handles empty supersedes list without errors', async () => {
     const rawId = 'raw-empty-sup-001';
-    writeL1RawEntry(rawId, 'standalone note.');
     await insertRawEntry(rawId, 'standalone note.');
 
     const { applyCompaction } = await import('../../src/daemon/compaction/apply.js');
@@ -329,9 +304,8 @@ describe('applyCompaction (AGT-301)', () => {
       ),
     ).resolves.toBeUndefined();
 
-    // compaction_links should have one row
-    const cortexDir = join(thinkHome, 'repo', CORTEX);
-    const lines = readL1Lines(cortexDir);
+    // The compacted line was enqueued to the outbox.
+    const lines = await readOutboxLines();
     const compacted = lines.find(l => Array.isArray(l['compacted_from']));
     expect(compacted).toBeDefined();
   });
@@ -348,8 +322,6 @@ describe('applyCompaction (AGT-301)', () => {
     // monkeypatch db.exec to throw on COMMIT after the first successful BEGIN.
     const rawId = 'raw-atomic-001';
     const oldId = 'old-atomic-001';
-    writeL1RawEntry(rawId, 'should roll back.');
-    writeL1RawEntry(oldId, 'supersede target.');
     await insertRawEntry(rawId, 'should roll back.');
     await insertRawEntry(oldId, 'supersede target.');
 
@@ -401,5 +373,10 @@ describe('applyCompaction (AGT-301)', () => {
     // L2: oldId should NOT have been marked superseded
     const oldRow = await getMemoryRow(oldId);
     expect(oldRow!['superseded_at']).toBeNull();
+
+    // l1_outbox: the compacted line is enqueued INSIDE the transaction, so a
+    // rollback must leave no outbox row either (atomic with the L2 writes).
+    const outboxRows = db.prepare('SELECT id FROM l1_outbox').all() as { id: number }[];
+    expect(outboxRows.length).toBe(0);
   });
 });

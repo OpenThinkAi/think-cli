@@ -19,7 +19,7 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, rmSync, existsSync, readFileSync, readdirSync } from 'node:fs';
+import { mkdtempSync, rmSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -44,15 +44,14 @@ function makeEvent(overrides: Partial<TerminalEventForWrite> = {}): TerminalEven
 }
 
 interface AppendCall {
-  cortexDir: string;
   obj: Record<string, unknown>;
 }
 
-function makeAppendCollector(): { calls: AppendCall[]; fn: (cortexDir: string, obj: Record<string, unknown>) => void } {
+function makeAppendCollector(): { calls: AppendCall[]; fn: (obj: Record<string, unknown>) => void } {
   const calls: AppendCall[] = [];
   return {
     calls,
-    fn: (cortexDir, obj) => calls.push({ cortexDir, obj }),
+    fn: (obj) => calls.push({ obj }),
   };
 }
 
@@ -301,7 +300,7 @@ describe('writeMemoriesForEvent — real on-disk append', () => {
     rmSync(thinkHome, { recursive: true, force: true });
   });
 
-  it('creates the cortex dir and writes a `000001.jsonl` with one line per memory', () => {
+  it('enqueues one l1_outbox line per memory (the real, non-stubbed path)', async () => {
     const event = makeEvent({ id: 'evt-disk-1', episodeKey: 'evt-disk-1' });
     const memories: CuratedMemory[] = [
       { content: 'first', topics: ['a'] },
@@ -313,21 +312,19 @@ describe('writeMemoriesForEvent — real on-disk append', () => {
       memories,
       cortexName: CORTEX,
       peerId: PROXY_PEER_ID,
-      // Use the real appendFn (do not pass a test seam).
+      // Use the real outbox path (do not pass an appendFn test seam). The push-
+      // debouncer's plumbing drain appends these to the cortex branch — no
+      // worktree write here (#70 Option B / AGT-458).
       notifyPush: () => {},
     });
 
-    const cortexDir = join(thinkHome, 'repo', CORTEX);
-    expect(existsSync(cortexDir)).toBe(true);
+    const { getCortexDb, closeAllCortexDbs } = await import('../../src/db/engrams.js');
+    const db = getCortexDb(CORTEX);
+    const rows = db.prepare('SELECT entry_id, line FROM l1_outbox ORDER BY id ASC').all() as
+      { entry_id: string; line: string }[];
+    expect(rows).toHaveLength(2);
 
-    const files = readdirSync(cortexDir).filter(f => f.endsWith('.jsonl')).sort();
-    expect(files).toEqual(['000001.jsonl']);
-
-    const raw = readFileSync(join(cortexDir, '000001.jsonl'), 'utf-8');
-    const lines = raw.split('\n').filter(l => l.length > 0);
-    expect(lines).toHaveLength(2);
-
-    const parsed = lines.map(l => JSON.parse(l));
+    const parsed = rows.map((r) => JSON.parse(r.line) as Record<string, unknown>);
     expect(parsed[0].content).toBe('first');
     expect(parsed[1].content).toBe('second');
     expect(parsed[0].episode_key).toBe('evt-disk-1');
@@ -336,6 +333,12 @@ describe('writeMemoriesForEvent — real on-disk append', () => {
     expect(parsed[1].source_ids).toEqual(['evt-disk-1']);
     expect(parsed[0].id).toBe(result.ids[0]);
     expect(parsed[1].id).toBe(result.ids[1]);
+
+    // The cortex worktree dir must NOT have been written by the proxy path.
+    const cortexDir = join(thinkHome, 'repo', CORTEX);
+    expect(existsSync(cortexDir)).toBe(false);
+
+    closeAllCortexDbs();
   });
 });
 

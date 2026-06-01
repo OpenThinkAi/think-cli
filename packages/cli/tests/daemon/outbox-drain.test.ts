@@ -57,7 +57,14 @@ beforeEach(async () => {
 
   const configDir = join(thinkHome, 'config');
   mkdirSync(configDir, { recursive: true, mode: 0o700 });
-  const config = { peerId: 'outbox-test-peer', cortex: { author: 'test-author' } };
+  // This suite exercises the LEGACY worktree drain (outbox → fs append to the
+  // L1 page file in the worktree), so it asserts via `readPageLines`. Opt into
+  // the legacy escape hatch; the plumbing drain (default) writes to the branch
+  // ref instead, covered by git-plumbing-write.test.ts.
+  const config = {
+    peerId: 'outbox-test-peer',
+    cortex: { author: 'test-author', plumbingWrites: false },
+  };
   await import('node:fs').then((fs) =>
     fs.writeFileSync(join(configDir, 'config.json'), JSON.stringify(config), { mode: 0o600 }),
   );

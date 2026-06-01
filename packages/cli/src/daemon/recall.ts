@@ -30,6 +30,14 @@
  *   does NOT apply to the FTS-fallback path (no cosine to compare). Set the
  *   config value ≤ -1 to disable.
  *
+ * Quality-aware ranking (AGT-459, design doc §5 M4):
+ *   After recency weighting, an additive curator-quality term is folded into the
+ *   score: +config.recall.qualityBoost for a promoted retro (retros.promoted=1),
+ *   −config.recall.qualityPenalty for a relegated retro (promoted=0 with prior
+ *   recall history). Candidates with no matching retros row (memories, un-curated
+ *   cortexes) get no term, so ranking degrades gracefully to cosine × recency.
+ *   Set either knob to 0 to disable that term.
+ *
  * Recency weighting (AGT-291):
  *   score = cosine × exp(-decay × (max_seq - entry_seq))
  *
@@ -112,6 +120,18 @@ const DEFAULT_DECAY = 0.05;
 // top-K" matches. Reuses the compaction-triage 0.6 as a starting point;
 // config-tunable via config.recall.relevanceFloor. Set ≤ -1 to disable.
 const DEFAULT_RELEVANCE_FLOOR = 0.6;
+
+// Quality-aware ranking terms (AGT-459 / design doc §5 M4).
+// Additive to the cosine × recency score: a promoted retro gets a small boost,
+// a relegated retro a small penalty. Kept small relative to the cosine spread
+// so curated quality breaks ties and lifts good lessons WITHOUT a weak-but-
+// promoted match drowning a strong exact match (design doc §8 open question).
+// Config-tunable via config.recall.qualityBoost / .qualityPenalty (set 0 to
+// disable). Candidates with no matching retros row (memories, un-curated
+// cortexes) get neither term, so ranking degrades gracefully to the prior
+// cosine × recency behaviour.
+const DEFAULT_QUALITY_BOOST = 0.1;
+const DEFAULT_QUALITY_PENALTY = 0.1;
 
 // ---------------------------------------------------------------------------
 // Types
@@ -223,6 +243,13 @@ interface ColumnInfo {
   hasSupersededAt: boolean;
   /** True when migration 12 has run and the compaction_links table exists. */
   hasCompactionLinks: boolean;
+  /**
+   * True when the curator `retros` table exists (migration 8) AND carries the
+   * `promoted` / `recalled_count` columns (migration 9). Gates the AGT-459
+   * quality-aware rerank: older DBs that haven't migrated have no curator state,
+   * so the quality terms are skipped and ranking is pure cosine × recency.
+   */
+  hasRetros: boolean;
 }
 
 const columnInfoCache = new WeakMap<DatabaseSync, ColumnInfo>();
@@ -244,12 +271,25 @@ function getColumnInfo(db: DatabaseSync): ColumnInfo {
     ),
   );
 
+  // The quality-aware rerank (AGT-459) reads retros.promoted / .recalled_count.
+  // Confirm both the table and the migration-9 columns exist before relying on
+  // them — a partially-migrated DB has the table (migration 8) but not the
+  // columns, and querying a missing column would throw.
+  let hasRetros = false;
+  if (tables.has('retros')) {
+    const retroCols = new Set(
+      (db.prepare('PRAGMA table_info(retros)').all() as { name: string }[]).map((c) => c.name),
+    );
+    hasRetros = retroCols.has('promoted') && retroCols.has('recalled_count');
+  }
+
   const info: ColumnInfo = {
     hasTopics: cols.has('topics'),
     hasTopicsJson: cols.has('topics_json'),
     hasActivitySeq: cols.has('activity_seq'),
     hasSupersededAt: cols.has('superseded_at'),
     hasCompactionLinks: tables.has('compaction_links'),
+    hasRetros,
   };
   columnInfoCache.set(db, info);
   return info;
@@ -322,6 +362,17 @@ interface ParsedRecallParams {
    * config-tunable via config.recall.relevanceFloor.
    */
   relevanceFloor: number;
+  /**
+   * Additive boost for curator-promoted retros (AGT-459). Default
+   * DEFAULT_QUALITY_BOOST (0.1); config-tunable via config.recall.qualityBoost.
+   */
+  qualityBoost: number;
+  /**
+   * Additive penalty (a non-negative magnitude, subtracted from the score) for
+   * curator-relegated retros (AGT-459). Default DEFAULT_QUALITY_PENALTY (0.1);
+   * config-tunable via config.recall.qualityPenalty.
+   */
+  qualityPenalty: number;
   /**
    * When true, skip BOTH the superseded_at and compaction_links filters —
    * return every entry regardless of supersession or compaction state.
@@ -409,11 +460,31 @@ function parseRecallParams(params: Record<string, unknown>): ParsedRecallParams 
   }
   const relevanceFloor = relevanceFloorRaw;
 
+  // AGT-459: quality-aware ranking terms. Both must be finite, non-negative
+  // numbers — a negative boost or penalty would invert the curator's intent
+  // (penalise the promoted, boost the relegated), a silent foot-gun. Reject
+  // rather than rank perversely. Set either to 0 to disable that term.
+  const qualityBoostRaw = cfg.recall?.qualityBoost ?? DEFAULT_QUALITY_BOOST;
+  if (typeof qualityBoostRaw !== 'number' || !Number.isFinite(qualityBoostRaw) || qualityBoostRaw < 0) {
+    throw new Error(
+      `recall: config.recall.qualityBoost must be a non-negative number (use 0 to disable), got ${JSON.stringify(qualityBoostRaw)}`,
+    );
+  }
+  const qualityBoost = qualityBoostRaw;
+
+  const qualityPenaltyRaw = cfg.recall?.qualityPenalty ?? DEFAULT_QUALITY_PENALTY;
+  if (typeof qualityPenaltyRaw !== 'number' || !Number.isFinite(qualityPenaltyRaw) || qualityPenaltyRaw < 0) {
+    throw new Error(
+      `recall: config.recall.qualityPenalty must be a non-negative number (use 0 to disable), got ${JSON.stringify(qualityPenaltyRaw)}`,
+    );
+  }
+  const qualityPenalty = qualityPenaltyRaw;
+
   const full = params['full'] === true;
   const includeSuperseded = params['includeSuperseded'] === true;
   const noEmbed = params['no_embed'] === true;
 
-  return { query, limit, kind, topic, since, decay, relevanceFloor, full, includeSuperseded, noEmbed };
+  return { query, limit, kind, topic, since, decay, relevanceFloor, qualityBoost, qualityPenalty, full, includeSuperseded, noEmbed };
 }
 
 // ---------------------------------------------------------------------------
@@ -639,6 +710,8 @@ async function recallOneCortexWithVec(
   since: string | undefined,
   decay: number,
   relevanceFloor: number,
+  qualityBoost: number,
+  qualityPenalty: number,
   full: boolean,
   includeSuperseded: boolean,
 ): Promise<RecallEntry[]> {
@@ -675,7 +748,7 @@ async function recallOneCortexWithVec(
   // getCortexDb calls getIndexDbPath → sanitizeName, which rejects `/`, `\`, and
   // `..` sequences. Path-traversal attempts are caught here with a clear error.
   const db = getCortexDb(cortexName);
-  const { hasTopics, hasTopicsJson, hasActivitySeq, hasSupersededAt, hasCompactionLinks } = getColumnInfo(db);
+  const { hasTopics, hasTopicsJson, hasActivitySeq, hasSupersededAt, hasCompactionLinks, hasRetros } = getColumnInfo(db);
 
   // AGT-320: topic filter requires a topics column. Throw rather than silently
   // returning unfiltered results. Give a helpful hint to run 'think reindex'.
@@ -861,6 +934,44 @@ async function recallOneCortexWithVec(
     }
   }
 
+  // AGT-459 (design doc §5 M4): quality-aware rerank. A retro lives in BOTH the
+  // memories table (what recall surfaces, keyed by id) and the curator `retros`
+  // table (which carries the promoted/relegation state), sharing one id. Batch-
+  // load the curator state for the floored ids in a single query, then fold an
+  // ADDITIVE quality term into the cosine × recency score below:
+  //   - promoted=1                          → +qualityBoost
+  //   - promoted=0 AND recalled_count > 0   → −qualityPenalty  (relegated:
+  //       once promoted, demoted by the relegation pass — distinct from a
+  //       never-curated promoted=0/recalled_count=0 retro, which is untouched)
+  // Memory rows and un-curated cortexes have no matching retros row and get no
+  // term, so ranking degrades gracefully to the prior cosine × recency order
+  // (AC2). Chose additive-to-score over a similarity-only top-N re-rank because
+  // the AC and design doc call for additivity, the pipeline already reranks by
+  // `score`, and a small additive term breaks ties on quality without a weak-
+  // but-promoted match drowning a strong exact match (design doc §8).
+  const qualityApplies = hasRetros && (qualityBoost > 0 || qualityPenalty > 0);
+  // id → 1 (promoted) | -1 (relegated). Absent => neutral (no term).
+  const qualityMap = new Map<string, 1 | -1>();
+  if (qualityApplies && flooredRows.length > 0) {
+    const rowIds = flooredRows.map((r) => r.id);
+    const idPlaceholders = rowIds.map(() => '?').join(', ');
+    try {
+      const retroRows = db.prepare(
+        `SELECT id, promoted, recalled_count FROM retros
+         WHERE cortex_name = ? AND tombstoned_at IS NULL AND id IN (${idPlaceholders})`,
+      ).all(cortexName, ...rowIds) as { id: string; promoted: number; recalled_count: number }[];
+      for (const r of retroRows) {
+        if (r.promoted === 1) qualityMap.set(r.id, 1);
+        else if (r.recalled_count > 0) qualityMap.set(r.id, -1);
+        // promoted=0 && recalled_count=0 → never-curated; leave neutral.
+      }
+    } catch {
+      // Best-effort: a curator-state read failure must never break recall.
+      // Fall through with an empty qualityMap (pure cosine × recency ranking).
+      qualityMap.clear();
+    }
+  }
+
   return flooredRows.map((row) => {
     let topicsValue: string[] = [];
     try {
@@ -887,6 +998,13 @@ async function recallOneCortexWithVec(
     } else {
       score = similarity;
     }
+
+    // AGT-459: additive quality term, applied AFTER recency weighting so the
+    // boost/penalty is a flat curator signal independent of recency, not scaled
+    // by it. Neutral (absent from qualityMap) leaves the score untouched.
+    const quality = qualityMap.get(row.id);
+    if (quality === 1) score += qualityBoost;
+    else if (quality === -1) score -= qualityPenalty;
 
     const compactedFrom = compactedFromMap.get(row.id) ?? null;
     // For compacted entries, supersedes == compacted_from (the raws absorbed).
@@ -935,7 +1053,7 @@ async function recallSingleCortex(
   // caller gets a fast, clear error rather than a timeout waiting for embed().
   sanitizeName(cortexName);
 
-  const { query, limit, kind, topic, since, decay, relevanceFloor, full, includeSuperseded, noEmbed } = parseRecallParams(params);
+  const { query, limit, kind, topic, since, decay, relevanceFloor, qualityBoost, qualityPenalty, full, includeSuperseded, noEmbed } = parseRecallParams(params);
 
   if (noEmbed) {
     return recallOneCortexWithFts(cortexName, query, limit);
@@ -957,7 +1075,7 @@ async function recallSingleCortex(
   }
 
   const entries = await recallOneCortexWithVec(
-    cortexName, queryVec, limit, kind, topic, since, decay, relevanceFloor, full, includeSuperseded,
+    cortexName, queryVec, limit, kind, topic, since, decay, relevanceFloor, qualityBoost, qualityPenalty, full, includeSuperseded,
   );
   entries.sort((a, b) => b.score - a.score);
   return entries.slice(0, limit);
@@ -994,7 +1112,7 @@ async function recallSingleCortex(
 async function recallFederated(
   params: Record<string, unknown>,
 ): Promise<RecallEntry[]> {
-  const { query, limit, kind, topic, since, decay, relevanceFloor, full, includeSuperseded, noEmbed } = parseRecallParams(params);
+  const { query, limit, kind, topic, since, decay, relevanceFloor, qualityBoost, qualityPenalty, full, includeSuperseded, noEmbed } = parseRecallParams(params);
 
   // Enumerate locally-known cortexes via local git refs (no network call).
   // listLocalBranches() uses `git for-each-ref refs/heads/` — sync but does
@@ -1068,7 +1186,7 @@ async function recallFederated(
     cortexNames.map(async (name) => {
       try {
         return await recallOneCortexWithVec(
-          name, queryVec, limit, kind, topic, since, decay, relevanceFloor, full, includeSuperseded,
+          name, queryVec, limit, kind, topic, since, decay, relevanceFloor, qualityBoost, qualityPenalty, full, includeSuperseded,
         );
       } catch (err) {
         // Partial failure: cortex is unavailable or corrupt; contribute zero
