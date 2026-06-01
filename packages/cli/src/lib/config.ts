@@ -32,6 +32,18 @@ export interface CortexConfig {
   staleWindowMinutes?: number;
   retroRelegateAfterRuns?: number;
   /**
+   * Minimum trimmed-character length for a `kind=retro` write (AGT-455).
+   * Retros below this are rejected at intake unless `--force` is set.
+   * Default 40 (see `DEFAULT_RETRO_MIN_LENGTH`).
+   */
+  retroMinLength?: number;
+  /**
+   * Cosine-similarity threshold above which a new retro is folded into an
+   * existing near-duplicate retro (occurrences++) instead of inserted
+   * (AGT-455). Default 0.95 (see `DEFAULT_RETRO_NEAR_DUP_THRESHOLD`).
+   */
+  retroNearDupThreshold?: number;
+  /**
    * Persistent opt-in to ship cortex content to Anthropic via the Claude
    * Agent SDK (`think curate`, `think long-term backfill`, episode
    * curation, retro dedupe). The CLI fails closed if this is `false`/

@@ -160,7 +160,7 @@ describe('sync handler (AGT-286)', () => {
 
     const result = await handleSync({
       cortex: cortexName,
-      content: 'Always validate inputs at the boundary',
+      content: 'Always validate inputs at the trust boundary before they reach the core',
       kind: 'retro',
       topics: ['testing', 'validation'],
     });

@@ -18,6 +18,13 @@
  * These tests use the `_gitOverride` seam so no real subprocess fires —
  * we assert on the recorded call sequence + actual file writes to a tmp
  * THINK_HOME.
+ *
+ * Kind note: the writes below use `kind: 'event'` (the original `think retro`
+ * scenario motivated the fix, but the outbox/L1 drain mechanics are
+ * kind-agnostic). Events deliberately bypass the AGT-455 retro write gate and
+ * near-duplicate fold — both of which would otherwise reject the short fixture
+ * content or collapse the multi-write FIFO test, neither of which is what this
+ * file exercises.
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
@@ -125,7 +132,7 @@ describe('L1 outbox + push-debouncer drain', () => {
     const { handleSync } = await import('../../src/daemon/sync-handler.js');
     const { getCortexDb } = await import('../../src/db/engrams.js');
 
-    await handleSync({ cortex: 'alpha', content: 'first entry', kind: 'retro' });
+    await handleSync({ cortex: 'alpha', content: 'first entry', kind: 'event' });
 
     // L1 page file must NOT exist yet — the drain runs async after 500ms.
     expect(existsSync(join(thinkHome, 'repo', 'alpha'))).toBe(false);
@@ -137,7 +144,7 @@ describe('L1 outbox + push-debouncer drain', () => {
     expect(rows).toHaveLength(1);
     const parsed = JSON.parse(rows[0].line) as Record<string, unknown>;
     expect(parsed['content']).toBe('first entry');
-    expect(parsed['kind']).toBe('retro');
+    expect(parsed['kind']).toBe('event');
   });
 
   it('flush() drains the outbox to the L1 page file', async () => {
@@ -148,7 +155,7 @@ describe('L1 outbox + push-debouncer drain', () => {
     const { impl } = makeGitMock();
     pushDebouncer._gitOverride = impl;
 
-    await handleSync({ cortex: 'alpha', content: 'pre-flush', kind: 'retro' });
+    await handleSync({ cortex: 'alpha', content: 'pre-flush', kind: 'event' });
     await pushDebouncer.flush('alpha');
 
     const lines = readPageLines('alpha');
@@ -169,8 +176,8 @@ describe('L1 outbox + push-debouncer drain', () => {
     const { impl, calls } = makeGitMock();
     pushDebouncer._gitOverride = impl;
 
-    await handleSync({ cortex: 'alpha', content: 'alpha-1', kind: 'retro' });
-    await handleSync({ cortex: 'beta', content: 'beta-1', kind: 'retro' });
+    await handleSync({ cortex: 'alpha', content: 'alpha-1', kind: 'event' });
+    await handleSync({ cortex: 'beta', content: 'beta-1', kind: 'event' });
 
     // Fire both flushes concurrently — the global mutex must serialize them.
     await Promise.all([
@@ -218,7 +225,7 @@ describe('L1 outbox + push-debouncer drain', () => {
     pushDebouncer._gitOverride = impl;
 
     for (let i = 1; i <= 5; i++) {
-      await handleSync({ cortex: 'alpha', content: `entry-${i}`, kind: 'retro' });
+      await handleSync({ cortex: 'alpha', content: `entry-${i}`, kind: 'event' });
     }
     await pushDebouncer.flush('alpha');
 
@@ -240,7 +247,7 @@ describe('L1 outbox + push-debouncer drain', () => {
 
     // Enqueue without draining (simulates "daemon crashed before debounce
     // window expired").
-    await handleSync({ cortex: 'alpha', content: 'survived-crash', kind: 'retro' });
+    await handleSync({ cortex: 'alpha', content: 'survived-crash', kind: 'event' });
     const db = getCortexDb('alpha');
     expect((db.prepare('SELECT COUNT(*) AS n FROM l1_outbox').get() as { n: number }).n).toBe(1);
     expect(existsSync(join(thinkHome, 'repo', 'alpha'))).toBe(false);

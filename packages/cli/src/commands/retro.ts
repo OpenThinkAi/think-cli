@@ -33,6 +33,8 @@ import { addWriteOptions, extractWriteOpts } from '../lib/write-options.js';
 interface DaemonSyncResult {
   entry_id: string;
   status: 'stored' | 'queued';
+  /** AGT-455: true when this write was folded into an existing near-duplicate retro. */
+  folded?: boolean;
   warnings?: string[];
 }
 
@@ -57,6 +59,7 @@ function stripControls(s: unknown): string {
 export const retroCommand = addWriteOptions(new Command('retro')
   .description('Record a permanent codebase observation to a cortex')
   .argument('<content>', 'The observation to record'))
+  .option('--force', 'Bypass the write-time quality gate (length floor + junk-shape check)')
   .addHelpText('after', `
 Requirements:
   Requires the think daemon (start it with: think daemon start).
@@ -83,7 +86,7 @@ Examples:
   think -C fx-tracker retro "strategy engine type contracts are not documented"
   think retro "AGT-169 pattern" --cortex think-cli --topic prior_decision
 `)
-  .action(async function (this: Command, content: string, opts: { topic: string[]; cortex?: string }) {
+  .action(async function (this: Command, content: string, opts: { topic: string[]; cortex?: string; force?: boolean }) {
     const globalOpts = this.optsWithGlobals() as { cortex?: string };
 
     // Guard against v2 muscle memory: "think retro add <obs>" or
@@ -126,6 +129,7 @@ Examples:
           content,
           kind: 'retro',
           ...(topics ? { topics } : {}),
+          ...(opts.force ? { force: true } : {}),
         }) as DaemonSyncResult;
       } finally {
         try { client.close(); } catch { /* best-effort */ }
@@ -134,7 +138,11 @@ Examples:
       const safeEntryId = stripControls(result.entry_id);
       const badge = chalk.cyan(`[${cortex}]`);
       const excerpt = content.length > 60 ? content.slice(0, 60) + '…' : content;
-      if (result.status === 'queued') {
+      if (result.folded) {
+        // AGT-455: the write was a near-duplicate of an existing retro and was
+        // folded into it (occurrences++). entry_id is the existing canonical row.
+        console.log(`${chalk.green('✓')} ${badge} folded into existing retro ${safeEntryId} (near-duplicate)`);
+      } else if (result.status === 'queued') {
         console.log(`${chalk.yellow('⏳')} ${badge} queued retro ${safeEntryId}`);
       } else {
         console.log(`${chalk.green('✓')} ${badge} stored retro ${safeEntryId}`);

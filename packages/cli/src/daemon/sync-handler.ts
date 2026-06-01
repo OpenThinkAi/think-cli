@@ -37,6 +37,8 @@ import embed, { EMBEDDING_MODEL_NAME } from '../lib/embed.js';
 import { compactionQueue } from './compaction/queue.js';
 import { pushDebouncer } from './push-debouncer.js';
 import { runSupersessionWorker } from './supersession/worker.js';
+import { searchVectors } from '../lib/search-vectors.js';
+import { validateRetroContent, getRetroNearDupThreshold } from './retro-gate.js';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -73,6 +75,13 @@ export interface SyncParams {
    * and integration tests that run without a remote.
    */
   skipPush?: boolean;
+  /**
+   * When true, bypasses the AGT-455 write-time retro quality gate (length
+   * floor + junk-shape heuristics). Only meaningful for `kind=retro`; ignored
+   * for other kinds. The near-duplicate fold (occurrences++) still applies —
+   * `force` attests the retro is intentional, not that it must duplicate-insert.
+   */
+  force?: boolean;
 }
 
 /**
@@ -109,6 +118,16 @@ export interface SyncResult {
    * if it duplicates an existing one. Check daemon log for tombstone events."
    */
   supersession_scheduled?: boolean;
+  /**
+   * Present and `true` (AGT-455) when a `kind=retro` write was folded into an
+   * existing near-duplicate retro (cosine >= the configured threshold) instead
+   * of inserting a new row. When set, `entry_id` is the id of the EXISTING
+   * canonical retro whose `occurrences` counter was incremented — not a
+   * newly-minted id. No supersession check is scheduled in this case (the fold
+   * already resolved the duplicate). Callers should surface this as an advisory
+   * ("folded into an existing retro") rather than reporting a fresh store.
+   */
+  folded?: boolean;
   warnings?: string[];
 }
 
@@ -121,7 +140,7 @@ export interface SyncResult {
  * Throws `Error` with a user-readable message that names the offending field.
  */
 function validateSyncParams(raw: Record<string, unknown>): SyncParams {
-  const { cortex, content, kind, topics, skipPush } = raw;
+  const { cortex, content, kind, topics, skipPush, force } = raw;
 
   if (typeof cortex !== 'string' || cortex.length === 0) {
     throw new Error("invalid field 'cortex': must be a non-empty string");
@@ -169,6 +188,7 @@ function validateSyncParams(raw: Record<string, unknown>): SyncParams {
     kind: kind as EntryKind,
     topics: parsedTopics,
     skipPush: skipPush === true,
+    force: force === true,
   };
 }
 
@@ -196,6 +216,62 @@ function cortexExists(cortexName: string): boolean {
 }
 
 // ---------------------------------------------------------------------------
+// Retro near-duplicate fold (AGT-455)
+// ---------------------------------------------------------------------------
+
+/**
+ * If a near-duplicate retro already exists in `safeCortex`, increment its
+ * `occurrences` counter and return its id. Returns `null` when no qualifying
+ * duplicate exists (the caller then inserts a fresh row).
+ *
+ * "Near-duplicate" = an existing non-deleted retro row whose stored embedding
+ * is >= the configured cosine threshold (default 0.95) to the new content's
+ * embedding. We re-use the unified `searchVectors` API (same backend the
+ * supersession worker uses), then confirm the top hit is actually a retro:
+ * `searchVectors` ranks across all kinds, so a memory/event could out-rank a
+ * retro — we only fold into retro rows.
+ *
+ * The `occurrences` counter starts at 1 for any retro inserted by the sync
+ * handler (see the INSERT below), so a fold takes it 1 → 2 → … `COALESCE`
+ * guards rows written before migration 18 added the column (NULL → treated as
+ * 1, folded to 2).
+ */
+function foldRetroNearDuplicate(
+  db: ReturnType<typeof getCortexDb>,
+  safeCortex: string,
+  embeddingVec: Float32Array,
+): string | null {
+  const threshold = getRetroNearDupThreshold();
+
+  // Fetch a small top-K so a non-retro top hit doesn't hide a retro just below
+  // it. K=5 is ample: anything at >= 0.95 cosine is near-identical text, and a
+  // cortex rarely has many distinct rows clustered that tightly.
+  const candidates = searchVectors(safeCortex, embeddingVec, 5);
+
+  for (const c of candidates) {
+    if (c.similarity < threshold) {
+      // Results are similarity-sorted descending; once we drop below the
+      // threshold no later candidate can qualify.
+      break;
+    }
+    const row = db
+      .prepare(
+        `SELECT id FROM memories
+         WHERE id = ? AND deleted_at IS NULL AND kind = 'retro'`,
+      )
+      .get(c.id) as { id: string } | undefined;
+    if (!row) continue; // top hit was a memory/event (or deleted) — keep scanning
+
+    db.prepare(
+      `UPDATE memories SET occurrences = COALESCE(occurrences, 1) + 1 WHERE id = ?`,
+    ).run(row.id);
+    return row.id;
+  }
+
+  return null;
+}
+
+// ---------------------------------------------------------------------------
 // Main handler
 // ---------------------------------------------------------------------------
 
@@ -209,7 +285,17 @@ function cortexExists(cortexName: string): boolean {
 export async function handleSync(params: Record<string, unknown>): Promise<SyncResult> {
   // --- validation ---
   // validateSyncParams throws Error with a user-readable message on failure.
-  const { cortex, content, kind, topics, skipPush } = validateSyncParams(params);
+  const { cortex, content, kind, topics, skipPush, force } = validateSyncParams(params);
+
+  // AGT-455: write-time retro quality gate. Length floor + junk-shape checks
+  // are content-only (no embedding needed), so run them before the cortex
+  // existence check would matter — they throw an actionable error that the
+  // un-truncated daemon error path surfaces to the user. Memory/event writes
+  // are deliberately untouched. The near-duplicate fold runs later (it needs
+  // the embedding).
+  if (kind === 'retro') {
+    validateRetroContent(content, force === true);
+  }
 
   if (!cortexExists(cortex)) {
     throw new Error(`cortex '${cortex}' not found; run: think cortex create ${cortex}`);
@@ -268,6 +354,24 @@ export async function handleSync(params: Record<string, unknown>): Promise<SyncR
   const activitySeq = assignNextSeq(safeCortex);
   const db = getCortexDb(safeCortex);
 
+  // AGT-455: near-duplicate fold. Before inserting a new retro, check whether
+  // an existing retro in this cortex is a near-textual duplicate (cosine >=
+  // the configured threshold, default 0.95). If so, fold the new write into
+  // the existing canonical row by incrementing its `occurrences` counter and
+  // return the existing id — no new row, no supersession check, no extra L1
+  // line. This is cheap dedup that runs before the LLM supersession worker.
+  // Only retros are folded; memory/event writes skip this entirely.
+  if (kind === 'retro') {
+    const folded = foldRetroNearDuplicate(db, safeCortex, embeddingVec);
+    if (folded) {
+      // Re-use the existing entry's identity. The new uuid `id` is discarded;
+      // nothing was written for it. The fold mutates only the L2 `occurrences`
+      // counter on the existing row — L1 is append-only and the canonical
+      // retro line already exists, so no outbox row / push is scheduled.
+      return { entry_id: folded, status: 'stored', folded: true };
+    }
+  }
+
   // L2 memory row + l1_outbox row land atomically. Either both writes
   // happen or neither — if the transaction rolls back, the caller sees
   // the error and no half-written state survives.
@@ -279,12 +383,16 @@ export async function handleSync(params: Record<string, unknown>): Promise<SyncR
   // explanation). The outbox row is the durable hand-off; the push-debouncer
   // drains the queue under a global mutex, so cross-cortex writes serialize
   // on the tree instead of trampling each other.
+  // AGT-455: retros carry occurrences=1 at insert so a later near-duplicate
+  // fold increments a known baseline (1 → 2 …). Memory/event rows leave it
+  // NULL — the column is retro-only.
+  const occurrences = kind === 'retro' ? 1 : null;
   const insertMemory = db.prepare(`
     INSERT OR IGNORE INTO memories
       (id, ts, author, content, source_ids, created_at, deleted_at,
        sync_version, origin_peer_id, embedding, embedding_model, activity_seq,
-       kind, topics_json)
-    VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?)
+       kind, topics_json, occurrences)
+    VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?)
   `);
   const insertOutbox = db.prepare(
     'INSERT INTO l1_outbox (entry_id, line, created_at) VALUES (?, ?, ?)',
@@ -309,6 +417,7 @@ export async function handleSync(params: Record<string, unknown>): Promise<SyncR
       activitySeq,
       kind,
       JSON.stringify(topics ?? []),
+      occurrences,
     );
     insertOutbox.run(id, line, ts);
     commitBoth.run();

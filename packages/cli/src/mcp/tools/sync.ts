@@ -37,6 +37,10 @@ export const thinkSyncTool: ThinkToolEntry = {
           type: 'string',
           description: 'Target cortex name. Defaults to the active cortex.',
         },
+        force: {
+          type: 'boolean',
+          description: "For kind='retro' only: bypass the write-time quality gate (length floor + junk-shape check). Ignored for other kinds.",
+        },
       },
       required: ['content'],
     },
@@ -71,6 +75,9 @@ export const thinkSyncTool: ThinkToolEntry = {
     const rpcParams: Record<string, unknown> = { cortex, content, kind };
     if (Array.isArray(params['topics'])) {
       rpcParams['topics'] = (params['topics'] as unknown[]).filter((t): t is string => typeof t === 'string');
+    }
+    if (params['force'] === true) {
+      rpcParams['force'] = true;
     }
 
     let result: unknown;
