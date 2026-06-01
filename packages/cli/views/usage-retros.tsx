@@ -95,7 +95,7 @@ export default function UsageRetros({ data }: ViewProps<RetroUsageReport>) {
         <tbody>
           {rows.map((e) => (
             <tr key={`${e.cortex}/${e.retro_id}`}>
-              <td style={num} title="composite value signal (AGT-460)">{e.value_signal.toFixed(1)}</td>
+              <td style={num} title="composite value signal">{e.value_signal.toFixed(1)}</td>
               <td style={num}>{e.surface_count}</td>
               <td style={{ ...td, maxWidth: 520 }}>
                 {e.content ?? <em style={{ color: "#999" }}>(deleted)</em>}

@@ -90,9 +90,10 @@ describe('computeRetroValueSignal', () => {
     expect(mid).toBeLessThan(W.promoteThreshold);
   });
 
-  it('mid-session noise alone cannot clear the threshold no matter how much', () => {
-    // 8 mid-session surfacings on a single-occurrence retro: 3.0 + 8*0.25 = 5.0.
-    // Exactly at the boundary by construction — bump to 9 to stay strictly noise-driven.
+  it('a single-occurrence retro with modest mid-session noise stays below the promote threshold', () => {
+    // 4 mid-session surfacings on a single-occurrence retro: 3.0 + 4*0.25 = 4.0 < 5.0.
+    // Modest noise stays below the threshold (not a boundary probe — enough
+    // mid-session hits would eventually clear it; that's not what this checks).
     const signal = computeRetroValueSignal(
       { occurrences: 1, briefCount: 0, sessionStartCount: 0, midSessionCount: 4, lastHighSimilarityAt: null },
       W,

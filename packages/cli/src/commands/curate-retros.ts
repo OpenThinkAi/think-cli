@@ -41,7 +41,7 @@ Storage contract:
 
   promote — a retro whose composite value signal clears the promote
            threshold is marked promoted=1, making it eligible for surfacing
-           in retro recall paths. The signal (AGT-460) folds independent
+           in retro recall paths. The signal folds independent
            re-reports (occurrences), deliberate brief/session-start
            surfacings, and recency of high-similarity surfacings into one
            score; no LLM judgment is applied. With no surfacing telemetry it
@@ -66,11 +66,12 @@ Configuration:
   Set via: think config set cortex.retroRelegateAfterRuns <n>
 
   cortex.retroValueSignal        Weights/thresholds for the composite value
-                                 signal that gates promotion (AGT-460).
-                                 Notable: promoteThreshold (default 5.0),
+                                 signal that gates promotion. Notable:
+                                 promoteThreshold (default 5.0),
                                  occurrenceWeight (3.0), briefWeight (2.0),
                                  sessionStartWeight (2.0), midSessionWeight
-                                 (0.25). See retro-value-signal.ts.
+                                 (0.25).
+  Set a field via: think config set cortex.retroValueSignal.promoteThreshold <n>
 
 Examples:
   think -C fx-tracker curate-retros
@@ -181,8 +182,8 @@ async function runRetroCuration(
   }
 
   // 2. Promotion pass: re-fetch after dedupe (occurrences may have changed), then promote
-  //    deterministically. Promotion is gated on the composite value signal (AGT-460 /
-  //    design doc §5 M5) instead of raw occurrences: it folds independent re-reports,
+  //    deterministically. Promotion is gated on the composite value signal
+  //    (design doc §5 M5) instead of raw occurrences: it folds independent re-reports,
   //    deliberate brief/session-start surfacings, and recency of high-similarity surfacings
   //    into one score, so a recurring real lesson promotes even when its raw surface-count
   //    is low, and vector-noise surfacings don't push junk over on their own.
