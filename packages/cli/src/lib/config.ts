@@ -209,6 +209,40 @@ export interface RecallConfig {
    * Default: 0.6
    */
   relevanceFloor?: number;
+
+  /**
+   * Additive quality boost applied to a recall candidate whose retro is
+   * curator-promoted (`retros.promoted = 1`), on top of the cosine × recency
+   * score (AGT-459 / design doc §5 M4).
+   *
+   * The boost is intentionally small relative to the cosine spread so curated
+   * quality breaks ties and lifts a promoted lesson above an equal-similarity
+   * un-promoted one, WITHOUT letting a weak-but-promoted match drown a strong
+   * exact match (design doc §8 open question). Memory rows and un-curated
+   * cortexes have no matching `retros` row and receive no boost, so ranking is
+   * unchanged for them (graceful degradation).
+   *
+   * Set to `0` to disable the boost.
+   *
+   * Default: 0.1
+   */
+  qualityBoost?: number;
+
+  /**
+   * Additive quality penalty (subtracted from the score) applied to a recall
+   * candidate whose retro was curator-relegated — `retros.promoted = 0` with
+   * prior recall history (`recalled_count > 0`), i.e. a retro that was once
+   * promoted and later demoted by the relegation pass (AGT-457). This is
+   * distinct from a never-curated retro (`promoted = 0`, `recalled_count = 0`),
+   * which receives no penalty so un-curated cortexes do not regress.
+   *
+   * Stored as a non-negative magnitude; it is subtracted from the score.
+   *
+   * Set to `0` to disable the penalty.
+   *
+   * Default: 0.1
+   */
+  qualityPenalty?: number;
 }
 
 export interface CompactionConfig {
