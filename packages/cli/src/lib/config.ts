@@ -174,6 +174,28 @@ export interface RecallConfig {
    * Default: 0.05
    */
   recencyDecay?: number;
+
+  /**
+   * Absolute cosine-similarity floor for recall (AGT-456 / design doc §5 M2).
+   *
+   * Any candidate whose raw cosine similarity (in [−1, 1], BEFORE recency
+   * reweighting) is below this floor is excluded from the result set. This
+   * stops sparse cortexes from surfacing garbage-tier matches just because
+   * they are the best of a bad top-K — a query with no above-floor matches
+   * returns zero entries rather than low-similarity junk.
+   *
+   * Reuses the compaction-triage 0.6 as a starting point; tune after a sweep
+   * against the usage corpus (design doc §8 open question).
+   *
+   * The floor is inapplicable in the FTS-fallback path (no embeddings, hence
+   * no cosine to compare) — FTS results are ranked by the FTS5 engine and
+   * carry `similarity: 0`, so the floor is intentionally NOT applied there.
+   *
+   * Range: [−1, 1]. Set to `-1` (or any value ≤ −1) to disable the floor.
+   *
+   * Default: 0.6
+   */
+  relevanceFloor?: number;
 }
 
 export interface CompactionConfig {

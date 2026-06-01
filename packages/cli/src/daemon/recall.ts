@@ -23,6 +23,13 @@
  * is not yet wired through), the handler throws rather than silently returning
  * unfiltered results. Callers that request a filter are asserting intent.
  *
+ * Relevance floor (AGT-456, design doc §5 M2):
+ *   Candidates whose RAW cosine similarity is below config.recall.relevanceFloor
+ *   (default 0.6) are excluded BEFORE recency reweighting, so a sparse cortex
+ *   returns zero entries instead of a top-K of garbage-tier matches. The floor
+ *   does NOT apply to the FTS-fallback path (no cosine to compare). Set the
+ *   config value ≤ -1 to disable.
+ *
  * Recency weighting (AGT-291):
  *   score = cosine × exp(-decay × (max_seq - entry_seq))
  *
@@ -97,6 +104,13 @@ const RECENCY_OVERFETCH_FACTOR = 5;
 //   seq_distance=14 → weight≈0.50
 //   seq_distance=28 → weight≈0.25
 const DEFAULT_DECAY = 0.05;
+
+// Default absolute cosine-similarity floor (AGT-456 / design doc §5 M2).
+// Candidates whose raw cosine is below this are excluded BEFORE recency
+// reweighting, so sparse cortexes stop surfacing garbage-tier "best of a bad
+// top-K" matches. Reuses the compaction-triage 0.6 as a starting point;
+// config-tunable via config.recall.relevanceFloor. Set ≤ -1 to disable.
+const DEFAULT_RELEVANCE_FLOOR = 0.6;
 
 // ---------------------------------------------------------------------------
 // Types
@@ -301,6 +315,13 @@ interface ParsedRecallParams {
   since: string | undefined;
   decay: number;
   /**
+   * Absolute cosine-similarity floor (AGT-456). Candidates with raw cosine
+   * below this are excluded before recency reweighting. Inapplicable to the
+   * FTS-fallback path (no cosine). Default DEFAULT_RELEVANCE_FLOOR (0.6);
+   * config-tunable via config.recall.relevanceFloor.
+   */
+  relevanceFloor: number;
+  /**
    * When true, skip BOTH the superseded_at and compaction_links filters —
    * return every entry regardless of supersession or compaction state.
    * Set by the `--full` CLI flag (AGT-305).
@@ -373,12 +394,13 @@ function parseRecallParams(params: Record<string, unknown>): ParsedRecallParams 
 
   const cfg = getConfig();
   const decay = cfg.recall?.recencyDecay ?? DEFAULT_DECAY;
+  const relevanceFloor = cfg.recall?.relevanceFloor ?? DEFAULT_RELEVANCE_FLOOR;
 
   const full = params['full'] === true;
   const includeSuperseded = params['includeSuperseded'] === true;
   const noEmbed = params['no_embed'] === true;
 
-  return { query, limit, kind, topic, since, decay, full, includeSuperseded, noEmbed };
+  return { query, limit, kind, topic, since, decay, relevanceFloor, full, includeSuperseded, noEmbed };
 }
 
 // ---------------------------------------------------------------------------
@@ -575,6 +597,7 @@ async function recallOneCortexWithVec(
   topic: string | undefined,
   since: string | undefined,
   decay: number,
+  relevanceFloor: number,
   full: boolean,
   includeSuperseded: boolean,
 ): Promise<RecallEntry[]> {
@@ -746,11 +769,25 @@ async function recallOneCortexWithVec(
     vectorResults.map((r) => [r.id, r.similarity]),
   );
 
+  // AGT-456 (design doc §5 M2): apply the absolute cosine-similarity floor to
+  // the RAW cosine, BEFORE recency reweighting. Candidates below the floor are
+  // dropped entirely so a sparse cortex returns zero entries rather than a
+  // top-K of garbage-tier "best of a bad bunch" matches. Recency weighting only
+  // discounts, so a sub-floor cosine could never recover above the floor anyway
+  // — filtering on the raw cosine here is both correct and the cheapest cut.
+  // Note: this is only reached on the vector path; the FTS fallback
+  // (recallOneCortexWithFts) carries similarity=0 and is intentionally exempt,
+  // since there is no cosine to compare against.
+  const flooredRows =
+    relevanceFloor <= -1
+      ? rows
+      : rows.filter((row) => (simMap.get(row.id) ?? -Infinity) >= relevanceFloor);
+
   // Batched compaction_links lookup — one query for all returned IDs, not N+1.
   // compacted_from_map: compacted_id → array of raw_ids that folded into it.
   const compactedFromMap = new Map<string, string[]>();
-  if (hasCompactionLinks && rows.length > 0) {
-    const rowIds = rows.map((r) => r.id);
+  if (hasCompactionLinks && flooredRows.length > 0) {
+    const rowIds = flooredRows.map((r) => r.id);
     const idPlaceholders = rowIds.map(() => '?').join(', ');
     const linkRows = db.prepare(
       `SELECT raw_id, compacted_id FROM compaction_links WHERE compacted_id IN (${idPlaceholders})`,
@@ -765,7 +802,7 @@ async function recallOneCortexWithVec(
     }
   }
 
-  return rows.map((row) => {
+  return flooredRows.map((row) => {
     let topicsValue: string[] = [];
     try {
       topicsValue = JSON.parse(row.topics ?? '[]') as string[];
@@ -839,7 +876,7 @@ async function recallSingleCortex(
   // caller gets a fast, clear error rather than a timeout waiting for embed().
   sanitizeName(cortexName);
 
-  const { query, limit, kind, topic, since, decay, full, includeSuperseded, noEmbed } = parseRecallParams(params);
+  const { query, limit, kind, topic, since, decay, relevanceFloor, full, includeSuperseded, noEmbed } = parseRecallParams(params);
 
   if (noEmbed) {
     return recallOneCortexWithFts(cortexName, query, limit);
@@ -861,7 +898,7 @@ async function recallSingleCortex(
   }
 
   const entries = await recallOneCortexWithVec(
-    cortexName, queryVec, limit, kind, topic, since, decay, full, includeSuperseded,
+    cortexName, queryVec, limit, kind, topic, since, decay, relevanceFloor, full, includeSuperseded,
   );
   entries.sort((a, b) => b.score - a.score);
   return entries.slice(0, limit);
@@ -898,7 +935,7 @@ async function recallSingleCortex(
 async function recallFederated(
   params: Record<string, unknown>,
 ): Promise<RecallEntry[]> {
-  const { query, limit, kind, topic, since, decay, full, includeSuperseded, noEmbed } = parseRecallParams(params);
+  const { query, limit, kind, topic, since, decay, relevanceFloor, full, includeSuperseded, noEmbed } = parseRecallParams(params);
 
   // Enumerate locally-known cortexes via local git refs (no network call).
   // listLocalBranches() uses `git for-each-ref refs/heads/` — sync but does
@@ -972,7 +1009,7 @@ async function recallFederated(
     cortexNames.map(async (name) => {
       try {
         return await recallOneCortexWithVec(
-          name, queryVec, limit, kind, topic, since, decay, full, includeSuperseded,
+          name, queryVec, limit, kind, topic, since, decay, relevanceFloor, full, includeSuperseded,
         );
       } catch (err) {
         // Partial failure: cortex is unavailable or corrupt; contribute zero
