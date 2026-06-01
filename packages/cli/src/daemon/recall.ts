@@ -64,6 +64,7 @@ import { listLocalBranches } from '../lib/git.js';
 import { reindexingCortexes, reindexFailedCortexes } from './embed-model-check.js';
 import { sanitizeName } from '../lib/paths.js';
 import { recordRetroSurfacings } from '../db/usage-db.js';
+import { bumpRecallStats } from '../db/retro-queries.js';
 
 /**
  * User-facing note printed when recall falls back to FTS ranking due to
@@ -480,7 +481,8 @@ export async function handleRecall(
 }
 
 /**
- * Append a usage-telemetry row for every retro in the recall result.
+ * Append a usage-telemetry row for every retro in the recall result and bump
+ * each surfaced retro's recall stats on its cortex's retros table.
  *
  * This is the single capture point for retro-surfacing analytics: every
  * `think recall`, MCP `think_recall`, and both of `think brief`'s internal
@@ -488,8 +490,17 @@ export async function handleRecall(
  * its calls with source='brief' so the report can separate task-start
  * orientation from ad-hoc recall.
  *
- * Best-effort and non-throwing — recordRetroSurfacings swallows write errors
- * so telemetry can never degrade a recall response.
+ * AGT-457 (design doc §5 M3): besides the append-only usage.db row, each
+ * surfacing advances the originating retro's `last_recalled_at` /
+ * `recalled_count` (via bumpRecallStats, grouped by cortex). This is the live
+ * write-back that closes the surfacing → curation feedback loop and activates
+ * the otherwise-dormant relegation path in `curate-retros`. The live option is
+ * simpler than reconciling from usage.db in the curator: the daemon already
+ * holds the surfaced ids + cortexes here, and `bumpRecallStats` already exists.
+ *
+ * Best-effort and non-throwing — recordRetroSurfacings swallows write errors,
+ * and the bump is wrapped in try/catch, so telemetry/stat updates can never
+ * degrade a recall response.
  */
 const KNOWN_SOURCES: ReadonlySet<string> = new Set(['brief', 'recall', 'mcp', 'hook']);
 
@@ -518,6 +529,24 @@ function recordSurfacings(
       score: e.fts_fallback ? null : e.score,
     })),
   });
+
+  // AGT-457 (§5 M3): write the surfacing back to the retros table so
+  // last_recalled_at / recalled_count advance and the curator's relegation
+  // path can fire. Group by cortex (bumpRecallStats is per-cortex) and bump
+  // best-effort — a stat-update failure must never break recall.
+  try {
+    const idsByCortex = new Map<string, string[]>();
+    for (const e of retros) {
+      const ids = idsByCortex.get(e.cortex);
+      if (ids) ids.push(e.id);
+      else idsByCortex.set(e.cortex, [e.id]);
+    }
+    for (const [cortex, ids] of idsByCortex) {
+      bumpRecallStats(cortex, ids);
+    }
+  } catch {
+    /* best-effort: recall-stat write must never break recall */
+  }
 }
 
 async function handleRecallInner(
