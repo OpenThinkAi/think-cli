@@ -321,6 +321,37 @@ export class PushDebouncer {
       // exists". Replace with an explicit local-ref check (rev-parse) so the
       // decision is deterministic regardless of transient errors.
       if (currentBranch !== safeCortex) {
+        // Self-heal (#69): a prior cycle (this cortex or another) may have
+        // crashed after appending to the L1 page but before committing,
+        // leaving the shared worktree dirty on `currentBranch`. `git switch`
+        // refuses to overwrite uncommitted changes, which would wedge branch
+        // switching for EVERY cortex until a human cleans the tree. Commit the
+        // leftover on its own branch (it belongs there by the orphan-branch
+        // invariant) so the switch starts clean — preserving the data rather
+        // than resetting it away. Mirrors `lib/git.ts:salvageDirtyWorktree`.
+        // Stage only TRACKED changes (`git add -u`) — untracked files don't
+        // block the switch and shouldn't be swept into cortex history.
+        // Guarded on a real `.git` (like the union-driver step below) so the
+        // call-count unit tests — which mock git with no repo on disk — don't
+        // see the salvage's extra add/diff/commit.
+        if (fs.existsSync(path.join(repoPath, '.git'))) {
+          await git(['add', '-u'], repoPath);
+          const hasTrackedDirt = await git(['diff', '--cached', '--quiet'], repoPath)
+            .then(() => false, () => true);
+          if (hasTrackedDirt) {
+            await git(
+              [
+                'commit',
+                '-m',
+                `chore(cortex): salvage uncommitted worktree changes on ${currentBranch} (self-heal #69)`,
+              ],
+              repoPath,
+            );
+            log(
+              `self-healed dirty worktree on '${currentBranch}' before switching to '${safeCortex}' (#69)`,
+            );
+          }
+        }
         const localRefExists = await git(
           ['rev-parse', '--verify', '--quiet', `refs/heads/${safeCortex}`],
           repoPath,

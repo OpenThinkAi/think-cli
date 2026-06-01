@@ -155,7 +155,9 @@ Examples:
       } else {
         const msg = err instanceof Error ? err.message : String(err);
         const cleaned = stripControls(msg);
-        const display = cleaned.length > 200 ? cleaned.slice(0, 200) + '…' : cleaned;
+        // Generous cap so git's remediation hint (e.g. "Please commit your
+        // changes or stash them…") survives instead of being cut mid-sentence (#69).
+        const display = cleaned.length > 1000 ? cleaned.slice(0, 1000) + '…' : cleaned;
         console.error(chalk.red(`think retro: daemon error — ${display}`));
         process.exitCode = 1;
       }
