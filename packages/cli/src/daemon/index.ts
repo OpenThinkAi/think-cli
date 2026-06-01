@@ -46,6 +46,7 @@ import { runEmbedModelChecks } from './embed-model-check.js';
 import { warmupEmbedModel, EMBEDDING_MODEL_NAME } from '../lib/embed.js';
 import { startProxySubscribe } from './proxy-subscribe.js';
 import { startPullLoop, notifyCliCall } from './pull-loop.js';
+import { startCurationLoop } from './curation-loop.js';
 
 // ---------------------------------------------------------------------------
 // Paths
@@ -500,6 +501,17 @@ export async function runDaemon(options: DaemonOptions): Promise<void> {
   // Falls back silently to polling if the proxy is unreachable.
   // ---------------------------------------------------------------------------
 
+  // ---------------------------------------------------------------------------
+  // Curation loop — scheduled retro curation per repo cortex (AGT-462)
+  //
+  // Runs the merge → promote → relegate passes that `think curate-retros`
+  // performs, on a configurable cadence (cortex.curationIntervalHours; 0
+  // disables), for every local repo cortex except the personal work-log cortex.
+  // The loop self-guards against errors and never fires on boot.
+  // ---------------------------------------------------------------------------
+
+  const curationLoopHandle = startCurationLoop();
+
   const proxySubscribeHandle = startProxySubscribe((_cortex, _commitSha) => {
     // TODO: call triggerImmediatePull(cortex) here once AGT-311 passes the
     // cortex name through to the callback (the exported pull-loop function
@@ -536,6 +548,8 @@ export async function runDaemon(options: DaemonOptions): Promise<void> {
     if (pullLoopHandle !== null) {
       pullLoopHandle.stop();
     }
+    // Stop the scheduled curation loop (no-op if disabled).
+    curationLoopHandle.stop();
     // Stop proxy-subscribe WS client (no-op if proxy not configured).
     proxySubscribeHandle.stop();
 

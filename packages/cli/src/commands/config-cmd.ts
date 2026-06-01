@@ -16,6 +16,7 @@ const ALLOWED_KEYS = new Set([
   'cortex.idleWindowMinutes',
   'cortex.staleWindowMinutes',
   'cortex.retroRelegateAfterRuns',
+  'cortex.curationIntervalHours',
   'cortex.retroMinLength',
   'cortex.retroNearDupThreshold',
   'paused',
@@ -32,7 +33,7 @@ const ENUM_KEYS: Record<string, string[]> = {
  * Keys that require a daemon restart to take effect. A note is printed
  * after a successful write.
  */
-const DAEMON_RESTART_KEYS = new Set(['proxy.url']);
+const DAEMON_RESTART_KEYS = new Set(['proxy.url', 'cortex.curationIntervalHours']);
 
 export const configCommand = new Command('config')
   .description('View or update think configuration');

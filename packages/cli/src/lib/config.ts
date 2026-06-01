@@ -69,6 +69,19 @@ export interface CortexConfig {
   staleWindowMinutes?: number;
   retroRelegateAfterRuns?: number;
   /**
+   * Cadence, in hours, at which the daemon runs retro curation (the merge →
+   * promote → relegate passes that `think curate-retros` performs) for each
+   * local repo cortex (AGT-462 / design doc §5 M6). The personal work-log
+   * cortex (`cortex.active`) is never curated — curation is retro-scoped.
+   *
+   * Set to `0` (or any value ≤ 0) to disable the scheduled loop entirely; the
+   * manual `think curate-retros` command is unaffected. Default 6 (see
+   * `DEFAULT_CURATION_INTERVAL_HOURS` in `daemon/curation-loop.ts`).
+   *
+   * Requires a daemon restart to take effect.
+   */
+  curationIntervalHours?: number;
+  /**
    * Minimum trimmed-character length for a `kind=retro` write (AGT-455).
    * Retros below this are rejected at intake unless `--force` is set.
    * Default 40 (see `DEFAULT_RETRO_MIN_LENGTH`).
