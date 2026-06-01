@@ -394,7 +394,19 @@ function parseRecallParams(params: Record<string, unknown>): ParsedRecallParams 
 
   const cfg = getConfig();
   const decay = cfg.recall?.recencyDecay ?? DEFAULT_DECAY;
-  const relevanceFloor = cfg.recall?.relevanceFloor ?? DEFAULT_RELEVANCE_FLOOR;
+
+  // AGT-456: validate the configured floor. Cosine ∈ [−1, 1], so any value
+  // above 1 would suppress every candidate forever — a silent foot-gun.
+  // Reject it with a clear error rather than returning empty results
+  // indefinitely. Values in [−1, 1] are active floors; anything below −1 is
+  // the "disabled" sentinel (no real cosine is < −1, so nothing is filtered).
+  const relevanceFloorRaw = cfg.recall?.relevanceFloor ?? DEFAULT_RELEVANCE_FLOOR;
+  if (typeof relevanceFloorRaw !== 'number' || !Number.isFinite(relevanceFloorRaw) || relevanceFloorRaw > 1) {
+    throw new Error(
+      `recall: config.recall.relevanceFloor must be a number ≤ 1 (cosine range is [−1, 1]; use ≤ -1 to disable the floor), got ${JSON.stringify(relevanceFloorRaw)}`,
+    );
+  }
+  const relevanceFloor = relevanceFloorRaw;
 
   const full = params['full'] === true;
   const includeSuperseded = params['includeSuperseded'] === true;
@@ -778,10 +790,28 @@ async function recallOneCortexWithVec(
   // Note: this is only reached on the vector path; the FTS fallback
   // (recallOneCortexWithFts) carries similarity=0 and is intentionally exempt,
   // since there is no cosine to compare against.
-  const flooredRows =
-    relevanceFloor <= -1
-      ? rows
-      : rows.filter((row) => (simMap.get(row.id) ?? -Infinity) >= relevanceFloor);
+  const floorActive = relevanceFloor > -1;
+  const flooredRows = floorActive
+    ? rows.filter((row) => (simMap.get(row.id) ?? -Infinity) >= relevanceFloor)
+    : rows;
+
+  // Breadcrumb (AGT-456 review): the floor silently changes the long-standing
+  // "always return the top-K" contract to "return nothing when nothing clears
+  // the bar." Without a signal a user can't tell "no matching memories" from
+  // "matches existed but scored below the floor and were suppressed." Emit a
+  // stderr hint naming the drop count + floor so they know to reach for
+  // `config.recall.relevanceFloor` (set ≤ -1 to disable) rather than assuming
+  // data loss. Matches the existing stderr-warning convention in this file
+  // (reindex/degraded warnings above); the daemon captures stderr in its log.
+  if (floorActive) {
+    const dropped = rows.length - flooredRows.length;
+    if (dropped > 0) {
+      const safeCortex = cortexName.replace(/[\r\n]/g, ' ');
+      process.stderr.write(
+        `think recall: ${dropped} candidate${dropped === 1 ? '' : 's'} in cortex "${safeCortex}" fell below the relevance floor (${relevanceFloor}) and ${dropped === 1 ? 'was' : 'were'} excluded. Lower or disable it via config.recall.relevanceFloor (set ≤ -1 to disable) if you expected ${dropped === 1 ? 'it' : 'them'}.\n`,
+      );
+    }
+  }
 
   // Batched compaction_links lookup — one query for all returned IDs, not N+1.
   // compacted_from_map: compacted_id → array of raw_ids that folded into it.

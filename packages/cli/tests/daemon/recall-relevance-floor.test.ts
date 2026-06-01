@@ -172,6 +172,44 @@ describe('handleRecall — relevance floor (AGT-456)', () => {
     expect(ids).not.toContain(newButBelowFloor);
   });
 
+  // ── breadcrumb: dropped candidates emit a stderr hint (AGT-456 review) ───
+
+  it('emits a stderr breadcrumb when the floor drops candidates', async () => {
+    insertAt(0.8, 2, 'above floor');
+    insertAt(0.3, 1, 'below floor'); // dropped
+
+    const stderrSpy = vi.spyOn(process.stderr, 'write').mockReturnValue(true);
+    vi.spyOn(embedModule, 'default').mockResolvedValue(axis(0));
+    await handleRecall({ cortex: CORTEX, query: 'q', limit: 50 });
+
+    const wrote = stderrSpy.mock.calls.map((c) => String(c[0])).join('');
+    expect(wrote).toMatch(/relevance floor/);
+    expect(wrote).toMatch(/relevanceFloor/);
+  });
+
+  it('does not emit the breadcrumb when nothing is dropped', async () => {
+    insertAt(0.9, 1, 'well above floor');
+
+    const stderrSpy = vi.spyOn(process.stderr, 'write').mockReturnValue(true);
+    vi.spyOn(embedModule, 'default').mockResolvedValue(axis(0));
+    await handleRecall({ cortex: CORTEX, query: 'q', limit: 50 });
+
+    const wrote = stderrSpy.mock.calls.map((c) => String(c[0])).join('');
+    expect(wrote).not.toMatch(/relevance floor/);
+  });
+
+  // ── validation: out-of-range floor is rejected (AGT-456 review #3) ───────
+
+  it('rejects a configured floor above 1 (would suppress everything forever)', async () => {
+    insertAt(0.9, 1, 'entry');
+    saveConfig({ ...getConfig(), recall: { relevanceFloor: 2.0 } });
+
+    vi.spyOn(embedModule, 'default').mockResolvedValue(axis(0));
+    await expect(handleRecall({ cortex: CORTEX, query: 'q' })).rejects.toThrow(
+      /relevanceFloor must be a number/,
+    );
+  });
+
   // ── AC2: FTS fallback (no_embed) is exempt — similarity=0 still surfaces ──
 
   it('AC2: the floor does NOT apply to the FTS-fallback path (no_embed)', async () => {
