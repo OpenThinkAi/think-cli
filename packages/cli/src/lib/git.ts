@@ -39,6 +39,10 @@ function runGit(args: string[], cwd?: string): string {
     encoding: 'utf-8',
     stdio: ['pipe', 'pipe', 'pipe'],
     env: safeGitEnv(),
+    // On Windows, spawning git without this flashes a console window per call.
+    // The daemon makes many git calls (pull/push/show); during a backfill that's
+    // a storm of focus-stealing windows. Harmless no-op on macOS/Linux.
+    windowsHide: true,
   }).trim();
 }
 
@@ -248,6 +252,7 @@ export function ensureRepoCloned(): void {
     encoding: 'utf-8',
     stdio: ['pipe', 'pipe', 'pipe'],
     env: safeGitEnv(),
+    windowsHide: true, // suppress the per-call console window on Windows
   });
   // Fresh clone: stamp the always-effective local union driver so the very
   // first write's pull-rebase can reconcile a divergent page.

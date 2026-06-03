@@ -28,7 +28,7 @@ import {
   fetchBranch,
 } from '../lib/git.js';
 import { parseMemoriesJsonl } from '../lib/curator.js';
-import { deterministicId } from '../lib/deterministic-id.js';
+import { resolveMemoryId } from '../lib/deterministic-id.js';
 import { getCortexDb, closeCortexDb } from '../db/engrams.js';
 import { recomputeActivitySeq } from '../db/activity-seq.js';
 import embed, { EMBEDDING_MODEL_NAME } from '../lib/embed.js';
@@ -147,8 +147,10 @@ export async function reindexOneCortex(
     const entries = parseMemoriesJsonl(page);
 
     for (const entry of entries) {
-      // Compute deterministic id matching how sync adapters produce it
-      const id = deterministicId(entry.ts, entry.author, entry.content);
+      // L2 key: explicit id when present, deterministic fallback for legacy
+      // lines (see resolveMemoryId). Keeps reindex idempotent against the
+      // daemon pull-loop rather than duplicating rows under a second key.
+      const id = resolveMemoryId(entry);
       total++;
 
       // Embed — errors are non-fatal; log and continue
