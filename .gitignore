@@ -14,3 +14,7 @@ design-drafts/
 
 # curate-eval harness output (dev script)
 packages/cli/scripts/eval-out/
+
+# Local agent state (Claude Code worktrees, scratch cortex dirs)
+.claude/
+Cortex: personal/

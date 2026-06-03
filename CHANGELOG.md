@@ -2,6 +2,24 @@
 
 ## [Unreleased]
 
+## [2.0.0] — 2026-06-02
+
+### Changed (breaking)
+
+- **Retros now live on your home cortex, tagged by repo context — not on per-repo cortex branches (iterative-learning v3; reverses the v2 #70 "Option B" locality decision).** A retro is no longer routed to a separate `cortex/<repo>` branch that the daemon had to `git switch` to. It is stored on your **home cortex** (the active one, or `-C <name>`) and tagged with a reserved `repo:<context>` topic, where the context is the basename of the git repo you run the command in (auto-detected). Recall and `think brief` scope to that context. Different teams/home cortices can now hold different lessons for the same repo — this is intentional. Eliminates the shared-worktree branch-switching that was the root of a recurring bug class (#65, #69).
+  - **`think retro "<lesson>"`** is now zero-flag in the common case: it auto-detects the repo context. `--context <name>` overrides the detected context; outside a git repo the retro is stored untagged. **`--cortex`/`-C` now selects the home cortex to store on** (consistent with every other command) — it no longer names a per-retro bucket. Old `think retro "..." --cortex <repo>` invocations keep working but now store on a cortex literally named `<repo>`; switch them to `--context <repo>`.
+  - **`think brief`** reads from the home cortex and scopes the retro section to the current repo context (auto-detected); `--context <name>` overrides. The separate per-repo cortex argument is gone.
+  - **`think recall`** adds an additive working-context boost: retros tagged for the repo you're in surface first, without hard-filtering out cross-context lessons. Tunable via `config.recall.contextBoost` (default 0.1); `--no-context` disables it.
+  - Scheduled curation now includes the home cortex (it previously excluded the active cortex, which is where retros now live). Curation remains retro-scoped, so memory/event entries are untouched.
+
+### Added
+
+- **`think retro-migrate` — fold legacy per-repo cortices into your home cortex.** `think retro-migrate --to <home> [--from <a,b,c>]` copies every retro from the source cortices onto the target home cortex, tagged `repo:<source>`, then tombstones the source copy. Both halves sync to all peers. **Dry-run by default** (preview counts); pass `--apply` to perform it. Idempotent — re-running, or running after another peer migrated, is a no-op. Forward-only (a synced tombstone cannot be cleanly un-synced), so preview before applying. Run this once per machine after upgrading.
+
+### Migration
+
+Existing retros stay on their old `cortex/<repo>` branches until you run `think retro-migrate --to <your-home-cortex> --apply`. Until then, `think brief` in a repo will show no retros for that context (they haven't moved yet). New retros written after upgrade already follow the v3 model.
+
 ## [1.11.1] — 2026-05-31
 
 ### Fixed

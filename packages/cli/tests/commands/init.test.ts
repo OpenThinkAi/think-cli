@@ -73,9 +73,10 @@ describe('think init — scoped marker block', () => {
     const content = readClaude();
     expect(content).toContain('# Iterative Learning');
     expect(content).toContain('# Reading retros at task start');
-    expect(content).toContain('think retro "<observation>" --cortex <repo-basename>');
-    expect(content).toContain('think brief --cortex <repo-basename>');
-    // No specific cortex baked into the base block — that's the per-repo block's job.
+    expect(content).toContain('think retro "<observation>"');
+    expect(content).toContain('think brief');
+    // v3: the base block auto-detects the repo context — no baked cortex/context.
+    expect(content).not.toContain('--context fx-tracker');
     expect(content).not.toContain('--cortex fx-tracker');
   });
 
@@ -265,8 +266,8 @@ describe('think init --retro — iterative-learning block', () => {
     expect(content).toContain(RETRO_BEGIN_MARKER);
     expect(content).toContain(RETRO_END_MARKER);
     expect(content).toContain('# Iterative Learning');
-    expect(content).toContain('think brief --cortex fx-tracker');
-    expect(content).toContain('think retro "<observation>" --cortex fx-tracker');
+    expect(content).toContain('think brief --context fx-tracker');
+    expect(content).toContain('think retro "<observation>" --context fx-tracker');
     expect(content.indexOf(RETRO_BEGIN_MARKER)).toBeLessThan(content.indexOf(RETRO_END_MARKER));
   });
 
@@ -282,12 +283,12 @@ describe('think init --retro — iterative-learning block', () => {
 
   it('updates the cortex name in place when re-run with a different value', async () => {
     await runRetro('old-cortex');
-    expect(readClaude()).toContain('think brief --cortex old-cortex');
+    expect(readClaude()).toContain('think brief --context old-cortex');
 
     await runRetro('new-cortex');
     const content = readClaude();
-    expect(content).toContain('think brief --cortex new-cortex');
-    expect(content).toContain('think retro "<observation>" --cortex new-cortex');
+    expect(content).toContain('think brief --context new-cortex');
+    expect(content).toContain('think retro "<observation>" --context new-cortex');
     expect(content).not.toContain('old-cortex');
     // Still exactly one retro block.
     expect((content.match(/think:retro:begin/g) ?? []).length).toBe(1);
@@ -305,7 +306,7 @@ describe('think init --retro — iterative-learning block', () => {
     expect(content).toContain(RETRO_END_MARKER);
     expect(content).toContain('# Work Logging');
     expect(content).toContain('# Iterative Learning');
-    expect(content).toContain('think brief --cortex fx-tracker');
+    expect(content).toContain('think brief --context fx-tracker');
 
     // Re-running the work-log path leaves the retro block untouched.
     const before = content;
@@ -324,7 +325,7 @@ describe('think init --retro — iterative-learning block', () => {
     expect(existsSync(path.join(projectDir, 'CLAUDE.md'))).toBe(true);
     const content = readClaude();
     expect(content).toContain(RETRO_BEGIN_MARKER);
-    expect(content).toContain('think brief --cortex greenfield');
+    expect(content).toContain('think brief --context greenfield');
   });
 
   it('errors clearly and exits non-zero when --retro is passed without --cortex', async () => {
@@ -366,7 +367,7 @@ describe('think init --retro — iterative-learning block', () => {
     const agents = readFileSync(path.join(projectDir, 'AGENTS.md'), 'utf-8');
     expect(agents).toContain('# Existing agents file');
     expect(agents).toContain(RETRO_BEGIN_MARKER);
-    expect(agents).toContain('think brief --cortex fx-tracker');
+    expect(agents).toContain('think brief --context fx-tracker');
   });
 
   it('does not run legacy work-log migration on the retro path', async () => {
@@ -435,7 +436,7 @@ describe('think init --retro — directory resolution (AC #6)', () => {
 
     const claudePath = path.join(tempDir1, 'CLAUDE.md');
     expect(existsSync(claudePath)).toBe(true);
-    expect(readFileSync(claudePath, 'utf-8')).toContain('think brief --cortex my-repo');
+    expect(readFileSync(claudePath, 'utf-8')).toContain('think brief --context my-repo');
   });
 
   it('--retro no -d outside a git repo with --yes resolves to cwd', async () => {
@@ -448,7 +449,7 @@ describe('think init --retro — directory resolution (AC #6)', () => {
     const resolvedCwd = process.cwd();
     const claudePath = path.join(resolvedCwd, 'CLAUDE.md');
     expect(existsSync(claudePath)).toBe(true);
-    expect(readFileSync(claudePath, 'utf-8')).toContain('think brief --cortex my-repo');
+    expect(readFileSync(claudePath, 'utf-8')).toContain('think brief --context my-repo');
     expect(existsSync(path.join(homeRoot, 'CLAUDE.md'))).toBe(false);
   });
 
@@ -462,7 +463,7 @@ describe('think init --retro — directory resolution (AC #6)', () => {
 
     const claudePath = path.join(tempDir1, 'CLAUDE.md');
     expect(existsSync(claudePath)).toBe(true);
-    expect(readFileSync(claudePath, 'utf-8')).toContain('think brief --cortex my-repo');
+    expect(readFileSync(claudePath, 'utf-8')).toContain('think brief --context my-repo');
   });
 
   it('base think init (no --retro) with --yes still uses $HOME, not cwd', async () => {
@@ -670,9 +671,9 @@ describe('think init — v3 block (AGT-321)', () => {
     expect(content).toContain('kind=memory');
     expect(content).toContain('kind=retro');
     expect(content).toContain('kind=event');
-    // Paragraph (c): cortex inference
-    expect(content).toContain('repo basename');
-    expect(content).toContain('--cortex <name>');
+    // Paragraph (c): v3 context tagging
+    expect(content).toContain('repo:<basename>');
+    expect(content).toContain('--context <name>');
   });
 
   it('v3 block uses the same BEGIN/END markers (idempotent replace with v2)', async () => {
@@ -696,8 +697,8 @@ describe('think init — v3 block (AGT-321)', () => {
     );
     const content = readClaude();
     expect(content).toContain(RETRO_BEGIN_MARKER);
-    expect(content).toContain('think brief --cortex my-repo');
-    expect(content).toContain('think retro "<observation>" --cortex my-repo');
+    expect(content).toContain('think brief --context my-repo');
+    expect(content).toContain('think retro "<observation>" --context my-repo');
   });
 
   it('invalid --block-version value exits with error', async () => {

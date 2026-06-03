@@ -20,6 +20,8 @@ import { Command } from 'commander';
 import chalk from 'chalk';
 import { connectDaemon, DaemonUnavailableError } from '../lib/daemon-client.js';
 import { addWriteOptions, extractWriteOpts } from '../lib/write-options.js';
+import { getConfig } from '../lib/config.js';
+import { detectWorkingContext, contextTopic, normalizeContext } from '../lib/working-context.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -57,37 +59,47 @@ function stripControls(s: unknown): string {
 // ---------------------------------------------------------------------------
 
 export const retroCommand = addWriteOptions(new Command('retro')
-  .description('Record a permanent codebase observation to a cortex')
+  .description('Record a durable lesson onto your home cortex, tagged by repo context')
   .argument('<content>', 'The observation to record'))
   .option('--force', 'Bypass the write-time quality gate (length floor + junk-shape check)')
+  .option('--context <name>', 'Context this lesson is about (default: the git repo you are in)')
   .addHelpText('after', `
 Requirements:
   Requires the think daemon (start it with: think daemon start).
 
-Storage contract:
+Storage model (iterative-learning v3 — see docs/iterative-learning-v3-locality.md):
+  A retro is stored on your HOME cortex (the active cortex, or -C <name>) and
+  TAGGED with the context it is about — it is no longer routed to a separate
+  per-context branch. The context is auto-detected from the git repo you run the
+  command in (its root basename), encoded as a 'repo:<context>' topic so recall
+  and 'think brief' can scope to it. Different teams/home cortices can hold
+  different lessons for the same context — that is intended.
+
+  Common case is zero-flag:  think retro "<lesson>"   (context auto-detected)
+  Outside a git repo, the retro is stored untagged (a global lesson).
+
   Retros have no TTL and are never purged. Text is preserved exactly as written.
-  Supersession check (AGT-305) runs asynchronously on the daemon side.
+  Supersession check runs asynchronously on the daemon side.
 
-  --cortex is required. No fallback to the active cortex — retros are scoped
-  to a specific codebase or tool, not the user's current working context.
-  A cortex must already exist (run 'think cortex create <name>' if needed).
-
-v2 migration notes:
-  - 'think retro add "<obs>"' → 'think retro "<obs>"' (drop "add")
-  - 'think retro recall' → 'think recall --kind retro' (use unified recall)
-  - '--kind convention|invariant|prior_decision|gotcha' → '--topic <tag>' (open string)
+Cortex vs context (v3):
+  '-C <name>' / '--cortex <name>' now selects the HOME cortex to STORE on
+  (your team/personal corpus). It no longer routes to a per-context branch.
+  Use '--context <name>' to set the repo tag when auto-detection is wrong.
+  Old 'think retro "..." --cortex <repo>' invocations now store on a cortex
+  named <repo>; update them to '--context <repo>' (run 'think retro-migrate'
+  to fold legacy per-repo cortices into your home cortex).
 
 Reads:
-  To recall retros, use: think recall --kind retro [--cortex <name>]
+  To recall retros, use: think recall --kind retro [--topic repo:<context>]
+  At task start:          think brief        (scopes to the current repo context)
 
 Examples:
+  think retro "tests run after merge, before push — don't push without checks"
   think retro "users hate the modal" --topic ux
-  think retro "always run migrations in a transaction" --cortex fx-tracker
-  think -C fx-tracker retro "strategy engine type contracts are not documented"
-  think retro "AGT-169 pattern" --cortex think-cli --topic prior_decision
+  think retro "strategy engine type contracts are undocumented" --context fx-tracker
+  think -C engineering retro "always run migrations in a transaction"
 `)
-  .action(async function (this: Command, content: string, opts: { topic: string[]; cortex?: string; force?: boolean }) {
-    const globalOpts = this.optsWithGlobals() as { cortex?: string };
+  .action(async function (this: Command, content: string, opts: { topic: string[]; cortex?: string; context?: string; force?: boolean }) {
 
     // Guard against v2 muscle memory: "think retro add <obs>" or
     // "think retro recall" — the former would silently write "add" as the
@@ -95,40 +107,63 @@ Examples:
     // footguns. Print a targeted migration message instead.
     if (content === 'add') {
       console.error(chalk.red('think retro: "add" is no longer a subcommand.'));
-      console.error(chalk.yellow('  v3 usage: think retro "<your observation>" --cortex <name>'));
+      console.error(chalk.yellow('  v3 usage: think retro "<your observation>"   (context auto-detected)'));
       console.error(chalk.yellow('  (drop "add" — the content is now the first positional argument)'));
       process.exitCode = 1;
       return;
     }
     if (content === 'recall') {
       console.error(chalk.red('think retro: "recall" is no longer a subcommand.'));
-      console.error(chalk.yellow('  To read retros, use: think recall --kind retro [--cortex <name>]'));
+      console.error(chalk.yellow('  To read retros, use: think recall --kind retro [--topic repo:<context>]'));
       process.exitCode = 1;
       return;
     }
 
-    const { topics, cortex: localCortex } = extractWriteOpts(opts);
+    const { topics } = extractWriteOpts(opts);
+    const config = getConfig();
 
-    // Intentionally no fallback to config.cortex?.active — retros are scoped
-    // to a specific codebase or tool, not the user's current working context.
-    const cortex = localCortex ?? globalOpts.cortex;
+    // ── Storage cortex (the user's home/team) ────────────────────────────────
+    // v3 reverses the old "retros require --cortex and live on a per-context
+    // branch" rule. Storage is now the home cortex: the global `-C`/`--cortex`
+    // (read from the parent program opts), else the active cortex from config.
+    //
+    // Note: `--cortex` is both a program-global (`-C`) and a command-local
+    // option (from addWriteOptions), but commander routes the long name to the
+    // program option in every position, so `this.parent.opts().cortex` is the
+    // single source of truth and the command-local copy is never populated.
+    // `--cortex`/`-C` therefore means storage only; use `--context` for the
+    // repo tag.
+    const globalCortex = (this.parent?.opts() as { cortex?: string } | undefined)?.cortex;
+    const storageCortex = globalCortex ?? config.cortex?.active;
 
-    if (!cortex) {
-      console.error(chalk.red('think retro: --cortex is required. Retros scope to a specific codebase or tool.'));
-      console.error(chalk.red('Pass it as: think retro "..." --cortex <name>  or  think -C <name> retro "..."'));
+    if (!storageCortex) {
+      console.error(chalk.red('think retro: no home cortex set.'));
+      console.error(chalk.red('Set one with: think cortex switch <name>   or pass: think -C <name> retro "..."'));
       process.exitCode = 1;
       return;
     }
+
+    // ── Context tag (what the lesson is about) ────────────────────────────────
+    // Precedence: explicit --context  >  the git repo we're in (auto)  >  none
+    // (untagged "global" lesson).
+    const context: string | null = opts.context
+      ? normalizeContext(opts.context)
+      : detectWorkingContext();
+
+    // Fold the context into the topics as a reserved 'repo:<context>' tag so it
+    // rides the existing topics_json column + recall topic filter (AGT-320).
+    const baseTopics = topics ?? [];
+    const finalTopics = context ? [...baseTopics, contextTopic(context)] : baseTopics;
 
     try {
       const client = await connectDaemon();
       let result: DaemonSyncResult;
       try {
         result = await client.call('sync', {
-          cortex,
+          cortex: storageCortex,
           content,
           kind: 'retro',
-          ...(topics ? { topics } : {}),
+          ...(finalTopics.length > 0 ? { topics: finalTopics } : {}),
           ...(opts.force ? { force: true } : {}),
         }) as DaemonSyncResult;
       } finally {
@@ -136,7 +171,8 @@ Examples:
       }
 
       const safeEntryId = stripControls(result.entry_id);
-      const badge = chalk.cyan(`[${cortex}]`);
+      const ctxTag = context ? chalk.dim(` (context: ${context})`) : chalk.dim(' (untagged — not in a git repo)');
+      const badge = chalk.cyan(`[${storageCortex}]`) + ctxTag;
       const excerpt = content.length > 60 ? content.slice(0, 60) + '…' : content;
       if (result.folded) {
         // AGT-455: the write was a near-duplicate of an existing retro and was

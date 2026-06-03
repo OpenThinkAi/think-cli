@@ -133,6 +133,17 @@ const DEFAULT_RELEVANCE_FLOOR = 0.6;
 const DEFAULT_QUALITY_BOOST = 0.1;
 const DEFAULT_QUALITY_PENALTY = 0.1;
 
+// Context-aware ranking term (iterative-learning v3 — retro locality).
+// When recall is given a `context` (the repo the caller is working in), retros
+// tagged `repo:<context>` get an additive boost so lessons for the current
+// codebase surface first — WITHOUT hard-filtering out cross-context lessons
+// (design doc §3.3: brief scopes, recall boosts). Additive and applied after
+// recency weighting, like the M4 quality term; a row without the matching
+// `repo:` topic gets no term, so ranking degrades gracefully to cosine ×
+// recency (+ quality). Config-tunable via config.recall.contextBoost (0 to
+// disable). Kept on the same small scale as the quality boost.
+const DEFAULT_CONTEXT_BOOST = 0.1;
+
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
@@ -230,11 +241,12 @@ interface HydratedRow {
 
 interface ColumnInfo {
   /**
-   * True when the `topics` column exists. Migration 14 added `topics_json`
-   * (not `topics`), so this is always false today; the topic-filter throw
-   * below treats topic filtering as not-yet-implemented. A future ticket
-   * will either rename the column or wire `topics_json` through the SELECT
-   * and parser; until then, the SELECT emits `'[]' as topics`.
+   * True when a legacy `topics` column exists. Migration 14 added `topics_json`
+   * (not `topics`), so this is false on current schemas — and that is fine:
+   * topic filtering IS wired through `topics_json` (the filter uses
+   * `json_each(topics_json)` and the SELECT projects `topics_json as topics`
+   * below; AGT-320). `hasTopics` only distinguishes which column name to read
+   * when an older `topics` column is present.
    */
   hasTopics: boolean;
   hasTopicsJson: boolean;
@@ -353,6 +365,13 @@ interface ParsedRecallParams {
   limit: number;
   kind: string | undefined;
   topic: string | undefined;
+  /**
+   * Working context (repo basename) the caller is in (v3 retro locality).
+   * When set, retros tagged `repo:<context>` receive an additive contextBoost.
+   * Normalized lowercase. Undefined when the caller is not in a repo / did not
+   * pass one — recall then behaves identically to the pre-v3 ranking.
+   */
+  context: string | undefined;
   since: string | undefined;
   decay: number;
   /**
@@ -373,6 +392,12 @@ interface ParsedRecallParams {
    * config-tunable via config.recall.qualityPenalty.
    */
   qualityPenalty: number;
+  /**
+   * Additive boost for retros tagged with the active `context` (v3). Default
+   * DEFAULT_CONTEXT_BOOST (0.1); config-tunable via config.recall.contextBoost.
+   * Ignored when `context` is undefined.
+   */
+  contextBoost: number;
   /**
    * When true, skip BOTH the superseded_at and compaction_links filters —
    * return every entry regardless of supersession or compaction state.
@@ -432,6 +457,11 @@ function parseRecallParams(params: Record<string, unknown>): ParsedRecallParams 
 
   const topic = typeof params['topic'] === 'string' ? params['topic'] : undefined;
 
+  // v3 retro locality: working context (repo basename). Normalized lowercase so
+  // the `repo:<context>` topic match is case-insensitive and stable.
+  const contextRaw = typeof params['context'] === 'string' ? params['context'].trim().toLowerCase() : '';
+  const context = contextRaw.length > 0 ? contextRaw : undefined;
+
   // AGT-320: validate since as ISO-8601 if provided.
   const sinceRaw = params['since'];
   if (sinceRaw !== undefined) {
@@ -480,11 +510,22 @@ function parseRecallParams(params: Record<string, unknown>): ParsedRecallParams 
   }
   const qualityPenalty = qualityPenaltyRaw;
 
+  // v3: context boost must be a finite, non-negative number (a negative boost
+  // would demote the current repo's lessons — the inverse of intent). Set 0 to
+  // disable. Mirrors the qualityBoost validation.
+  const contextBoostRaw = cfg.recall?.contextBoost ?? DEFAULT_CONTEXT_BOOST;
+  if (typeof contextBoostRaw !== 'number' || !Number.isFinite(contextBoostRaw) || contextBoostRaw < 0) {
+    throw new Error(
+      `recall: config.recall.contextBoost must be a non-negative number (use 0 to disable), got ${JSON.stringify(contextBoostRaw)}`,
+    );
+  }
+  const contextBoost = contextBoostRaw;
+
   const full = params['full'] === true;
   const includeSuperseded = params['includeSuperseded'] === true;
   const noEmbed = params['no_embed'] === true;
 
-  return { query, limit, kind, topic, since, decay, relevanceFloor, qualityBoost, qualityPenalty, full, includeSuperseded, noEmbed };
+  return { query, limit, kind, topic, context, since, decay, relevanceFloor, qualityBoost, qualityPenalty, contextBoost, full, includeSuperseded, noEmbed };
 }
 
 // ---------------------------------------------------------------------------
@@ -707,11 +748,13 @@ async function recallOneCortexWithVec(
   limit: number,
   kind: string | undefined,
   topic: string | undefined,
+  context: string | undefined,
   since: string | undefined,
   decay: number,
   relevanceFloor: number,
   qualityBoost: number,
   qualityPenalty: number,
+  contextBoost: number,
   full: boolean,
   includeSuperseded: boolean,
 ): Promise<RecallEntry[]> {
@@ -972,6 +1015,12 @@ async function recallOneCortexWithVec(
     }
   }
 
+  // v3: the reserved topic that marks a retro as belonging to the active
+  // context. Computed once per cortex; null when no context is in play so the
+  // boost branch is skipped entirely (and pre-v3 ranking is preserved exactly).
+  const contextApplies = context !== undefined && contextBoost > 0;
+  const ctxTopic = contextApplies ? `repo:${context}` : null;
+
   return flooredRows.map((row) => {
     let topicsValue: string[] = [];
     try {
@@ -1005,6 +1054,15 @@ async function recallOneCortexWithVec(
     const quality = qualityMap.get(row.id);
     if (quality === 1) score += qualityBoost;
     else if (quality === -1) score -= qualityPenalty;
+
+    // v3 context boost: additive, applied after recency weighting like the
+    // quality term. Only retros carrying the active `repo:<context>` topic get
+    // it; everything else (other contexts, memories, events) is untouched, so
+    // this never hard-filters and never perturbs the orthogonal-axis ranking
+    // fixtures (which carry no repo: topic and pass no context).
+    if (ctxTopic !== null && topicsValue.some((t) => t.toLowerCase() === ctxTopic)) {
+      score += contextBoost;
+    }
 
     const compactedFrom = compactedFromMap.get(row.id) ?? null;
     // For compacted entries, supersedes == compacted_from (the raws absorbed).
@@ -1053,7 +1111,7 @@ async function recallSingleCortex(
   // caller gets a fast, clear error rather than a timeout waiting for embed().
   sanitizeName(cortexName);
 
-  const { query, limit, kind, topic, since, decay, relevanceFloor, qualityBoost, qualityPenalty, full, includeSuperseded, noEmbed } = parseRecallParams(params);
+  const { query, limit, kind, topic, context, since, decay, relevanceFloor, qualityBoost, qualityPenalty, contextBoost, full, includeSuperseded, noEmbed } = parseRecallParams(params);
 
   if (noEmbed) {
     return recallOneCortexWithFts(cortexName, query, limit);
@@ -1075,7 +1133,7 @@ async function recallSingleCortex(
   }
 
   const entries = await recallOneCortexWithVec(
-    cortexName, queryVec, limit, kind, topic, since, decay, relevanceFloor, qualityBoost, qualityPenalty, full, includeSuperseded,
+    cortexName, queryVec, limit, kind, topic, context, since, decay, relevanceFloor, qualityBoost, qualityPenalty, contextBoost, full, includeSuperseded,
   );
   entries.sort((a, b) => b.score - a.score);
   return entries.slice(0, limit);
@@ -1112,7 +1170,7 @@ async function recallSingleCortex(
 async function recallFederated(
   params: Record<string, unknown>,
 ): Promise<RecallEntry[]> {
-  const { query, limit, kind, topic, since, decay, relevanceFloor, qualityBoost, qualityPenalty, full, includeSuperseded, noEmbed } = parseRecallParams(params);
+  const { query, limit, kind, topic, context, since, decay, relevanceFloor, qualityBoost, qualityPenalty, contextBoost, full, includeSuperseded, noEmbed } = parseRecallParams(params);
 
   // Enumerate locally-known cortexes via local git refs (no network call).
   // listLocalBranches() uses `git for-each-ref refs/heads/` — sync but does
@@ -1186,7 +1244,7 @@ async function recallFederated(
     cortexNames.map(async (name) => {
       try {
         return await recallOneCortexWithVec(
-          name, queryVec, limit, kind, topic, since, decay, relevanceFloor, qualityBoost, qualityPenalty, full, includeSuperseded,
+          name, queryVec, limit, kind, topic, context, since, decay, relevanceFloor, qualityBoost, qualityPenalty, contextBoost, full, includeSuperseded,
         );
       } catch (err) {
         // Partial failure: cortex is unavailable or corrupt; contribute zero

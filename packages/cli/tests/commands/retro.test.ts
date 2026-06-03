@@ -1,14 +1,20 @@
 /**
- * Tests for `think retro` command — AGT-294
+ * Tests for `think retro` command — iterative-learning v3 (retro locality).
  *
- * Verifies:
- *  1. When daemon is available, calls daemonClient.call("sync", {..., kind: "retro"})
- *  2. Output is "✓ [cortex] stored retro <id>" with content excerpt
- *  3. --cortex flag overrides active cortex
- *  4. --topic flag (repeatable) is forwarded to daemon as topics array
- *  5. v2 subcommands (add / recall) no longer exist on this command
- *  6. L1 entry has kind: "retro" (verified via daemon mock params)
- *  7. Missing --cortex exits non-zero
+ * v3 contract (supersedes the AGT-294 per-context-branch contract):
+ *  1. Storage cortex = home cortex: global -C, else config.cortex.active.
+ *  2. Context is auto-detected from the git repo (basename) and folded into
+ *     topics as a reserved 'repo:<context>' tag.
+ *  3. --context <name> overrides the auto-detected context.
+ *  4. -C / --cortex selects the home cortex to STORE on (commander routes the
+ *     long name to the program-global option in every position).
+ *  5. Outside a git repo (no detected context, no --context), the retro is
+ *     stored untagged.
+ *  6. v2 subcommands (add / recall) still no-op with a migration message.
+ *
+ * detectWorkingContext is mocked to null by default so topic assertions are
+ * deterministic regardless of where the test process runs (it runs inside the
+ * think-cli repo, which would otherwise auto-tag every write).
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
@@ -19,6 +25,7 @@ import { Command } from 'commander';
 import { retroCommand } from '../../src/commands/retro.js';
 import * as daemonClientModule from '../../src/lib/daemon-client.js';
 import { DaemonUnavailableError } from '../../src/lib/daemon-client.js';
+import * as workingContext from '../../src/lib/working-context.js';
 
 /** Build a fresh program with a fresh retro command instance per test */
 function makeProgram(): Command {
@@ -41,7 +48,7 @@ function makeMockClient(resultOverride?: Partial<{ entry_id: string; status: str
   };
 }
 
-describe('think retro — daemon-routed path (AGT-294)', () => {
+describe('think retro — v3 locality', () => {
   let originalHome: string | undefined;
   let tmpHome: string;
 
@@ -51,6 +58,9 @@ describe('think retro — daemon-routed path (AGT-294)', () => {
     process.env.THINK_HOME = tmpHome;
     vi.spyOn(console, 'log').mockImplementation(() => {});
     vi.spyOn(console, 'error').mockImplementation(() => {});
+    // Default: behave as if run outside a git repo so topic assertions are
+    // deterministic. Tests that exercise auto-detection override this.
+    vi.spyOn(workingContext, 'detectWorkingContext').mockReturnValue(null);
   });
 
   afterEach(() => {
@@ -61,11 +71,11 @@ describe('think retro — daemon-routed path (AGT-294)', () => {
     process.exitCode = 0;
   });
 
-  it('calls daemonClient.call("sync", { cortex, content, kind: "retro" }) (AC #1)', async () => {
+  it('stores on the -C home cortex with kind="retro" (no context → no topics)', async () => {
     const mockClient = makeMockClient();
     vi.spyOn(daemonClientModule, 'connectDaemon').mockResolvedValue(mockClient);
 
-    const cortex = 'retro-daemon-call-test';
+    const cortex = 'engineering';
     const prog = makeProgram();
     await prog.parseAsync(['node', 'think', '-C', cortex, 'retro', 'some codebase observation']);
 
@@ -78,11 +88,11 @@ describe('think retro — daemon-routed path (AGT-294)', () => {
     expect(mockClient.close).toHaveBeenCalled();
   });
 
-  it('outputs "✓ [cortex] stored retro <id>" with content excerpt on success (AC #2)', async () => {
+  it('outputs "✓ [cortex] ... stored retro <id>" with content excerpt on success', async () => {
     const mockClient = makeMockClient({ entry_id: 'abc123def456' });
     vi.spyOn(daemonClientModule, 'connectDaemon').mockResolvedValue(mockClient);
 
-    const cortex = 'output-test';
+    const cortex = 'engineering';
     const prog = makeProgram();
     await prog.parseAsync(['node', 'think', '-C', cortex, 'retro', 'some observation']);
 
@@ -92,82 +102,131 @@ describe('think retro — daemon-routed path (AGT-294)', () => {
     expect(output).toContain('some observation');
   });
 
-  it('--cortex flag overrides active cortex (AC #3)', async () => {
+  it('auto-detects the git repo context and tags it as repo:<context>', async () => {
+    vi.spyOn(workingContext, 'detectWorkingContext').mockReturnValue('stamp-cli');
     const mockClient = makeMockClient();
     vi.spyOn(daemonClientModule, 'connectDaemon').mockResolvedValue(mockClient);
 
     const prog = makeProgram();
-    await prog.parseAsync(['node', 'think', 'retro', 'overridden cortex obs', '--cortex', 'explicit-cortex']);
+    await prog.parseAsync(['node', 'think', '-C', 'engineering', 'retro', 'tests run after merge before push']);
 
-    expect(mockClient.call).toHaveBeenCalledWith('sync', expect.objectContaining({
-      cortex: 'explicit-cortex',
-    }));
+    const callArgs = mockClient.call.mock.calls[0][1] as Record<string, unknown>;
+    expect(callArgs.cortex).toBe('engineering');
+    expect(callArgs.topics).toEqual(['repo:stamp-cli']);
   });
 
-  it('--topic is forwarded as topics array to daemon (AC #4)', async () => {
+  it('--context overrides the auto-detected context', async () => {
+    vi.spyOn(workingContext, 'detectWorkingContext').mockReturnValue('detected-repo');
     const mockClient = makeMockClient();
     vi.spyOn(daemonClientModule, 'connectDaemon').mockResolvedValue(mockClient);
 
     const prog = makeProgram();
-    await prog.parseAsync(['node', 'think', '-C', 'topic-test', 'retro', 'topical obs', '--topic', 'ux', '--topic', 'perf']);
+    await prog.parseAsync(['node', 'think', '-C', 'engineering', 'retro', 'obs', '--context', 'Fx-Tracker']);
+
+    const callArgs = mockClient.call.mock.calls[0][1] as Record<string, unknown>;
+    // normalized lowercase, detected value ignored
+    expect(callArgs.topics).toEqual(['repo:fx-tracker']);
+  });
+
+  it('appends the context topic after user --topic values', async () => {
+    vi.spyOn(workingContext, 'detectWorkingContext').mockReturnValue('stamp-cli');
+    const mockClient = makeMockClient();
+    vi.spyOn(daemonClientModule, 'connectDaemon').mockResolvedValue(mockClient);
+
+    const prog = makeProgram();
+    await prog.parseAsync(['node', 'think', '-C', 'eng', 'retro', 'obs', '--topic', 'ux', '--topic', 'perf']);
+
+    const callArgs = mockClient.call.mock.calls[0][1] as Record<string, unknown>;
+    expect(callArgs.topics).toEqual(['ux', 'perf', 'repo:stamp-cli']);
+  });
+
+  it('--topic alone (no context) is forwarded unchanged', async () => {
+    const mockClient = makeMockClient();
+    vi.spyOn(daemonClientModule, 'connectDaemon').mockResolvedValue(mockClient);
+
+    const prog = makeProgram();
+    await prog.parseAsync(['node', 'think', '-C', 'eng', 'retro', 'topical obs', '--topic', 'ux', '--topic', 'perf']);
 
     expect(mockClient.call).toHaveBeenCalledWith('sync', expect.objectContaining({
       topics: ['ux', 'perf'],
     }));
   });
 
-  it('all --topic values reach L1 topics array for retro (AGT-296 AC #6)', async () => {
+  it('omits topics key when no context and no --topic', async () => {
     const mockClient = makeMockClient();
     vi.spyOn(daemonClientModule, 'connectDaemon').mockResolvedValue(mockClient);
 
     const prog = makeProgram();
-    await prog.parseAsync([
-      'node', 'think', '-C', 'multi-topic-retro', 'retro', 'always use transactions',
-      '--topic', 'db', '--topic', 'safety', '--topic', 'convention',
-    ]);
-
-    const callArgs = mockClient.call.mock.calls[0][1] as Record<string, unknown>;
-    expect(callArgs['topics']).toEqual(['db', 'safety', 'convention']);
-  });
-
-  it('does not include topics key when no --topic flags (clean params)', async () => {
-    const mockClient = makeMockClient();
-    vi.spyOn(daemonClientModule, 'connectDaemon').mockResolvedValue(mockClient);
-
-    const prog = makeProgram();
-    await prog.parseAsync(['node', 'think', '-C', 'no-topic-test', 'retro', 'observation without topics']);
+    await prog.parseAsync(['node', 'think', '-C', 'eng', 'retro', 'observation without topics']);
 
     const callArgs = mockClient.call.mock.calls[0][1] as Record<string, unknown>;
     expect(callArgs).not.toHaveProperty('topics');
   });
 
-  it('content "add" exits non-zero with migration message (AC #5 — no silent data corruption)', async () => {
+  it('falls back to config active cortex for storage when no -C', async () => {
+    const { saveConfig, getConfig } = await import('../../src/lib/config.js');
+    saveConfig({ ...getConfig(), cortex: { active: 'personal' } });
+
+    const mockClient = makeMockClient();
+    vi.spyOn(daemonClientModule, 'connectDaemon').mockResolvedValue(mockClient);
+
+    const prog = makeProgram();
+    await prog.parseAsync(['node', 'think', 'retro', 'obs stored on active cortex']);
+
+    expect(mockClient.call).toHaveBeenCalledWith('sync', expect.objectContaining({
+      cortex: 'personal',
+    }));
+  });
+
+  it('--cortex (like -C) selects the storage cortex; context still auto-detected', async () => {
+    vi.spyOn(workingContext, 'detectWorkingContext').mockReturnValue('stamp-cli');
+    const mockClient = makeMockClient();
+    vi.spyOn(daemonClientModule, 'connectDaemon').mockResolvedValue(mockClient);
+
+    const prog = makeProgram();
+    await prog.parseAsync(['node', 'think', 'retro', 'obs', '--cortex', 'engineering']);
+
+    const callArgs = mockClient.call.mock.calls[0][1] as Record<string, unknown>;
+    expect(callArgs.cortex).toBe('engineering');         // --cortex = storage
+    expect(callArgs.topics).toEqual(['repo:stamp-cli']); // context from the repo
+  });
+
+  it('exits non-zero when no home cortex is resolvable', async () => {
+    const connectSpy = vi.spyOn(daemonClientModule, 'connectDaemon');
+    const prog = makeProgram();
+    await prog.parseAsync(['node', 'think', 'retro', 'obs with no home cortex']);
+
+    expect(connectSpy).not.toHaveBeenCalled();
+    expect(process.exitCode).toBe(1);
+    const err = (console.error as ReturnType<typeof vi.fn>).mock.calls.flat().join('\n');
+    expect(err).toContain('no home cortex');
+  });
+
+  it('content "add" exits non-zero with migration message', async () => {
     const connectSpy = vi.spyOn(daemonClientModule, 'connectDaemon');
 
     const prog = makeProgram();
-    await prog.parseAsync(['node', 'think', '-C', 'add-guard-test', 'retro', 'add']);
+    await prog.parseAsync(['node', 'think', '-C', 'eng', 'retro', 'add']);
 
-    // Guard fires — daemon never called, exits non-zero
     expect(connectSpy).not.toHaveBeenCalled();
     expect(process.exitCode).toBe(1);
     const errOutput = (console.error as ReturnType<typeof vi.fn>).mock.calls.flat().join('\n');
     expect(errOutput).toContain('"add" is no longer a subcommand');
   });
 
-  it('content "recall" exits non-zero with migration message (AC #5 — no silent data corruption)', async () => {
+  it('content "recall" exits non-zero with migration message', async () => {
     const connectSpy = vi.spyOn(daemonClientModule, 'connectDaemon');
 
     const prog = makeProgram();
-    await prog.parseAsync(['node', 'think', '-C', 'recall-guard-test', 'retro', 'recall']);
+    await prog.parseAsync(['node', 'think', '-C', 'eng', 'retro', 'recall']);
 
-    // Guard fires — daemon never called, exits non-zero
     expect(connectSpy).not.toHaveBeenCalled();
     expect(process.exitCode).toBe(1);
     const errOutput = (console.error as ReturnType<typeof vi.fn>).mock.calls.flat().join('\n');
     expect(errOutput).toContain('"recall" is no longer a subcommand');
   });
 
-  it('L1 entry has kind: "retro" (AC #7)', async () => {
+  it('L1 entry has kind: "retro"', async () => {
     const mockClient = makeMockClient({ entry_id: 'kind-check-id' });
     vi.spyOn(daemonClientModule, 'connectDaemon').mockResolvedValue(mockClient);
 
@@ -176,27 +235,6 @@ describe('think retro — daemon-routed path (AGT-294)', () => {
 
     const callArgs = mockClient.call.mock.calls[0][1] as Record<string, unknown>;
     expect(callArgs.kind).toBe('retro');
-  });
-
-  it('exits non-zero when --cortex is missing (AC #7)', async () => {
-    const prog = makeProgram();
-    await prog.parseAsync(['node', 'think', 'retro', 'missing cortex obs']);
-    expect(process.exitCode).toBe(1);
-  });
-
-  it('does not fall back to active cortex from config — retros require explicit cortex', async () => {
-    // Even if an active cortex is configured, retro requires explicit --cortex
-    // (intentional design: retros scope to a specific tool, not working context)
-    const { saveConfig, getConfig } = await import('../../src/lib/config.js');
-    saveConfig({ ...getConfig(), cortex: { active: 'some-active-cortex' } });
-
-    const connectSpy = vi.spyOn(daemonClientModule, 'connectDaemon');
-    const prog = makeProgram();
-    await prog.parseAsync(['node', 'think', 'retro', 'obs without explicit cortex']);
-
-    // Should exit non-zero — no daemon call
-    expect(connectSpy).not.toHaveBeenCalled();
-    expect(process.exitCode).toBe(1);
   });
 
   it('exits non-zero when daemon is unavailable', async () => {
@@ -215,7 +253,7 @@ describe('think retro — daemon-routed path (AGT-294)', () => {
   it('surfaces advisory warnings from daemon', async () => {
     const mockClient = makeMockClient({
       entry_id: 'warn-id',
-      warnings: ["kind 'retro' stored to L1 only; L2 schema extension pending"],
+      warnings: ['near-duplicate check running'],
     });
     vi.spyOn(daemonClientModule, 'connectDaemon').mockResolvedValue(mockClient);
 
@@ -223,19 +261,7 @@ describe('think retro — daemon-routed path (AGT-294)', () => {
     await prog.parseAsync(['node', 'think', '-C', 'warnings-test', 'retro', 'content with warnings']);
 
     const output = (console.log as ReturnType<typeof vi.fn>).mock.calls.flat().join('\n');
-    expect(output).toContain('L2 schema extension pending');
-  });
-
-  it('-C global flag sets cortex', async () => {
-    const mockClient = makeMockClient();
-    vi.spyOn(daemonClientModule, 'connectDaemon').mockResolvedValue(mockClient);
-
-    const prog = makeProgram();
-    await prog.parseAsync(['node', 'think', '-C', 'global-cortex', 'retro', 'global flag test']);
-
-    expect(mockClient.call).toHaveBeenCalledWith('sync', expect.objectContaining({
-      cortex: 'global-cortex',
-    }));
+    expect(output).toContain('near-duplicate check running');
   });
 
   it('exits 0 on success', async () => {

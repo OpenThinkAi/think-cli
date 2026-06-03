@@ -13,18 +13,17 @@
  *      AGT-299 compaction replay is responsible for reconciling L1 → L2
  *      on the next daemon start.
  *   6. INSERT into L2 (memories table) with embedding + assignNextSeq.
- *      kind and topics are stored in L1 only for now — the `memories`
- *      table gains those columns in the L2 schema extension ticket that
- *      follows AGT-286. Until that migration lands, kind-filtered and
- *      topic-scoped L2 queries are not supported. A warning is included
- *      in the response when non-default kind or non-empty topics are used.
+ *      `kind` and `topics` ARE persisted to L2: the insert below writes the
+ *      `kind` and `topics_json` columns (migration 14), so kind-filtered and
+ *      topic-scoped recall work directly against L2. (This supersedes the
+ *      original AGT-286 "L1 only for now" plan, which a later schema extension
+ *      already completed.)
  *   7. Return { entry_id, status, warnings }.
  *
  * NOT in this ticket:
  *   - Compaction queue (AGT-299)
  *   - Push-to-remote debounce (AGT-309)
  *   - Retro supersession check (AGT-305)
- *   - L2 kind/topics columns (follow-on L2 schema extension)
  */
 
 import fs from 'node:fs';
