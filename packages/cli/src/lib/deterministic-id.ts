@@ -10,6 +10,25 @@ export function deterministicId(ts: string, author: string, content: string): st
   return uuidv5(hash, THINK_UUID_NAMESPACE);
 }
 
+/**
+ * The L2 primary key for a memory entry: its explicit `id` when present — the
+ * key the daemon pull-loop ingests under and that `supersedes`/`compacted_from`
+ * point to — falling back to a content-derived {@link deterministicId} only for
+ * legacy pre-v7 lines that have no `id`. All paths that index memories into L2
+ * (reindex, git-adapter) must route through this so a reindex is idempotent
+ * against daemon-ingested rows instead of duplicating them under a second key.
+ */
+export function resolveMemoryId(entry: {
+  id?: string;
+  ts: string;
+  author: string;
+  content: string;
+}): string {
+  return typeof entry.id === 'string' && entry.id
+    ? entry.id
+    : deterministicId(entry.ts, entry.author, entry.content);
+}
+
 // Separate namespace-prefixed hash for long-term events so they can't
 // collide with memory IDs even if ts/author/content happen to match.
 export function deterministicEventId(ts: string, author: string, title: string, content: string): string {

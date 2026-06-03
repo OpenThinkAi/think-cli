@@ -15,6 +15,14 @@ export type EntryKind = 'memory' | 'retro' | 'event';
 const ENTRY_KINDS: ReadonlySet<EntryKind> = new Set(['memory', 'retro', 'event']);
 
 export interface MemoryEntry {
+  /**
+   * The memory's stable identity as written in the JSONL. This is the key the
+   * daemon pull-loop ingests under and the key supersedes/compacted_from
+   * reference — so reindex/git-adapter MUST key on it too (falling back to a
+   * deterministic id only for legacy id-less lines). Optional because pre-v7
+   * legacy lines lack it.
+   */
+  id?: string;
   ts: string;
   author: string;
   content: string;
@@ -397,6 +405,7 @@ export function parseMemoriesJsonl(content: string): MemoryEntry[] {
           ? parsed.topics.filter((t: unknown): t is string => typeof t === 'string')
           : [];
         entries.push({
+          id: typeof parsed.id === 'string' && parsed.id ? parsed.id : undefined,
           ts: parsed.ts ?? '',
           author: parsed.author ?? 'unknown',
           content: parsed.content,

@@ -32,7 +32,7 @@ import {
 } from '../db/retro-queries.js';
 import { serializeRetroForSync, parseRetrosJsonl } from '../lib/retro-jsonl.js';
 import { getConfig, getPeerId } from '../lib/config.js';
-import { deterministicId, deterministicEventId } from '../lib/deterministic-id.js';
+import { deterministicEventId, resolveMemoryId } from '../lib/deterministic-id.js';
 import { validateEngramContent } from '../lib/sanitize.js';
 import type { SyncAdapter, SyncResult } from './types.js';
 
@@ -349,7 +349,11 @@ export class GitSyncAdapter implements SyncAdapter {
       // deletes are local-only and do not propagate.
       if (m.deleted_at) continue;
 
-      const id = deterministicId(m.ts, m.author, m.content);
+      // L2 key: explicit id when present, deterministic fallback for legacy
+      // lines (see resolveMemoryId). Recomputing a deterministic id here (as
+      // this used to) keyed L2 under an id nothing references — duplicating
+      // pull-loop rows and breaking supersession.
+      const id = resolveMemoryId(m);
 
       const { content: sanitizedContent, warnings } = validateEngramContent(m.content);
       if (warnings.length > 0) {
@@ -564,7 +568,7 @@ export class GitSyncAdapter implements SyncAdapter {
       execFileSync(
         'git',
         ['-c', 'core.hooksPath=/dev/null', 'ls-remote', '--exit-code', '--', repo, 'HEAD'],
-        { stdio: ['ignore', 'pipe', 'pipe'], timeout: 5000, env: { ...process.env, GIT_TERMINAL_PROMPT: '0' } },
+        { stdio: ['ignore', 'pipe', 'pipe'], timeout: 5000, windowsHide: true, env: { ...process.env, GIT_TERMINAL_PROMPT: '0' } },
       );
       return true;
     } catch (err) {
