@@ -37,6 +37,7 @@ import { getDaemonPidPath, isDaemonRunning, removePidFile } from '../lib/daemon-
 import { DEFAULT_DAEMON_TCP_PORT } from '../lib/daemon-constants.js';
 import { parseLineFraming, dispatchRequest } from './protocol.js';
 import { handleSync } from './sync-handler.js';
+import { handleRetroMigrate } from './retro-migrate-handler.js';
 import { handleStatus } from './status.js';
 import { compactionQueue, scanAndEnqueueUncompacted } from './compaction/queue.js';
 import { pushDebouncer } from './push-debouncer.js';
@@ -610,6 +611,7 @@ export async function runDaemon(options: DaemonOptions): Promise<void> {
       },
     ],
     ['sync', handleSync],
+    ['retro_migrate', handleRetroMigrate],
     ['status', handleStatus],
   ]);
 

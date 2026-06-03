@@ -73,7 +73,7 @@ Three verbs for writing:
 - \`think retro "<content>"\` — durable wisdom about a codebase; kind=retro. Use when you notice a convention, invariant, gotcha, or prior decision worth preserving for the next agent in this repo. Text is preserved exactly as written.
 - \`think event "<content>"\` — notable thing happened; kind=event. Use for milestones, decisions, incidents. Events accumulate and are never superseded.
 
-Cortex is inferred from the repo basename (\`basename "$(git rev-parse --show-toplevel)"\`) unless you pass \`--cortex <name>\` explicitly. For repos with a stable name, prefer \`think init --retro --cortex <name>\` to bake it into the block.
+\`think sync\` and \`think retro\` store on your home cortex (the active one, or \`-C <name>\`). \`think retro\` auto-tags the lesson with the repo you run it in (a \`repo:<basename>\` context) so \`think brief\` and recall surface it for that codebase — you don't pass a cortex per repo. Override the detected context with \`--context <name>\` when needed.
 `;
 
 const OTEAM_EXTRA_LINE = `\n**Under an \`oteam\` workspace:** run \`think recall\` before \`oteam assign\` and \`think sync\` after each role-pipeline hand-off.\n`;
@@ -83,10 +83,10 @@ const RETRO_BLOCK = `# Iterative Learning
 When you observe a convention, invariant, prior decision, or gotcha worth remembering about a repo, leave a retro for the next agent who works on it:
 
 \`\`\`
-think retro "<observation>" --cortex <repo-basename>
+think retro "<observation>"
 \`\`\`
 
-\`<repo-basename>\` is the basename of the repo's root directory — \`basename "$(git rev-parse --show-toplevel)"\` (e.g., \`fx-tracker\`, \`ui-host\`). For repos that have a stable cortex name, prefer the per-repo \`think init --retro --cortex <name>\` block — it bakes the cortex literally so agents don't have to infer it.
+The retro is stored on your home cortex and auto-tagged with the repo you're in (its root basename, e.g. \`repo:fx-tracker\`) so it surfaces for that codebase. Override with \`--context <name>\` if you're writing about a different repo. Outside a git repo it's stored untagged.
 
 Loose triggers — you decide when to emit. Examples:
 
@@ -101,10 +101,10 @@ Loose triggers — you decide when to emit. Examples:
 Before non-trivial work in a repo (especially the first time touching it in a session), load prior retros + personal context:
 
 \`\`\`
-think brief --cortex <repo-basename>
+think brief
 \`\`\`
 
-Optional, not required — orchestrator skills (\`/assign-ticket\`, \`/implement-project\`) handle this deterministically when applicable.
+\`think brief\` auto-detects the repo and scopes retros to it. Optional, not required — orchestrator skills (\`/assign-ticket\`, \`/implement-project\`) handle this deterministically when applicable.
 `;
 
 // Fingerprint that identifies a pre-marker (legacy) think block written by an
@@ -209,15 +209,15 @@ This repo participates in agentic iterative learning via \`think retro\`. Treat 
 **Read at task start.** Before any non-trivial task in this repo, run:
 
 \`\`\`
-think brief --cortex ${cortex}
+think brief --context ${cortex}
 \`\`\`
 
-Use the output to inform the work — prior conventions, invariants, decisions, and gotchas other agents have already learned.
+Use the output to inform the work — prior conventions, invariants, decisions, and gotchas other agents have already learned. (Retros are stored on your home cortex, scoped to the \`${cortex}\` context; \`think brief\` alone also works when you run it inside this repo.)
 
 **Write when you notice something worth remembering.** When you discover a convention, invariant, prior decision, or gotcha another agent would benefit from knowing, run:
 
 \`\`\`
-think retro "<observation>" --cortex ${cortex}
+think retro "<observation>" --context ${cortex}
 \`\`\`
 
 Loose guidance — you decide when to emit. Examples:

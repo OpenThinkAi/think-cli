@@ -74,7 +74,6 @@ export type CurateOneFn = (cortex: string) => Promise<void>;
 // ---------------------------------------------------------------------------
 
 export class CurationLoop {
-  private readonly activeCortex: string | undefined;
   private stopped = false;
   private currentTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -99,7 +98,7 @@ export class CurationLoop {
   private _curateOverride?: CurateOneFn;
 
   constructor() {
-    this.activeCortex = getConfig().cortex?.active;
+    // No per-instance config snapshot needed — the cycle reads config fresh.
   }
 
   // ---------------------------------------------------------------------------
@@ -159,10 +158,22 @@ export class CurationLoop {
   }
 
   /**
-   * Run one curation pass across every local repo cortex (excluding the
-   * personal work-log cortex). Each cortex is curated independently; a failure
-   * on one is logged and does not abort the others, and any throw is swallowed
-   * so an error can never crash the daemon or stop the loop.
+   * Run one curation pass across every local cortex, INCLUDING the home/active
+   * cortex. Pre-v3 the active cortex was excluded as a pure work-log with no
+   * retros; under iterative-learning v3 retros live on the home cortex (tagged
+   * repo:<context>), so it must be curated too. Curation is retro-scoped — it
+   * only touches `kind=retro` rows + the `retros` curator table — so curating
+   * the home cortex never disturbs its memory/event entries.
+   *
+   * (Known follow-up: the merge pass is not yet context-aware, so it could in
+   * principle merge two near-identical retros from different repo:<context>
+   * tags. In practice distinct contexts carry textually distinct lessons and
+   * the near-dup threshold is high (0.95); scoping merges per context is a
+   * future refinement.)
+   *
+   * Each cortex is curated independently; a failure on one is logged and does
+   * not abort the others, and any throw is swallowed so an error can never
+   * crash the daemon or stop the loop.
    */
   private async cycle(): Promise<void> {
     if (this.stopped) return;
@@ -175,7 +186,7 @@ export class CurationLoop {
       return;
     }
 
-    const cortexes = branches.filter(b => b !== this.activeCortex);
+    const cortexes = branches;
     if (cortexes.length === 0) return;
 
     const curate = this._curateOverride ?? curateOneCortex;

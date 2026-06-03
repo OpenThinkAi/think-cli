@@ -15,6 +15,7 @@ import { closeCortexDb } from '../db/engrams.js';
 import type { RecallScope } from '../daemon/recall.js';
 import { NOTE_FTS_FALLBACK, NOTE_FTS_EXPLICIT, validateKind, validateSince } from '../daemon/recall.js';
 import { formatRecallOutput, cortexSet, DEFAULT_RECALL_LIMIT } from '../lib/recall-format.js';
+import { detectWorkingContext, normalizeContext } from '../lib/working-context.js';
 
 export function printDecisions(m: MemoryRow): void {
   if (!m.decisions) return;
@@ -238,6 +239,8 @@ export const recallCommand = new Command('recall')
   .option('--include-superseded', 'Include superseded entries but still hide compacted-raw memories')
   .option('--kind <kind>', 'Filter by entry kind: memory, retro, or event')
   .option('--topic <topic>', 'Filter by topic — case-insensitive exact match on the entry topics array')
+  .option('--context <name>', 'Boost retros tagged for this repo context (default: the git repo you are in)')
+  .option('--no-context', 'Disable the working-context boost (do not auto-detect the repo)')
   .option('--since <date>', 'Only entries at or after this ISO-8601 date (e.g. 2026-05-01)')
   .option('--no-embed', 'Skip semantic ranking; use FTS keyword search (fast, offline, deterministic). Also set by THINK_NO_EMBED=1.')
   .addOption(
@@ -262,7 +265,7 @@ Ranking:
   (default 0.05; higher values bias harder toward recent entries). This applies
   to the semantic path only — --no-embed (full-text search) is unaffected.`,
   )
-  .action(async function (this: Command, query: string, opts: { engrams?: boolean; all?: boolean; days: string; limit: string; full?: boolean; json?: boolean; includeSuperseded?: boolean; scope: string; embed: boolean; kind?: string; topic?: string; since?: string }) {
+  .action(async function (this: Command, query: string, opts: { engrams?: boolean; all?: boolean; days: string; limit: string; full?: boolean; json?: boolean; includeSuperseded?: boolean; scope: string; embed: boolean; kind?: string; topic?: string; context?: string | boolean; since?: string }) {
     const config = getConfig();
     const cortex = config.cortex?.active;
 
@@ -358,6 +361,15 @@ Ranking:
         if (scope === 'active') rpcParams['cortex'] = cortex;
         if (opts.kind !== undefined) rpcParams['kind'] = opts.kind;
         if (opts.topic !== undefined) rpcParams['topic'] = opts.topic;
+        // v3 working-context boost: pass the repo context so retros tagged
+        // repo:<context> surface first. --context <name> overrides; --no-context
+        // (opts.context === false) disables; otherwise auto-detect from cwd.
+        if (opts.context !== false) {
+          const ctx = typeof opts.context === 'string'
+            ? normalizeContext(opts.context)
+            : detectWorkingContext();
+          if (ctx) rpcParams['context'] = ctx;
+        }
         if (opts.since !== undefined) rpcParams['since'] = opts.since;
         if (opts.full) rpcParams['full'] = true;
         if (opts.includeSuperseded) rpcParams['includeSuperseded'] = true;

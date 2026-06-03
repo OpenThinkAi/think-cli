@@ -6,15 +6,15 @@ This repo participates in agentic iterative learning via `think retro`. Treat re
 **Read at task start.** Before any non-trivial task in this repo, run:
 
 ```
-think brief --cortex think-cli
+think brief --context think-cli
 ```
 
-Use the output to inform the work — prior conventions, invariants, decisions, and gotchas other agents have already learned.
+Use the output to inform the work — prior conventions, invariants, decisions, and gotchas other agents have already learned. (Retros are stored on your home cortex, scoped to the `think-cli` context; `think brief` alone also works when you run it inside this repo.)
 
 **Write when you notice something worth remembering.** When you discover a convention, invariant, prior decision, or gotcha another agent would benefit from knowing, run:
 
 ```
-think retro "<observation>" --cortex think-cli
+think retro "<observation>" --context think-cli
 ```
 
 Loose guidance — you decide when to emit. Examples:

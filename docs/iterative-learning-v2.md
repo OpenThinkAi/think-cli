@@ -120,6 +120,13 @@ manual entry point.
 
 ## 6. Issue #70 — locality decision
 
+> **Reversed 2026-06-02 by `iterative-learning-v3-locality.md`.** This section
+> chose Option B and deferred Option A; v3 adopts Option A (retros move into the
+> active cortex, tagged `repo:<context>`; per-context branches retired for
+> retros). The Option B plumbing-writes (AGT-458) stay for sync/compaction but no
+> longer route retro writes. Read v3 for the current design; the rest of this
+> section is historical.
+
 Two options were on the table:
 - **Option A** (retros → `kind=retro` rows in the active cortex, tagged by
   repo): a data-model migration. **Deferred** — it is exactly the restructuring

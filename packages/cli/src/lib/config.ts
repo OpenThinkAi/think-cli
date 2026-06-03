@@ -300,6 +300,21 @@ export interface RecallConfig {
    * Default: 0.1
    */
   qualityPenalty?: number;
+
+  /**
+   * Additive boost (iterative-learning v3 — retro locality) applied to a recall
+   * candidate retro tagged with the caller's active working context
+   * (`repo:<context>`), where context is the git-repo basename the command runs
+   * in. Surfaces lessons for the current codebase first without hard-filtering
+   * out cross-context lessons (brief scopes; recall boosts). Applied after
+   * recency weighting, like qualityBoost. Only affects rows carrying the
+   * matching `repo:` topic; ignored when no context is supplied.
+   *
+   * Set to `0` to disable.
+   *
+   * Default: 0.1
+   */
+  contextBoost?: number;
 }
 
 export interface CompactionConfig {

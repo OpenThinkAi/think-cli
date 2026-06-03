@@ -61,7 +61,7 @@ describe('CurationLoop', () => {
     vi.restoreAllMocks();
   });
 
-  it('scheduled path triggers curation for repo cortexes, excluding the active cortex', async () => {
+  it('scheduled path curates every local cortex, INCLUDING the home cortex (v3)', async () => {
     const { CurationLoop } = await import('../../src/daemon/curation-loop.js');
 
     mockConfig = { cortex: { active: 'personal' } };
@@ -78,12 +78,11 @@ describe('CurationLoop', () => {
     await tick(60);
     handle.stop();
 
-    // Both repo cortexes curated; the personal work-log cortex is excluded.
-    // (The loop reschedules, so a cortex may appear more than once — assert on
-    // the unique set, not the call count.)
+    // v3: retros live on the home cortex now, so it is curated too (curation is
+    // retro-scoped, so this is safe). (The loop reschedules, so a cortex may
+    // appear more than once — assert on the unique set, not the call count.)
     const uniqueCurated = [...new Set(curated)].sort();
-    expect(uniqueCurated).toEqual(['stamp-cli', 'think-cli']);
-    expect(curated).not.toContain('personal');
+    expect(uniqueCurated).toEqual(['personal', 'stamp-cli', 'think-cli']);
   });
 
   it('does not fire on start() and waits at least one interval', async () => {
