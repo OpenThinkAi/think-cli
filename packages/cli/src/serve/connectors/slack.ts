@@ -190,7 +190,7 @@ const MAX_TRANSCRIPT_CHARS = 500_000;
  * token 302s on its download. The in-channel `.vtt` is the reachable artifact.
  */
 type TranscriptFidelity = 'verbatim' | 'summary';
-type TranscriptFormat = 'vtt' | 'srt' | 'canvas';
+type TranscriptFormat = 'vtt' | 'canvas';
 
 interface ClassifiedTranscript {
   file: SlackFile;
@@ -202,7 +202,11 @@ interface ClassifiedTranscript {
 function classifyTranscriptFile(f: SlackFile): ClassifiedTranscript | null {
   const name = (f.name ?? '').toLowerCase();
   if (name.endsWith('.vtt')) return { file: f, fidelity: 'verbatim', format: 'vtt' };
-  if (name.endsWith('.srt')) return { file: f, fidelity: 'verbatim', format: 'srt' };
+  // NOTE: `.srt` is intentionally NOT matched. Slack auto-posts huddle
+  // transcripts as `.vtt` (with `<v Speaker>` voice spans) — `.srt` has not
+  // been observed. Rather than ship raw SRT (sequence numbers + timing lines)
+  // as if it were normalized `verbatim` text, we skip it until Slack is seen
+  // to emit it, at which point an `srtToTranscript` normalizer should be added.
   // AI huddle-notes canvas. Match on the title marker rather than bare
   // `filetype === 'quip'` so we don't sweep in unrelated canvases someone
   // happened to attach to a settled thread.
@@ -549,12 +553,7 @@ export function createSlackConnector(
     for (const pick of picks) {
       const raw = await fetchFileContent(token, pick.file);
       if (raw === null) continue; // walled / inaccessible → skip cleanly
-      let transcript =
-        pick.format === 'vtt'
-          ? vttToTranscript(raw)
-          : pick.format === 'srt'
-            ? raw
-            : canvasHtmlToText(raw);
+      let transcript = pick.format === 'vtt' ? vttToTranscript(raw) : canvasHtmlToText(raw);
       const truncated = transcript.length > MAX_TRANSCRIPT_CHARS;
       if (truncated) transcript = transcript.slice(0, MAX_TRANSCRIPT_CHARS);
       if (!transcript.trim()) continue; // nothing usable extracted
@@ -570,7 +569,7 @@ export function createSlackConnector(
         occurredAt: tsToIso(root.ts) ?? undefined,
         payload: JSON.stringify({
           kind: 'huddle.transcript',
-          // 'verbatim' (real `.vtt`/`.srt`) vs 'summary' (AI-notes canvas).
+          // 'verbatim' (real `.vtt`) vs 'summary' (AI-notes canvas).
           fidelity: pick.fidelity,
           format: pick.format,
           workspace,
@@ -578,14 +577,15 @@ export function createSlackConnector(
           channel_name: channel.name ?? null,
           title: pick.file.title ?? pick.file.name ?? null,
           thread_ts: root.ts,
-          closing_reaction: closingReaction,
+          // Thread *participants* (who posted in the Slack thread), NOT the
+          // huddle speakers — the latter appear inline in `transcript` as
+          // `Speaker: …` turns. Kept as weak provenance signal for the curator.
           participants: collectParticipants(messages),
           // The curator's primary source text — segmented into per-topic
           // memories exactly like a meeting transcript.
           transcript,
           truncated,
           started_at: tsToIso(root.ts),
-          final_state: 'closed',
         }),
       });
     }
