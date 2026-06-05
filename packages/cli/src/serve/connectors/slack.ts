@@ -251,18 +251,26 @@ export function vttToTranscript(vtt: string): string {
 
 /** Strip an AI-notes canvas's HTML to readable plaintext. */
 export function canvasHtmlToText(html: string): string {
-  return html
-    .replace(/<style[\s\S]*?<\/style>/gi, '')
-    .replace(/<script[\s\S]*?<\/script>/gi, '')
-    .replace(/<\/(p|div|li|h[1-6]|tr)>/gi, '\n')
-    .replace(/<br\s*\/?>/gi, '\n')
-    .replace(/<[^>]+>/g, '')
+  // Decode entities FIRST, then strip tags. Order is load-bearing: a canvas
+  // body can carry entity-encoded markup (e.g. `&lt;script&gt;…&lt;/script&gt;`)
+  // that, if tags were stripped before decoding, would survive every strip pass
+  // (no raw `<`/`>` to match) and exit as a literal `<script>…</script>` string
+  // injected into the curator LLM's prompt. Decoding first means the strip
+  // passes see real `<`/`>` and remove the markup. `&amp;` must decode first
+  // within this group so `&amp;lt;` → `&lt;` → `<` chains collapse correctly.
+  const decoded = html
     .replace(/&amp;/g, '&')
     .replace(/&lt;/g, '<')
     .replace(/&gt;/g, '>')
     .replace(/&nbsp;/g, ' ')
     .replace(/&#39;/g, "'")
-    .replace(/&quot;/g, '"')
+    .replace(/&quot;/g, '"');
+  return decoded
+    .replace(/<style[\s\S]*?<\/style>/gi, '')
+    .replace(/<script[\s\S]*?<\/script>/gi, '')
+    .replace(/<\/(p|div|li|h[1-6]|tr)>/gi, '\n')
+    .replace(/<br\s*\/?>/gi, '\n')
+    .replace(/<[^>]+>/g, '')
     .replace(/[ \t]+\n/g, '\n')
     .replace(/\n{3,}/g, '\n\n')
     .trim();
