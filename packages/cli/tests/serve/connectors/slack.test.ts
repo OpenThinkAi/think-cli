@@ -2,6 +2,8 @@ import { describe, it, expect } from 'vitest';
 import {
   createSlackConnector,
   SlackRateLimitError,
+  vttToTranscript,
+  canvasHtmlToText,
   type FetchFn,
   type SlackCursor,
 } from '../../../src/serve/connectors/slack.js';
@@ -26,7 +28,9 @@ import {
 interface CannedResponse {
   status?: number;
   headers?: Record<string, string>;
-  body: unknown;
+  body?: unknown;
+  /** Raw response body (for file downloads). Takes precedence over `body`. */
+  text?: string;
 }
 
 interface MockFetchOptions {
@@ -43,10 +47,17 @@ function makeFetch(opts: MockFetchOptions): FetchFn {
       throw new Error(`mock fetch: no route matched ${u}`);
     }
     const status = route.response.status ?? 200;
+    const isRaw = route.response.text !== undefined;
     const headers = new Headers(route.response.headers ?? {});
-    if (!headers.has('content-type')) headers.set('content-type', 'application/json');
-    const bodyText =
-      route.response.body === undefined ? '' : JSON.stringify(route.response.body);
+    if (!headers.has('content-type')) {
+      headers.set('content-type', isRaw ? 'text/plain' : 'application/json');
+    }
+    const bodyText = isRaw
+      ? (route.response.text as string)
+      : route.response.body === undefined
+        ? ''
+        : JSON.stringify(route.response.body);
+    // 204/205/304 forbid a body; everything we mock (incl. 302) allows one.
     return new Response(bodyText, { status, headers });
   };
 }
@@ -811,5 +822,250 @@ describe('createSlackConnector.verifyCredential', () => {
     const r = await connector.verifyCredential!(SECRET);
     expect(r.ok).toBe(false);
     expect(JSON.stringify(r)).not.toContain(SECRET);
+  });
+});
+
+describe('createSlackConnector — huddle transcript ingestion', () => {
+  const FILE_BASE = 'https://files.slack.com/files-pri';
+
+  // Two consecutive Alice cues exercise same-speaker merging; Bob starts a new
+  // turn. Cue ids + timing lines must be stripped.
+  const VTT = [
+    'WEBVTT',
+    '',
+    'abc-1/0-0',
+    '00:00:01.000 --> 00:00:03.000',
+    '<v Alice>Hi everyone, let us start.</v>',
+    '',
+    'abc-1/1-0',
+    '00:00:03.500 --> 00:00:05.000',
+    '<v Alice>We are deciding the cache TTL.</v>',
+    '',
+    'abc-1/2-0',
+    '00:00:05.500 --> 00:00:07.000',
+    '<v Bob>Sixty seconds works for me.</v>',
+  ].join('\n');
+
+  const CANVAS_HTML =
+    '<div class="quip-canvas-content"><h1>Huddle notes</h1>' +
+    '<p>AI took notes from 2:00 - 2:47 PM.</p>' +
+    '<h2>Summary</h2><ul><li>Decided cache TTL is 60s.</li></ul></div>';
+
+  const ROOT_TS = '1718000000.000100';
+
+  /** Build the standard mock: a `:lock:`-reacted huddle root whose thread
+   * reply carries the supplied files. `fileRoutes` serves their downloads. */
+  function buildFetch(files: unknown[], fileRoutes: MockFetchOptions['routes']) {
+    return makeFetch({
+      routes: [
+        {
+          match: matchMethod('users.conversations'),
+          response: { body: { ok: true, channels: [{ id: 'C01', name: 'planning' }] } },
+        },
+        {
+          match: matchMethod('conversations.history'),
+          response: {
+            body: {
+              ok: true,
+              messages: [
+                {
+                  ts: ROOT_TS,
+                  user: 'U_ALICE',
+                  text: 'huddle ended',
+                  reactions: [{ name: 'lock', users: ['U_ALICE'], count: 1 }],
+                },
+              ],
+            },
+          },
+        },
+        {
+          match: matchMethod('conversations.replies'),
+          response: {
+            body: {
+              ok: true,
+              messages: [
+                {
+                  ts: ROOT_TS,
+                  user: 'U_ALICE',
+                  text: 'huddle ended',
+                  reactions: [{ name: 'lock', users: ['U_ALICE'], count: 1 }],
+                  files,
+                },
+              ],
+            },
+          },
+        },
+        ...fileRoutes,
+      ],
+    });
+  }
+
+  function transcriptsOf(events: Array<{ payload: unknown }>) {
+    return events.filter(
+      (e) => (JSON.parse(e.payload as string) as { kind: string }).kind === 'huddle.transcript',
+    );
+  }
+
+  it('emits a verbatim huddle.transcript event for an attached .vtt', async () => {
+    const fetchImpl = buildFetch(
+      [
+        {
+          id: 'F_VTT',
+          name: 'standup.vtt',
+          filetype: 'text',
+          mimetype: 'text/plain',
+          url_private_download: `${FILE_BASE}/T-F_VTT/download/standup.vtt`,
+        },
+      ],
+      [{ match: (u) => u.includes('F_VTT'), response: { text: VTT } }],
+    );
+    const connector = createSlackConnector({ fetchImpl, closingReaction: 'lock' });
+    const result = await connector.poll({ subscription: SUB, credential: TOKEN, cursor: null });
+
+    const transcripts = transcriptsOf(result.events);
+    expect(transcripts).toHaveLength(1);
+    const evt = transcripts[0];
+    expect(evt.episodeKey).toBe('slack:huddle:acme:C01:F_VTT');
+    expect(evt.id).toBe('slack:huddle:acme:C01:F_VTT:transcript');
+    expect(evt.terminal).toBe(true);
+    const p = JSON.parse(evt.payload as string) as {
+      fidelity: string;
+      format: string;
+      channel_id: string;
+      transcript: string;
+      truncated: boolean;
+    };
+    expect(p.fidelity).toBe('verbatim');
+    expect(p.format).toBe('vtt');
+    expect(p.channel_id).toBe('C01');
+    expect(p.truncated).toBe(false);
+    // Same-speaker cues merged into one turn; Bob a separate turn.
+    expect(p.transcript).toBe(
+      'Alice: Hi everyone, let us start. We are deciding the cache TTL.\nBob: Sixty seconds works for me.',
+    );
+    // The closed-thread event is still emitted alongside it.
+    expect(result.events.length).toBe(2);
+  });
+
+  it('skips a transcript file the bot cannot download (302 → login)', async () => {
+    const fetchImpl = buildFetch(
+      [
+        {
+          id: 'F_WALLED',
+          name: 'huddle.vtt',
+          filetype: 'text',
+          url_private_download: `${FILE_BASE}/T-F_WALLED/download/huddle.vtt`,
+        },
+      ],
+      [{ match: (u) => u.includes('F_WALLED'), response: { status: 302, text: '<html>login</html>' } }],
+    );
+    const connector = createSlackConnector({ fetchImpl, closingReaction: 'lock' });
+    const result = await connector.poll({ subscription: SUB, credential: TOKEN, cursor: null });
+
+    // No transcript event — but the closed-thread event still ships.
+    expect(transcriptsOf(result.events)).toHaveLength(0);
+    expect(result.events).toHaveLength(1);
+  });
+
+  it('falls back to the AI-notes canvas (summary) when no verbatim transcript exists', async () => {
+    const fetchImpl = buildFetch(
+      [
+        {
+          id: 'F_CANVAS',
+          title: ':headphones: Huddle notes: 6/4/26',
+          filetype: 'quip',
+          mimetype: 'application/vnd.slack-docs',
+          url_private_download: `${FILE_BASE}/T-F_CANVAS/download/canvas`,
+        },
+      ],
+      [{ match: (u) => u.includes('F_CANVAS'), response: { text: CANVAS_HTML } }],
+    );
+    const connector = createSlackConnector({ fetchImpl, closingReaction: 'lock' });
+    const result = await connector.poll({ subscription: SUB, credential: TOKEN, cursor: null });
+
+    const transcripts = transcriptsOf(result.events);
+    expect(transcripts).toHaveLength(1);
+    const p = JSON.parse(transcripts[0].payload as string) as {
+      fidelity: string;
+      format: string;
+      transcript: string;
+    };
+    expect(p.fidelity).toBe('summary');
+    expect(p.format).toBe('canvas');
+    expect(p.transcript).toContain('Decided cache TTL is 60s.');
+    expect(p.transcript).not.toContain('<'); // tags stripped
+  });
+
+  it('prefers the verbatim .vtt over the canvas and never fetches the canvas', async () => {
+    // The canvas download route is intentionally NOT registered: if the
+    // connector tried to fetch it, the mock would throw "no route matched".
+    const fetchImpl = buildFetch(
+      [
+        {
+          id: 'F_VTT',
+          name: 'standup.vtt',
+          filetype: 'text',
+          url_private_download: `${FILE_BASE}/T-F_VTT/download/standup.vtt`,
+        },
+        {
+          id: 'F_CANVAS',
+          title: ':headphones: Huddle notes: 6/4/26',
+          filetype: 'quip',
+          url_private_download: `${FILE_BASE}/T-F_CANVAS/download/canvas`,
+        },
+      ],
+      [{ match: (u) => u.includes('F_VTT'), response: { text: VTT } }],
+    );
+    const connector = createSlackConnector({ fetchImpl, closingReaction: 'lock' });
+    const result = await connector.poll({ subscription: SUB, credential: TOKEN, cursor: null });
+
+    const transcripts = transcriptsOf(result.events);
+    expect(transcripts).toHaveLength(1);
+    expect((JSON.parse(transcripts[0].payload as string) as { fidelity: string }).fidelity).toBe(
+      'verbatim',
+    );
+  });
+
+  it('emits no transcript event for a settled thread with no transcript files', async () => {
+    const fetchImpl = buildFetch([], []);
+    const connector = createSlackConnector({ fetchImpl, closingReaction: 'lock' });
+    const result = await connector.poll({ subscription: SUB, credential: TOKEN, cursor: null });
+    expect(transcriptsOf(result.events)).toHaveLength(0);
+    expect(result.events).toHaveLength(1); // just the closed-thread event
+  });
+});
+
+describe('vttToTranscript / canvasHtmlToText', () => {
+  it('merges consecutive same-speaker cues and drops timing/cue lines', () => {
+    const vtt = [
+      'WEBVTT',
+      '',
+      'id-1/0-0',
+      '00:00:01.000 --> 00:00:02.000',
+      '<v Dana>First.</v>',
+      'id-1/1-0',
+      '00:00:02.000 --> 00:00:03.000',
+      '<v Dana>Second.</v>',
+      'id-1/2-0',
+      '00:00:03.000 --> 00:00:04.000',
+      '<v Eli>Reply.</v>',
+    ].join('\n');
+    expect(vttToTranscript(vtt)).toBe('Dana: First. Second.\nEli: Reply.');
+  });
+
+  it('falls back to caption text for VTT without <v> voice spans', () => {
+    const vtt = ['WEBVTT', '', '1', '00:00:01.000 --> 00:00:02.000', 'plain caption line'].join(
+      '\n',
+    );
+    expect(vttToTranscript(vtt)).toBe('plain caption line');
+  });
+
+  it('strips canvas HTML to readable text', () => {
+    const html = '<div><h1>Title</h1><p>Line&nbsp;one</p><ul><li>bullet</li></ul></div>';
+    const text = canvasHtmlToText(html);
+    expect(text).toContain('Title');
+    expect(text).toContain('Line one');
+    expect(text).toContain('bullet');
+    expect(text).not.toContain('<');
   });
 });
