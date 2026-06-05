@@ -126,6 +126,25 @@ interface SlackReaction {
   count?: number;
 }
 
+/**
+ * Subset of a Slack file object as it rides inline on `conversations.history`
+ * / `conversations.replies` messages. Slack includes `url_private*` on the
+ * inline object, so reading a file's content needs no extra `files.info` hop.
+ */
+interface SlackFile {
+  id: string;
+  /** Filename incl. extension, e.g. `EEP - data strategy.vtt`. */
+  name?: string;
+  /** Human title; for AI-notes canvases this is `:headphones: Huddle notes: …`. */
+  title?: string;
+  /** Slack's coarse type bucket: `text`, `quip` (canvas), `huddle_transcript`, … */
+  filetype?: string;
+  mimetype?: string;
+  /** Authenticated download URLs on `files.slack.com`. */
+  url_private?: string;
+  url_private_download?: string;
+}
+
 interface SlackMessage {
   ts: string;
   thread_ts?: string;
@@ -135,6 +154,7 @@ interface SlackMessage {
   text?: string;
   reactions?: SlackReaction[];
   subtype?: string;
+  files?: SlackFile[];
 }
 
 interface SlackChannel {
@@ -148,6 +168,117 @@ const DEFAULT_CLOSED_THREAD_MEMORY = 500;
 const DEFAULT_CLOSING_REACTION = 'lock';
 const HISTORY_PAGE_SIZE = 100;
 const CHANNELS_PAGE_SIZE = 200;
+
+// Cap the transcript text we ship in a single event's payload. The curator
+// pretty-prints the whole payload into one prompt, so an unbounded multi-hour
+// transcript could blow the model's context. A half-MB cap (~125k tokens) is
+// generous for real huddles; on overflow we slice and flag `truncated: true`.
+const MAX_TRANSCRIPT_CHARS = 500_000;
+
+/**
+ * Transcript-bearing files that appear in a channel after a meeting/huddle:
+ *
+ *   - `verbatim`: a Slack-auto-posted `.vtt`/`.srt` transcript (speaker-labeled,
+ *     timestamped). This is the high-fidelity artifact — present only when the
+ *     workspace had *transcription* (not just AI notes) enabled for the call.
+ *   - `summary`: the AI huddle-notes `quip` canvas (topics/decisions/action
+ *     items). Always produced for an AI-notes huddle, but lossy — a fallback
+ *     when no verbatim transcript exists.
+ *
+ * NOTE: Slack's native `huddle_transcript` file object is deliberately NOT
+ * matched here. It is shared only into the canvas's internal channel, so a bot
+ * token 302s on its download. The in-channel `.vtt` is the reachable artifact.
+ */
+type TranscriptFidelity = 'verbatim' | 'summary';
+type TranscriptFormat = 'vtt' | 'canvas';
+
+interface ClassifiedTranscript {
+  file: SlackFile;
+  fidelity: TranscriptFidelity;
+  format: TranscriptFormat;
+}
+
+/** Classify a file as a transcript artifact, or `null` if it isn't one. */
+function classifyTranscriptFile(f: SlackFile): ClassifiedTranscript | null {
+  const name = (f.name ?? '').toLowerCase();
+  if (name.endsWith('.vtt')) return { file: f, fidelity: 'verbatim', format: 'vtt' };
+  // NOTE: `.srt` is intentionally NOT matched. Slack auto-posts huddle
+  // transcripts as `.vtt` (with `<v Speaker>` voice spans) — `.srt` has not
+  // been observed. Rather than ship raw SRT (sequence numbers + timing lines)
+  // as if it were normalized `verbatim` text, we skip it until Slack is seen
+  // to emit it, at which point an `srtToTranscript` normalizer should be added.
+  // AI huddle-notes canvas. Match on the title marker rather than bare
+  // `filetype === 'quip'` so we don't sweep in unrelated canvases someone
+  // happened to attach to a settled thread.
+  if (f.filetype === 'quip' && /huddle notes/i.test(f.title ?? '')) {
+    return { file: f, fidelity: 'summary', format: 'canvas' };
+  }
+  return null;
+}
+
+/**
+ * Normalize a WebVTT transcript to speaker-turn plaintext. Slack's huddle
+ * `.vtt` uses `<v Speaker Name>text</v>` voice spans with uuid cue ids and
+ * `00:00:12.426 --> 00:00:16.339` timing lines; we keep only the spoken text,
+ * collapse it to `Speaker: text` turns, and merge consecutive same-speaker
+ * cues so the curator reads dialogue, not subtitle fragments.
+ */
+export function vttToTranscript(vtt: string): string {
+  const lines = vtt.split(/\r?\n/);
+  const out: string[] = [];
+  let lastSpeaker: string | null = null;
+  for (const line of lines) {
+    const m = line.match(/^<v\s+([^>]+)>([\s\S]*?)<\/v>\s*$/);
+    if (!m) continue;
+    const speaker = m[1].trim();
+    const text = m[2].trim();
+    if (!text) continue;
+    if (speaker === lastSpeaker && out.length > 0) {
+      out[out.length - 1] += ' ' + text;
+    } else {
+      out.push(`${speaker}: ${text}`);
+      lastSpeaker = speaker;
+    }
+  }
+  // Fallback for VTT without voice spans: drop the header, cue-id, and timing
+  // lines and keep the remaining caption text.
+  if (out.length === 0) {
+    for (const line of lines) {
+      const t = line.trim();
+      if (!t || t === 'WEBVTT' || t.includes('-->')) continue;
+      if (/^[0-9a-f-]+(\/\d+-?\d*)?$/i.test(t)) continue; // cue identifier
+      out.push(t);
+    }
+  }
+  return out.join('\n');
+}
+
+/** Strip an AI-notes canvas's HTML to readable plaintext. */
+export function canvasHtmlToText(html: string): string {
+  // Decode entities FIRST, then strip tags. Order is load-bearing: a canvas
+  // body can carry entity-encoded markup (e.g. `&lt;script&gt;…&lt;/script&gt;`)
+  // that, if tags were stripped before decoding, would survive every strip pass
+  // (no raw `<`/`>` to match) and exit as a literal `<script>…</script>` string
+  // injected into the curator LLM's prompt. Decoding first means the strip
+  // passes see real `<`/`>` and remove the markup. `&amp;` must decode first
+  // within this group so `&amp;lt;` → `&lt;` → `<` chains collapse correctly.
+  const decoded = html
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&nbsp;/g, ' ')
+    .replace(/&#39;/g, "'")
+    .replace(/&quot;/g, '"');
+  return decoded
+    .replace(/<style[\s\S]*?<\/style>/gi, '')
+    .replace(/<script[\s\S]*?<\/script>/gi, '')
+    .replace(/<\/(p|div|li|h[1-6]|tr)>/gi, '\n')
+    .replace(/<br\s*\/?>/gi, '\n')
+    .replace(/<[^>]+>/g, '')
+    .replace(/[ \t]+\n/g, '\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+}
 
 function normalizeReactionName(raw: string): string {
   // Operators sometimes paste `:lock:` from Slack's emoji picker. Slack's
@@ -307,18 +438,13 @@ export function createSlackConnector(
     return new Date(secs * 1000).toISOString();
   }
 
-  async function emitForClosedThread(
-    token: string,
+  function buildClosedThreadEvent(
     workspace: string,
     channel: SlackChannel,
     root: SlackMessage,
-  ): Promise<EventInput> {
-    const { messages: thread, hasMore } = await listThreadReplies(token, channel.id, root.ts);
-    // `conversations.replies` returns the root as the first element plus
-    // every reply, in chronological order. Empty array would be a Slack
-    // bug, but treat defensively: if empty, fall back to the root we
-    // already have so the event still ships.
-    const messages = thread.length > 0 ? thread : [root];
+    messages: SlackMessage[],
+    hasMore: boolean,
+  ): EventInput {
     const participants = collectParticipants(messages);
     const firstTs = messages[0]?.ts ?? root.ts;
     const lastTs = messages[messages.length - 1]?.ts ?? root.ts;
@@ -357,6 +483,115 @@ export function createSlackConnector(
     };
   }
 
+  /**
+   * Download a file's content from `files.slack.com`. Returns the body text on
+   * a clean 200, or `null` on any non-200. `redirect: 'manual'` is the crux:
+   * a file the bot can't access (e.g. Slack's native `huddle_transcript`, which
+   * is shared only into the canvas's internal channel) responds `302` toward a
+   * login page — without `manual` we'd silently follow it and parse the login
+   * HTML as if it were the transcript. Treating any non-200 as "skip" keeps
+   * those walled files from poisoning a memory.
+   *
+   * NOTE: this bypasses `slackFetch` on purpose — that helper expects the
+   * `api.slack.com` JSON envelope (`{ ok, ... }`), whereas file bodies are raw
+   * bytes served from a different host.
+   */
+  async function fetchFileContent(token: string, file: SlackFile): Promise<string | null> {
+    const url = file.url_private_download ?? file.url_private;
+    if (!url) return null;
+    let res: Response;
+    try {
+      res = await fetchImpl(url, {
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'User-Agent': 'open-think-server',
+        },
+        redirect: 'manual',
+      });
+    } catch {
+      return null;
+    }
+    if (res.status !== 200) return null;
+    try {
+      return await res.text();
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Emit one terminal `huddle.transcript` event per transcript file attached to
+   * a settled thread (root + replies). When a thread carries both a verbatim
+   * `.vtt` and the AI-notes summary canvas, the verbatim wins and the canvas is
+   * dropped — we'd rather the curator segment the real dialogue than Slack's
+   * lossy recap. Files the bot can't download (`fetchFileContent` → null) are
+   * skipped silently, so a walled native transcript never blocks the others.
+   */
+  async function emitTranscriptsForThread(
+    token: string,
+    workspace: string,
+    channel: SlackChannel,
+    root: SlackMessage,
+    messages: SlackMessage[],
+  ): Promise<EventInput[]> {
+    // Collect transcript-classified files across the whole thread, deduped by
+    // file id (Slack can echo the same file on multiple share records).
+    const found = new Map<string, ClassifiedTranscript>();
+    for (const m of messages) {
+      for (const f of m.files ?? []) {
+        const classified = classifyTranscriptFile(f);
+        if (classified && !found.has(f.id)) found.set(f.id, classified);
+      }
+    }
+    if (found.size === 0) return [];
+
+    const all = [...found.values()];
+    const verbatim = all.filter((t) => t.fidelity === 'verbatim');
+    const picks = verbatim.length > 0 ? verbatim : all;
+
+    const events: EventInput[] = [];
+    for (const pick of picks) {
+      const raw = await fetchFileContent(token, pick.file);
+      if (raw === null) continue; // walled / inaccessible → skip cleanly
+      let transcript = pick.format === 'vtt' ? vttToTranscript(raw) : canvasHtmlToText(raw);
+      const truncated = transcript.length > MAX_TRANSCRIPT_CHARS;
+      if (truncated) transcript = transcript.slice(0, MAX_TRANSCRIPT_CHARS);
+      if (!transcript.trim()) continue; // nothing usable extracted
+
+      // Key the episode on the file id (not the thread root) so the same
+      // huddle's transcript and any in-channel discussion stay distinct
+      // memories, and a re-poll `INSERT OR IGNORE`s against the existing row.
+      const episodeKey = `slack:huddle:${workspace}:${channel.id}:${pick.file.id}`;
+      events.push({
+        id: episodeKey + ':transcript',
+        episodeKey,
+        terminal: true,
+        occurredAt: tsToIso(root.ts) ?? undefined,
+        payload: JSON.stringify({
+          kind: 'huddle.transcript',
+          // 'verbatim' (real `.vtt`) vs 'summary' (AI-notes canvas).
+          fidelity: pick.fidelity,
+          format: pick.format,
+          workspace,
+          channel_id: channel.id,
+          channel_name: channel.name ?? null,
+          title: pick.file.title ?? pick.file.name ?? null,
+          thread_ts: root.ts,
+          // Thread *participants* (who posted in the Slack thread), NOT the
+          // huddle speakers — the latter appear inline in `transcript` as
+          // `Speaker: …` turns. Kept as weak provenance signal for the curator.
+          participants: collectParticipants(messages),
+          // The curator's primary source text — segmented into per-topic
+          // memories exactly like a meeting transcript.
+          transcript,
+          truncated,
+          started_at: tsToIso(root.ts),
+        }),
+      });
+    }
+    return events;
+  }
+
   async function poll(
     ctx: PollContext<SlackCursor>,
   ): Promise<PollResult<SlackCursor>> {
@@ -381,8 +616,14 @@ export function createSlackConnector(
         if (!hasClosingReaction(msg)) continue;
         const episodeKey = `slack:${workspace}:${ch.id}:${msg.ts}`;
         if (emitted.has(episodeKey)) continue;
-        const evt = await emitForClosedThread(token, workspace, ch, msg);
-        events.push(evt);
+        // Fetch the thread once, then feed both the closed-thread event and the
+        // transcript scan. `conversations.replies` returns the root first then
+        // replies in order; an empty array would be a Slack bug, so fall back
+        // to the root we already hold.
+        const { messages: thread, hasMore } = await listThreadReplies(token, ch.id, msg.ts);
+        const threadMessages = thread.length > 0 ? thread : [msg];
+        events.push(buildClosedThreadEvent(workspace, ch, msg, threadMessages, hasMore));
+        events.push(...(await emitTranscriptsForThread(token, workspace, ch, msg, threadMessages)));
         emitted.add(episodeKey);
       }
     }
