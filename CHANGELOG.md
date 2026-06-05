@@ -2,6 +2,17 @@
 
 ## [Unreleased]
 
+## [2.1.0] — 2026-06-04
+
+### Added
+
+- **Slack huddle/meeting transcripts are now ingested into memory (#74).** On a `:hive:`-reacted thread, the Slack connector picks up the verbatim `.vtt` transcript Slack auto-posts after a huddle (when transcription is enabled), normalizes it into `Speaker: text` dialogue turns, and emits a new terminal `huddle.transcript` event that the curator segments into per-topic memories — the same path meeting transcripts already use. When no verbatim transcript exists, it falls back to the AI-notes summary canvas. The bot only reads files shared into channels it belongs to; files it can't access are skipped silently.
+- Very long transcripts are capped at 500k characters; when that happens the stored `huddle.transcript` event carries `truncated: true` so the curator (and you) can tell the tail was dropped.
+
+### Setup / Migration
+
+- **Add the `files:read` scope to your Slack bot and re-authorize it.** Transcript download requires it; without it, huddle-transcript ingestion is silently skipped (ordinary thread-text ingestion is unaffected). If your bot was already provisioned with `files:read`, no action is needed.
+
 ## [2.0.0] — 2026-06-02
 
 ### Changed (breaking)
