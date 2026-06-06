@@ -37,6 +37,7 @@ import { reindexCommand } from './commands/reindex.js';
 import { hookCommand } from './commands/hook.js';
 import { mcpCommand } from './commands/mcp.js';
 import { usageCommand } from './commands/usage.js';
+import { dashboardCommand } from './commands/dashboard.js';
 
 const program = new Command();
 
@@ -80,5 +81,6 @@ program.addCommand(reindexCommand);
 program.addCommand(hookCommand);
 program.addCommand(mcpCommand);
 program.addCommand(usageCommand);
+program.addCommand(dashboardCommand);
 
 program.parse();
