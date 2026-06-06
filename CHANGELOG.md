@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+## [2.2.0-alpha.0] — 2026-06-06
+
+### Added
+
+- **`think dashboard` — a browser status dashboard with an AI prompt box (alpha).** Renders configurable panels over your recent work-log window — by default *Working on* / *Shipped today* / *Unfinished* — plus a center prompt box that answers free-form questions agentically by driving think's own `think_recall`/`think_expand` MCP tools over your corpus. Like `think retro-usage`, it opens via the external `ui-leaf` binary (`npm i -g @openthink/ui-leaf`); `--json` dumps the data headless. The panels and prompt box call the Claude API and are consent-gated (`THINK_LLM_CONSENT`), exactly like `think summary`.
+- **Heavy org customization via `config.dashboard`.** Every axis is config, not a fork: `view` (or `--view`) swaps the `.tsx` presentation; `panels[]` declares your own panels and AI buckets (`render: "digest"` for an AI bucket whose `desc` drives the prompt, or `"today"` for a raw, live-tailed list); `windowDays` sets the history window; `digest.{model,prompt}` overrides the digest AI; and `ask.servers` registers extra MCP servers (e.g. a Linear server) so the prompt box can cross-check other systems. Omitting the block reproduces the built-in three-panel default.
+
+> **Alpha release.** Published under the `alpha` dist-tag — `latest` is unaffected. Install with `npm i -g @openthink/think@2.2.0-alpha.0`. Requires the `ui-leaf` binary on PATH to open the view.
+
 ## [2.1.0] — 2026-06-04
 
 ### Added
