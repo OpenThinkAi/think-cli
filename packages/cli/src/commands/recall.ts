@@ -14,7 +14,7 @@ import type { LongTermEventRow } from '../db/long-term-queries.js';
 import { closeCortexDb } from '../db/engrams.js';
 import type { RecallScope } from '../daemon/recall.js';
 import { NOTE_FTS_FALLBACK, NOTE_FTS_EXPLICIT, validateKind, validateSince } from '../daemon/recall.js';
-import { formatRecallOutput, cortexSet, DEFAULT_RECALL_LIMIT } from '../lib/recall-format.js';
+import { formatRecallOutput, cortexSet, DEFAULT_RECALL_LIMIT, wrapForAgent } from '../lib/recall-format.js';
 import { detectWorkingContext, normalizeContext } from '../lib/working-context.js';
 
 export function printDecisions(m: MemoryRow): void {
@@ -171,11 +171,13 @@ export function renderPersonalAll(cortex: string, { days, query }: { days: numbe
  * AGT-318: Formatted FTS recall — maps searchMemories results to RecallEntry[]
  * and renders via the pure formatter (formatRecallOutput).
  * Called by the recall action when the daemon is unavailable (FTS degraded mode).
+ *
+ * AGT-464: accepts `forAgent` to apply <recall-result> wrapping.
  */
 function runFormattedFtsRecall(
   cortex: string,
   query: string,
-  opts: { engrams?: boolean; limit: number; full?: boolean },
+  opts: { engrams?: boolean; limit: number; full?: boolean; forAgent?: boolean },
 ): void {
   const { limit } = opts;
 
@@ -208,7 +210,9 @@ function runFormattedFtsRecall(
   cortexes.add(cortex);
 
   const formatted = formatRecallOutput(entries, cortexes, { full: opts.full });
-  console.log(formatted);
+  // AGT-464: wrap in <recall-result> delimiters for agent consumers.
+  const output = opts.forAgent ? wrapForAgent(formatted, entries) : formatted;
+  console.log(output);
 
   // Optionally include engrams (legacy v2 local index not part of the v3 kind model).
   if (opts.engrams) {
@@ -243,6 +247,8 @@ export const recallCommand = new Command('recall')
   .option('--no-context', 'Disable the working-context boost (do not auto-detect the repo)')
   .option('--since <date>', 'Only entries at or after this ISO-8601 date (e.g. 2026-05-01)')
   .option('--no-embed', 'Skip semantic ranking; use FTS keyword search (fast, offline, deterministic). Also set by THINK_NO_EMBED=1.')
+  .option('--for-agent', 'Wrap each entry in <recall-result> delimiters (auto-enabled on non-TTY stdout)')
+  .option('--no-for-agent', 'Disable <recall-result> wrapping even when stdout is non-TTY')
   .addOption(
     new Option(
       '--scope <value>',
@@ -263,9 +269,23 @@ Ranking:
     think config set recall.recencyDecay 0
 
   (default 0.05; higher values bias harder toward recent entries). This applies
-  to the semantic path only — --no-embed (full-text search) is unaffected.`,
+  to the semantic path only — --no-embed (full-text search) is unaffected.
+
+Agent consumers:
+  When stdout is not a TTY (e.g. piped to an agent, captured via $(...), or
+  consumed by a hook), think recall automatically wraps each entry's content
+  in <recall-result cortex="..." kind="..." id="...">...</recall-result>
+  delimiters. This gives downstream agents a clear boundary between entries and
+  prevents peer-authored content from being mistaken for top-level instructions.
+
+  Override the auto-detection:
+    --for-agent      Force wrapping even in a TTY (useful for testing).
+    --no-for-agent   Suppress wrapping even when stdout is piped (e.g. piping
+                     to 'less' or a script that expects plain text).
+
+  --json ignores --for-agent: JSON output is already a self-delimited envelope.`,
   )
-  .action(async function (this: Command, query: string, opts: { engrams?: boolean; all?: boolean; days: string; limit: string; full?: boolean; json?: boolean; includeSuperseded?: boolean; scope: string; embed: boolean; kind?: string; topic?: string; context?: string | boolean; since?: string }) {
+  .action(async function (this: Command, query: string, opts: { engrams?: boolean; all?: boolean; days: string; limit: string; full?: boolean; json?: boolean; includeSuperseded?: boolean; scope: string; embed: boolean; kind?: string; topic?: string; context?: string | boolean; since?: string; forAgent?: boolean }) {
     const config = getConfig();
     const cortex = config.cortex?.active;
 
@@ -276,6 +296,11 @@ Ranking:
 
     // AGT-308: scope is validated by Commander .choices() before action runs.
     const scope = opts.scope as RecallScope;
+
+    // AGT-464: --for-agent / --no-for-agent / auto-TTY detection.
+    // Commander.js --no-for-agent sets opts.forAgent=false; --for-agent sets it true.
+    // When neither flag is given, opts.forAgent is undefined → auto-detect via isTTY.
+    const forAgent = opts.forAgent === true || (opts.forAgent !== false && !process.stdout.isTTY);
 
     // AGT-324: honor both --no-embed flag and THINK_NO_EMBED=1 env var.
     // Commander.js --no-embed convention: sets opts.embed=false (not opts.noEmbed).
@@ -436,7 +461,10 @@ Ranking:
           supersedes: e.supersedes ?? [],
         }));
         const cortexes = recallEntries.length > 0 ? cortexSet(recallEntries) : new Set<string>([cortex]);
-        process.stdout.write(formatRecallOutput(recallEntries, cortexes, { full: opts.full }) + '\n');
+        const formatted = formatRecallOutput(recallEntries, cortexes, { full: opts.full });
+        // AGT-464: wrap in <recall-result> delimiters for agent consumers.
+        const output = forAgent ? wrapForAgent(formatted, recallEntries) : formatted;
+        process.stdout.write(output + '\n');
         closeCortexDb(cortex);
         return;
       }
@@ -494,6 +522,6 @@ Ranking:
     }
 
     if (noEmbed) console.log(NOTE_FTS_EXPLICIT);
-    runFormattedFtsRecall(cortex, query, { engrams: opts.engrams, limit, full: opts.full });
+    runFormattedFtsRecall(cortex, query, { engrams: opts.engrams, limit, full: opts.full, forAgent });
     closeCortexDb(cortex);
   });

@@ -217,4 +217,69 @@ describe('think recall flags (AGT-319)', () => {
     const errOutput = (console.error as ReturnType<typeof vi.fn>).mock.calls.flat().join(' ');
     expect(errOutput).toMatch(/--json.*--all|not compatible/i);
   });
+
+  // ---------------------------------------------------------------------------
+  // AGT-464: --for-agent / --no-for-agent / auto-TTY wrapping
+  // ---------------------------------------------------------------------------
+
+  it('non-TTY stdout auto-wraps output in <recall-result> tags', async () => {
+    insertMemory(CORTEX, { ts: '2026-06-01T00:00:00.000Z', author: 'tester', content: 'agent wrap auto detect test' });
+    closeAllCortexDbs();
+
+    // process.stdout.isTTY is falsy in tests (stdout is mocked / piped),
+    // so the auto-detect path should engage without any explicit flag.
+    const prog = makeProgram();
+    await prog.parseAsync(['node', 'think', 'recall', 'agent wrap auto detect']);
+
+    const logOutput = (console.log as ReturnType<typeof vi.fn>).mock.calls.flat().join('');
+    expect(logOutput).toContain('<recall-result');
+    expect(logOutput).toContain('</recall-result>');
+  });
+
+  it('--for-agent explicitly wraps output even when isTTY would be true', async () => {
+    insertMemory(CORTEX, { ts: '2026-06-01T00:00:00.000Z', author: 'tester', content: 'explicit for-agent flag test' });
+    closeAllCortexDbs();
+
+    // Simulate a TTY environment by setting isTTY on the mocked stdout.
+    Object.defineProperty(process.stdout, 'isTTY', { value: true, configurable: true });
+    try {
+      const prog = makeProgram();
+      await prog.parseAsync(['node', 'think', 'recall', '--for-agent', 'explicit for-agent flag']);
+
+      const logOutput = (console.log as ReturnType<typeof vi.fn>).mock.calls.flat().join('');
+      expect(logOutput).toContain('<recall-result');
+      expect(logOutput).toContain('</recall-result>');
+    } finally {
+      Object.defineProperty(process.stdout, 'isTTY', { value: undefined, configurable: true });
+    }
+  });
+
+  it('--no-for-agent suppresses wrapping even when stdout is non-TTY', async () => {
+    insertMemory(CORTEX, { ts: '2026-06-01T00:00:00.000Z', author: 'tester', content: 'no-for-agent suppress wrap test' });
+    closeAllCortexDbs();
+
+    // process.stdout.isTTY is falsy in tests — without the flag wrapping
+    // would auto-engage. --no-for-agent should suppress it.
+    const prog = makeProgram();
+    await prog.parseAsync(['node', 'think', 'recall', '--no-for-agent', 'no-for-agent suppress wrap']);
+
+    const logOutput = (console.log as ReturnType<typeof vi.fn>).mock.calls.flat().join('');
+    expect(logOutput).not.toContain('<recall-result');
+    expect(logOutput).not.toContain('</recall-result>');
+  });
+
+  it('--json ignores --for-agent: no <recall-result> wrapping in JSON output', async () => {
+    insertMemory(CORTEX, { ts: '2026-06-01T00:00:00.000Z', author: 'tester', content: 'json for-agent compat test' });
+    closeAllCortexDbs();
+
+    const prog = makeProgram();
+    await prog.parseAsync(['node', 'think', 'recall', '--json', '--for-agent', 'json for-agent compat']);
+
+    const written = stdoutWriteSpy.mock.calls.flat().join('');
+    // JSON path outputs to stdout.write; should be parseable JSON with no tag wrapper.
+    const parsed = JSON.parse(written.trim());
+    expect(Array.isArray(parsed)).toBe(true);
+    // The raw JSON string should not contain recall-result tags.
+    expect(written).not.toContain('<recall-result');
+  });
 });
