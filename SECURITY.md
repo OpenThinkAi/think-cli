@@ -48,12 +48,13 @@ That routes the report directly to the maintainers without any public trace. Inc
 
 The primary residual risk worth naming explicitly:
 
-**Engrams pulled from peer cortexes are untrusted content.** When `think pull <cortex>` or `think cortex pull` fetches memories written by another peer, those memories eventually get fed into your Claude agent via `think recall`, `think curate`, or similar. We take two defensive measures:
+**Engrams pulled from peer cortexes are untrusted content.** When `think pull <cortex>` or `think cortex pull` fetches memories written by another peer, those memories eventually get fed into your Claude agent via `think recall`, `think curate`, or similar. We take three defensive measures:
 
 1. `wrapData()` in `src/lib/sanitize.ts` escapes `<data>` delimiters so peer content can't close the delimiter block and inject new top-level instructions.
 2. A short regex list warns on obvious prompt-injection phrasings ("ignore previous instructions," "override instructions," etc.).
+3. `think recall` wraps each entry in `<recall-result cortex="..." kind="..." id="...">` delimiters when stdout is non-TTY or `--for-agent` is set, so peer-authored content reaches the downstream agent as bounded data rather than free-floating text. Literal `<recall-result` / `</recall-result` substrings inside entry content are HTML-escaped at render time so a crafted memory cannot break out of the envelope. Cross-reference [Agent topology / Two untrusted-input surfaces](#two-untrusted-input-surfaces) which already names peer-pulled memories as the relevant surface.
 
-**Neither is a security boundary.** The regex is opportunistic — a malicious peer bypasses with paraphrase, translation, or novel wording. The actual boundary is the system prompt in the agent itself, which instructs the model to treat `<data>` content as inert data, not instructions.
+**None of these is a security boundary.** The regex is opportunistic — a malicious peer bypasses with paraphrase, translation, or novel wording. The `<recall-result>` wrap only helps a consuming agent that has been instructed (by its own system prompt) to treat `<recall-result>` blocks as inert data; if the downstream agent has no such instruction, the wrap provides zero protection. The actual boundary is the system prompt in the agent itself, which instructs the model to treat delimited content as inert data, not instructions.
 
 **The same opportunistic-warning treatment applies to proxy event payloads and file imports.** As of AGT-059, `validateEngramContent` runs inside the DB write functions (`insertEngram` and `insertMemoryIfNotExists`) rather than only at caller-side edges, so:
 

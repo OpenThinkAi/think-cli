@@ -125,6 +125,10 @@ export function formatRecallOutput(
         ? entry.content
         : truncateUnicode(entry.content, CONTENT_TRUNCATE_CHARS);
 
+      // Each entry occupies exactly ONE line (content is single-line after truncation
+      // — no embedded newlines). wrapForAgent depends on this invariant to find and
+      // wrap content via a forward-scanning cursor; don't change this without
+      // updating wrapForAgent accordingly.
       if (multiCortex) {
         lines.push(`${date}  [${entry.cortex}/${kind}]  ${content}`);
       } else {
@@ -146,4 +150,122 @@ export function formatRecallOutput(
  */
 export function cortexSet(entries: RecallEntry[]): Set<string> {
   return new Set(entries.map(e => e.cortex).filter(Boolean));
+}
+
+// ---------------------------------------------------------------------------
+// Agent-consumption wrapping — AGT-464
+// ---------------------------------------------------------------------------
+
+/**
+ * Escape literal `<recall-result` / `</recall-result` substrings in content
+ * so peer-authored text cannot break out of the `<recall-result>` envelope.
+ *
+ * Uses case-insensitive matching, mirroring wrapData()'s `<\/?data` regex
+ * in src/lib/sanitize.ts. The opening half of the tag is sufficient: escaping
+ * `<recall-result` covers both the open tag (`<recall-result ...>`) and the
+ * close tag (`</recall-result>`) because the close tag starts with `</recall-result`.
+ */
+export function escapeRecallDelimiters(content: string): string {
+  // Capture the `<` and everything after it so we can replace just the `<`
+  // with `&lt;`, preserving the original casing of the tag name and slash.
+  return content.replace(/<(\/?)recall-result/gi, (match) => `&lt;${match.slice(1)}`);
+}
+
+/**
+ * HTML-escape a string for use in an XML attribute value (double-quoted).
+ * Escapes `"` → `&quot;` and `<` → `&lt;`.
+ */
+function escapeAttr(value: string): string {
+  return value.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;');
+}
+
+/**
+ * Wrap each entry's content in `<recall-result>` delimiters for agent consumers.
+ *
+ * Preserves the human-readable group headers (e.g. `── retros (3) ──`) and
+ * the per-entry date/kind prefix line OUTSIDE the wrap so the format degrades
+ * gracefully when a consuming agent ignores the tags.
+ *
+ * Each entry in `formatted` is matched by scanning `entries` in order (same
+ * order the formatter produces them). The wrap is applied only to the content
+ * fragment — the `YYYY-MM-DD  [kind]  ` prefix remains outside the tag so the
+ * existing human-readable structure is preserved.
+ *
+ * Attribute values are HTML-escaped (`&quot;` for `"`, `&lt;` for `<`) so a
+ * peer-authored cortex name or entry ID cannot break out of the attribute
+ * context.
+ *
+ * @param formatted  Output of formatRecallOutput() — the full formatted string.
+ * @param entries    The same RecallEntry[] that was passed to formatRecallOutput().
+ * @returns          The formatted string with each entry's content body wrapped.
+ */
+export function wrapForAgent(formatted: string, entries: RecallEntry[]): string {
+  if (entries.length === 0) return formatted;
+
+  // The formatter always emits one line per entry in the shape:
+  //   `${date}  [${kind}]  ${content}` (single-cortex)
+  //   `${date}  [${cortex}/${kind}]  ${content}` (multi-cortex)
+  // Entries are emitted in the same order as they appear in the `entries` array.
+  //
+  // Correctness invariant: two entries MAY share the same (date, kind, cortex)
+  // — e.g. two memories captured on the same day from the same cortex. To avoid
+  // the first occurrence being matched twice (and the second entry's line never
+  // wrapped), we track a forward-only `searchFrom` cursor that advances past each
+  // match. This ensures the Nth entry finds the Nth occurrence of its prefix, even
+  // when multiple entries share the same prefix string.
+  //
+  // NOTE: wrapping replaces only the content portion of a line (from after the
+  // prefix to the next `\n` or end-of-string). This relies on content being
+  // single-line, which is guaranteed today by the formatter's 200-char truncation
+  // and its `lines.push(...)` shape — no newlines are ever emitted inside a content
+  // value. If the formatter ever allows multi-line content, update this approach.
+
+  let result = formatted;
+  // `searchFrom` is a cursor that advances past each processed entry line so
+  // duplicate prefixes find the correct (next) occurrence rather than the first.
+  let searchFrom = 0;
+
+  for (const entry of entries) {
+    const date = entry.ts.slice(0, 10);
+    const kind = entry.kind ?? 'memory';
+    // The cortex field is always set for entries returned by the daemon/FTS paths.
+    const cortexRaw = entry.cortex ?? '';
+
+    // Build both candidate prefixes; the formatter uses single-cortex form when
+    // all entries share one cortex, multi-cortex form otherwise.
+    const prefixSingle = `${date}  [${kind}]  `;
+    const prefixMulti  = `${date}  [${cortexRaw}/${kind}]  `;
+
+    // Find the next occurrence of this entry's prefix starting at searchFrom.
+    // Try single-cortex first; if not found at or after searchFrom, try multi.
+    let idx = result.indexOf(prefixSingle, searchFrom);
+    let prefix = prefixSingle;
+    if (idx === -1) {
+      idx = result.indexOf(prefixMulti, searchFrom);
+      prefix = prefixMulti;
+    }
+    if (idx === -1) continue; // entry line not found — skip silently
+
+    const contentStart = idx + prefix.length;
+    const lineEnd = result.indexOf('\n', contentStart);
+    const rawContent = lineEnd === -1
+      ? result.slice(contentStart)
+      : result.slice(contentStart, lineEnd);
+
+    const escaped    = escapeRecallDelimiters(rawContent);
+    const cortexAttr = escapeAttr(cortexRaw);
+    const kindAttr   = escapeAttr(kind);
+    const idAttr     = escapeAttr(entry.id);
+    const wrapped    = `<recall-result cortex="${cortexAttr}" kind="${kindAttr}" id="${idAttr}">${escaped}</recall-result>`;
+
+    result = result.slice(0, contentStart) + wrapped + (lineEnd === -1 ? '' : result.slice(lineEnd));
+
+    // Advance the cursor past the end of the line we just processed (in the
+    // updated `result`). The wrapped replacement is longer than `rawContent`
+    // but we only need to advance past the current `idx` so later entries
+    // with the same prefix find the *next* occurrence, not this one again.
+    searchFrom = contentStart + wrapped.length;
+  }
+
+  return result;
 }
