@@ -347,9 +347,16 @@ cortexCommand.addCommand(new Command('push')
   .description('Push local memories to remote')
   .option('--cortex <name>', 'Push a specific cortex instead of the active one')
   .option('--if-online', 'Skip silently if remote is unreachable (used by auto-propagation)')
-  .action(async (opts: { cortex?: string; ifOnline?: boolean }) => {
+  .action(async function (this: Command, opts: { cortex?: string; ifOnline?: boolean }) {
+    // Resolve --cortex against globals so the program-level `-C/--cortex`
+    // doesn't shadow the subcommand flag (commander v13 binds long flags to
+    // the nearest declaring command up the chain; without this fallback,
+    // `cortex push --cortex <name>` would land on the program option and
+    // leave opts.cortex undefined). Local flag wins, then global, then
+    // config.cortex.active.
+    const globalOpts = this.optsWithGlobals() as { cortex?: string };
     const config = getConfig();
-    const cortex = opts.cortex ?? config.cortex?.active;
+    const cortex = opts.cortex ?? globalOpts.cortex ?? config.cortex?.active;
 
     if (!cortex) {
       if (opts.ifOnline) return;
@@ -391,9 +398,13 @@ cortexCommand.addCommand(new Command('pull')
   .description('Pull remote memories to local')
   .option('--cortex <name>', 'Pull a specific cortex instead of the active one')
   .option('--if-online', 'Skip silently if remote is unreachable')
-  .action(async (opts: { cortex?: string; ifOnline?: boolean }) => {
+  .action(async function (this: Command, opts: { cortex?: string; ifOnline?: boolean }) {
+    // See `cortex push` for why this fallback exists: program-level
+    // `-C/--cortex` would otherwise shadow the subcommand flag and leave
+    // opts.cortex undefined.
+    const globalOpts = this.optsWithGlobals() as { cortex?: string };
     const config = getConfig();
-    const cortex = opts.cortex ?? config.cortex?.active;
+    const cortex = opts.cortex ?? globalOpts.cortex ?? config.cortex?.active;
 
     if (!cortex) {
       if (opts.ifOnline) return;
@@ -435,9 +446,13 @@ cortexCommand.addCommand(new Command('sync')
   .description('Sync memories with remote (pull + push)')
   .option('--cortex <name>', 'Sync a specific cortex instead of the active one')
   .option('--if-online', 'Skip silently if remote is unreachable (used by the auto-sync LaunchAgent).')
-  .action(async (opts: { cortex?: string; ifOnline?: boolean }) => {
+  .action(async function (this: Command, opts: { cortex?: string; ifOnline?: boolean }) {
+    // See `cortex push` for why this fallback exists: program-level
+    // `-C/--cortex` would otherwise shadow the subcommand flag and leave
+    // opts.cortex undefined.
+    const globalOpts = this.optsWithGlobals() as { cortex?: string };
     const config = getConfig();
-    const cortex = opts.cortex ?? config.cortex?.active;
+    const cortex = opts.cortex ?? globalOpts.cortex ?? config.cortex?.active;
 
     if (!cortex) {
       // --if-online runs from launchd with no terminal — bail quietly so the
