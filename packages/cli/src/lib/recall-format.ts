@@ -129,10 +129,15 @@ export function formatRecallOutput(
       // — no embedded newlines). wrapForAgent depends on this invariant to find and
       // wrap content via a forward-scanning cursor; don't change this without
       // updating wrapForAgent accordingly.
+      //
+      // AGT-465: provenance bracket added as a third tag segment.
+      // Single-cortex: `${date}  [${kind}]  [${provenance}]  ${content}`
+      // Multi-cortex:  `${date}  [${cortex}/${kind}]  [${provenance}]  ${content}`
+      const prov = entry.provenance ?? 'unknown';
       if (multiCortex) {
-        lines.push(`${date}  [${entry.cortex}/${kind}]  ${content}`);
+        lines.push(`${date}  [${entry.cortex}/${kind}]  [${prov}]  ${content}`);
       } else {
-        lines.push(`${date}  [${kind}]  ${content}`);
+        lines.push(`${date}  [${kind}]  [${prov}]  ${content}`);
       }
     }
 
@@ -230,11 +235,15 @@ export function wrapForAgent(formatted: string, entries: RecallEntry[]): string 
     const kind = entry.kind ?? 'memory';
     // The cortex field is always set for entries returned by the daemon/FTS paths.
     const cortexRaw = entry.cortex ?? '';
+    // AGT-465: provenance defaults to 'unknown' for entries without the field
+    // (e.g., wire entries from an older daemon version).
+    const provRaw = entry.provenance ?? 'unknown';
 
     // Build both candidate prefixes; the formatter uses single-cortex form when
     // all entries share one cortex, multi-cortex form otherwise.
-    const prefixSingle = `${date}  [${kind}]  `;
-    const prefixMulti  = `${date}  [${cortexRaw}/${kind}]  `;
+    // AGT-465: prefix now includes the provenance bracket segment.
+    const prefixSingle = `${date}  [${kind}]  [${provRaw}]  `;
+    const prefixMulti  = `${date}  [${cortexRaw}/${kind}]  [${provRaw}]  `;
 
     // Find the next occurrence of this entry's prefix starting at searchFrom.
     // Try single-cortex first; if not found at or after searchFrom, try multi.
@@ -256,7 +265,9 @@ export function wrapForAgent(formatted: string, entries: RecallEntry[]): string 
     const cortexAttr = escapeAttr(cortexRaw);
     const kindAttr   = escapeAttr(kind);
     const idAttr     = escapeAttr(entry.id);
-    const wrapped    = `<recall-result cortex="${cortexAttr}" kind="${kindAttr}" id="${idAttr}">${escaped}</recall-result>`;
+    // AGT-465: add provenance attribute to the envelope tag.
+    const provAttr   = escapeAttr(provRaw);
+    const wrapped    = `<recall-result cortex="${cortexAttr}" kind="${kindAttr}" id="${idAttr}" provenance="${provAttr}">${escaped}</recall-result>`;
 
     result = result.slice(0, contentStart) + wrapped + (lineEnd === -1 ? '' : result.slice(lineEnd));
 
