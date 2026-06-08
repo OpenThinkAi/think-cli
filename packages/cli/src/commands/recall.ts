@@ -13,7 +13,7 @@ import type { MemoryRow } from '../db/memory-queries.js';
 import type { LongTermEventRow } from '../db/long-term-queries.js';
 import { closeCortexDb } from '../db/engrams.js';
 import type { RecallScope } from '../daemon/recall.js';
-import { NOTE_FTS_FALLBACK, NOTE_FTS_EXPLICIT, validateKind, validateSince, applyProvenanceFilters, deriveProvenance, validateSourceSelector } from '../daemon/recall.js';
+import { NOTE_FTS_FALLBACK, NOTE_FTS_EXPLICIT, validateKind, validateSince, applyProvenanceFilters, deriveProvenance, validateSourceSelector, applyTrustTierFilters, deriveTrustTier, validateTrustTierValue } from '../daemon/recall.js';
 import { formatRecallOutput, cortexSet, DEFAULT_RECALL_LIMIT, wrapForAgent } from '../lib/recall-format.js';
 import { detectWorkingContext, normalizeContext } from '../lib/working-context.js';
 
@@ -174,11 +174,12 @@ export function renderPersonalAll(cortex: string, { days, query }: { days: numbe
  *
  * AGT-464: accepts `forAgent` to apply <recall-result> wrapping.
  * AGT-465: accepts `sources` / `excludeSources` for provenance filtering.
+ * AGT-466: accepts `tiers` / `excludeTiers` / `includeQuarantined` for trust tier filtering.
  */
 function runFormattedFtsRecall(
   cortex: string,
   query: string,
-  opts: { engrams?: boolean; limit: number; full?: boolean; forAgent?: boolean; sources?: string[]; excludeSources?: string[] },
+  opts: { engrams?: boolean; limit: number; full?: boolean; forAgent?: boolean; sources?: string[]; excludeSources?: string[]; tiers?: string[]; excludeTiers?: string[]; includeQuarantined?: boolean },
 ): void {
   const { limit } = opts;
 
@@ -193,24 +194,39 @@ function runFormattedFtsRecall(
   // Cast through unknown because MemoryRow type does not expose the kind
   // column yet (it exists in the DB but has not been added to the TS interface).
   const activeCortexForFts = getConfig().cortex?.active;
-  const entries = rawMemories.map(m => ({
-    id: m.id,
-    ts: m.ts,
-    kind: m.kind ?? null,
-    content: m.content,
-    topics: [] as string[],
-    similarity: 0,
-    score: 0,
-    cortex,
-    compacted_from: null,
-    supersedes: [] as string[],
-    activity_seq: null,
-    fts_fallback: true as const,
-    provenance: deriveProvenance(cortex, m.episode_key, activeCortexForFts),
-  }));
+  const trustRules = getConfig().cortex?.trustTiers?.rules;
+  const entries = rawMemories.map(m => {
+    const provenance = deriveProvenance(cortex, m.episode_key, activeCortexForFts);
+    const trustTier = deriveTrustTier(provenance, trustRules);
+    return {
+      id: m.id,
+      ts: m.ts,
+      kind: m.kind ?? null,
+      content: m.content,
+      topics: [] as string[],
+      similarity: 0,
+      score: 0,
+      cortex,
+      compacted_from: null,
+      supersedes: [] as string[],
+      activity_seq: null,
+      fts_fallback: true as const,
+      provenance,
+      trustTier,
+    };
+  });
 
   // AGT-465: apply provenance filters post-result on the FTS path.
-  const filteredEntries = applyProvenanceFilters(entries, opts.sources, opts.excludeSources);
+  const provFilteredEntries = applyProvenanceFilters(entries, opts.sources, opts.excludeSources);
+  // AGT-466: apply trust tier filters after provenance filters.
+  const { entries: filteredEntries, quarantinedDropped } = applyTrustTierFilters(provFilteredEntries, {
+    tiers: opts.tiers,
+    excludeTiers: opts.excludeTiers,
+    includeQuarantined: opts.includeQuarantined ?? false,
+  });
+  if (quarantinedDropped > 0) {
+    process.stderr.write(`note: dropped ${quarantinedDropped} quarantined entr${quarantinedDropped === 1 ? 'y' : 'ies'}; pass --include-quarantined to surface\n`);
+  }
 
   const cortexes = cortexSet(filteredEntries);
   // Ensure the cortex appears in the set even when results are empty.
@@ -285,6 +301,36 @@ export const recallCommand = new Command('recall')
     },
     [] as string[],
   )
+  .option(
+    '--trust-tier <list>',
+    'Only include entries with this trust tier (repeatable; comma-separated): trusted, untrusted, quarantined. Off by default (no tier filter).',
+    (val: string, prev: string[]) => {
+      const parts = val.split(',').map((s) => s.trim()).filter(Boolean);
+      for (const t of parts) {
+        try { validateTrustTierValue(t); }
+        catch (e) { console.error((e as Error).message); process.exit(1); }
+      }
+      return [...prev, ...parts];
+    },
+    [] as string[],
+  )
+  .option(
+    '--exclude-trust-tier <list>',
+    'Exclude entries with this trust tier (repeatable; comma-separated). Excludes win over --trust-tier.',
+    (val: string, prev: string[]) => {
+      const parts = val.split(',').map((s) => s.trim()).filter(Boolean);
+      for (const t of parts) {
+        try { validateTrustTierValue(t); }
+        catch (e) { console.error((e as Error).message); process.exit(1); }
+      }
+      return [...prev, ...parts];
+    },
+    [] as string[],
+  )
+  .option(
+    '--include-quarantined',
+    'Surface quarantined entries (default: quarantined entries are silently dropped). Required to surface quarantined entries even when --trust-tier quarantined is also set.',
+  )
   .addOption(
     new Option(
       '--scope <value>',
@@ -320,6 +366,26 @@ Provenance filtering (AGT-465):
 
   Both flags are repeatable and comma-separated. Excludes win over includes.
 
+Trust tier filtering (AGT-466):
+  Each entry is classified into a trust tier: trusted (your own entries by default),
+  untrusted (all others by default), or quarantined (explicitly configured entries
+  dropped silently by default). Configure tiers in cortex.trustTiers.rules.
+
+  Quarantined entries are ALWAYS silently dropped unless --include-quarantined is
+  passed — even if --trust-tier quarantined is set, you must also pass
+  --include-quarantined to surface them (the flag gates quarantine surfacing as a
+  whole, not just tier filtering). When entries are dropped, a count is emitted
+  to stderr: "note: dropped N quarantined entries; pass --include-quarantined to
+  surface". Suppress when N=0.
+
+    think recall "query" --trust-tier trusted          # own entries only
+    think recall "query" --exclude-trust-tier untrusted # drop untrusted
+    think recall "query" --include-quarantined          # surface quarantined entries
+    think recall "query" --trust-tier quarantined --include-quarantined  # quarantined only
+
+  Tier filters are additive to --source / --exclude-source. Order: source filter →
+  quarantine drop → tier filter. Excludes win over includes for both flag types.
+
 Agent consumers:
   When stdout is not a TTY (e.g. piped to an agent, captured via $(...), or
   consumed by a hook), think recall automatically wraps each entry's content
@@ -335,7 +401,7 @@ Agent consumers:
 
   --json ignores --for-agent: JSON output is already a self-delimited envelope.`,
   )
-  .action(async function (this: Command, query: string, opts: { engrams?: boolean; all?: boolean; days: string; limit: string; full?: boolean; json?: boolean; includeSuperseded?: boolean; scope: string; embed: boolean; kind?: string; topic?: string; context?: string | boolean; since?: string; forAgent?: boolean; source: string[]; excludeSource: string[] }) {
+  .action(async function (this: Command, query: string, opts: { engrams?: boolean; all?: boolean; days: string; limit: string; full?: boolean; json?: boolean; includeSuperseded?: boolean; scope: string; embed: boolean; kind?: string; topic?: string; context?: string | boolean; since?: string; forAgent?: boolean; source: string[]; excludeSource: string[]; trustTier: string[]; excludeTrustTier: string[]; includeQuarantined?: boolean }) {
     const config = getConfig();
     const cortex = config.cortex?.active;
 
@@ -453,6 +519,10 @@ Agent consumers:
         // to avoid unnecessary daemon-side parsing).
         if (opts.source.length > 0) rpcParams['sources'] = opts.source;
         if (opts.excludeSource.length > 0) rpcParams['excludeSources'] = opts.excludeSource;
+        // AGT-466: pass trust tier filters to the daemon.
+        if (opts.trustTier.length > 0) rpcParams['tiers'] = opts.trustTier;
+        if (opts.excludeTrustTier.length > 0) rpcParams['excludeTiers'] = opts.excludeTrustTier;
+        if (opts.includeQuarantined) rpcParams['includeQuarantined'] = true;
 
         type DaemonRecallEntry = {
           id: string;
@@ -469,6 +539,8 @@ Agent consumers:
           fts_fallback?: true;
           /** AGT-465: provenance tag derived by the daemon. */
           provenance?: string;
+          /** AGT-466: trust tier derived by the daemon. */
+          trustTier?: string;
         };
 
         let entries: DaemonRecallEntry[];
@@ -513,12 +585,15 @@ Agent consumers:
         // new wire field doesn't silently drop here).
         // AGT-465: provenance defaults to 'unknown' for older daemon responses
         // that don't carry the field yet.
+        // AGT-466: trustTier defaults to 'untrusted' for older daemon responses
+        // that don't carry the field yet.
         const recallEntries = entries.map((e) => ({
           ...e,
           similarity: e.similarity ?? 0,
           score: e.score ?? e.similarity ?? 0,
           supersedes: e.supersedes ?? [],
           provenance: e.provenance ?? 'unknown',
+          trustTier: (e.trustTier ?? 'untrusted') as import('../daemon/recall.js').RecallEntry['trustTier'],
         }));
         const cortexes = recallEntries.length > 0 ? cortexSet(recallEntries) : new Set<string>([cortex]);
         const formatted = formatRecallOutput(recallEntries, cortexes, { full: opts.full });
@@ -585,6 +660,9 @@ Agent consumers:
     // AGT-465: pass provenance filters to the FTS path (sources/excludeSources).
     const sources = opts.source.length > 0 ? opts.source : undefined;
     const excludeSources = opts.excludeSource.length > 0 ? opts.excludeSource : undefined;
-    runFormattedFtsRecall(cortex, query, { engrams: opts.engrams, limit, full: opts.full, forAgent, sources, excludeSources });
+    // AGT-466: pass trust tier filters to the FTS path.
+    const tiers = opts.trustTier.length > 0 ? opts.trustTier : undefined;
+    const excludeTiers = opts.excludeTrustTier.length > 0 ? opts.excludeTrustTier : undefined;
+    runFormattedFtsRecall(cortex, query, { engrams: opts.engrams, limit, full: opts.full, forAgent, sources, excludeSources, tiers, excludeTiers, includeQuarantined: opts.includeQuarantined });
     closeCortexDb(cortex);
   });

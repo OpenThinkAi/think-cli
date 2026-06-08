@@ -231,13 +231,15 @@ describe('wrapForAgent (AGT-464 / AGT-465)', () => {
     provenance: 'self',
   });
 
-  it('wraps entry content in <recall-result> tags with correct attributes including provenance (AGT-465)', () => {
+  it('wraps entry content in <recall-result> tags with correct attributes including provenance (AGT-465) and trust (AGT-466)', () => {
     const entries = [baseEntry];
     const formatted = formatRecallOutput(entries, cortexSet(entries));
     const wrapped = wrapForAgent(formatted, entries);
     // AGT-465: provenance attribute added to the open tag (attribute always
     // present even when the bracket is suppressed in human output for "self").
-    expect(wrapped).toContain('<recall-result cortex="think-cli" kind="memory" id="m-wrap-1" provenance="self">');
+    // AGT-466: trust attribute added alongside provenance. baseEntry has no
+    // trustTier set → defaults to 'untrusted' in the formatter.
+    expect(wrapped).toContain('<recall-result cortex="think-cli" kind="memory" id="m-wrap-1" provenance="self" trust="untrusted">');
     expect(wrapped).toContain('the quick brown fox');
     expect(wrapped).toContain('</recall-result>');
   });

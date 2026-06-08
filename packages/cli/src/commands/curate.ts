@@ -24,6 +24,7 @@ import type { MemoryEntry } from '../lib/curator.js';
 import { acquireCurateLock } from '../lib/curate-lock.js';
 import { LlmConsentError } from '../lib/llm-consent.js';
 import { LlmSkippedError } from '../lib/llm/client.js';
+import { deriveProvenance, deriveTrustTier } from '../daemon/recall.js';
 
 export const curateCommand = new Command('curate')
   .description('Run curation: evaluate pending events and promote to memories')
@@ -31,7 +32,11 @@ export const curateCommand = new Command('curate')
   .option('--consolidate', 'Run long-term memory consolidation only (no curation)')
   .option('--episode <key>', 'Curate a specific episode into a narrative memory')
   .option('--if-idle', 'Only curate if the user appears idle (used by auto-curation scheduler)')
-  .action(async (opts: { dryRun?: boolean; consolidate?: boolean; episode?: string; ifIdle?: boolean }) => {
+  .option(
+    '--include-quarantined',
+    'Include quarantined engrams in the curation envelope (default: quarantined engrams are excluded). A note is emitted to stderr when engrams are dropped.',
+  )
+  .action(async (opts: { dryRun?: boolean; consolidate?: boolean; episode?: string; ifIdle?: boolean; includeQuarantined?: boolean }) => {
     const config = getConfig();
     const cortex = config.cortex?.active;
 
@@ -102,7 +107,23 @@ export const curateCommand = new Command('curate')
 
     // Episode curation: separate flow for narrative synthesis
     if (opts.episode) {
-      const episodeEngrams = getPendingEpisodeEngrams(cortex, opts.episode);
+      const allEpisodeEngrams = getPendingEpisodeEngrams(cortex, opts.episode);
+      // AGT-466: quarantine filtering on episode engrams (same logic as pending engrams above).
+      const activeCortexForEpisode = config.cortex?.active;
+      const trustRulesForEpisode = config.cortex?.trustTiers?.rules;
+      let episodeEngrams = allEpisodeEngrams;
+      if (!opts.includeQuarantined) {
+        const before = allEpisodeEngrams.length;
+        episodeEngrams = allEpisodeEngrams.filter((e) => {
+          const provenance = deriveProvenance(cortex, e.episode_key ?? null, activeCortexForEpisode);
+          const tier = deriveTrustTier(provenance, trustRulesForEpisode);
+          return tier !== 'quarantined';
+        });
+        const dropped = before - episodeEngrams.length;
+        if (dropped > 0) {
+          process.stderr.write(`note: skipped ${dropped} quarantined engram${dropped === 1 ? '' : 's'} in episode curation; pass --include-quarantined to include\n`);
+        }
+      }
       if (episodeEngrams.length === 0) {
         console.log(chalk.dim(`No pending events for episode: ${opts.episode}`));
         closeCortexDb(cortex);
@@ -252,9 +273,36 @@ export const curateCommand = new Command('curate')
     }
 
     // 3. Read pending engrams
-    const pending = getPendingEngrams(cortex);
-    if (pending.length === 0) {
+    const allPending = getPendingEngrams(cortex);
+    if (allPending.length === 0) {
       console.log(chalk.dim('No pending events to evaluate.'));
+      closeCortexDb(cortex);
+      return;
+    }
+
+    // AGT-466: quarantine filtering on pending engrams. Derive provenance for
+    // each engram (same logic as recall — episode_key → proxy, cortex match →
+    // self, etc.), then classify into a trust tier. Quarantined engrams are
+    // silently excluded from the curation envelope by default; surfaced only
+    // when --include-quarantined is passed. Emits a stderr count line when N>0.
+    const activeCortexForCurate = config.cortex?.active;
+    const trustRulesForCurate = config.cortex?.trustTiers?.rules;
+    let pending = allPending;
+    if (!opts.includeQuarantined) {
+      const before = allPending.length;
+      pending = allPending.filter((e) => {
+        const provenance = deriveProvenance(cortex, e.episode_key ?? null, activeCortexForCurate);
+        const tier = deriveTrustTier(provenance, trustRulesForCurate);
+        return tier !== 'quarantined';
+      });
+      const dropped = before - pending.length;
+      if (dropped > 0) {
+        process.stderr.write(`note: skipped ${dropped} quarantined engram${dropped === 1 ? '' : 's'} in curation; pass --include-quarantined to include\n`);
+      }
+    }
+
+    if (pending.length === 0) {
+      console.log(chalk.dim('No pending events to evaluate (all were quarantined; pass --include-quarantined to include them).'));
       closeCortexDb(cortex);
       return;
     }

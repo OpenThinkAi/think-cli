@@ -54,6 +54,7 @@ The primary residual risk worth naming explicitly:
 2. A short regex list warns on obvious prompt-injection phrasings ("ignore previous instructions," "override instructions," etc.).
 3. `think recall` wraps each entry in `<recall-result cortex="..." kind="..." id="...">` delimiters when stdout is non-TTY or `--for-agent` is set, so peer-authored content reaches the downstream agent as bounded data rather than free-floating text. Literal `<recall-result` / `</recall-result` substrings inside entry content are HTML-escaped at render time so a crafted memory cannot break out of the envelope. Cross-reference [Agent topology / Two untrusted-input surfaces](#two-untrusted-input-surfaces) which already names peer-pulled memories as the relevant surface.
 4. `think recall` derives and emits a `provenance` tag for every entry — `self` (your cortex), `peer:<name>` (a locally-cloned peer cortex), `proxy:<connector>` (an external subscription source like GitHub or Linear), or `unknown` (unclassifiable). The tag appears as a `[provenance]` bracket in human-readable output and as a `provenance="..."` attribute on the `<recall-result>` envelope (AGT-465). This lets a downstream agent — and a human reader — see at a glance where each piece of content originated. Combined with `--source` / `--exclude-source` filtering, a consuming agent can, for example, restrict a sensitive task to `self`-sourced entries or drop all `proxy:*` content before acting on it.
+5. `think recall` and `think curate` classify every entry into a **trust tier** based on the user's configured `cortex.trustTiers.rules` policy (AGT-466). The default shipped rules: `self → trusted`, everything else → `untrusted`. Nothing is `quarantined` by default. Quarantined entries are silently excluded from recall and curation input by default — they never enter the model's context unless `--include-quarantined` is explicitly passed. See [Trust tiers: labelling-plus-policy, still opportunistic](#trust-tiers-labelling-plus-policy-still-opportunistic) below for the full details and explicit caveats.
 
 **None of these is a security boundary.** The regex is opportunistic — a malicious peer bypasses with paraphrase, translation, or novel wording. The `<recall-result>` wrap only helps a consuming agent that has been instructed (by its own system prompt) to treat `<recall-result>` blocks as inert data; if the downstream agent has no such instruction, the wrap provides zero protection. The actual boundary is the system prompt in the agent itself, which instructs the model to treat delimited content as inert data, not instructions.
 
@@ -62,9 +63,9 @@ The provenance tag carries the same opportunistic-warning caveat:
 - The tag is derived from two locally-persisted fields: the entry's `cortex` name (set at curation time) and its `episode_key` (set by the local subscribe code). Both fields are inside your own `~/.think/` storage, so trusting them requires the same trust level you already extend to your local cortex contents.
 - **`peer:` tells you origin, not intent.** A malicious peer who has sync access could write a row claiming a benign-sounding cortex name. The `peer:` tag is honest about where the data came from (a cortex that differs from yours), but it is not a judgment about the author's trustworthiness.
 - **`proxy:` is the highest-fidelity tag** because the connector kind (the part after `proxy:`) is set by your local subscribe code on a key the proxy server does not control — a GitHub proxy can't make its entries appear as `proxy:linear`. But a malicious proxy *can* craft arbitrary content within its own connector's entries; `proxy:github` means "arrived via the github connector," not "safe to trust."
-- **`unknown` means unclassifiable**, not "untrusted by exception." It surfaces when `cortex.active` is unset (no active cortex configured), so the system can't distinguish self from peer. AGT-466 will map all four provenance classes to explicit trust tiers; until then, treat `unknown` as the most conservative case.
+- **`unknown` means unclassifiable**, not "untrusted by exception." It surfaces when `cortex.active` is unset (no active cortex configured), so the system can't distinguish self from peer. Under the AGT-466 trust tier system, `unknown` provenance resolves to `untrusted` by default (via the implicit `* → untrusted` fail-safe rule).
 
-The actual security boundary remains the consuming agent's own system prompt, which must instruct the model to treat `<recall-result>` blocks as inert data regardless of provenance tag. Provenance tagging is the labelling layer; AGT-466 is the trust-enforcement layer.
+The actual security boundary remains the consuming agent's own system prompt, which must instruct the model to treat `<recall-result>` blocks as inert data regardless of provenance tag. Provenance tagging (AGT-465) is the labelling layer; trust tiers (AGT-466) are the policy layer built on top of it. See [Trust tiers: labelling-plus-policy, still opportunistic](#trust-tiers-labelling-plus-policy-still-opportunistic) for the full treatment.
 
 **The same opportunistic-warning treatment applies to proxy event payloads and file imports.** As of AGT-059, `validateEngramContent` runs inside the DB write functions (`insertEngram` and `insertMemoryIfNotExists`) rather than only at caller-side edges, so:
 
@@ -74,6 +75,33 @@ The actual security boundary remains the consuming agent's own system prompt, wh
 These paths previously bypassed validation entirely. The chokepoint covers them now without requiring every caller to remember to validate first. As with peer-pulled engrams, this is **opportunistic warning, not a security boundary** — paraphrase still bypasses, the agent's system prompt is still the actual line of defense.
 
 Do not add a cortex peer, configure a proxy, or import a file you don't trust at the same level as any other source of input your AI agent will read.
+
+### Trust tiers: labelling-plus-policy, still opportunistic
+
+AGT-466 added a configurable trust tier layer on top of AGT-465's provenance labels. Every recall entry is classified as `trusted`, `untrusted`, or `quarantined` based on the user's `cortex.trustTiers.rules` list in config (first-match-wins, implicit final rule `* → untrusted`). Default shipped rules: `self → trusted`, everything else → `untrusted`.
+
+**What trust tiers DO:**
+
+- **Reduce attack surface.** `quarantined` entries are excluded from `think recall` output and from `think curate` envelopes by default. A quarantined entry never enters the model's context unless the user explicitly passes `--include-quarantined`. This shrinks the prompt-injection surface for operators who have proxy sources they want to contain.
+- **Label entries declaratively.** Every `<recall-result>` envelope now carries a `trust="..."` attribute alongside `provenance="..."`, so a downstream agent can branch on tier (e.g., refuse to act on `untrusted` entries without human confirmation) if its system prompt instructs it to.
+- **Provide a policy knob.** Operators can configure fine-grained rules: quarantine all `proxy:github` entries while allowing `proxy:linear` and `peer:*` through as `untrusted` (the default), for example.
+
+**What trust tiers do NOT do:**
+
+- **Do not authenticate authorship.** A `trusted` tier on a `self` entry means the entry's `cortex` field matches your active cortex — it does not mean you authored the content, or that a previous sync didn't inject a malicious row. Trust tiers are built on provenance labels, and provenance labels are locally-derived heuristics, not cryptographic guarantees.
+- **Do not validate content.** A `trusted` entry can still contain a prompt injection written by a prior model run or a malicious sync. Tier classification does not parse, sanitize, or verify entry content.
+- **Do not block paraphrase.** The quarantine tier prevents a known-quarantined entry from entering the context. A malicious actor who can inject an entry into a non-quarantined source (e.g., a `peer:*` cortex you have not quarantined) bypasses quarantine entirely. This is the same opportunistic-warning caveat that applies to the regex scan and the `<recall-result>` delimiter.
+- **Do not change the actual security boundary.** The real line of defense is the consuming agent's own system prompt, which must instruct the model to treat `<recall-result>` blocks as inert data regardless of the `trust="..."` attribute. Tiers reduce what the prompt sees; they do not change what the prompt must do with what it sees.
+
+**Relationship to AGT-465 provenance labels:**
+
+AGT-465 (provenance labelling) is the *labelling layer*: it derives `self`, `peer:*`, `proxy:*`, or `unknown` from locally-persisted fields and carries it through the recall pipeline. AGT-466 (trust tiers) is the *policy layer* built on top: it maps each provenance class to a tier via the configured `trustTiers.rules` list, then gates visibility at recall and curation boundaries. The two are orthogonal — a user can use `--source` / `--exclude-source` (provenance) and `--trust-tier` / `--exclude-trust-tier` (tier) independently. At the post-rerank filter site the order is: source filter → quarantine drop → tier filter.
+
+**The default is deliberately conservative but backward-compatible.** The default tier for everything except `self` is `untrusted` (not `quarantined`) — if the default were `quarantined`, every existing user's peer/proxy entries would silently disappear from recall after upgrading, which is a backward-compat catastrophe. `untrusted` preserves recall behaviour while still distinguishing "yours" from "everyone else's" for any future policy layer a downstream agent wants to apply. Nothing is `quarantined` unless the user explicitly writes a rule.
+
+**Silent-drop with a stderr count.** When entries are dropped because they are quarantined and `--include-quarantined` was not passed, think emits a single informational line to stderr (not stdout): `note: dropped N quarantined entries; pass --include-quarantined to surface`. The entry *content* is never in this line — surfacing quarantined content even as a marker defeats the tier's purpose. The stderr count is the compromise: it tells a user they configured something without re-injecting the untrusted text.
+
+**In summary:** trust tiers are a useful reduce-attack-surface knob that an operator can layer onto an already-defended pipeline. They are not, and must never be described as, a security boundary.
 
 ### Configuration tampering
 
