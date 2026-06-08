@@ -10,7 +10,7 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { deriveTrustTier } from '../../src/daemon/recall.js';
+import { deriveTrustTier, deriveProvenance } from '../../src/daemon/recall.js';
 import type { TrustTierRule } from '../../src/lib/config.js';
 import type { Engram } from '../../src/db/engram-queries.js';
 
@@ -48,20 +48,11 @@ function filterQuarantinedEngrams(
 ): { filtered: Engram[]; dropped: number } {
   if (includeQuarantined) return { filtered: engrams, dropped: 0 };
 
-  // Inline deriveProvenance logic (same as recall.ts deriveProvenance).
-  const SUBSCRIBE_KEY_RE = /^subscribe:([A-Za-z0-9_-]+)$/;
-  function deriveProvenance(episodeKey: string | null): string {
-    if (episodeKey) {
-      const m = SUBSCRIBE_KEY_RE.exec(episodeKey);
-      if (m) return `proxy:${m[1]}`;
-    }
-    if (!activeCortex || activeCortex.trim().length === 0) return 'unknown';
-    return cortex === activeCortex ? 'self' : `peer:${cortex}`;
-  }
-
+  // Use production deriveProvenance directly so any future changes to the
+  // provenance derivation logic are reflected in this test automatically.
   const before = engrams.length;
   const filtered = engrams.filter((e) => {
-    const provenance = deriveProvenance(e.episode_key ?? null);
+    const provenance = deriveProvenance(cortex, e.episode_key ?? null, activeCortex);
     const tier = deriveTrustTier(provenance, trustRules);
     return tier !== 'quarantined';
   });
