@@ -412,6 +412,22 @@ export function applyTrustTierFilters(
 export const VALID_TRUST_TIERS: ReadonlySet<string> = new Set(['trusted', 'untrusted', 'quarantined']);
 
 /**
+ * Emit a single stderr line when quarantined entries were silently dropped
+ * from a recall or curate call. Count-only — never emits entry content.
+ * Suppressed when count is 0.
+ *
+ * Canonical wording per SECURITY.md and the approved AGT-466 plan:
+ *   "note: dropped N quarantined entr(y|ies); pass --include-quarantined to surface"
+ */
+export function emitQuarantineDropNotice(count: number): void {
+  if (count > 0) {
+    process.stderr.write(
+      `note: dropped ${count} quarantined entr${count === 1 ? 'y' : 'ies'}; pass --include-quarantined to surface\n`,
+    );
+  }
+}
+
+/**
  * Validate a single trust tier value. Throws with a lowercase `error:` prefix
  * on invalid input. Exported so the CLI layer can validate eagerly.
  */
@@ -1544,9 +1560,7 @@ async function recallSingleCortex(
     const provFiltered = applyProvenanceFilters(ftsEntries, sources, excludeSources);
     // AGT-466: trust tier filter (quarantine drop + tier filter) applied after provenance filter.
     const { entries: tierFiltered, quarantinedDropped } = applyTrustTierFilters(provFiltered, { tiers, excludeTiers, includeQuarantined });
-    if (quarantinedDropped > 0) {
-      process.stderr.write(`note: dropped ${quarantinedDropped} quarantined entr${quarantinedDropped === 1 ? 'y' : 'ies'}; pass --include-quarantined to surface\n`);
-    }
+    emitQuarantineDropNotice(quarantinedDropped);
     return tierFiltered;
   }
 
@@ -1565,9 +1579,7 @@ async function recallSingleCortex(
     const ftsEntries = recallOneCortexWithFts(cortexName, query, limit, activeCortex);
     const provFiltered = applyProvenanceFilters(ftsEntries, sources, excludeSources);
     const { entries: tierFiltered, quarantinedDropped } = applyTrustTierFilters(provFiltered, { tiers, excludeTiers, includeQuarantined });
-    if (quarantinedDropped > 0) {
-      process.stderr.write(`note: dropped ${quarantinedDropped} quarantined entr${quarantinedDropped === 1 ? 'y' : 'ies'}; pass --include-quarantined to surface\n`);
-    }
+    emitQuarantineDropNotice(quarantinedDropped);
     return tierFiltered;
   }
 
@@ -1582,9 +1594,7 @@ async function recallSingleCortex(
   const provFiltered = applyProvenanceFilters(sliced, sources, excludeSources);
   // AGT-466: trust tier filter applied post-rerank, post-provenance-filter.
   const { entries: tierFiltered, quarantinedDropped } = applyTrustTierFilters(provFiltered, { tiers, excludeTiers, includeQuarantined });
-  if (quarantinedDropped > 0) {
-    process.stderr.write(`note: dropped ${quarantinedDropped} quarantined entr${quarantinedDropped === 1 ? 'y' : 'ies'}; pass --include-quarantined to surface\n`);
-  }
+  emitQuarantineDropNotice(quarantinedDropped);
   return tierFiltered;
 }
 
@@ -1666,9 +1676,7 @@ async function recallFederated(
     const noEmbedProvFiltered = applyProvenanceFilters(noEmbedSliced, sources, excludeSources);
     // AGT-466: trust tier filter applied after provenance filter.
     const { entries: noEmbedTierFiltered, quarantinedDropped: noEmbedDropped } = applyTrustTierFilters(noEmbedProvFiltered, { tiers, excludeTiers, includeQuarantined });
-    if (noEmbedDropped > 0) {
-      process.stderr.write(`note: dropped ${noEmbedDropped} quarantined entr${noEmbedDropped === 1 ? 'y' : 'ies'}; pass --include-quarantined to surface\n`);
-    }
+    emitQuarantineDropNotice(noEmbedDropped);
     return noEmbedTierFiltered;
   }
 
@@ -1695,9 +1703,7 @@ async function recallFederated(
     const fallbackProvFiltered = applyProvenanceFilters(fallbackSliced, sources, excludeSources);
     // AGT-466: trust tier filter applied after provenance filter.
     const { entries: fallbackTierFiltered, quarantinedDropped: fallbackDropped } = applyTrustTierFilters(fallbackProvFiltered, { tiers, excludeTiers, includeQuarantined });
-    if (fallbackDropped > 0) {
-      process.stderr.write(`note: dropped ${fallbackDropped} quarantined entr${fallbackDropped === 1 ? 'y' : 'ies'}; pass --include-quarantined to surface\n`);
-    }
+    emitQuarantineDropNotice(fallbackDropped);
     return fallbackTierFiltered;
   }
   // Fan out to all cortexes in parallel. Per-cortex failures are caught
@@ -1733,8 +1739,6 @@ async function recallFederated(
   const fedProvFiltered = applyProvenanceFilters(sliced, sources, excludeSources);
   // AGT-466: trust tier filter applied after provenance filter.
   const { entries: fedTierFiltered, quarantinedDropped: fedDropped } = applyTrustTierFilters(fedProvFiltered, { tiers, excludeTiers, includeQuarantined });
-  if (fedDropped > 0) {
-    process.stderr.write(`note: dropped ${fedDropped} quarantined entr${fedDropped === 1 ? 'y' : 'ies'}; pass --include-quarantined to surface\n`);
-  }
+  emitQuarantineDropNotice(fedDropped);
   return fedTierFiltered;
 }

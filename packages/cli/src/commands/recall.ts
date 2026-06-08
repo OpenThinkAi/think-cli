@@ -13,7 +13,7 @@ import type { MemoryRow } from '../db/memory-queries.js';
 import type { LongTermEventRow } from '../db/long-term-queries.js';
 import { closeCortexDb } from '../db/engrams.js';
 import type { RecallScope } from '../daemon/recall.js';
-import { NOTE_FTS_FALLBACK, NOTE_FTS_EXPLICIT, validateKind, validateSince, applyProvenanceFilters, deriveProvenance, validateSourceSelector, applyTrustTierFilters, deriveTrustTier, validateTrustTierValue } from '../daemon/recall.js';
+import { NOTE_FTS_FALLBACK, NOTE_FTS_EXPLICIT, validateKind, validateSince, applyProvenanceFilters, deriveProvenance, validateSourceSelector, applyTrustTierFilters, deriveTrustTier, validateTrustTierValue, emitQuarantineDropNotice } from '../daemon/recall.js';
 import { formatRecallOutput, cortexSet, DEFAULT_RECALL_LIMIT, wrapForAgent } from '../lib/recall-format.js';
 import { detectWorkingContext, normalizeContext } from '../lib/working-context.js';
 
@@ -224,9 +224,7 @@ function runFormattedFtsRecall(
     excludeTiers: opts.excludeTiers,
     includeQuarantined: opts.includeQuarantined ?? false,
   });
-  if (quarantinedDropped > 0) {
-    process.stderr.write(`note: dropped ${quarantinedDropped} quarantined entr${quarantinedDropped === 1 ? 'y' : 'ies'}; pass --include-quarantined to surface\n`);
-  }
+  emitQuarantineDropNotice(quarantinedDropped);
 
   const cortexes = cortexSet(filteredEntries);
   // Ensure the cortex appears in the set even when results are empty.
