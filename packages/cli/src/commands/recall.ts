@@ -13,7 +13,7 @@ import type { MemoryRow } from '../db/memory-queries.js';
 import type { LongTermEventRow } from '../db/long-term-queries.js';
 import { closeCortexDb } from '../db/engrams.js';
 import type { RecallScope } from '../daemon/recall.js';
-import { NOTE_FTS_FALLBACK, NOTE_FTS_EXPLICIT, validateKind, validateSince } from '../daemon/recall.js';
+import { NOTE_FTS_FALLBACK, NOTE_FTS_EXPLICIT, validateKind, validateSince, applyProvenanceFilters, deriveProvenance, validateSourceSelector } from '../daemon/recall.js';
 import { formatRecallOutput, cortexSet, DEFAULT_RECALL_LIMIT, wrapForAgent } from '../lib/recall-format.js';
 import { detectWorkingContext, normalizeContext } from '../lib/working-context.js';
 
@@ -173,11 +173,12 @@ export function renderPersonalAll(cortex: string, { days, query }: { days: numbe
  * Called by the recall action when the daemon is unavailable (FTS degraded mode).
  *
  * AGT-464: accepts `forAgent` to apply <recall-result> wrapping.
+ * AGT-465: accepts `sources` / `excludeSources` for provenance filtering.
  */
 function runFormattedFtsRecall(
   cortex: string,
   query: string,
-  opts: { engrams?: boolean; limit: number; full?: boolean; forAgent?: boolean },
+  opts: { engrams?: boolean; limit: number; full?: boolean; forAgent?: boolean; sources?: string[]; excludeSources?: string[] },
 ): void {
   const { limit } = opts;
 
@@ -186,10 +187,12 @@ function runFormattedFtsRecall(
     m => JSON.stringify([m.ts, m.author, m.content]),
   );
 
+  // AGT-465: derive activeCortex for provenance tagging on the FTS path.
   // Map MemoryRow to RecallEntry (fts_fallback path; no similarity/score data).
   // The memories table contains kind=memory, kind=retro, kind=event rows.
   // Cast through unknown because MemoryRow type does not expose the kind
   // column yet (it exists in the DB but has not been added to the TS interface).
+  const activeCortexForFts = getConfig().cortex?.active;
   const entries = rawMemories.map(m => ({
     id: m.id,
     ts: m.ts,
@@ -203,15 +206,19 @@ function runFormattedFtsRecall(
     supersedes: [] as string[],
     activity_seq: null,
     fts_fallback: true as const,
+    provenance: deriveProvenance(cortex, m.episode_key, activeCortexForFts),
   }));
 
-  const cortexes = cortexSet(entries);
+  // AGT-465: apply provenance filters post-result on the FTS path.
+  const filteredEntries = applyProvenanceFilters(entries, opts.sources, opts.excludeSources);
+
+  const cortexes = cortexSet(filteredEntries);
   // Ensure the cortex appears in the set even when results are empty.
   cortexes.add(cortex);
 
-  const formatted = formatRecallOutput(entries, cortexes, { full: opts.full });
+  const formatted = formatRecallOutput(filteredEntries, cortexes, { full: opts.full });
   // AGT-464: wrap in <recall-result> delimiters for agent consumers.
-  const output = opts.forAgent ? wrapForAgent(formatted, entries) : formatted;
+  const output = opts.forAgent ? wrapForAgent(formatted, filteredEntries) : formatted;
   console.log(output);
 
   // Optionally include engrams (legacy v2 local index not part of the v3 kind model).
@@ -249,6 +256,35 @@ export const recallCommand = new Command('recall')
   .option('--no-embed', 'Skip semantic ranking; use FTS keyword search (fast, offline, deterministic). Also set by THINK_NO_EMBED=1.')
   .option('--for-agent', 'Wrap each entry in <recall-result> delimiters (auto-enabled on non-TTY stdout)')
   .option('--no-for-agent', 'Disable <recall-result> wrapping even when stdout is non-TTY')
+  .option(
+    '--source <list>',
+    'Only include entries with matching provenance (repeatable; comma-separated): self, peer, proxy, peer:<name>, proxy:<connector>, unknown',
+    (val: string, prev: string[]) => {
+      const parts = val.split(',').map((s) => s.trim()).filter(Boolean);
+      // Validate each selector eagerly so the user gets a clear error before
+      // any expensive work (daemon connect, embed call). An unrecognized selector
+      // would otherwise silently return zero results.
+      for (const sel of parts) {
+        try { validateSourceSelector(sel); }
+        catch (e) { console.error((e as Error).message); process.exit(1); }
+      }
+      return [...prev, ...parts];
+    },
+    [] as string[],
+  )
+  .option(
+    '--exclude-source <list>',
+    'Exclude entries with matching provenance (repeatable; comma-separated). Excludes win over --source.',
+    (val: string, prev: string[]) => {
+      const parts = val.split(',').map((s) => s.trim()).filter(Boolean);
+      for (const sel of parts) {
+        try { validateSourceSelector(sel); }
+        catch (e) { console.error((e as Error).message); process.exit(1); }
+      }
+      return [...prev, ...parts];
+    },
+    [] as string[],
+  )
   .addOption(
     new Option(
       '--scope <value>',
@@ -271,12 +307,26 @@ Ranking:
   (default 0.05; higher values bias harder toward recent entries). This applies
   to the semantic path only — --no-embed (full-text search) is unaffected.
 
+Provenance filtering (AGT-465):
+  Each entry carries a provenance tag: self (your cortex), peer:<name> (a locally-
+  cloned peer cortex), proxy:<connector> (an external subscription like GitHub or
+  Linear), or unknown (pre-classification rows). Use --source / --exclude-source
+  to filter by provenance class:
+
+    think recall "query" --source self              # own entries only
+    think recall "query" --source self,peer         # self + all peers
+    think recall "query" --source peer:alice        # only peer alice
+    think recall "query" --exclude-source proxy     # omit all proxy entries
+
+  Both flags are repeatable and comma-separated. Excludes win over includes.
+
 Agent consumers:
   When stdout is not a TTY (e.g. piped to an agent, captured via $(...), or
   consumed by a hook), think recall automatically wraps each entry's content
-  in <recall-result cortex="..." kind="..." id="...">...</recall-result>
-  delimiters. This gives downstream agents a clear boundary between entries and
-  prevents peer-authored content from being mistaken for top-level instructions.
+  in <recall-result cortex="..." kind="..." id="..." provenance="...">
+  ...</recall-result> delimiters. This gives downstream agents a clear boundary
+  between entries and prevents peer-authored content from being mistaken for
+  top-level instructions.
 
   Override the auto-detection:
     --for-agent      Force wrapping even in a TTY (useful for testing).
@@ -285,7 +335,7 @@ Agent consumers:
 
   --json ignores --for-agent: JSON output is already a self-delimited envelope.`,
   )
-  .action(async function (this: Command, query: string, opts: { engrams?: boolean; all?: boolean; days: string; limit: string; full?: boolean; json?: boolean; includeSuperseded?: boolean; scope: string; embed: boolean; kind?: string; topic?: string; context?: string | boolean; since?: string; forAgent?: boolean }) {
+  .action(async function (this: Command, query: string, opts: { engrams?: boolean; all?: boolean; days: string; limit: string; full?: boolean; json?: boolean; includeSuperseded?: boolean; scope: string; embed: boolean; kind?: string; topic?: string; context?: string | boolean; since?: string; forAgent?: boolean; source: string[]; excludeSource: string[] }) {
     const config = getConfig();
     const cortex = config.cortex?.active;
 
@@ -398,6 +448,11 @@ Agent consumers:
         if (opts.since !== undefined) rpcParams['since'] = opts.since;
         if (opts.full) rpcParams['full'] = true;
         if (opts.includeSuperseded) rpcParams['includeSuperseded'] = true;
+        // AGT-465: pass provenance filters to the daemon. Only set when non-empty
+        // (the Commander accumulator always returns an array; skip empty arrays
+        // to avoid unnecessary daemon-side parsing).
+        if (opts.source.length > 0) rpcParams['sources'] = opts.source;
+        if (opts.excludeSource.length > 0) rpcParams['excludeSources'] = opts.excludeSource;
 
         type DaemonRecallEntry = {
           id: string;
@@ -412,6 +467,8 @@ Agent consumers:
           score: number | null;
           activity_seq: number | null;
           fts_fallback?: true;
+          /** AGT-465: provenance tag derived by the daemon. */
+          provenance?: string;
         };
 
         let entries: DaemonRecallEntry[];
@@ -451,14 +508,17 @@ Agent consumers:
         }
 
         // Normalize the daemon's wire entries into RecallEntry shape for the
-        // formatter. The wire type is structurally RecallEntry with three
-        // nullable fields; default them and let the rest spread through (so a
+        // formatter. The wire type is structurally RecallEntry with nullable
+        // fields; default them and let the rest spread through (so a
         // new wire field doesn't silently drop here).
+        // AGT-465: provenance defaults to 'unknown' for older daemon responses
+        // that don't carry the field yet.
         const recallEntries = entries.map((e) => ({
           ...e,
           similarity: e.similarity ?? 0,
           score: e.score ?? e.similarity ?? 0,
           supersedes: e.supersedes ?? [],
+          provenance: e.provenance ?? 'unknown',
         }));
         const cortexes = recallEntries.length > 0 ? cortexSet(recallEntries) : new Set<string>([cortex]);
         const formatted = formatRecallOutput(recallEntries, cortexes, { full: opts.full });
@@ -522,6 +582,9 @@ Agent consumers:
     }
 
     if (noEmbed) console.log(NOTE_FTS_EXPLICIT);
-    runFormattedFtsRecall(cortex, query, { engrams: opts.engrams, limit, full: opts.full, forAgent });
+    // AGT-465: pass provenance filters to the FTS path (sources/excludeSources).
+    const sources = opts.source.length > 0 ? opts.source : undefined;
+    const excludeSources = opts.excludeSource.length > 0 ? opts.excludeSource : undefined;
+    runFormattedFtsRecall(cortex, query, { engrams: opts.engrams, limit, full: opts.full, forAgent, sources, excludeSources });
     closeCortexDb(cortex);
   });
