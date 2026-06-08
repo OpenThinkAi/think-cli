@@ -13,7 +13,7 @@ import type { MemoryRow } from '../db/memory-queries.js';
 import type { LongTermEventRow } from '../db/long-term-queries.js';
 import { closeCortexDb } from '../db/engrams.js';
 import type { RecallScope } from '../daemon/recall.js';
-import { NOTE_FTS_FALLBACK, NOTE_FTS_EXPLICIT, validateKind, validateSince, applyProvenanceFilters, deriveProvenance } from '../daemon/recall.js';
+import { NOTE_FTS_FALLBACK, NOTE_FTS_EXPLICIT, validateKind, validateSince, applyProvenanceFilters, deriveProvenance, validateSourceSelector } from '../daemon/recall.js';
 import { formatRecallOutput, cortexSet, DEFAULT_RECALL_LIMIT, wrapForAgent } from '../lib/recall-format.js';
 import { detectWorkingContext, normalizeContext } from '../lib/working-context.js';
 
@@ -261,6 +261,13 @@ export const recallCommand = new Command('recall')
     'Only include entries with matching provenance (repeatable; comma-separated): self, peer, proxy, peer:<name>, proxy:<connector>, unknown',
     (val: string, prev: string[]) => {
       const parts = val.split(',').map((s) => s.trim()).filter(Boolean);
+      // Validate each selector eagerly so the user gets a clear error before
+      // any expensive work (daemon connect, embed call). An unrecognized selector
+      // would otherwise silently return zero results.
+      for (const sel of parts) {
+        try { validateSourceSelector(sel); }
+        catch (e) { console.error((e as Error).message); process.exit(1); }
+      }
       return [...prev, ...parts];
     },
     [] as string[],
@@ -270,6 +277,10 @@ export const recallCommand = new Command('recall')
     'Exclude entries with matching provenance (repeatable; comma-separated). Excludes win over --source.',
     (val: string, prev: string[]) => {
       const parts = val.split(',').map((s) => s.trim()).filter(Boolean);
+      for (const sel of parts) {
+        try { validateSourceSelector(sel); }
+        catch (e) { console.error((e as Error).message); process.exit(1); }
+      }
       return [...prev, ...parts];
     },
     [] as string[],

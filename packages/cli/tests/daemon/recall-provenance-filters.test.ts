@@ -20,6 +20,7 @@ import {
   deriveProvenance,
   provenanceMatches,
   applyProvenanceFilters,
+  validateSourceSelector,
 } from '../../src/daemon/recall.js';
 import { saveConfig, getConfig } from '../../src/lib/config.js';
 import * as embedModule from '../../src/lib/embed.js';
@@ -44,6 +45,45 @@ describe('provenance schema regex (AGT-466 contract)', () => {
   it('rejects "proxy:" (no connector)', () => expect(PROVENANCE_SCHEMA_RE.test('proxy:')).toBe(false));
   it('rejects "other"', () => expect(PROVENANCE_SCHEMA_RE.test('other')).toBe(false));
   it('rejects "peer:name/slash"', () => expect(PROVENANCE_SCHEMA_RE.test('peer:name/slash')).toBe(false));
+});
+
+// ---------------------------------------------------------------------------
+// validateSourceSelector unit tests
+// ---------------------------------------------------------------------------
+
+describe('validateSourceSelector (AGT-465)', () => {
+  it('accepts "self"', () => expect(() => validateSourceSelector('self')).not.toThrow());
+  it('accepts "unknown"', () => expect(() => validateSourceSelector('unknown')).not.toThrow());
+  it('accepts bare "peer"', () => expect(() => validateSourceSelector('peer')).not.toThrow());
+  it('accepts bare "proxy"', () => expect(() => validateSourceSelector('proxy')).not.toThrow());
+  it('accepts "peer:alice"', () => expect(() => validateSourceSelector('peer:alice')).not.toThrow());
+  it('accepts "proxy:github"', () => expect(() => validateSourceSelector('proxy:github')).not.toThrow());
+  it('accepts "peer:think-cli"', () => expect(() => validateSourceSelector('peer:think-cli')).not.toThrow());
+  it('accepts "proxy:linear-v2"', () => expect(() => validateSourceSelector('proxy:linear-v2')).not.toThrow());
+  it('rejects typo "slef"', () => {
+    expect(() => validateSourceSelector('slef')).toThrow(/unknown provenance selector "slef"/);
+  });
+  it('rejects "peer:" with no name', () => {
+    expect(() => validateSourceSelector('peer:')).toThrow(/unknown provenance selector/);
+  });
+  it('rejects "proxy:" with no connector', () => {
+    expect(() => validateSourceSelector('proxy:')).toThrow(/unknown provenance selector/);
+  });
+  it('rejects "peer:name/slash" (slash not in charset)', () => {
+    expect(() => validateSourceSelector('peer:name/slash')).toThrow(/unknown provenance selector/);
+  });
+  it('rejects arbitrary string', () => {
+    expect(() => validateSourceSelector('other-value')).toThrow(/unknown provenance selector/);
+  });
+  it('error message names all valid selectors', () => {
+    try { validateSourceSelector('bad'); } catch (e) {
+      const msg = (e as Error).message;
+      expect(msg).toContain('self');
+      expect(msg).toContain('unknown');
+      expect(msg).toContain('peer');
+      expect(msg).toContain('proxy');
+    }
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -399,6 +439,26 @@ describe('handleRecall — provenance derivation + filtering (AGT-465)', () => {
       sources: ['self'], excludeSources: ['self'],
     });
     expect(results.map(e => e.id)).not.toContain(selfId);
+  });
+
+  it('invalid selector in sources param throws with clear error', async () => {
+    saveConfig({ ...getConfig(), cortex: { active: CORTEX }, recall: { relevanceFloor: -1 } });
+    setupEntry('content', axis(0));
+    vi.spyOn(embedModule, 'default').mockResolvedValue(axis(0));
+
+    await expect(
+      handleRecall({ cortex: CORTEX, query: 'content', scope: 'active', sources: ['slef'] }),
+    ).rejects.toThrow(/unknown provenance selector "slef"/);
+  });
+
+  it('invalid selector in excludeSources param throws with clear error', async () => {
+    saveConfig({ ...getConfig(), cortex: { active: CORTEX }, recall: { relevanceFloor: -1 } });
+    setupEntry('content', axis(0));
+    vi.spyOn(embedModule, 'default').mockResolvedValue(axis(0));
+
+    await expect(
+      handleRecall({ cortex: CORTEX, query: 'content', scope: 'active', excludeSources: ['proxyz'] }),
+    ).rejects.toThrow(/unknown provenance selector "proxyz"/);
   });
 
   it('comma-split sources string in params is expanded correctly', async () => {

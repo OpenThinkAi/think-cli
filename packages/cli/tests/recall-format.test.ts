@@ -75,10 +75,11 @@ describe('formatRecallOutput — golden output (AGT-318)', () => {
   it('single-cortex: retro then event then memory, no truncation needed', () => {
     const cortexes = cortexSet(THREE_ENTRIES);
     const out = formatRecallOutput(THREE_ENTRIES, cortexes);
-    // AGT-465: golden output now includes [provenance] bracket segment.
+    // AGT-465: provenance bracket is suppressed for "self" in single-cortex mode
+    // (noise-free: every result would just say [self]), but shown for peer/proxy.
     const expected = [
       '── retros (1) ──',
-      '2026-05-01  [retro]  [self]  Always run npm run build before committing to catch type errors early.',
+      '2026-05-01  [retro]  Always run npm run build before committing to catch type errors early.',
       '',
       '── events (1) ──',
       '2026-05-10  [event]  [peer:alice]  Shipped AGT-307: cortex provenance on every recall result.',
@@ -87,6 +88,21 @@ describe('formatRecallOutput — golden output (AGT-318)', () => {
       '2026-05-15  [memory]  [proxy:github]  Vector recall is sub-100ms because the embedding model is resident in the daemon.',
     ].join('\n');
     expect(out).toBe(expected);
+  });
+
+  it('single-cortex: all-self entries have no [self] bracket (suppressed as noise)', () => {
+    // When all results are from the user's own cortex, [self] would be
+    // redundant on every line. It's suppressed per the product design decision.
+    const allSelf = [
+      entry({ id: 'r2', ts: '2026-05-01T00:00:00Z', kind: 'retro', content: 'retro content', cortex: 'think-cli', provenance: 'self' }),
+      entry({ id: 'm2', ts: '2026-05-02T00:00:00Z', kind: 'memory', content: 'memory content', cortex: 'think-cli', provenance: 'self' }),
+    ];
+    const cortexes = cortexSet(allSelf);
+    const out = formatRecallOutput(allSelf, cortexes);
+    expect(out).not.toContain('[self]');
+    // But the format should still be correct.
+    expect(out).toContain('2026-05-01  [retro]  retro content');
+    expect(out).toContain('2026-05-02  [memory]  memory content');
   });
 
   it('multi-cortex: cortex name included in each entry tag', () => {
@@ -219,7 +235,8 @@ describe('wrapForAgent (AGT-464 / AGT-465)', () => {
     const entries = [baseEntry];
     const formatted = formatRecallOutput(entries, cortexSet(entries));
     const wrapped = wrapForAgent(formatted, entries);
-    // AGT-465: provenance attribute added to the open tag.
+    // AGT-465: provenance attribute added to the open tag (attribute always
+    // present even when the bracket is suppressed in human output for "self").
     expect(wrapped).toContain('<recall-result cortex="think-cli" kind="memory" id="m-wrap-1" provenance="self">');
     expect(wrapped).toContain('the quick brown fox');
     expect(wrapped).toContain('</recall-result>');

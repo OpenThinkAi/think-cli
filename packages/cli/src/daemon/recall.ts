@@ -239,6 +239,29 @@ export function applyProvenanceFilters(
   });
 }
 
+/**
+ * Validate a single provenance selector for --source / --exclude-source.
+ *
+ * Valid selectors (case-sensitive):
+ *   - "self"            — exact match for self entries
+ *   - "unknown"         — exact match for unknown entries
+ *   - "peer"            — matches all peer:* entries
+ *   - "proxy"           — matches all proxy:* entries
+ *   - "peer:<name>"     — exact match for a specific peer cortex
+ *   - "proxy:<connector>" — exact match for a specific proxy connector
+ *
+ * Throws with a lowercase `error:` prefix on invalid input.
+ * Exported so the CLI layer can validate eagerly before the daemon RPC.
+ */
+export function validateSourceSelector(selector: string): void {
+  const VALID_SOURCE_RE = /^(self|unknown|peer|proxy|peer:[A-Za-z0-9_-]+|proxy:[A-Za-z0-9_-]+)$/;
+  if (!VALID_SOURCE_RE.test(selector)) {
+    throw new Error(
+      `error: unknown provenance selector "${selector}". Valid selectors: self, unknown, peer, peer:<name>, proxy, proxy:<connector>`,
+    );
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
@@ -332,14 +355,6 @@ export interface RecallEntry {
    * no DB column added. Present on every entry returned by handleRecall.
    */
   provenance: string;
-  /**
-   * The episode_key from the memories row, when present. Used for proxy
-   * detection (subscribe:<connector> pattern). Null when absent.
-   * Not part of the public RecallEntry contract exposed to callers — it is
-   * only populated internally during recall and used for provenance derivation.
-   * @internal
-   */
-  episode_key?: string | null;
 }
 
 interface HydratedRow {
@@ -661,23 +676,28 @@ function parseRecallParams(params: Record<string, unknown>): ParsedRecallParams 
 
   // AGT-465: provenance source filters. Accept a string[] or a comma-joined
   // string; normalize into a flat string[] with commas split out.
-  function parseSourceList(raw: unknown): string[] | undefined {
+  // Each parsed selector is validated against the allowed vocabulary — an
+  // unrecognized selector throws so the caller sees an actionable error rather
+  // than silently getting an empty result set.
+  function parseSourceList(raw: unknown, paramName: string): string[] | undefined {
     if (raw === undefined || raw === null) return undefined;
+    let parts: string[] = [];
     if (Array.isArray(raw)) {
-      const flat = raw.flatMap((v) =>
+      parts = raw.flatMap((v) =>
         typeof v === 'string' ? v.split(',').map((s) => s.trim()).filter(Boolean) : [],
       );
-      return flat.length > 0 ? flat : undefined;
+    } else if (typeof raw === 'string') {
+      parts = raw.split(',').map((s) => s.trim()).filter(Boolean);
     }
-    if (typeof raw === 'string') {
-      const parts = raw.split(',').map((s) => s.trim()).filter(Boolean);
-      return parts.length > 0 ? parts : undefined;
+    if (parts.length === 0) return undefined;
+    for (const sel of parts) {
+      validateSourceSelector(sel); // throws with error: prefix on invalid selector
     }
-    return undefined;
+    return parts;
   }
 
-  const sources = parseSourceList(params['sources']);
-  const excludeSources = parseSourceList(params['excludeSources']);
+  const sources = parseSourceList(params['sources'], 'sources');
+  const excludeSources = parseSourceList(params['excludeSources'], 'excludeSources');
 
   return { query, limit, kind, topic, context, since, decay, relevanceFloor, qualityBoost, qualityPenalty, contextBoost, full, includeSuperseded, noEmbed, sources, excludeSources };
 }
