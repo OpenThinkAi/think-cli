@@ -679,7 +679,7 @@ function parseRecallParams(params: Record<string, unknown>): ParsedRecallParams 
   // Each parsed selector is validated against the allowed vocabulary — an
   // unrecognized selector throws so the caller sees an actionable error rather
   // than silently getting an empty result set.
-  function parseSourceList(raw: unknown, paramName: string): string[] | undefined {
+  function parseSourceList(raw: unknown): string[] | undefined {
     if (raw === undefined || raw === null) return undefined;
     let parts: string[] = [];
     if (Array.isArray(raw)) {
@@ -696,8 +696,8 @@ function parseRecallParams(params: Record<string, unknown>): ParsedRecallParams 
     return parts;
   }
 
-  const sources = parseSourceList(params['sources'], 'sources');
-  const excludeSources = parseSourceList(params['excludeSources'], 'excludeSources');
+  const sources = parseSourceList(params['sources']);
+  const excludeSources = parseSourceList(params['excludeSources']);
 
   return { query, limit, kind, topic, context, since, decay, relevanceFloor, qualityBoost, qualityPenalty, contextBoost, full, includeSuperseded, noEmbed, sources, excludeSources };
 }
