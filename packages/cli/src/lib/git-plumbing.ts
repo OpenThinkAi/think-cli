@@ -212,6 +212,16 @@ async function resolveTip(
  * can fast-forward to a remotely-advanced tip before building the commit. Pass
  * false to skip the network round-trip (offline / test).
  *
+ * `forceResetToRemote` (default false): when true, after the fetch, the local
+ * branch ref is unconditionally hard-reset to the freshly-fetched
+ * `origin/<branch>` tip (an `update-ref` without the old-value CAS guard),
+ * discarding any local-only commits. This is the recovery path used by the
+ * push-debouncer after a non-fast-forward rejection — the outbox-row replay
+ * model makes "discard local commits and re-append" lossless: outbox rows are
+ * only deleted after a successful push, so resetting to remote and re-appending
+ * recovers the pending entries on top of the current shared history. Ignored
+ * when `fetchFirst` is false (no fetch → no remote tip to reset to).
+ *
  * @returns `{ commit, stagedPath, parent }` — the new commit sha, the page it
  *          wrote, and the parent tip (null for the first commit on an unborn
  *          branch).
@@ -222,7 +232,7 @@ export async function appendLinesViaPlumbing(
   branchName: string,
   lines: string[],
   commitMessage: string,
-  opts: { fetchFirst?: boolean } = {},
+  opts: { fetchFirst?: boolean; forceResetToRemote?: boolean } = {},
 ): Promise<{ commit: string; stagedPath: string; parent: string | null }> {
   assertSafeBranch(branchName);
   if (lines.length === 0) {
@@ -253,6 +263,29 @@ export async function appendLinesViaPlumbing(
           `[${new Date().toISOString()}] [git-plumbing] fetch warning for ` +
             `'${branchName}' (non-fatal, local write proceeds): ${msg}\n`,
         );
+      }
+    }
+
+    // Recovery path: unconditionally hard-reset the local ref to the
+    // freshly-fetched origin tip, discarding any stale local commits. This is
+    // lossless when outbox rows are the source of truth — rows are only deleted
+    // after a successful push, so resetting local to remote and re-appending
+    // replays the pending entries on top of current shared history. Used by the
+    // push-debouncer after a non-fast-forward rejection so a deeply stale clone
+    // can self-heal in one retry rather than spinning forever on the same stale
+    // base.
+    if (opts.forceResetToRemote) {
+      const remoteTip = await git(
+        ['rev-parse', '--verify', '--quiet', `refs/remotes/origin/${branchName}`],
+        repoPath,
+      ).then(
+        (out) => out.trim() || null,
+        () => null,
+      );
+      if (remoteTip !== null) {
+        // Unconditional update-ref (no CAS old-value guard) — we intentionally
+        // want to overwrite whatever stale local commit exists.
+        await git(['update-ref', `refs/heads/${branchName}`, remoteTip], repoPath);
       }
     }
   }

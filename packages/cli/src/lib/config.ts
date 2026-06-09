@@ -165,6 +165,19 @@ export interface CortexConfig {
    * hatch while the plumbing path soaks).
    */
   plumbingWrites?: boolean;
+  /**
+   * Minimum number of commits by which the local cortex clone must trail
+   * `origin/<branch>` before the push-debouncer takes the force-reset path on
+   * attempt 1, bypassing the normal append-then-push round-trip (AGT-478 AC #3).
+   * Default 10.
+   *
+   * - A value of 1 means the force-reset path is taken on attempt 1 whenever
+   *   the clone is at all behind origin.
+   * - A value of 0 disables the large-behind short-circuit entirely (force-reset
+   *   still happens on attempt 2+ after a push rejection, but attempt 1 always
+   *   tries the normal append-then-push path first).
+   */
+  largeBehindThreshold?: number;
 }
 
 /**
