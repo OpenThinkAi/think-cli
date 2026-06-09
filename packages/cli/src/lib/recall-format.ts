@@ -140,15 +140,35 @@ export function formatRecallOutput(
       // for the common single-user, single-cortex case.
       const prov = entry.provenance ?? 'unknown';
       const showProv = multiCortex || prov !== 'self';
+
+      // AGT-466: trust tier bracket rendered ONLY when the tier is `quarantined`
+      // (the most salient case — content that was explicitly excluded by config
+      // and is now being surfaced via --include-quarantined). `untrusted` is NOT
+      // rendered by default: showing `[trust:untrusted]` on every peer/proxy entry
+      // would break all existing user output (v1 conservative choice per the
+      // approved plan "skip rendering entirely in v1" option). `trusted` is always
+      // silent. The `trust="..."` attribute IS always emitted on the <recall-result>
+      // envelope in --for-agent mode (additive, backward-compatible wire format).
+      const tier = entry.trustTier ?? 'untrusted';
+      const showTier = tier === 'quarantined'; // only quarantined surfaces visibly
+
       if (multiCortex) {
-        if (showProv) {
+        if (showProv && showTier) {
+          lines.push(`${date}  [${entry.cortex}/${kind}]  [${prov}]  [trust:${tier}]  ${content}`);
+        } else if (showProv) {
           lines.push(`${date}  [${entry.cortex}/${kind}]  [${prov}]  ${content}`);
+        } else if (showTier) {
+          lines.push(`${date}  [${entry.cortex}/${kind}]  [trust:${tier}]  ${content}`);
         } else {
           lines.push(`${date}  [${entry.cortex}/${kind}]  ${content}`);
         }
       } else {
-        if (showProv) {
+        if (showProv && showTier) {
+          lines.push(`${date}  [${kind}]  [${prov}]  [trust:${tier}]  ${content}`);
+        } else if (showProv) {
           lines.push(`${date}  [${kind}]  [${prov}]  ${content}`);
+        } else if (showTier) {
+          lines.push(`${date}  [${kind}]  [trust:${tier}]  ${content}`);
         } else {
           lines.push(`${date}  [${kind}]  ${content}`);
         }
@@ -261,13 +281,22 @@ export function wrapForAgent(formatted: string, entries: RecallEntry[]): string 
     //   - prefixSingle: shown when prov != 'self' (single-cortex suppress rule)
     //   - prefixMulti:  always shown (multi-cortex always shows provenance)
     const showProvSingle = provRaw !== 'self';
+
+    // AGT-466: trust tier bracket visibility mirrors formatRecallOutput exactly.
+    // Only `quarantined` emits a [trust:<tier>] bracket in human output (v1 conservative).
+    const tierRaw = entry.trustTier ?? 'untrusted';
+    const showTier = tierRaw === 'quarantined';
+
     // Build both candidate prefixes; the formatter uses single-cortex form when
     // all entries share one cortex, multi-cortex form otherwise.
     const prefixSingle = showProvSingle
-      ? `${date}  [${kind}]  [${provRaw}]  `
-      : `${date}  [${kind}]  `;
+      ? (showTier ? `${date}  [${kind}]  [${provRaw}]  [trust:${tierRaw}]  ` : `${date}  [${kind}]  [${provRaw}]  `)
+      : (showTier ? `${date}  [${kind}]  [trust:${tierRaw}]  ` : `${date}  [${kind}]  `);
+    // Multi-cortex: check prov + tier combinations — mirrors the 4-way branch in formatRecallOutput.
     // Multi-cortex always shows provenance (showProv = true when multiCortex).
-    const prefixMulti  = `${date}  [${cortexRaw}/${kind}]  [${provRaw}]  `;
+    const prefixMulti = showTier
+      ? `${date}  [${cortexRaw}/${kind}]  [${provRaw}]  [trust:${tierRaw}]  `
+      : `${date}  [${cortexRaw}/${kind}]  [${provRaw}]  `;
 
     // Find the next occurrence of this entry's prefix starting at searchFrom.
     // Try single-cortex first; if not found at or after searchFrom, try multi.
@@ -291,7 +320,9 @@ export function wrapForAgent(formatted: string, entries: RecallEntry[]): string 
     const idAttr     = escapeAttr(entry.id);
     // AGT-465: add provenance attribute to the envelope tag.
     const provAttr   = escapeAttr(provRaw);
-    const wrapped    = `<recall-result cortex="${cortexAttr}" kind="${kindAttr}" id="${idAttr}" provenance="${provAttr}">${escaped}</recall-result>`;
+    // AGT-466: add trust tier attribute to the envelope tag.
+    const trustAttr  = escapeAttr(tierRaw);
+    const wrapped    = `<recall-result cortex="${cortexAttr}" kind="${kindAttr}" id="${idAttr}" provenance="${provAttr}" trust="${trustAttr}">${escaped}</recall-result>`;
 
     result = result.slice(0, contentStart) + wrapped + (lineEnd === -1 ? '' : result.slice(lineEnd));
 

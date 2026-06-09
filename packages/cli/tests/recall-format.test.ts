@@ -33,11 +33,13 @@ function entry(
     compacted_from: null,
     supersedes: [],
     provenance: 'unknown', // AGT-465 default for test fixtures
+    trustTier: 'untrusted', // AGT-466 default for test fixtures (overridden per-entry as needed)
     ...overrides,
   };
 }
 
-// Three representative entries (one per kind), each with a distinct provenance (AGT-465).
+// Three representative entries (one per kind), each with a distinct provenance (AGT-465)
+// and trust tier (AGT-466). Self → trusted; peer/proxy → untrusted (shipped defaults).
 const RETRO_ENTRY = entry({
   id: 'r1',
   ts: '2026-05-01T12:00:00Z',
@@ -45,6 +47,7 @@ const RETRO_ENTRY = entry({
   content: 'Always run npm run build before committing to catch type errors early.',
   cortex: 'think-cli',
   provenance: 'self',
+  trustTier: 'trusted',
 });
 
 const EVENT_ENTRY = entry({
@@ -54,6 +57,7 @@ const EVENT_ENTRY = entry({
   content: 'Shipped AGT-307: cortex provenance on every recall result.',
   cortex: 'think-cli',
   provenance: 'peer:alice',
+  trustTier: 'untrusted',
 });
 
 const MEMORY_ENTRY = entry({
@@ -63,6 +67,7 @@ const MEMORY_ENTRY = entry({
   content: 'Vector recall is sub-100ms because the embedding model is resident in the daemon.',
   cortex: 'think-cli',
   provenance: 'proxy:github',
+  trustTier: 'untrusted',
 });
 
 const THREE_ENTRIES = [RETRO_ENTRY, EVENT_ENTRY, MEMORY_ENTRY];
@@ -229,15 +234,18 @@ describe('wrapForAgent (AGT-464 / AGT-465)', () => {
     content: 'the quick brown fox',
     cortex: 'think-cli',
     provenance: 'self',
+    trustTier: 'trusted', // AGT-466: self entries are trusted by default
   });
 
-  it('wraps entry content in <recall-result> tags with correct attributes including provenance (AGT-465)', () => {
+  it('wraps entry content in <recall-result> tags with correct attributes including provenance (AGT-465) and trust (AGT-466)', () => {
     const entries = [baseEntry];
     const formatted = formatRecallOutput(entries, cortexSet(entries));
     const wrapped = wrapForAgent(formatted, entries);
     // AGT-465: provenance attribute added to the open tag (attribute always
     // present even when the bracket is suppressed in human output for "self").
-    expect(wrapped).toContain('<recall-result cortex="think-cli" kind="memory" id="m-wrap-1" provenance="self">');
+    // AGT-466: trust attribute added alongside provenance. baseEntry is a self
+    // entry so trustTier is 'trusted' — matching normal production behavior.
+    expect(wrapped).toContain('<recall-result cortex="think-cli" kind="memory" id="m-wrap-1" provenance="self" trust="trusted">');
     expect(wrapped).toContain('the quick brown fox');
     expect(wrapped).toContain('</recall-result>');
   });

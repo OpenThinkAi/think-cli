@@ -133,6 +133,26 @@ export interface CortexConfig {
   /** Local OpenAI-compatible LLM backend (oMLX/Qwen). See `LocalLlmConfig`. */
   local?: LocalLlmConfig;
   /**
+   * Per-source trust tier policy (AGT-466). Declares a priority-ordered list
+   * of `selector → tier` rules that classify every recall entry as one of
+   * `trusted`, `untrusted`, or `quarantined`. First-match-wins. An implicit
+   * final rule `* → untrusted` is always appended — the fail-safe default.
+   *
+   * When this block is absent OR `rules` is empty, the shipped defaults apply:
+   *   - `self`    → `trusted`
+   *   - everything else → `untrusted`   (implicit `* → untrusted`)
+   *
+   * Nothing is `quarantined` by default — a user who never writes a rule sees
+   * byte-identical recall output compared to pre-AGT-466 (tier filtering is
+   * entirely opt-in via `--trust-tier` / `--exclude-trust-tier` flags).
+   *
+   * Selector grammar: identical to `--source`/`--exclude-source` selectors
+   * (`self`, `unknown`, `peer`, `proxy`, `peer:<name>`, `proxy:<connector>`),
+   * extended to also accept `*` as a wildcard that matches every provenance.
+   * See `validateTrustTierSelector` in `daemon/recall.ts`.
+   */
+  trustTiers?: TrustTiersConfig;
+  /**
    * Use git plumbing (hash-object / read-tree / commit-tree / update-ref) to
    * append cross-cortex L1 writes directly to the cortex branch ref, instead
    * of checking that branch out into the shared worktree first (#70 Option B,
@@ -315,6 +335,58 @@ export interface RecallConfig {
    * Default: 0.1
    */
   contextBoost?: number;
+}
+
+/**
+ * Tier value for a trust tier rule or a classified entry (AGT-466).
+ *
+ * - `trusted`      — content authored by sources the user explicitly trusts
+ *                    (default: `self` entries). Surfaced normally.
+ * - `untrusted`    — content from sources the user has not explicitly trusted
+ *                    (default: all non-self entries). Surfaced normally unless
+ *                    `--trust-tier` filtering is active.
+ * - `quarantined`  — content the user wants excluded from recall and curation
+ *                    by default. Silently dropped unless `--include-quarantined`
+ *                    is passed. Nothing is quarantined by default.
+ */
+export type TrustTier = 'trusted' | 'untrusted' | 'quarantined';
+
+/**
+ * A single selector → tier rule in the `trustTiers.rules` list (AGT-466).
+ *
+ * `match` is a provenance selector (same grammar as `--source`/`--exclude-source`,
+ * extended to accept `*` as a wildcard). `tier` is the trust tier to assign when
+ * the entry's provenance matches `match`. First-match-wins across all rules.
+ */
+export interface TrustTierRule {
+  /**
+   * Provenance selector that triggers this rule. Valid values:
+   *   `self`, `unknown`, `peer`, `proxy`, `peer:<name>`, `proxy:<connector>`, `*`.
+   * `peer` matches all `peer:*` values; `proxy` matches all `proxy:*` values;
+   * `*` matches everything. See `validateTrustTierSelector` in `daemon/recall.ts`.
+   */
+  match: string;
+  /**
+   * Trust tier assigned to entries whose provenance matches `match`.
+   */
+  tier: TrustTier;
+}
+
+/**
+ * Per-source trust tier configuration (AGT-466). Lives at `cortex.trustTiers`
+ * in `~/.config/think/config.json`.
+ */
+export interface TrustTiersConfig {
+  /**
+   * Ordered list of selector → tier rules. First-match-wins. The implicit
+   * final rule `* → untrusted` is always appended after all explicit rules,
+   * so any provenance not matched by a user-written rule resolves to `untrusted`.
+   *
+   * An empty (or absent) `rules` array is equivalent to having no `trustTiers`
+   * block at all — the shipped defaults apply: `self → trusted`, everything
+   * else → `untrusted`.
+   */
+  rules?: TrustTierRule[];
 }
 
 export interface CompactionConfig {

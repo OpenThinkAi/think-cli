@@ -68,6 +68,7 @@ import { getCortexDb } from '../db/engrams.js';
 import { searchVectors } from '../lib/search-vectors.js';
 import { searchMemories } from '../db/memory-queries.js';
 import { getConfig } from '../lib/config.js';
+import type { TrustTierRule, TrustTier } from '../lib/config.js';
 import { listLocalBranches } from '../lib/git.js';
 import { reindexingCortexes, reindexFailedCortexes } from './embed-model-check.js';
 import { sanitizeName } from '../lib/paths.js';
@@ -263,6 +264,182 @@ export function validateSourceSelector(selector: string): void {
 }
 
 // ---------------------------------------------------------------------------
+// Trust tiers — AGT-466
+// ---------------------------------------------------------------------------
+
+/**
+ * Validate a single provenance selector for the trust-tier rule `match` field.
+ *
+ * Extends `validateSourceSelector` to also accept `*` as a wildcard selector
+ * (which matches every provenance). The wildcard is intentionally not accepted
+ * by `validateSourceSelector` for `--source` / `--exclude-source` flags (where
+ * `*` is nonsensical — "include all sources" is just the default). But in a
+ * `trustTiers.rules[].match` field it is the explicit fail-safe override.
+ *
+ * Valid selectors (case-sensitive):
+ *   - `"*"`                    — wildcard; matches every provenance
+ *   - `"self"`                 — exact match for self entries
+ *   - `"unknown"`              — exact match for unknown entries
+ *   - `"peer"`                 — matches all peer:* entries
+ *   - `"proxy"`                — matches all proxy:* entries
+ *   - `"peer:<name>"`          — exact match for a specific peer cortex
+ *   - `"proxy:<connector>"`    — exact match for a specific proxy connector
+ *
+ * Throws with a lowercase `error:` prefix on invalid input.
+ * Exported so the CLI layer can validate trust tier selectors eagerly.
+ */
+export function validateTrustTierSelector(selector: string): void {
+  if (selector === '*') return; // wildcard accepted in trust-tier context
+  // Delegate to the existing --source validator for all other shapes.
+  try {
+    validateSourceSelector(selector);
+  } catch {
+    throw new Error(
+      `error: unknown trust tier selector "${selector}". Valid selectors: *, self, unknown, peer, peer:<name>, proxy, proxy:<connector>`,
+    );
+  }
+}
+
+/**
+ * Shipped default trust tier rules (AGT-466).
+ *
+ * Applied when `cortex.trustTiers` is absent OR `cortex.trustTiers.rules` is
+ * empty. The implicit `* → untrusted` rule is always appended in
+ * `deriveTrustTier` after all explicit rules; these defaults give `self →
+ * trusted` so the user's own entries are never labelled untrusted by default.
+ */
+const DEFAULT_TRUST_TIER_RULES: readonly TrustTierRule[] = [
+  { match: 'self', tier: 'trusted' },
+];
+
+/**
+ * Classify a recall entry into one of three trust tiers (AGT-466).
+ *
+ * Resolution: walk the configured rules in priority order; the first rule
+ * whose `match` selector satisfies `provenanceMatchesTrustSelector(provenance,
+ * match)` wins. If no rule matches, the implicit final rule `* → untrusted`
+ * applies (fail-safe default per AC #2).
+ *
+ * When `rules` is undefined or empty the shipped defaults (`self → trusted`)
+ * are used before the implicit wildcard, so existing users see:
+ *   - `self`    → `trusted`
+ *   - everything else → `untrusted`
+ *
+ * @param provenance  The entry's derived provenance string (AGT-465 shape).
+ * @param rules       The `cortex.trustTiers.rules` array from config, if set.
+ * @returns           `'trusted'`, `'untrusted'`, or `'quarantined'`.
+ */
+export function deriveTrustTier(
+  provenance: string,
+  rules: TrustTierRule[] | undefined,
+): TrustTier {
+  const effective = (rules && rules.length > 0) ? rules : DEFAULT_TRUST_TIER_RULES;
+
+  for (const rule of effective) {
+    if (rule.match === '*') return rule.tier;
+    if (provenanceMatches(provenance, rule.match)) return rule.tier;
+  }
+
+  // Implicit final rule: * → untrusted (fail-safe default).
+  return 'untrusted';
+}
+
+/**
+ * Apply trust tier filters to an array of entries (AGT-466).
+ *
+ * Order of operations (per approved plan):
+ *   1. Quarantine drop (runs ALWAYS unless `includeQuarantined`): silently
+ *      removes entries whose `trustTier === 'quarantined'` and returns the
+ *      count of dropped entries via the `quarantinedDropped` field.
+ *   2. Tier filter (runs ONLY when `tiers` or `excludeTiers` is non-empty):
+ *      `tiers` keeps only entries in the listed tiers; `excludeTiers` drops
+ *      entries in the listed tiers; excludes win over includes.
+ *
+ * MUST be called AFTER rerank + limit slice, same as `applyProvenanceFilters`.
+ * Applying it pre-rerank silently breaks orthogonal-axis vector-path tests
+ * (per the AGT-466 spike retro on this codebase).
+ *
+ * @returns `{ entries, quarantinedDropped }` — the filtered entries plus the
+ *          number of quarantined entries that were silently removed.
+ */
+export function applyTrustTierFilters(
+  entries: RecallEntry[],
+  opts: {
+    tiers: string[] | undefined;
+    excludeTiers: string[] | undefined;
+    includeQuarantined: boolean;
+  },
+): { entries: RecallEntry[]; quarantinedDropped: number } {
+  const { tiers, excludeTiers, includeQuarantined } = opts;
+
+  // Step 1 — quarantine drop.
+  let quarantinedDropped = 0;
+  let working = entries;
+  if (!includeQuarantined) {
+    const before = working.length;
+    working = working.filter((e) => e.trustTier !== 'quarantined');
+    quarantinedDropped = before - working.length;
+  }
+
+  // Step 2 — tier filter (only when flags are active).
+  const hasTierFilter = (tiers && tiers.length > 0) || (excludeTiers && excludeTiers.length > 0);
+  if (!hasTierFilter) {
+    return { entries: working, quarantinedDropped };
+  }
+
+  working = working.filter((e) => {
+    const tier = e.trustTier;
+
+    // Excludes win unconditionally.
+    if (excludeTiers && excludeTiers.length > 0) {
+      if (excludeTiers.includes(tier)) return false;
+    }
+
+    // If inclusion filter is active, entry must match at least one listed tier.
+    if (tiers && tiers.length > 0) {
+      return tiers.includes(tier);
+    }
+
+    return true;
+  });
+
+  return { entries: working, quarantinedDropped };
+}
+
+/**
+ * Valid tier values for `--trust-tier` / `--exclude-trust-tier`.
+ */
+export const VALID_TRUST_TIERS: ReadonlySet<string> = new Set(['trusted', 'untrusted', 'quarantined']);
+
+/**
+ * Emit a single stderr line when quarantined entries were silently dropped
+ * from a recall or curate call. Count-only — never emits entry content.
+ * Suppressed when count is 0.
+ *
+ * Canonical wording per SECURITY.md and the approved AGT-466 plan:
+ *   "note: dropped N quarantined entr(y|ies); pass --include-quarantined to surface"
+ */
+export function emitQuarantineDropNotice(count: number): void {
+  if (count > 0) {
+    process.stderr.write(
+      `note: dropped ${count} quarantined entr${count === 1 ? 'y' : 'ies'}; pass --include-quarantined to surface\n`,
+    );
+  }
+}
+
+/**
+ * Validate a single trust tier value. Throws with a lowercase `error:` prefix
+ * on invalid input. Exported so the CLI layer can validate eagerly.
+ */
+export function validateTrustTierValue(tier: string): void {
+  if (!VALID_TRUST_TIERS.has(tier)) {
+    throw new Error(
+      `error: unknown trust tier "${tier}". Valid tiers: trusted, untrusted, quarantined`,
+    );
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
 
@@ -355,6 +532,20 @@ export interface RecallEntry {
    * no DB column added. Present on every entry returned by handleRecall.
    */
   provenance: string;
+  /**
+   * Derived trust tier (AGT-466). One of three values:
+   *   - "trusted"     — provenance matched a `trusted` rule in cortex.trustTiers.rules
+   *   - "untrusted"   — provenance matched an `untrusted` rule, or the implicit
+   *                     `* → untrusted` fail-safe fired
+   *   - "quarantined" — provenance matched a `quarantined` rule; the entry is
+   *                     silently dropped from recall + curate by default; surfaced
+   *                     only when `--include-quarantined` is passed.
+   *
+   * Derived post-rerank from `provenance` + `cortex.trustTiers.rules`. No DB
+   * column. Additive field — old clients that don't know about this field will
+   * simply ignore it.
+   */
+  trustTier: TrustTier;
 }
 
 interface HydratedRow {
@@ -564,6 +755,24 @@ interface ParsedRecallParams {
    * Applied post-rerank, post-limit-slice — never pre-rerank.
    */
   excludeSources: string[] | undefined;
+  /**
+   * Trust tier inclusion filter (AGT-466). When provided, only entries whose
+   * derived `trustTier` is in this list are returned. Applied post-rerank,
+   * post-limit-slice, after the quarantine drop.
+   */
+  tiers: string[] | undefined;
+  /**
+   * Trust tier exclusion filter (AGT-466). Entries whose derived `trustTier`
+   * is in this list are dropped. Excludes win over includes. Applied post-rerank,
+   * post-limit-slice, after the quarantine drop.
+   */
+  excludeTiers: string[] | undefined;
+  /**
+   * When true, quarantined entries are surfaced instead of silently dropped
+   * (AGT-466). Off by default; must be explicitly passed to surface quarantined
+   * content. Does NOT opt out of `--trust-tier` / `--exclude-trust-tier` filters.
+   */
+  includeQuarantined: boolean;
 }
 
 /**
@@ -699,7 +908,30 @@ function parseRecallParams(params: Record<string, unknown>): ParsedRecallParams 
   const sources = parseSourceList(params['sources']);
   const excludeSources = parseSourceList(params['excludeSources']);
 
-  return { query, limit, kind, topic, context, since, decay, relevanceFloor, qualityBoost, qualityPenalty, contextBoost, full, includeSuperseded, noEmbed, sources, excludeSources };
+  // AGT-466: trust tier filters. Same comma-split + repeat convention as source
+  // filters. Each value must be a valid tier string (trusted/untrusted/quarantined).
+  function parseTierList(raw: unknown): string[] | undefined {
+    if (raw === undefined || raw === null) return undefined;
+    let parts: string[] = [];
+    if (Array.isArray(raw)) {
+      parts = raw.flatMap((v) =>
+        typeof v === 'string' ? v.split(',').map((s) => s.trim()).filter(Boolean) : [],
+      );
+    } else if (typeof raw === 'string') {
+      parts = raw.split(',').map((s) => s.trim()).filter(Boolean);
+    }
+    if (parts.length === 0) return undefined;
+    for (const t of parts) {
+      validateTrustTierValue(t); // throws with error: prefix on invalid value
+    }
+    return parts;
+  }
+
+  const tiers = parseTierList(params['tiers']);
+  const excludeTiers = parseTierList(params['excludeTiers']);
+  const includeQuarantined = params['includeQuarantined'] === true;
+
+  return { query, limit, kind, topic, context, since, decay, relevanceFloor, qualityBoost, qualityPenalty, contextBoost, full, includeSuperseded, noEmbed, sources, excludeSources, tiers, excludeTiers, includeQuarantined };
 }
 
 // ---------------------------------------------------------------------------
@@ -724,6 +956,8 @@ const VALID_SCOPES: ReadonlySet<string> = new Set(['active', 'accessible', 'all'
  * AGT-465: accepts activeCortex for provenance derivation. The FTS path runs
  * in the CLI process and has direct access to getConfig(), so this is passed
  * in rather than called inside the inner map for testability.
+ * AGT-466: each entry is classified with a `trustTier` derived from
+ * `cortex.trustTiers.rules` (or the defaults when no config is set).
  */
 function recallOneCortexWithFts(
   cortexName: string,
@@ -732,8 +966,10 @@ function recallOneCortexWithFts(
   activeCortex?: string,
 ): RecallEntry[] {
   const rows = searchMemories(cortexName, query, limit);
+  const trustRules = getConfig().cortex?.trustTiers?.rules;
   return rows.map((row) => {
     const provenance = deriveProvenance(cortexName, row.episode_key, activeCortex);
+    const trustTier = deriveTrustTier(provenance, trustRules);
     return {
       id: row.id,
       ts: row.ts,
@@ -748,6 +984,7 @@ function recallOneCortexWithFts(
       compacted_from: null,
       supersedes: [],
       provenance,
+      trustTier,
     };
   });
 }
@@ -1262,6 +1499,12 @@ async function recallOneCortexWithVec(
     // AGT-465: derive provenance from entry cortex + episode_key + active cortex.
     const provenance = deriveProvenance(cortexName, row.episode_key, activeCortex);
 
+    // AGT-466: derive trust tier from provenance + cortex.trustTiers.rules.
+    // getConfig() is called once per cortex (not per row) by the caller; here
+    // we call it per row for simplicity since it is cached after the first call.
+    // The cost is a Map lookup, not an FS read.
+    const trustTier = deriveTrustTier(provenance, getConfig().cortex?.trustTiers?.rules);
+
     return {
       id: row.id,
       ts: row.ts,
@@ -1275,6 +1518,7 @@ async function recallOneCortexWithVec(
       compacted_from: compactedFrom,
       supersedes,
       provenance,
+      trustTier,
     };
   });
 }
@@ -1305,7 +1549,7 @@ async function recallSingleCortex(
   // caller gets a fast, clear error rather than a timeout waiting for embed().
   sanitizeName(cortexName);
 
-  const { query, limit, kind, topic, context, since, decay, relevanceFloor, qualityBoost, qualityPenalty, contextBoost, full, includeSuperseded, noEmbed, sources, excludeSources } = parseRecallParams(params);
+  const { query, limit, kind, topic, context, since, decay, relevanceFloor, qualityBoost, qualityPenalty, contextBoost, full, includeSuperseded, noEmbed, sources, excludeSources, tiers, excludeTiers, includeQuarantined } = parseRecallParams(params);
 
   // AGT-465: activeCortex for provenance derivation.
   const activeCortex = getConfig().cortex?.active;
@@ -1313,7 +1557,11 @@ async function recallSingleCortex(
   if (noEmbed) {
     const ftsEntries = recallOneCortexWithFts(cortexName, query, limit, activeCortex);
     // AGT-465: provenance filter is applied post-result on the FTS path too.
-    return applyProvenanceFilters(ftsEntries, sources, excludeSources);
+    const provFiltered = applyProvenanceFilters(ftsEntries, sources, excludeSources);
+    // AGT-466: trust tier filter (quarantine drop + tier filter) applied after provenance filter.
+    const { entries: tierFiltered, quarantinedDropped } = applyTrustTierFilters(provFiltered, { tiers, excludeTiers, includeQuarantined });
+    emitQuarantineDropNotice(quarantinedDropped);
+    return tierFiltered;
   }
 
   let queryVec: Float32Array;
@@ -1329,7 +1577,10 @@ async function recallSingleCortex(
       process.stderr.write(`think recall: embedding error (${msg}); falling back to FTS ranking\n`);
     }
     const ftsEntries = recallOneCortexWithFts(cortexName, query, limit, activeCortex);
-    return applyProvenanceFilters(ftsEntries, sources, excludeSources);
+    const provFiltered = applyProvenanceFilters(ftsEntries, sources, excludeSources);
+    const { entries: tierFiltered, quarantinedDropped } = applyTrustTierFilters(provFiltered, { tiers, excludeTiers, includeQuarantined });
+    emitQuarantineDropNotice(quarantinedDropped);
+    return tierFiltered;
   }
 
   const entries = await recallOneCortexWithVec(
@@ -1340,7 +1591,11 @@ async function recallSingleCortex(
   // NEVER apply pre-rerank — per think-cli retro: orthogonal-axis fixtures
   // in recall vector-path tests break silently if filtered before rerank.
   const sliced = entries.slice(0, limit);
-  return applyProvenanceFilters(sliced, sources, excludeSources);
+  const provFiltered = applyProvenanceFilters(sliced, sources, excludeSources);
+  // AGT-466: trust tier filter applied post-rerank, post-provenance-filter.
+  const { entries: tierFiltered, quarantinedDropped } = applyTrustTierFilters(provFiltered, { tiers, excludeTiers, includeQuarantined });
+  emitQuarantineDropNotice(quarantinedDropped);
+  return tierFiltered;
 }
 
 // ---------------------------------------------------------------------------
@@ -1374,7 +1629,7 @@ async function recallSingleCortex(
 async function recallFederated(
   params: Record<string, unknown>,
 ): Promise<RecallEntry[]> {
-  const { query, limit, kind, topic, context, since, decay, relevanceFloor, qualityBoost, qualityPenalty, contextBoost, full, includeSuperseded, noEmbed, sources, excludeSources } = parseRecallParams(params);
+  const { query, limit, kind, topic, context, since, decay, relevanceFloor, qualityBoost, qualityPenalty, contextBoost, full, includeSuperseded, noEmbed, sources, excludeSources, tiers, excludeTiers, includeQuarantined } = parseRecallParams(params);
 
   // AGT-465: read activeCortex once for provenance derivation across all cortex legs.
   const activeCortex = getConfig().cortex?.active;
@@ -1418,7 +1673,11 @@ async function recallFederated(
     );
     // AGT-465: provenance filter applied post-result on the FTS path.
     const noEmbedSliced = noEmbedFts.flat().slice(0, limit);
-    return applyProvenanceFilters(noEmbedSliced, sources, excludeSources);
+    const noEmbedProvFiltered = applyProvenanceFilters(noEmbedSliced, sources, excludeSources);
+    // AGT-466: trust tier filter applied after provenance filter.
+    const { entries: noEmbedTierFiltered, quarantinedDropped: noEmbedDropped } = applyTrustTierFilters(noEmbedProvFiltered, { tiers, excludeTiers, includeQuarantined });
+    emitQuarantineDropNotice(noEmbedDropped);
+    return noEmbedTierFiltered;
   }
 
   // Embed once; shared across all cortex legs so the model is only invoked once.
@@ -1441,7 +1700,11 @@ async function recallFederated(
     );
     // AGT-465: provenance filter applied post-result on the FTS fallback path.
     const fallbackSliced = fallbackFts.flat().slice(0, limit);
-    return applyProvenanceFilters(fallbackSliced, sources, excludeSources);
+    const fallbackProvFiltered = applyProvenanceFilters(fallbackSliced, sources, excludeSources);
+    // AGT-466: trust tier filter applied after provenance filter.
+    const { entries: fallbackTierFiltered, quarantinedDropped: fallbackDropped } = applyTrustTierFilters(fallbackProvFiltered, { tiers, excludeTiers, includeQuarantined });
+    emitQuarantineDropNotice(fallbackDropped);
+    return fallbackTierFiltered;
   }
   // Fan out to all cortexes in parallel. Per-cortex failures are caught
   // individually so one unavailable/corrupt cortex doesn't abort the query.
@@ -1473,5 +1736,9 @@ async function recallFederated(
   // NEVER apply pre-rerank — per think-cli retro: orthogonal-axis fixtures
   // break silently if filtered before rerank.
   const sliced = allEntries.slice(0, limit);
-  return applyProvenanceFilters(sliced, sources, excludeSources);
+  const fedProvFiltered = applyProvenanceFilters(sliced, sources, excludeSources);
+  // AGT-466: trust tier filter applied after provenance filter.
+  const { entries: fedTierFiltered, quarantinedDropped: fedDropped } = applyTrustTierFilters(fedProvFiltered, { tiers, excludeTiers, includeQuarantined });
+  emitQuarantineDropNotice(fedDropped);
+  return fedTierFiltered;
 }
