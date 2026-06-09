@@ -1461,16 +1461,16 @@ async function recallOneCortexWithVec(
     // Recency weight: exp(-decay × (max_seq - entry_seq)) ∈ (0, 1].
     // Falls back to score=cosine when activity_seq is unavailable.
     //
-    // TODO(#55): For negative cosine similarities, multiplying by a weight in
-    // (0,1] moves the score toward zero, so old-but-negative entries are promoted
-    // relative to newer-but-negative ones. In practice this is low-impact since
-    // vector search rarely surfaces negative cosines, but the formula is not
-    // monotonic for the negative range. See GitHub issue #55 for fix direction.
+    // Sign-aware effective weight (AGT-477): for negative cosine, multiply by
+    // (2 - weight) ∈ [1, 2) so older entries decay toward 2×similarity (more
+    // negative) rather than toward zero, preserving recency monotonicity.
+    // Positive cosine is unchanged: effWeight = weight ∈ (0, 1].
     let score: number;
     if (maxSeq !== null && row.activity_seq !== null) {
       const seqDistance = maxSeq - row.activity_seq;
       const weight = Math.exp(-decay * seqDistance);
-      score = similarity * weight;
+      const effWeight = similarity >= 0 ? weight : (2 - weight);
+      score = similarity * effWeight;
     } else {
       score = similarity;
     }
