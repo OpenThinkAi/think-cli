@@ -6,7 +6,7 @@ import {
   selectUncuratedEvents,
   type EventRow,
 } from '../event-curator.js';
-import { pushDebouncer } from '../../daemon/push-debouncer.js';
+import { pushDebouncer, getPushDebouncerMetrics } from '../../daemon/push-debouncer.js';
 import { useDirectApiCuration } from '../../lib/curator.js';
 
 const DEFAULT_POLL_TIMEOUT_MS = 60_000;
@@ -121,6 +121,23 @@ export interface TickReport {
    * length + scheduler config.
    */
   curate_skip_reason: CurateSkipReason;
+  /**
+   * Snapshot of process-lifetime push-debouncer metrics at tick completion
+   * (AGT-478 AC #5). Lets operators observe permanent push failures in the
+   * tick report without scraping `daemon.log` directly.
+   *
+   * - `failures_nff`: total cycles where all retries were exhausted with a
+   *   non-fast-forward rejection still outstanding. A rising counter means the
+   *   proxy is not propagating curated memory to origin.
+   * - `successes`: total successful pushes since daemon start (sanity baseline).
+   * - `last_failure_at`: ISO timestamp of the most recent permanent NFF failure,
+   *   or `null` if none has occurred.
+   */
+  push_debouncer: {
+    failures_nff: number;
+    successes: number;
+    last_failure_at: string | null;
+  };
 }
 
 export interface SchedulerHandle {
@@ -538,6 +555,7 @@ export function createScheduler(opts: SchedulerOptions): SchedulerHandle {
         `curate_skip=${curate_skip_reason ?? 'none'}`,
     );
 
+    const pdm = getPushDebouncerMetrics();
     return {
       started_at,
       poll_finished_at,
@@ -545,6 +563,11 @@ export function createScheduler(opts: SchedulerOptions): SchedulerHandle {
       outcomes,
       curate_outcomes,
       curate_skip_reason,
+      push_debouncer: {
+        failures_nff: pdm.pushFailuresNonFastForward,
+        successes: pdm.pushSuccesses,
+        last_failure_at: pdm.lastPushErrorAt,
+      },
     };
   }
 
