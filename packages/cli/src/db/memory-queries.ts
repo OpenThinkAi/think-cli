@@ -180,7 +180,6 @@ export function tombstoneMemory(cortexName: string, id: string): void {
   ).run(new Date().toISOString(), id);
 }
 
-
 export function getSyncCursor(cortexName: string, backend: string, direction: string): string | null {
   const db = getCortexDb(cortexName);
   const row = db.prepare(

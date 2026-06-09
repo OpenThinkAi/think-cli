@@ -113,7 +113,7 @@ function dedupeBy<T>(rows: T[], key: (r: T) => string): T[] {
 }
 
 /**
- * Renders the "all recent memories" view for a cortex.
+ * Renders the "all recent memories + long-term events" view for a cortex.
  * Extracted so `think brief` can reuse it for its personal-context section.
  * Does NOT close the cortex DB — the caller is responsible for that.
  */

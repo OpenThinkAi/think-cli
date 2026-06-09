@@ -448,6 +448,20 @@ export const migrations: Migration[] = [
       // deprecated in favour of the structured long-term events tier. The DROP
       // is idempotent (IF EXISTS) so cortexes that never had the table are
       // unaffected. Forward-only; no rollback needed per think-cli convention.
+      //
+      // Warn when a user had actual content so they know where it went and
+      // can regenerate via `think long-term backfill` if desired.
+      try {
+        const row = db.prepare('SELECT content FROM longterm_summary WHERE id = 1').get() as { content: string } | undefined;
+        if (row?.content) {
+          process.stderr.write(
+            'think: removing deprecated long-term summary (superseded by long-term events).\n' +
+            '       Run `think long-term backfill` to regenerate structured events from your memories.\n',
+          );
+        }
+      } catch {
+        // Table may not exist yet — that is fine; the DROP below handles it.
+      }
       db.exec('DROP TABLE IF EXISTS longterm_summary;');
     },
   },

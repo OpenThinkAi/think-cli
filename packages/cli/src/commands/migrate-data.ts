@@ -1,10 +1,13 @@
 import { Command } from 'commander';
+import fs from 'node:fs';
+import path from 'node:path';
 import chalk from 'chalk';
 import { getConfig } from '../lib/config.js';
 import { ensureRepoCloned, fetchBranch, readFileFromBranch } from '../lib/git.js';
 import { parseMemoriesJsonl } from '../lib/curator.js';
 import { insertMemoryIfNotExists, getMemoryCount } from '../db/memory-queries.js';
 import { closeCortexDb } from '../db/engrams.js';
+import { getThinkDir, sanitizeName } from '../lib/paths.js';
 import { deterministicId } from '../lib/deterministic-id.js';
 
 export const migrateDataCommand = new Command('migrate-data')
@@ -67,6 +70,20 @@ export const migrateDataCommand = new Command('migrate-data')
     if (flagged.length > 0) {
       console.log(chalk.yellow(`  ⚠ ${flagged.length} row${flagged.length === 1 ? '' : 's'} produced validation warnings:`));
       for (const f of flagged) console.log(chalk.yellow(`    ${f}`));
+    }
+
+    // 3. Check for a legacy longterm summary file. The longterm_summary DB
+    //    tier was removed in AGT-479 (migration v19 drops the table). The
+    //    ~/.think/longterm/<cortex>.md file is left on disk as harmless
+    //    clutter — no consumer reads it anymore — but we surface a notice so
+    //    the user knows it is no longer migrated and can regenerate structured
+    //    events via `think long-term backfill` if desired.
+    const ltPath = path.join(getThinkDir(), 'longterm', `${sanitizeName(cortex)}.md`);
+    if (fs.existsSync(ltPath)) {
+      console.log(chalk.yellow(
+        `  ⚠  Legacy long-term summary found at ${ltPath} but is no longer migrated (tier removed). ` +
+        `Run \`think long-term backfill\` to generate structured events from your memories.`,
+      ));
     }
 
     const afterCount = getMemoryCount(cortex);

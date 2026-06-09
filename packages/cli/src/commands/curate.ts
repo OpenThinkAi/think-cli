@@ -72,7 +72,7 @@ export const curateCommand = new Command('curate')
     try {
     // --if-idle: bail early unless conditions are right. The scheduler fires
     // on a fixed cadence, so most firings should exit here in milliseconds.
-    // Skip the check for explicit episode/consolidate runs — those are manual.
+    // Skip the check for explicit episode runs — those are manual.
     if (opts.ifIdle && !opts.episode) {
       const shouldRun = shouldRunIdleCuration(cortex, config.cortex);
       if (!shouldRun.run) {
