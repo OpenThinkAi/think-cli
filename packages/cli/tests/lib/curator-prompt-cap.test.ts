@@ -24,7 +24,6 @@ describe('assembleCurationPrompt — curator prompt cap (AGT-065 AC #3)', () => 
     ];
     const prompt = assembleCurationPrompt({
       recentMemories: memories,
-      longtermSummary: null,
       curatorMd: null,
       pendingEngrams: noEngrams,
       author: 'test',
@@ -44,7 +43,6 @@ describe('assembleCurationPrompt — curator prompt cap (AGT-065 AC #3)', () => 
     }
     const prompt = assembleCurationPrompt({
       recentMemories: memories,
-      longtermSummary: null,
       curatorMd: null,
       pendingEngrams: noEngrams,
       author: 'test',
@@ -70,7 +68,6 @@ describe('assembleCurationPrompt — curator prompt cap (AGT-065 AC #3)', () => 
     }
     const prompt = assembleCurationPrompt({
       recentMemories: memories,
-      longtermSummary: null,
       curatorMd: null,
       pendingEngrams: noEngrams,
       author: 'test',
@@ -96,7 +93,6 @@ describe('assembleCurationPrompt — curator prompt cap (AGT-065 AC #3)', () => 
     };
     const prompt = assembleCurationPrompt({
       recentMemories: [],
-      longtermSummary: null,
       curatorMd: 'a'.repeat(5_000),
       pendingEngrams: [fatEngram],
       author: 'test',

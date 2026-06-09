@@ -92,7 +92,7 @@ describe('assembleEventDetectionPrompt', () => {
 describe('runLocalTwoPassCuration', () => {
   function curationPrompt(engrams: Engram[]) {
     return assembleCurationPrompt({
-      recentMemories: [], longtermSummary: null, recentLongTermEvents: [],
+      recentMemories: [], recentLongTermEvents: [],
       curatorMd: null, pendingEngrams: engrams, author: 'me',
     });
   }
@@ -133,7 +133,7 @@ describe('runLocalTwoPassCuration', () => {
 describe('assembleCurationPrompt', () => {
   it('returns a tierASystemPrompt that carries the same tuning suffix', () => {
     const p = assembleCurationPrompt({
-      recentMemories: [], longtermSummary: null, recentLongTermEvents: [],
+      recentMemories: [], recentLongTermEvents: [],
       curatorMd: null, pendingEngrams: [], author: 'me', selectivity: 'high',
     });
     expect(p.tierASystemPrompt).toContain('Additional instructions:');

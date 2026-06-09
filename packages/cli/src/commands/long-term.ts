@@ -2,7 +2,7 @@ import { Command } from 'commander';
 import chalk from 'chalk';
 import { query } from '../lib/claude-sdk.js';
 import { getConfig } from '../lib/config.js';
-import { getMemories, getLongtermSummary } from '../db/memory-queries.js';
+import { getMemories } from '../db/memory-queries.js';
 import {
   getLongTermEvents,
   getLongTermEventCount,
@@ -91,7 +91,6 @@ interface EventForPrompt {
 async function runBackfillBatch(
   monthLabel: string,
   memories: MemoryForPrompt[],
-  existingSummary: string | null,
   priorEvents: EventForPrompt[],
 ): Promise<LongTermEventProposal[]> {
   const memoriesText = memories
@@ -114,13 +113,8 @@ async function runBackfillBatch(
         .join('\n')
     : '(no prior long-term events)';
 
-  const summaryText = existingSummary ?? '(no existing summary to hint from)';
-
   const userMessage = [
     `## Month being backfilled: ${monthLabel}`,
-    '',
-    '## Existing long-term summary (hint — this is what a previous curator considered significant)',
-    wrapData('existing-longterm-summary', summaryText),
     '',
     '## Long-term events already produced (for supersession and topic reuse)',
     wrapData('prior-long-term-events', eventsText),
@@ -221,8 +215,6 @@ longTermCommand.addCommand(new Command('backfill')
       return;
     }
 
-    const summary = getLongtermSummary(cortex);
-
     // Group memories by year-month.
     const byMonth = new Map<string, MemoryForPrompt[]>();
     for (const m of memories) {
@@ -260,7 +252,6 @@ longTermCommand.addCommand(new Command('backfill')
       console.log(chalk.dim('Prompt envelope a real run would ship to Anthropic (per-month batch):'));
       console.log(chalk.dim('  - System prompt: long-term curator instructions (in src/commands/long-term.ts as BACKFILL_SYSTEM_PROMPT)'));
       console.log(chalk.dim('  - User message:'));
-      console.log(chalk.dim('    - Existing long-term summary (hint, ~kb)'));
       console.log(chalk.dim('    - Long-term events from prior batches (for supersession context, grows per month)'));
       console.log(chalk.dim('    - Memories in this month (the new content shipped each call)'));
       console.log(chalk.dim('  - Output shape: JSON array of {ts, kind, title, content, topics, supersedes?, source_memory_ids}'));
@@ -287,7 +278,7 @@ longTermCommand.addCommand(new Command('backfill')
       process.stdout.write(chalk.dim(`  ${month}: ${memoriesInMonth.length} memories... `));
 
       try {
-        const proposals = await runBackfillBatch(month, memoriesInMonth, summary, priorEvents);
+        const proposals = await runBackfillBatch(month, memoriesInMonth, priorEvents);
         if (isPreview) {
           proposalsForPreview.push({ month, events: proposals });
           console.log(chalk.dim(`${proposals.length} events proposed`));

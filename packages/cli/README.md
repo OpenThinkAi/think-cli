@@ -187,7 +187,6 @@ think cortex status            Show sync state
 
 think curate                   Run curation (--dry-run to preview)
 think curate --episode <key>   Curate an episode into a narrative memory
-think curate --consolidate     Compress older memories into long-term summary
 think monitor                  Show promoted vs dropped engrams
 think recall <query>           Search memories + engrams
 think memory                   Show memories (--history for timeline)

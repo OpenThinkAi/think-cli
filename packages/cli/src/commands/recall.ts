@@ -2,7 +2,7 @@ import { Command, Option } from 'commander';
 import chalk from 'chalk';
 import { getConfig } from '../lib/config.js';
 import { searchEngrams } from '../db/engram-queries.js';
-import { searchMemories, getLongtermSummary, getMemories } from '../db/memory-queries.js';
+import { searchMemories, getMemories } from '../db/memory-queries.js';
 import {
   searchLongTermEvents,
   getLongTermEventById,
@@ -113,7 +113,7 @@ function dedupeBy<T>(rows: T[], key: (r: T) => string): T[] {
 }
 
 /**
- * Renders the "all recent memories + long-term summary" view for a cortex.
+ * Renders the "all recent memories + long-term events" view for a cortex.
  * Extracted so `think brief` can reuse it for its personal-context section.
  * Does NOT close the cortex DB — the caller is responsible for that.
  */
@@ -123,7 +123,6 @@ export function renderPersonalAll(cortex: string, { days, query }: { days: numbe
     getMemories(cortex, { since: cutoff }),
     m => JSON.stringify([m.ts, m.author, m.content]),
   );
-  const longterm = getLongtermSummary(cortex);
   const allEvents = getLongTermEvents(cortex, { since: cutoff, limit: 200 });
   const matchingEngrams = dedupeBy(
     searchEngrams(cortex, query ?? ''),
@@ -146,12 +145,6 @@ export function renderPersonalAll(cortex: string, { days, query }: { days: numbe
     console.log();
   }
 
-  if (longterm && allEvents.length === 0) {
-    console.log(chalk.cyan('Long-term context (legacy summary):'));
-    console.log(`  ${longterm}`);
-    console.log();
-  }
-
   if (matchingEngrams.length > 0) {
     console.log(chalk.cyan(`Matching engrams (local):`));
     for (const e of matchingEngrams) {
@@ -161,7 +154,7 @@ export function renderPersonalAll(cortex: string, { days, query }: { days: numbe
     console.log();
   }
 
-  if (recentMemories.length === 0 && matchingEngrams.length === 0 && !longterm && allEvents.length === 0) {
+  if (recentMemories.length === 0 && matchingEngrams.length === 0 && allEvents.length === 0) {
     console.log(chalk.dim('No results found.'));
   }
 }
@@ -256,7 +249,7 @@ export const recallCommand = new Command('recall')
   .argument('<query>', 'What to recall')
   .description('Search memories and local engrams')
   .option('--engrams', 'Also search local engrams (not just memories)')
-  .option('--all', 'Dump all recent memories + long-term summary (ignores query for memories)')
+  .option('--all', 'Dump all recent memories + long-term events (ignores query for memories)')
   .option('--days <n>', 'Days of memories to include (only with --all)', '14')
   .option('--limit <n>', 'Max results to return (default: 8)', String(DEFAULT_RECALL_LIMIT))
   .option('--full', 'Return all entries including superseded and compacted-raw; lifts 200-char truncation')
