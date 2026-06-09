@@ -4,7 +4,7 @@ import chalk from 'chalk';
 import { getConfig } from '../lib/config.js';
 import type { CortexConfig } from '../lib/config.js';
 import { getPendingEngrams, getPendingEpisodeEngrams, markPromoted, markPurged, pruneExpiredEngrams } from '../db/engram-queries.js';
-import { getMemories, getLongtermSummary, setLongtermSummary, insertMemory, getMemoryByEpisodeKey, tombstoneMemory } from '../db/memory-queries.js';
+import { getMemories, insertMemory, getMemoryByEpisodeKey, tombstoneMemory } from '../db/memory-queries.js';
 import { insertLongTermEvent, getRecentLongTermEventsForContext } from '../db/long-term-queries.js';
 import { closeCortexDb } from '../db/engrams.js';
 import {
@@ -15,7 +15,6 @@ import {
   runCuration,
   runLocalTwoPassCuration,
   runEpisodeCuration,
-  runConsolidation,
 } from '../lib/curator.js';
 import { getDefaultLlmClient, isLocalCurationActive } from '../lib/llm/router.js';
 import { getSyncAdapter } from '../sync/registry.js';
@@ -29,14 +28,13 @@ import { deriveProvenance, deriveTrustTier, emitQuarantineDropNotice } from '../
 export const curateCommand = new Command('curate')
   .description('Run curation: evaluate pending events and promote to memories')
   .option('--dry-run', 'Preview what would be committed without saving')
-  .option('--consolidate', 'Run long-term memory consolidation only (no curation)')
   .option('--episode <key>', 'Curate a specific episode into a narrative memory')
   .option('--if-idle', 'Only curate if the user appears idle (used by auto-curation scheduler)')
   .option(
     '--include-quarantined',
     'Include quarantined engrams in the curation envelope (default: quarantined engrams are excluded). A note is emitted to stderr when engrams are dropped.',
   )
-  .action(async (opts: { dryRun?: boolean; consolidate?: boolean; episode?: string; ifIdle?: boolean; includeQuarantined?: boolean }) => {
+  .action(async (opts: { dryRun?: boolean; episode?: string; ifIdle?: boolean; includeQuarantined?: boolean }) => {
     const config = getConfig();
     const cortex = config.cortex?.active;
 
@@ -75,7 +73,7 @@ export const curateCommand = new Command('curate')
     // --if-idle: bail early unless conditions are right. The scheduler fires
     // on a fixed cadence, so most firings should exit here in milliseconds.
     // Skip the check for explicit episode/consolidate runs — those are manual.
-    if (opts.ifIdle && !opts.episode && !opts.consolidate) {
+    if (opts.ifIdle && !opts.episode) {
       const shouldRun = shouldRunIdleCuration(cortex, config.cortex);
       if (!shouldRun.run) {
         if (process.env.THINK_IDLE_DEBUG) {
@@ -232,43 +230,9 @@ export const curateCommand = new Command('curate')
       supersedes: [],
       topics: [],
     }));
-    const { recent, older } = filterRecentMemories(memoryEntries);
+    const { recent } = filterRecentMemories(memoryEntries);
 
-    // 2. Read existing long-term summary from local SQLite
-    const longtermSummary = getLongtermSummary(cortex);
-
-    // Handle --consolidate: just run long-term memory consolidation
-    if (opts.consolidate) {
-      if (older.length === 0) {
-        console.log(chalk.dim('No memories older than 2 weeks to consolidate.'));
-        return;
-      }
-
-      console.log(chalk.cyan(`Consolidating ${older.length} older memories into long-term summary...`));
-
-      try {
-        const newSummary = await runConsolidation(longtermSummary, older);
-        if (opts.dryRun) {
-          console.log();
-          console.log(chalk.cyan('Proposed long-term summary:'));
-          console.log(newSummary);
-          return;
-        }
-        setLongtermSummary(cortex, newSummary);
-        console.log(chalk.green('✓') + ` Long-term summary updated (${older.length} memories consolidated)`);
-      } catch (err) {
-        if (err instanceof LlmConsentError) {
-          console.error(chalk.red(err.message));
-          process.exit(1);
-        }
-        const message = err instanceof Error ? err.message : String(err);
-        console.error(chalk.red(`Consolidation failed: ${message}`));
-        process.exit(1);
-      }
-      return;
-    }
-
-    // 3. Read pending engrams
+    // 2. Read pending engrams
     const allPending = getPendingEngrams(cortex);
     if (allPending.length === 0) {
       console.log(chalk.dim('No pending events to evaluate.'));
@@ -322,7 +286,6 @@ export const curateCommand = new Command('curate')
     // 5. Assemble and run curation prompt
     const curationPrompt = assembleCurationPrompt({
       recentMemories: recent,
-      longtermSummary,
       recentLongTermEvents: recentEventContext,
       curatorMd,
       pendingEngrams: pending,
@@ -498,19 +461,7 @@ export const curateCommand = new Command('curate')
     // 11. Prune expired engrams
     const pruned = pruneExpiredEngrams(cortex);
 
-    // 12. Auto-consolidate if there are older memories and no long-term summary yet
-    if (older.length > 0 && !longtermSummary) {
-      console.log(chalk.dim(`  Consolidating ${older.length} older memories into long-term summary...`));
-      try {
-        const newSummary = await runConsolidation(null, older);
-        setLongtermSummary(cortex, newSummary);
-        console.log(chalk.dim(`  Long-term summary created`));
-      } catch {
-        console.log(chalk.dim(`  Long-term consolidation skipped (will retry next run)`));
-      }
-    }
-
-    // 13. Sync: push new memories and long-term events to remote after curation
+    // 12. Sync: push new memories and long-term events to remote after curation
     if (adapter?.isAvailable() && (newEntries.length > 0 || insertedEvents > 0)) {
       try {
         const pushResult = await adapter.push(cortex);
@@ -525,7 +476,7 @@ export const curateCommand = new Command('curate')
       }
     }
 
-    // 14. Report
+    // 13. Report
     console.log();
     console.log(`${chalk.green('✓')} Curation complete`);
     console.log(`  ${pending.length} evaluated, ${newEntries.length} promoted, ${purgedIds.length} purged, ${heldCount} still pending`);

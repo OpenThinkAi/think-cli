@@ -86,12 +86,12 @@ describe('extractFirstFencedBlock (AGT-222)', () => {
     expect(extractFirstFencedBlock(input)).toBe('{"memories":[]}');
   });
 
-  it('returns plain text (for runConsolidation-style responses) when no fence is used', () => {
+  it('returns plain text without a fence', () => {
     const summary = 'Q2 focused on shipping the curator pipeline. Adoption of stamp-cli landed mid-quarter.';
     expect(extractFirstFencedBlock(summary)).toBe(summary);
   });
 
-  it('strips fences around plain-text consolidation summaries', () => {
+  it('strips plain text inside a single fence', () => {
     const input = '```\nA concise paragraph summarising the quarter.\n```';
     expect(extractFirstFencedBlock(input)).toBe('A concise paragraph summarising the quarter.');
   });

@@ -441,9 +441,19 @@ export const migrations: Migration[] = [
       }
     },
   },
+  {
+    version: 19,
+    up: (db) => {
+      // AGT-479: drop the longterm_summary table — long-term summary tier is
+      // deprecated in favour of the structured long-term events tier. The DROP
+      // is idempotent (IF EXISTS) so cortexes that never had the table are
+      // unaffected. Forward-only; no rollback needed per think-cli convention.
+      db.exec('DROP TABLE IF EXISTS longterm_summary;');
+    },
+  },
 ];
 
-/** Returns the per-cortex SQLite connection (holds engrams, memories, longterm_summary, and sync_cursors tables) */
+/** Returns the per-cortex SQLite connection (holds engrams, memories, and sync_cursors tables) */
 export function getCortexDb(cortexName: string): DatabaseSync {
   const cached = dbs.get(cortexName);
   if (cached) return cached;

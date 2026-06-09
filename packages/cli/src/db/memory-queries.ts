@@ -180,21 +180,6 @@ export function tombstoneMemory(cortexName: string, id: string): void {
   ).run(new Date().toISOString(), id);
 }
 
-export function getLongtermSummary(cortexName: string): string | null {
-  const db = getCortexDb(cortexName);
-  const row = db.prepare('SELECT content FROM longterm_summary WHERE id = 1').get() as { content: string } | undefined;
-  return row?.content ?? null;
-}
-
-export function setLongtermSummary(cortexName: string, content: string): void {
-  const db = getCortexDb(cortexName);
-  // Atomic sync_version via subquery
-  db.prepare(
-    `INSERT INTO longterm_summary (id, content, updated_at, sync_version)
-     VALUES (1, ?, ?, (SELECT COALESCE(MAX(sync_version), 0) + 1 FROM memories))
-     ON CONFLICT(id) DO UPDATE SET content = excluded.content, updated_at = excluded.updated_at, sync_version = excluded.sync_version`
-  ).run(content, new Date().toISOString());
-}
 
 export function getSyncCursor(cortexName: string, backend: string, direction: string): string | null {
   const db = getCortexDb(cortexName);

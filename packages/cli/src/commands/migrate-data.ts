@@ -1,12 +1,10 @@
 import { Command } from 'commander';
-import fs from 'node:fs';
 import chalk from 'chalk';
 import { getConfig } from '../lib/config.js';
 import { ensureRepoCloned, fetchBranch, readFileFromBranch } from '../lib/git.js';
 import { parseMemoriesJsonl } from '../lib/curator.js';
-import { insertMemoryIfNotExists, setLongtermSummary, getMemoryCount } from '../db/memory-queries.js';
+import { insertMemoryIfNotExists, getMemoryCount } from '../db/memory-queries.js';
 import { closeCortexDb } from '../db/engrams.js';
-import { getLongtermPath } from '../lib/paths.js';
 import { deterministicId } from '../lib/deterministic-id.js';
 
 export const migrateDataCommand = new Command('migrate-data')
@@ -69,16 +67,6 @@ export const migrateDataCommand = new Command('migrate-data')
     if (flagged.length > 0) {
       console.log(chalk.yellow(`  ⚠ ${flagged.length} row${flagged.length === 1 ? '' : 's'} produced validation warnings:`));
       for (const f of flagged) console.log(chalk.yellow(`    ${f}`));
-    }
-
-    // 3. Migrate longterm summary
-    const ltPath = getLongtermPath(cortex);
-    if (fs.existsSync(ltPath)) {
-      const ltContent = fs.readFileSync(ltPath, 'utf-8').trim();
-      if (ltContent) {
-        setLongtermSummary(cortex, ltContent);
-        console.log(chalk.green('  ✓') + ' Long-term summary migrated');
-      }
     }
 
     const afterCount = getMemoryCount(cortex);
