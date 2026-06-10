@@ -155,7 +155,7 @@ function defaultGitRunner(args: string[], cwd: string): Promise<string> {
       '-c', 'core.fsmonitor=',
       ...args,
     ];
-    execFile('git', fullArgs, { cwd, encoding: 'utf-8', env: safeGitEnv() }, (err, stdout, stderr) => {
+    execFile('git', fullArgs, { cwd, encoding: 'utf-8', env: safeGitEnv(), windowsHide: true }, (err, stdout, stderr) => {
       if (err) {
         const msg = (err instanceof Error ? err.message : String(err)) + (stderr ? `\n${stderr}` : '');
         reject(new Error(msg));

@@ -445,6 +445,51 @@ export interface ProxyConfig {
   url?: string;
 }
 
+/**
+ * A stdio MCP server an org wants the dashboard's agentic prompt box to be
+ * able to search (e.g. a Linear MCP server, to cross-check tickets).
+ */
+export interface DashboardMcpServer {
+  type?: 'stdio';
+  command: string;
+  args?: string[];
+  /** Tool names to allow, namespaced `mcp__<name>__<tool>`. */
+  allowedTools?: string[];
+}
+
+/** One panel on the dashboard. */
+export interface DashboardPanel {
+  /** Stable key the digest emits / the view renders. */
+  key: string;
+  title: string;
+  /** CSS color for the dot accent. */
+  accent?: string;
+  /**
+   * 'digest' — an AI bucket; `desc` tells the model what belongs here.
+   * 'today'  — a raw, AI-free list that live-tails the work-log for today.
+   */
+  render?: 'digest' | 'today';
+  /** For render:'digest' — what the model should put in this bucket. */
+  desc?: string;
+}
+
+/**
+ * Heavy customization surface for `think dashboard`. Every field is optional;
+ * omitting the whole block reproduces the built-in three-panel default.
+ */
+export interface DashboardConfig {
+  /** Path to a custom view .tsx (absolute, or relative to cwd). */
+  view?: string;
+  /** Days of work-log history the digest summarizes. Default 7. */
+  windowDays?: number;
+  /** Panels, in order. Defaults to working-on / shipped-today / unfinished. */
+  panels?: DashboardPanel[];
+  /** Override the digest model / extra system guidance. */
+  digest?: { model?: string; prompt?: string };
+  /** Extra MCP servers the agentic prompt box may search, keyed by name. */
+  ask?: { servers?: Record<string, DashboardMcpServer>; model?: string; maxTurns?: number };
+}
+
 export interface Config {
   peerId: string;
   syncPort: number;
@@ -456,6 +501,7 @@ export interface Config {
   recall?: RecallConfig;
   compaction?: CompactionConfig;
   proxy?: ProxyConfig;
+  dashboard?: DashboardConfig;
 }
 
 export function getConfigDir(): string {

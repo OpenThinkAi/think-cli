@@ -120,6 +120,7 @@ function git(args: string[], cwd: string): string {
     encoding: 'utf-8',
     stdio: ['pipe', 'pipe', 'pipe'],
     env: safeGitEnv(),
+    windowsHide: true,
   }).trim();
 }
 
@@ -452,6 +453,7 @@ export const cortexMigrateLayoutCommand = new Command('migrate-layout')
         encoding: 'utf-8',
         stdio: ['pipe', 'pipe', 'pipe'],
         env: safeGitEnv(),
+        windowsHide: true,
       }).trim();
       if (originalBranch === 'HEAD') originalBranch = null; // detached
     } catch {
@@ -485,6 +487,7 @@ export const cortexMigrateLayoutCommand = new Command('migrate-layout')
           encoding: 'utf-8',
           stdio: ['pipe', 'pipe', 'pipe'],
           env: safeGitEnv(),
+          windowsHide: true,
         });
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
