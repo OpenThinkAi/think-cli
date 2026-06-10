@@ -50,6 +50,10 @@ const DEFAULT_PANELS: DashboardPanel[] = [
   { key: 'unfinished', title: 'Unfinished', accent: '#d97706', render: 'digest' },
 ];
 
+// These three types are intentionally duplicated in views/dashboard.tsx: the
+// view is compiled standalone by ui-leaf and has no import path back into the
+// CLI source, so the shapes are mirrored by hand on both sides of the stdio
+// boundary. Keep them in sync.
 interface PanelItem {
   title: string;
   detail?: string;
@@ -171,7 +175,7 @@ What it shows:
 
 Customize (config.dashboard in ~/.config/think/config.json):
   view         custom .tsx presentation
-  panels       your own panels + AI buckets
+  panels       your own panels + AI buckets (up to 4 per row; extras wrap)
   windowDays   history window the digest sees
   digest       model / extra guidance
   ask.servers  extra MCP servers (e.g. Linear)
@@ -207,7 +211,7 @@ Examples:
       data = await buildData(cortex, panels, dashCfg);
     } catch (err) {
       if (err instanceof LlmConsentError) {
-        console.error(chalk.red(err.message));
+        console.error(chalk.red(`think dashboard: ${err.message}`));
       } else {
         const msg = err instanceof Error ? err.message : String(err);
         console.error(chalk.red(`think dashboard: ${msg}`));

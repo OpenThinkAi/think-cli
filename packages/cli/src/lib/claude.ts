@@ -225,12 +225,6 @@ function thinkMcpServer(): { type: 'stdio'; command: string; args: string[] } {
   return { type: 'stdio', command: 'think', args: ['mcp'] };
 }
 
-/**
- * Answer a free-form question about the think corpus, letting the model drive
- * its own searches via think's MCP tools — plus any org-configured extra MCP
- * servers (so the prompt box can cross-check Linear, etc.). Returns the final
- * markdown answer.
- */
 /** Render arbitrary view-supplied context into prompt text. */
 function renderContext(ctx: unknown): string {
   if (ctx == null) return '';
@@ -242,6 +236,12 @@ function renderContext(ctx: unknown): string {
   }
 }
 
+/**
+ * Answer a free-form question about the think corpus, letting the model drive
+ * its own searches via think's MCP tools — plus any org-configured extra MCP
+ * servers (so the prompt box can cross-check Linear, etc.). Returns the final
+ * markdown answer.
+ */
 export async function answerThinkQuestion(
   question: string,
   opts: { servers?: Record<string, DashboardMcpServer>; model?: string; maxTurns?: number; context?: unknown } = {},
@@ -271,7 +271,7 @@ export async function answerThinkQuestion(
   let result = '';
   let lastText = ''; // best-effort fallback if the loop ends on the turn cap
 
-  const drain = async () => {
+  try {
     for await (const message of query({
       prompt,
       options: {
@@ -301,10 +301,6 @@ export async function answerThinkQuestion(
         if (text) lastText = text;
       }
     }
-  };
-
-  try {
-    await drain();
   } catch (err) {
     // The SDK throws on max-turns; fall back to whatever the model last wrote.
     if (!lastText) throw err instanceof Error ? err : new Error(String(err));
