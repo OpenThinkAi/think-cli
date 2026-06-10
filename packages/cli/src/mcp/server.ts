@@ -2,8 +2,10 @@
  * think MCP server — AGT-314
  *
  * Exposes think tools over the Model Context Protocol using stdio transport.
- * Claude Code launches this process on demand via `think mcp`; it MUST NOT
- * be auto-started by the daemon or any other process.
+ * Claude Code launches this process on demand, either via `think mcp` or by
+ * running this file directly (`node dist/mcp/server.js` — the command that
+ * `think mcp install` registers in the MCP config). It MUST NOT be
+ * auto-started by the daemon or any other process.
  *
  * Architecture:
  *   MCP client (Claude Code) ↔ stdio ↔ this process ↔ daemon RPC (Unix socket)
@@ -15,6 +17,9 @@
  * registration table that subsequent tickets append to.
  */
 
+import { realpathSync } from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import {
@@ -178,4 +183,42 @@ export async function runMcpServer(): Promise<void> {
 
   process.on('SIGTERM', () => { shutdown('SIGTERM').catch(() => { process.exit(0); }); });
   process.on('SIGINT',  () => { shutdown('SIGINT').catch(() => { process.exit(0); }); });
+}
+
+// ---------------------------------------------------------------------------
+// Direct-invocation entry point
+// ---------------------------------------------------------------------------
+
+/**
+ * True when this module is the script Node was launched with
+ * (`node dist/mcp/server.js`) rather than imported (`think mcp`, tests).
+ *
+ * `argv1` is resolved through `realpathSync` so a symlinked launch path still
+ * matches the module's real location (Node resolves `import.meta.url` to the
+ * real path when `--preserve-symlinks` is off, the default). Exported for
+ * unit testing.
+ */
+export function isDirectInvocation(argv1: string | undefined, moduleUrl: string): boolean {
+  if (!argv1) return false;
+  const modulePath = fileURLToPath(moduleUrl);
+  let scriptPath: string;
+  try {
+    scriptPath = realpathSync(argv1);
+  } catch {
+    scriptPath = path.resolve(argv1);
+  }
+  return scriptPath === modulePath;
+}
+
+// Self-start when launched directly. `think mcp install` registers
+// `{ command: "node", args: ["…/dist/mcp/server.js"] }` in Claude Code's MCP
+// config, but this module previously only exported runMcpServer without ever
+// calling it — so the configured server loaded the module, did nothing, and
+// exited 0, which Claude Code reports as "MCP error -32000: Connection
+// closed". Imports (the `think mcp` command, tests) are unaffected.
+if (isDirectInvocation(process.argv[1], import.meta.url)) {
+  runMcpServer().catch((err) => {
+    process.stderr.write(`[think mcp] fatal: ${err instanceof Error ? err.message : String(err)}\n`);
+    process.exit(1);
+  });
 }

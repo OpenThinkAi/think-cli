@@ -116,13 +116,14 @@ describe('MCP server scaffold — in-process', () => {
 // ---------------------------------------------------------------------------
 
 import { spawn } from 'node:child_process';
-import { existsSync, mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const PKG_ROOT = resolve(fileURLToPath(import.meta.url), '..', '..', '..');
 const DIST_INDEX = join(PKG_ROOT, 'dist', 'index.js');
+const DIST_MCP_SERVER = join(PKG_ROOT, 'dist', 'mcp', 'server.js');
 
 describe('MCP server — subprocess stdio', () => {
   it.skipIf(!existsSync(DIST_INDEX))(
@@ -255,5 +256,129 @@ describe('MCP server — subprocess stdio', () => {
     // module graph from dist) under parallel fork-pool load can need well over
     // the old 15s. 15s daemon-ready + 30s tools/list worst case → 45s.
     45_000,
+  );
+});
+
+// ---------------------------------------------------------------------------
+// isDirectInvocation — the guard that self-starts the server when launched
+// as `node dist/mcp/server.js` (the command `think mcp install` registers).
+// ---------------------------------------------------------------------------
+
+describe('isDirectInvocation', () => {
+  async function getHelper() {
+    const { isDirectInvocation } = await import('../../src/mcp/server.js');
+    return isDirectInvocation;
+  }
+
+  it('returns false when argv[1] is undefined (e.g. node REPL)', async () => {
+    const isDirectInvocation = await getHelper();
+    expect(isDirectInvocation(undefined, import.meta.url)).toBe(false);
+  });
+
+  it('returns true when argv[1] is the module path itself', async () => {
+    const isDirectInvocation = await getHelper();
+    // realpathSync: on macOS tmpdir() is a symlink (/var → /private/var);
+    // resolve it up front so the constructed module URL is already real,
+    // matching how Node reports import.meta.url.
+    const dir = realpathSync(mkdtempSync(join(tmpdir(), 'think-direct-')));
+    try {
+      const script = join(dir, 'server.js');
+      writeFileSync(script, '// stand-in module\n');
+      expect(isDirectInvocation(script, pathToFileURL(script).href)).toBe(true);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('returns true when argv[1] is a symlink to the module path', async () => {
+    const isDirectInvocation = await getHelper();
+    const dir = realpathSync(mkdtempSync(join(tmpdir(), 'think-direct-')));
+    try {
+      const script = join(dir, 'server.js');
+      const link = join(dir, 'server-link.js');
+      writeFileSync(script, '// stand-in module\n');
+      symlinkSync(script, link);
+      expect(isDirectInvocation(link, pathToFileURL(script).href)).toBe(true);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('returns false when argv[1] is a different script (e.g. the CLI entry)', async () => {
+    const isDirectInvocation = await getHelper();
+    const dir = realpathSync(mkdtempSync(join(tmpdir(), 'think-direct-')));
+    try {
+      const script = join(dir, 'server.js');
+      const other = join(dir, 'index.js');
+      writeFileSync(script, '// stand-in module\n');
+      writeFileSync(other, '// stand-in CLI entry\n');
+      expect(isDirectInvocation(other, pathToFileURL(script).href)).toBe(false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('returns false for a nonexistent argv[1] path', async () => {
+    const isDirectInvocation = await getHelper();
+    expect(isDirectInvocation('/nonexistent/script.js', import.meta.url)).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Subprocess: spawn `node dist/mcp/server.js` — exactly the command that
+// `think mcp install` writes into Claude Code's MCP config.
+//
+// Regression test: before the direct-invocation guard, this loaded the
+// module, did nothing, and exited 0, which Claude Code surfaced as
+// "MCP error -32000: Connection closed".
+//
+// Skipped unless dist/mcp/server.js exists. Run `npm run build` to enable.
+// ---------------------------------------------------------------------------
+
+describe('MCP server — direct node invocation', () => {
+  it.skipIf(!existsSync(DIST_MCP_SERVER))(
+    'starts the server instead of exiting silently with code 0',
+    async () => {
+      const thinkHome = mkdtempSync(join(tmpdir(), 'think-mcp-direct-'));
+      try {
+        const child = spawn(process.execPath, [DIST_MCP_SERVER], {
+          stdio: ['pipe', 'pipe', 'pipe'],
+          env: { ...process.env, THINK_HOME: thinkHome },
+        });
+
+        let stderr = '';
+        child.stderr.setEncoding('utf8');
+
+        // Pass as soon as the server announces itself on stderr (it may then
+        // fail daemon validation in this bare environment — that's fine, the
+        // bug under test is the silent 0-exit before any code runs). Fail if
+        // the process exits without ever announcing, or hangs silently.
+        const outcome = await new Promise<string>((res) => {
+          const timer = setTimeout(() => {
+            child.kill('SIGKILL');
+            res(`timed out with no [think mcp] output.\nstderr: ${stderr}`);
+          }, 20_000);
+          child.stderr.on('data', (c: string) => {
+            stderr += c;
+            if (stderr.includes('[think mcp]')) {
+              clearTimeout(timer);
+              child.kill('SIGKILL');
+              res('started');
+            }
+          });
+          child.on('close', (code) => {
+            clearTimeout(timer);
+            res(stderr.includes('[think mcp]')
+              ? 'started'
+              : `exited (code=${code}) with no [think mcp] output.\nstderr: ${stderr}`);
+          });
+        });
+
+        expect(outcome).toBe('started');
+      } finally {
+        rmSync(thinkHome, { recursive: true, force: true });
+      }
+    },
+    30_000,
   );
 });
