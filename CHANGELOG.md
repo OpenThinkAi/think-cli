@@ -2,6 +2,28 @@
 
 ## [Unreleased]
 
+## [2.2.0] — 2026-06-10
+
+Stable release. Includes everything from 2.2.0-alpha.0 — `think dashboard` and its `config.dashboard` customization surface now ship on the `latest` dist-tag (see the alpha entry below for the full description) — plus the following changes landed since the alpha.
+
+### Added
+
+- **Recall output is wrapped in `<recall-result>` delimiters** so agent consumers can reliably extract the result block from surrounding terminal noise (AGT-464).
+- **Recall provenance tags and source filters.** Every recall entry is tagged with its provenance (`self`/`peer`/`proxy`/`unknown`), and new `--source`/`--exclude-source` flags filter by it (AGT-465).
+- **Per-source trust tiers with quarantine.** Untrusted-source content is quarantined out of recall output instead of blending in with trusted memories (AGT-466).
+- **Dashboard ask receives view context.** The prompt box forwards view-supplied context (selected item, active filter) into the agentic ask, wrapped in `<data>` tags with a treat-as-data guard in the system prompt.
+
+### Changed
+
+- **The long-term summary tier is gone; long-term events are now the sole long-term tier** across recall, curate, and the backfill curator (AGT-479, #68). Migration v19 drops the `longterm_summary` table — if you had a summary row, a one-time notice points you at `think long-term backfill` to regenerate events.
+
+### Fixed
+
+- **`think mcp install` configs actually start the server now (#75).** The installer registers `node dist/mcp/server.js`, but the module never invoked `runMcpServer()` when launched directly — every installed config loaded the module, exited 0, and surfaced in Claude Code as "MCP error -32000: Connection closed". A direct-invocation guard self-starts the server; configs already in the field start working on upgrade with no rewrite. Thanks @kennytwitchell.
+- **Daemon git polling no longer flashes console windows on Windows.** The async git runners used by the pull loop and push debouncer now pass `windowsHide`, matching the sync runners.
+- **Push debouncer self-heals a non-fast-forward stale clone (AGT-478, #72).** On a non-FF rejection the retry hard-resets the local branch to the fetched origin tip instead of looping on the same stale parent forever; a large-behind short-circuit (`cortex.largeBehindThreshold`, default 10) takes the reset path immediately, and permanent NFF failures now surface via `/v1/health`.
+- **Recall recency ordering restored for negative-cosine entries (AGT-477).** A sign-aware effective weight makes older negative-similarity entries decay toward lower rank instead of toward zero, so newer entries rank above older ones across the full similarity range.
+
 ## [2.2.0-alpha.0] — 2026-06-06
 
 ### Added
