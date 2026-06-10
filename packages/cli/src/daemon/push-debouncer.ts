@@ -82,7 +82,7 @@ function runGitAsync(
     const child = execFile(
       'git',
       fullArgs,
-      { cwd, encoding: 'utf-8', env },
+      { cwd, encoding: 'utf-8', env, windowsHide: true },
       (err, stdout, stderr) => {
         if (err) {
           const message = (err instanceof Error ? err.message : String(err)) +
