@@ -8,14 +8,14 @@ Stable release. Includes everything from 2.2.0-alpha.0 — `think dashboard` and
 
 ### Added
 
-- **Recall output is wrapped in `<recall-result>` delimiters** so agent consumers can reliably extract the result block from surrounding terminal noise (AGT-464).
 - **Recall provenance tags and source filters.** Every recall entry is tagged with its provenance (`self`/`peer`/`proxy`/`unknown`), and new `--source`/`--exclude-source` flags filter by it (AGT-465).
 - **Per-source trust tiers with quarantine.** Untrusted-source content is quarantined out of recall output instead of blending in with trusted memories (AGT-466).
 - **Dashboard ask receives view context.** The prompt box forwards view-supplied context (selected item, active filter) into the agentic ask, wrapped in `<data>` tags with a treat-as-data guard in the system prompt.
 
 ### Changed
 
-- **The long-term summary tier is gone; long-term events are now the sole long-term tier** across recall, curate, and the backfill curator (AGT-479, #68). Migration v19 drops the `longterm_summary` table — if you had a summary row, a one-time notice points you at `think long-term backfill` to regenerate events.
+- **Recall output is now wrapped in `<recall-result>` delimiters** so agent consumers can reliably extract the result block from surrounding terminal noise (AGT-464). Programmatic callers will now receive `<recall-result>…</recall-result>` wrapper lines on stdout; agent consumers should strip or pattern-match on them.
+- **Breaking (migration v19): the long-term summary tier is removed; long-term events are now the sole long-term tier** across recall, curate, and the backfill curator (AGT-479, #68). The migration drops the `longterm_summary` table — if you had a summary row, that data is deleted on upgrade. A one-time notice on migration points you at `think long-term backfill` to regenerate the equivalent long-term events.
 
 ### Fixed
 
