@@ -170,9 +170,13 @@ What it shows:
   servers). Defaults to working-on / shipped-today / unfinished.
 
 Customize (config.dashboard in ~/.config/think/config.json):
-  view        custom .tsx presentation        panels    your own panels + AI buckets
-  windowDays  history the digest sees          digest    model / extra guidance
-  ask.servers extra MCP servers (e.g. Linear)  --view    one-off view override
+  view         custom .tsx presentation
+  panels       your own panels + AI buckets
+  windowDays   history window the digest sees
+  digest       model / extra guidance
+  ask.servers  extra MCP servers (e.g. Linear)
+
+  Pass --view for a one-off view override without touching config.
 
 Requirements:
   Opening the view requires the ui-leaf binary on your PATH:
