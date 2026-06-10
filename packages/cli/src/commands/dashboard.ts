@@ -123,7 +123,6 @@ function loadWindow(cortex: string | null, since: Date): Entry[] {
 function loadTodayItems(cortex: string | null): PanelItem[] {
   const since = startOfDay(new Date());
   return loadWindow(cortex, since)
-    .filter((e) => new Date(e.timestamp) >= since)
     .map((e) => ({ title: e.content, time: e.timestamp.slice(11, 16) }))
     .reverse();
 }
@@ -224,8 +223,7 @@ Examples:
     if (!resolved) {
       const which = opts.view ?? dashCfg.view;
       console.error(chalk.red(`think dashboard: could not locate the ${which ? `custom view "${which}"` : `${VIEW_NAME} view`}.`));
-      console.error(chalk.dim('Falling back to --json:'));
-      process.stdout.write(JSON.stringify(data, null, 2) + '\n');
+      console.error(chalk.dim('Run with --json for the headless data payload.'));
       cleanup();
       process.exitCode = 1;
       return;
@@ -256,7 +254,16 @@ function mountView(
     ask: async (args) => {
       const question = typeof args.question === 'string' ? args.question.trim() : '';
       if (!question) throw new Error('question is required');
-      return { answer: await answerThinkQuestion(question, { servers: cfg.ask?.servers, model: cfg.ask?.model, maxTurns: cfg.ask?.maxTurns }) };
+      return {
+        answer: await answerThinkQuestion(question, {
+          servers: cfg.ask?.servers,
+          model: cfg.ask?.model,
+          maxTurns: cfg.ask?.maxTurns,
+          // Arbitrary context a custom view passes alongside the question
+          // (selected item, active filter, fetched ticket, …). Treated as data.
+          context: args.context,
+        }),
+      };
     },
   };
 
