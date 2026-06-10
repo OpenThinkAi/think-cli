@@ -125,10 +125,53 @@ export function formatRecallOutput(
         ? entry.content
         : truncateUnicode(entry.content, CONTENT_TRUNCATE_CHARS);
 
+      // Each entry occupies exactly ONE line (content is single-line after truncation
+      // — no embedded newlines). wrapForAgent depends on this invariant to find and
+      // wrap content via a forward-scanning cursor; don't change this without
+      // updating wrapForAgent accordingly.
+      //
+      // AGT-465: provenance bracket added as a third tag segment ONLY when it
+      // carries useful information:
+      //   - In single-cortex mode, "[self]" is suppressed (every result is self —
+      //     noise). Non-self values (peer:*, proxy:*, unknown) are always shown.
+      //   - In multi-cortex mode, the bracket is always shown because the result
+      //     set can mix self / peer / proxy from different cortexes.
+      // This is a product-reviewer decision to avoid breaking the output format
+      // for the common single-user, single-cortex case.
+      const prov = entry.provenance ?? 'unknown';
+      const showProv = multiCortex || prov !== 'self';
+
+      // AGT-466: trust tier bracket rendered ONLY when the tier is `quarantined`
+      // (the most salient case — content that was explicitly excluded by config
+      // and is now being surfaced via --include-quarantined). `untrusted` is NOT
+      // rendered by default: showing `[trust:untrusted]` on every peer/proxy entry
+      // would break all existing user output (v1 conservative choice per the
+      // approved plan "skip rendering entirely in v1" option). `trusted` is always
+      // silent. The `trust="..."` attribute IS always emitted on the <recall-result>
+      // envelope in --for-agent mode (additive, backward-compatible wire format).
+      const tier = entry.trustTier ?? 'untrusted';
+      const showTier = tier === 'quarantined'; // only quarantined surfaces visibly
+
       if (multiCortex) {
-        lines.push(`${date}  [${entry.cortex}/${kind}]  ${content}`);
+        if (showProv && showTier) {
+          lines.push(`${date}  [${entry.cortex}/${kind}]  [${prov}]  [trust:${tier}]  ${content}`);
+        } else if (showProv) {
+          lines.push(`${date}  [${entry.cortex}/${kind}]  [${prov}]  ${content}`);
+        } else if (showTier) {
+          lines.push(`${date}  [${entry.cortex}/${kind}]  [trust:${tier}]  ${content}`);
+        } else {
+          lines.push(`${date}  [${entry.cortex}/${kind}]  ${content}`);
+        }
       } else {
-        lines.push(`${date}  [${kind}]  ${content}`);
+        if (showProv && showTier) {
+          lines.push(`${date}  [${kind}]  [${prov}]  [trust:${tier}]  ${content}`);
+        } else if (showProv) {
+          lines.push(`${date}  [${kind}]  [${prov}]  ${content}`);
+        } else if (showTier) {
+          lines.push(`${date}  [${kind}]  [trust:${tier}]  ${content}`);
+        } else {
+          lines.push(`${date}  [${kind}]  ${content}`);
+        }
       }
     }
 
@@ -146,4 +189,149 @@ export function formatRecallOutput(
  */
 export function cortexSet(entries: RecallEntry[]): Set<string> {
   return new Set(entries.map(e => e.cortex).filter(Boolean));
+}
+
+// ---------------------------------------------------------------------------
+// Agent-consumption wrapping — AGT-464
+// ---------------------------------------------------------------------------
+
+/**
+ * Escape literal `<recall-result` / `</recall-result` substrings in content
+ * so peer-authored text cannot break out of the `<recall-result>` envelope.
+ *
+ * Uses case-insensitive matching, mirroring wrapData()'s `<\/?data` regex
+ * in src/lib/sanitize.ts. The opening half of the tag is sufficient: escaping
+ * `<recall-result` covers both the open tag (`<recall-result ...>`) and the
+ * close tag (`</recall-result>`) because the close tag starts with `</recall-result`.
+ */
+export function escapeRecallDelimiters(content: string): string {
+  // Capture the `<` and everything after it so we can replace just the `<`
+  // with `&lt;`, preserving the original casing of the tag name and slash.
+  return content.replace(/<(\/?)recall-result/gi, (match) => `&lt;${match.slice(1)}`);
+}
+
+/**
+ * HTML-escape a string for use in an XML attribute value (double-quoted).
+ * Escapes `"` → `&quot;` and `<` → `&lt;`.
+ */
+function escapeAttr(value: string): string {
+  return value.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;');
+}
+
+/**
+ * Wrap each entry's content in `<recall-result>` delimiters for agent consumers.
+ *
+ * Preserves the human-readable group headers (e.g. `── retros (3) ──`) and
+ * the per-entry date/kind prefix line OUTSIDE the wrap so the format degrades
+ * gracefully when a consuming agent ignores the tags.
+ *
+ * Each entry in `formatted` is matched by scanning `entries` in order (same
+ * order the formatter produces them). The wrap is applied only to the content
+ * fragment — the `YYYY-MM-DD  [kind]  ` prefix remains outside the tag so the
+ * existing human-readable structure is preserved.
+ *
+ * Attribute values are HTML-escaped (`&quot;` for `"`, `&lt;` for `<`) so a
+ * peer-authored cortex name or entry ID cannot break out of the attribute
+ * context.
+ *
+ * @param formatted  Output of formatRecallOutput() — the full formatted string.
+ * @param entries    The same RecallEntry[] that was passed to formatRecallOutput().
+ * @returns          The formatted string with each entry's content body wrapped.
+ */
+export function wrapForAgent(formatted: string, entries: RecallEntry[]): string {
+  if (entries.length === 0) return formatted;
+
+  // The formatter always emits one line per entry in the shape:
+  //   `${date}  [${kind}]  ${content}` (single-cortex)
+  //   `${date}  [${cortex}/${kind}]  ${content}` (multi-cortex)
+  // Entries are emitted in the same order as they appear in the `entries` array.
+  //
+  // Correctness invariant: two entries MAY share the same (date, kind, cortex)
+  // — e.g. two memories captured on the same day from the same cortex. To avoid
+  // the first occurrence being matched twice (and the second entry's line never
+  // wrapped), we track a forward-only `searchFrom` cursor that advances past each
+  // match. This ensures the Nth entry finds the Nth occurrence of its prefix, even
+  // when multiple entries share the same prefix string.
+  //
+  // NOTE: wrapping replaces only the content portion of a line (from after the
+  // prefix to the next `\n` or end-of-string). This relies on content being
+  // single-line, which is guaranteed today by the formatter's 200-char truncation
+  // and its `lines.push(...)` shape — no newlines are ever emitted inside a content
+  // value. If the formatter ever allows multi-line content, update this approach.
+
+  let result = formatted;
+  // `searchFrom` is a cursor that advances past each processed entry line so
+  // duplicate prefixes find the correct (next) occurrence rather than the first.
+  let searchFrom = 0;
+
+  for (const entry of entries) {
+    const date = entry.ts.slice(0, 10);
+    const kind = entry.kind ?? 'memory';
+    // The cortex field is always set for entries returned by the daemon/FTS paths.
+    const cortexRaw = entry.cortex ?? '';
+    // AGT-465: provenance defaults to 'unknown' for entries without the field
+    // (e.g., wire entries from an older daemon version).
+    const provRaw = entry.provenance ?? 'unknown';
+
+    // AGT-465: provenance bracket visibility mirrors formatRecallOutput exactly.
+    // formatRecallOutput rule: showProv = multiCortex || prov !== 'self'
+    // wrapForAgent doesn't know which mode the formatter used, but it doesn't
+    // need to: it tries both prefix forms and takes whichever one matches.
+    // So each prefix is built to match its respective formatter variant:
+    //   - prefixSingle: shown when prov != 'self' (single-cortex suppress rule)
+    //   - prefixMulti:  always shown (multi-cortex always shows provenance)
+    const showProvSingle = provRaw !== 'self';
+
+    // AGT-466: trust tier bracket visibility mirrors formatRecallOutput exactly.
+    // Only `quarantined` emits a [trust:<tier>] bracket in human output (v1 conservative).
+    const tierRaw = entry.trustTier ?? 'untrusted';
+    const showTier = tierRaw === 'quarantined';
+
+    // Build both candidate prefixes; the formatter uses single-cortex form when
+    // all entries share one cortex, multi-cortex form otherwise.
+    const prefixSingle = showProvSingle
+      ? (showTier ? `${date}  [${kind}]  [${provRaw}]  [trust:${tierRaw}]  ` : `${date}  [${kind}]  [${provRaw}]  `)
+      : (showTier ? `${date}  [${kind}]  [trust:${tierRaw}]  ` : `${date}  [${kind}]  `);
+    // Multi-cortex: check prov + tier combinations — mirrors the 4-way branch in formatRecallOutput.
+    // Multi-cortex always shows provenance (showProv = true when multiCortex).
+    const prefixMulti = showTier
+      ? `${date}  [${cortexRaw}/${kind}]  [${provRaw}]  [trust:${tierRaw}]  `
+      : `${date}  [${cortexRaw}/${kind}]  [${provRaw}]  `;
+
+    // Find the next occurrence of this entry's prefix starting at searchFrom.
+    // Try single-cortex first; if not found at or after searchFrom, try multi.
+    let idx = result.indexOf(prefixSingle, searchFrom);
+    let prefix = prefixSingle;
+    if (idx === -1) {
+      idx = result.indexOf(prefixMulti, searchFrom);
+      prefix = prefixMulti;
+    }
+    if (idx === -1) continue; // entry line not found — skip silently
+
+    const contentStart = idx + prefix.length;
+    const lineEnd = result.indexOf('\n', contentStart);
+    const rawContent = lineEnd === -1
+      ? result.slice(contentStart)
+      : result.slice(contentStart, lineEnd);
+
+    const escaped    = escapeRecallDelimiters(rawContent);
+    const cortexAttr = escapeAttr(cortexRaw);
+    const kindAttr   = escapeAttr(kind);
+    const idAttr     = escapeAttr(entry.id);
+    // AGT-465: add provenance attribute to the envelope tag.
+    const provAttr   = escapeAttr(provRaw);
+    // AGT-466: add trust tier attribute to the envelope tag.
+    const trustAttr  = escapeAttr(tierRaw);
+    const wrapped    = `<recall-result cortex="${cortexAttr}" kind="${kindAttr}" id="${idAttr}" provenance="${provAttr}" trust="${trustAttr}">${escaped}</recall-result>`;
+
+    result = result.slice(0, contentStart) + wrapped + (lineEnd === -1 ? '' : result.slice(lineEnd));
+
+    // Advance the cursor past the end of the line we just processed (in the
+    // updated `result`). The wrapped replacement is longer than `rawContent`
+    // but we only need to advance past the current `idx` so later entries
+    // with the same prefix find the *next* occurrence, not this one again.
+    searchFrom = contentStart + wrapped.length;
+  }
+
+  return result;
 }

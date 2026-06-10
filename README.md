@@ -235,6 +235,53 @@ Full endpoint reference, threat model, and operator runbook live at
 [`packages/cli/docs/serve.md`](packages/cli/docs/serve.md) and
 [`packages/cli/SECURITY-serve.md`](packages/cli/SECURITY-serve.md).
 
+### Operator runbook — push-debouncer recovery
+
+The proxy daemon runs a push-debouncer that periodically commits curated memory
+and pushes it to the shared cortex branch on origin. If the proxy's local cortex
+clone falls significantly behind origin (e.g. after a slow restart while another
+writer advanced origin), the daemon will automatically self-heal: it detects the
+`behind` count, fetches origin, hard-resets the local branch to the fresh remote
+tip, re-appends any pending outbox entries, and pushes. This should require no
+operator intervention for any gap size.
+
+**Observing push health.** The `/v1/health` endpoint and each tick's report include
+a `push_debouncer` block:
+
+```json
+{
+  "status": "ok",
+  "push_debouncer": {
+    "failures_nff": 0,
+    "successes": 42,
+    "last_failure_at": null
+  }
+}
+```
+
+A rising `failures_nff` counter means the proxy is curating but curated entries
+are not reaching origin. Check `daemon.log` for `[push-debouncer]` lines and
+inspect `git status -sb` in the proxy's cortex clone directory.
+
+**Last-resort escape hatch.** If the proxy cannot self-heal (e.g. due to a
+network partition or corrupted ref), you can restore propagation immediately with:
+
+```sh
+git -C <cortex-clone-path> reset --hard origin/<branch>
+```
+
+This discards any local-only commits. Curated entries that were pending in the
+outbox (not yet pushed) will be re-appended on the next write cycle — no data is
+permanently lost because the outbox rows are only deleted after a successful push.
+
+**Configuring the large-behind threshold.** The daemon short-circuits to the
+force-reset path when `behind >= cortex.largeBehindThreshold` (default 10).
+To tune this add to your config:
+
+```json
+{ "cortex": { "largeBehindThreshold": 5 } }
+```
+
 > **Migrating from `open-think-server`?** The package was deprecated in
 > v0.5.0 and the proxy now ships inside `@openthink/think`.
 > - Replace `npx open-think-server` with `npx @openthink/think serve`.

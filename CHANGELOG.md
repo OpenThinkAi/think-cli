@@ -11,6 +11,13 @@
 
 > **Alpha release.** Published under the `alpha` dist-tag — `latest` is unaffected. Install with `npm i -g @openthink/think@2.2.0-alpha.0`. Requires the `ui-leaf` binary on PATH to open the view.
 
+## [2.1.1] — 2026-06-07
+
+### Fixed
+
+- **`think cortex pull|push|sync --cortex <name>` no longer bails with "No active cortex" (#63).** The program-level `-C/--cortex` global option was shadowing the subcommand `--cortex` flag (commander v13 long-flag resolution lands the value on the program option), so `opts.cortex` was undefined inside the subcommand handler and the early-bail fired even though a cortex name was passed. The three subcommand handlers now resolve via `this.optsWithGlobals()` with precedence `subcommand --cortex > global -C/--cortex > config.cortex.active`. Equals form (`--cortex=<name>`) and the global short form (`think -C <name> cortex pull`) also resolve correctly. The no-flag default (use the active cortex) is unchanged.
+>>>>>>> origin/main
+
 ## [2.1.0] — 2026-06-04
 
 ### Added

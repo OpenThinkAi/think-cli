@@ -166,7 +166,6 @@ async function main(): Promise<void> {
 
   const prompt = assembleCurationPrompt({
     recentMemories: [],
-    longtermSummary: null,
     recentLongTermEvents: [],
     curatorMd: null,
     pendingEngrams: engrams,

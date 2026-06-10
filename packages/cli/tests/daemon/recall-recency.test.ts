@@ -18,6 +18,7 @@ import { join } from 'node:path';
 import { getCortexDb, closeAllCortexDbs } from '../../src/db/engrams.js';
 import { insertMemory } from '../../src/db/memory-queries.js';
 import { handleRecall } from '../../src/daemon/recall.js';
+import { saveConfig, getConfig } from '../../src/lib/config.js';
 import * as embedModule from '../../src/lib/embed.js';
 
 // ---------------------------------------------------------------------------
@@ -216,6 +217,93 @@ describe('handleRecall — recency-weighted ranking (AGT-291)', () => {
         expect(r.score).toBeLessThanOrEqual(r.similarity + 1e-9);
       }
     }
+  });
+
+  // ── AC1: recency monotonic for negative-cosine entries (AGT-477) ────────
+
+  it('AC1 (AGT-477): newer negative-cosine entry scores higher than older one with equal similarity', async () => {
+    // Two entries with equal negative cosine against the query — the newer one
+    // (higher activity_seq) must score strictly higher (less negative) than the
+    // older one. The relevance floor is disabled so negative-cosine entries
+    // are not filtered before the monotonicity check.
+    const db = getCortexDb(CORTEX);
+
+    // Disable the relevance floor so negative-cosine entries surface.
+    saveConfig({ ...getConfig(), recall: { relevanceFloor: -2 } });
+
+    // Query: axis(0) = [1, 0, ...]
+    // Use a vector with -1 at pos 0: cosine with axis(0) = -1.
+    const negVec = new Float32Array(DIM);
+    negVec[0] = -1.0;
+
+    // Older entry: low activity_seq → larger seqDistance → more discounted
+    const olderRow = insertMemory(CORTEX, {
+      ts: '2020-01-01T00:00:00Z',
+      author: 'test',
+      content: 'older negative-cosine entry',
+    });
+    db.prepare('UPDATE memories SET embedding = ?, activity_seq = ? WHERE id = ?')
+      .run(toBlob(negVec), 1, olderRow.id);
+
+    // Newer entry: high activity_seq (max)
+    const newerRow = insertMemory(CORTEX, {
+      ts: '2026-01-01T00:00:00Z',
+      author: 'test',
+      content: 'newer negative-cosine entry',
+    });
+    db.prepare('UPDATE memories SET embedding = ?, activity_seq = ? WHERE id = ?')
+      .run(toBlob(negVec), 100, newerRow.id);
+
+    vi.spyOn(embedModule, 'default').mockResolvedValue(axis(0));
+    const results = await handleRecall({ cortex: CORTEX, query: 'test', limit: 10 });
+
+    const olderEntry = results.find((r) => r.id === olderRow.id);
+    const newerEntry = results.find((r) => r.id === newerRow.id);
+    expect(olderEntry).toBeDefined();
+    expect(newerEntry).toBeDefined();
+
+    // Both have negative similarity; newer must rank higher (larger = less negative score)
+    expect(newerEntry!.score).toBeGreaterThan(olderEntry!.score);
+    // Both scores should be negative
+    expect(newerEntry!.score).toBeLessThan(0);
+    expect(olderEntry!.score).toBeLessThan(0);
+  });
+
+  // ── AC4 regression: positive-cosine recency is unaffected (AGT-477) ──────
+
+  it('AC4 (AGT-477): positive-cosine recency ordering is preserved (newer scores higher)', async () => {
+    const db = getCortexDb(CORTEX);
+
+    const posVec = axis(0); // cosine = 1.0 with axis(0) query
+
+    const olderRow = insertMemory(CORTEX, {
+      ts: '2020-01-01T00:00:00Z',
+      author: 'test',
+      content: 'older positive-cosine entry',
+    });
+    db.prepare('UPDATE memories SET embedding = ?, activity_seq = ? WHERE id = ?')
+      .run(toBlob(posVec), 1, olderRow.id);
+
+    const newerRow = insertMemory(CORTEX, {
+      ts: '2026-01-01T00:00:00Z',
+      author: 'test',
+      content: 'newer positive-cosine entry',
+    });
+    db.prepare('UPDATE memories SET embedding = ?, activity_seq = ? WHERE id = ?')
+      .run(toBlob(posVec), 100, newerRow.id);
+
+    vi.spyOn(embedModule, 'default').mockResolvedValue(axis(0));
+    const results = await handleRecall({ cortex: CORTEX, query: 'test', limit: 10 });
+
+    const olderEntry = results.find((r) => r.id === olderRow.id);
+    const newerEntry = results.find((r) => r.id === newerRow.id);
+    expect(olderEntry).toBeDefined();
+    expect(newerEntry).toBeDefined();
+
+    // Newer positive-cosine entry must score higher (recency intact)
+    expect(newerEntry!.score).toBeGreaterThan(olderEntry!.score);
+    expect(newerEntry!.score).toBeGreaterThan(0);
+    expect(olderEntry!.score).toBeGreaterThan(0);
   });
 
   // ── most-recent entry has score === similarity (weight = 1) ─────────────

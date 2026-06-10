@@ -35,6 +35,43 @@ import { getConfig } from '../lib/config.js';
 import { daemonLog } from './log.js';
 
 // ---------------------------------------------------------------------------
+// Push-debouncer metrics (process-lifetime counters, reset on restart)
+// ---------------------------------------------------------------------------
+
+export interface PushDebouncerMetrics {
+  /** Total successful pushes across all cortices since daemon start. */
+  pushSuccesses: number;
+  /**
+   * Total cycles where all MAX_PUSH_ATTEMPTS were exhausted with a
+   * non-fast-forward rejection still outstanding. The proxy curates but curated
+   * entries stop reaching origin until the next successful push cycle.
+   */
+  pushFailuresNonFastForward: number;
+  /**
+   * ISO timestamp of the last permanent non-FF push failure, or null when none
+   * has occurred since daemon start. Operators can compare against now() to
+   * assess staleness.
+   */
+  lastPushErrorAt: string | null;
+}
+
+/** Internal mutable counters — exported only for tests. */
+export const _pushMetrics: PushDebouncerMetrics = {
+  pushSuccesses: 0,
+  pushFailuresNonFastForward: 0,
+  lastPushErrorAt: null,
+};
+
+/**
+ * Returns a snapshot of process-lifetime push-debouncer metrics. Counters
+ * reset on daemon restart. Mirrors the `compactionQueue.getStats()` pattern
+ * (see `daemon/compaction/queue.ts`).
+ */
+export function getPushDebouncerMetrics(): PushDebouncerMetrics {
+  return { ..._pushMetrics };
+}
+
+// ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
 
@@ -342,11 +379,21 @@ export class PushDebouncer {
    * concurrent write to a different cortex can never trip on this cortex's
    * dirty tree — the #70/#65/#69 switch-race class is structurally gone.
    *
-   * On a non-fast-forward push rejection the local ref is reset back to the
-   * (re-fetched) remote tip and the append is rebuilt on top of it, mirroring
-   * the legacy pull-rebase-then-retry loop without a checkout. Outbox rows are
-   * deleted only after a successful push (or, with `skipPush`, after the local
-   * ref advance) so a crash mid-cycle leaves them for the next drain.
+   * On a non-fast-forward push rejection the local ref is hard-reset to the
+   * freshly-fetched remote tip (`forceResetToRemote`) before re-appending and
+   * retrying. This makes the local ref a guaranteed descendant of origin at push
+   * time, breaking the permanent non-FF loop (AGT-478 root cause: prior path
+   * reset to `parent` — the same stale tip — so the push was always non-FF).
+   *
+   * A large-behind short-circuit: if `behind >= LARGE_BEHIND_THRESHOLD` before
+   * the first append attempt, take the force-reset path immediately (attempt 1)
+   * rather than waiting for the push to bounce, so deeply stale clones
+   * self-heal in one retry cycle. Configurable via
+   * `cortex.largeBehindThreshold` (default 10).
+   *
+   * Outbox rows are deleted only after a successful push (or, with `skipPush`,
+   * after the local ref advance) so a crash mid-cycle leaves them for the next
+   * drain.
    */
   private async _executePlumbingLocked(
     safeCortex: string,
@@ -358,6 +405,13 @@ export class PushDebouncer {
     const hasRealGit = fs.existsSync(path.join(repoPath, '.git'));
 
     try {
+      // Ensure the union merge driver is active in `.git/info/attributes` BEFORE
+      // any rebase that touches `.jsonl` files. Mirrors the legacy path; idempotent.
+      // Guard on a real `.git` so unit tests (mocked git, no repo on disk) skip it.
+      if (hasRealGit) {
+        ensureLocalUnionMergeAttribute();
+      }
+
       // --- read l1_outbox (FIFO) ---
       let rows: { id: number; line: string }[] = [];
       try {
@@ -386,22 +440,63 @@ export class PushDebouncer {
       const effectiveCount = Math.max(lines.length, count);
       const commitMsg = `auto: ${effectiveCount} ${effectiveCount === 1 ? 'entry' : 'entries'} via daemon ${new Date().toISOString()}`;
 
+      // Large-behind short-circuit (AC #3). Compute how many commits behind
+      // origin we are AFTER the fetch inside the first appendLinesViaPlumbing
+      // call would run. We do a lightweight pre-fetch here only when in a real
+      // repo so the test seam (no real git) skips this check cleanly. The
+      // `behind` count determines whether attempt 1 should immediately use
+      // forceResetToRemote instead of first trying the normal append.
+      const LARGE_BEHIND_THRESHOLD =
+        getConfig().cortex?.largeBehindThreshold ?? 10;
+      let startWithReset = false;
+      if (hasRealGit) {
+        try {
+          await git(['fetch', 'origin', '--', safeCortex], repoPath);
+          const behindOut = await git(
+            [
+              'rev-list', '--count',
+              `refs/heads/${safeCortex}..refs/remotes/origin/${safeCortex}`,
+            ],
+            repoPath,
+          );
+          const behind = parseInt(behindOut.trim(), 10);
+          if (!isNaN(behind) && LARGE_BEHIND_THRESHOLD > 0 && behind >= LARGE_BEHIND_THRESHOLD) {
+            startWithReset = true;
+            log(
+              `cortex '${safeCortex}' is ${behind} commits behind origin ` +
+                `(threshold=${LARGE_BEHIND_THRESHOLD}) — taking force-reset path on attempt 1`,
+            );
+          }
+        } catch {
+          // Pre-flight fetch/rev-list failed (new cortex, offline, etc.) —
+          // proceed with the normal path; the push will surface real errors.
+        }
+      }
+
       // Append + advance the branch ref via plumbing, retrying on a non-FF
-      // push by resetting our local ref to the re-fetched remote tip and
-      // rebuilding on top of it.
+      // push by hard-resetting the local ref to the re-fetched remote tip and
+      // rebuilding on top of it. `forceResetToRemote` ensures the local ref is
+      // always a descendant of origin at push time (fixes AGT-478 root cause).
       const MAX = PushDebouncer.MAX_PUSH_ATTEMPTS;
       let lastErr: unknown;
+      let lastErrIsNonFF = false;
       for (let attempt = 1; attempt <= MAX; attempt++) {
-        const { commit, parent } = await appendLinesViaPlumbing(
+        // On attempt 1 use forceResetToRemote when the clone was already far
+        // behind. On subsequent attempts (after a push rejection), always use
+        // forceResetToRemote so the retry never builds on the same stale base.
+        const forceResetToRemote = startWithReset || attempt > 1;
+        const { commit } = await appendLinesViaPlumbing(
           git,
           repoPath,
           safeCortex,
           lines,
           commitMsg,
-          // Skip the network fetch when there is no real repo (unit tests with
-          // a mocked git seam) — the mock's `fetch` is a harmless no-op, but
-          // skipping keeps the recorded call sequence focused on the write.
-          { fetchFirst: hasRealGit && !this._gitOverride },
+          // fetchFirst: skip the network round-trip when no real repo (mocked git
+          // seam). When forceResetToRemote is true the fetch is internal to
+          // appendLinesViaPlumbing (it needs the remote tip before resetting);
+          // the pre-flight fetch above already ran, but a re-fetch inside is
+          // cheap (git deduplicates) and ensures the tip is fresh at reset time.
+          { fetchFirst: hasRealGit && !this._gitOverride, forceResetToRemote },
         );
         log(`appended ${lines.length} ${lines.length === 1 ? 'entry' : 'entries'} to '${safeCortex}' via plumbing (commit ${commit.slice(0, 12)})`);
 
@@ -414,6 +509,7 @@ export class PushDebouncer {
         try {
           await git(['push', 'origin', `refs/heads/${safeCortex}:refs/heads/${safeCortex}`], repoPath);
           log(`pushed cortex '${safeCortex}' to origin`);
+          _pushMetrics.pushSuccesses++;
           this._deleteOutboxRows(safeCortex, drainedIds);
           return;
         } catch (pushErr) {
@@ -424,25 +520,23 @@ export class PushDebouncer {
             // Auth/network/other — surface immediately, don't spin.
             throw pushErr;
           }
+          lastErrIsNonFF = true;
           log(
             `push rejected for cortex '${safeCortex}' (attempt ${attempt}/${MAX}, ` +
-              `origin advanced) — re-fetching and rebuilding the append`,
+              `non-fast-forward) — will force-reset to remote tip on next attempt`,
           );
-          // Discard our just-built local commit so the next attempt rebuilds
-          // on the re-fetched remote tip. `resolveTip` inside the next
-          // `appendLinesViaPlumbing` fast-forwards the local ref to origin
-          // after the fetch, so a plain reset back to `parent` (the tip we
-          // built on) is enough to undo this attempt's commit; the fetch in
-          // the next iteration advances it past `parent`.
-          if (parent !== null) {
-            await git(['update-ref', `refs/heads/${safeCortex}`, parent, commit], repoPath)
-              .catch(() => {
-                // Ref already moved — best effort; the next resolveTip reconciles.
-              });
-          }
-          // The next iteration must fetch even under _gitOverride-less real
-          // git to pick up origin's advance.
+          // forceResetToRemote=true on next loop iteration ensures the local ref
+          // is hard-reset to the freshly-fetched origin tip before re-appending.
+          // (No explicit update-ref here — the reset happens inside
+          // appendLinesViaPlumbing at the top of the next iteration.)
         }
+      }
+
+      // All attempts exhausted with a non-FF still outstanding: surface in
+      // metrics so operators can observe without scraping daemon.log (AC #5).
+      if (lastErrIsNonFF) {
+        _pushMetrics.pushFailuresNonFastForward++;
+        _pushMetrics.lastPushErrorAt = new Date().toISOString();
       }
 
       throw (

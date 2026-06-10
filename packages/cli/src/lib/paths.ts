@@ -34,16 +34,14 @@ export function sanitizeName(name: string): string {
 }
 
 /**
- * Ensure the on-disk parent directories for a cortex's index DB and longterm
- * file exist. Slash-containing cortex names (e.g. "cortex/engineering") map
- * to nested paths like `<index>/cortex/engineering.db`; without an explicit
- * mkdir, SQLite and `fs.writeFile` would throw ENOENT on the missing
- * `cortex/` subdir. Idempotent — safe to call before every DB open or
- * longterm write.
+ * Ensure the on-disk parent directories for a cortex's index DB exist.
+ * Slash-containing cortex names (e.g. "cortex/engineering") map to nested
+ * paths like `<index>/cortex/engineering.db`; without an explicit mkdir,
+ * SQLite would throw ENOENT on the missing `cortex/` subdir. Idempotent —
+ * safe to call before every DB open.
  */
 export function ensureCortexParentDirs(cortexName: string): void {
   fs.mkdirSync(path.dirname(getIndexDbPath(cortexName)), { recursive: true });
-  fs.mkdirSync(path.dirname(getLongtermPath(cortexName)), { recursive: true });
 }
 
 function getThinkHome(): string | null {
@@ -91,14 +89,6 @@ export function getRepoPath(): string {
  */
 export function getUsageDbPath(): string {
   return path.join(getThinkDir(), 'usage.db');
-}
-
-export function getLongtermDir(): string {
-  return path.join(getThinkDir(), 'longterm');
-}
-
-export function getLongtermPath(cortexName: string): string {
-  return path.join(getLongtermDir(), `${sanitizeName(cortexName)}.md`);
 }
 
 export function getCuratorMdPath(): string {
@@ -255,7 +245,6 @@ export function maybeMigrateEngramsToIndex(): void {
 export function ensureThinkDirs(): void {
   maybeMigrateEngramsToIndex();
   fs.mkdirSync(getIndexDir(), { recursive: true });
-  fs.mkdirSync(getLongtermDir(), { recursive: true });
 }
 
 /**
