@@ -24,7 +24,11 @@ export function getSyncAdapter(): SyncAdapter | null {
   if (config.cortex?.repo) {
     return new GitSyncAdapter();
   }
-  if (config.cortex?.hub?.url) {
+  // Require BOTH url and token, matching HubSyncAdapter.isAvailable() / its
+  // internal getHub() guard. Selecting on url alone would pick the adapter for
+  // a token-less config that then soft-errors on every sync — selection must
+  // never be weaker than the operation guard.
+  if (config.cortex?.hub?.url && config.cortex.hub.token) {
     return new HubSyncAdapter();
   }
   return null;

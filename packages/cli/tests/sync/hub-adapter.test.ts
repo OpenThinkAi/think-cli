@@ -257,11 +257,18 @@ describe('hub adapter round-trip (peer A push -> peer B pull)', () => {
 });
 
 describe('hub adapter isAvailable', () => {
-  it('true iff cortex.hub.url is present', () => {
+  it('true iff cortex.hub has BOTH url and token (selection matches operation guard)', () => {
     pair.peerA.activate();
     const a = new HubSyncAdapter(hubFetch);
     // No hub config yet for this fresh peer home.
     expect(a.isAvailable()).toBe(false);
+
+    // url without token must NOT count as available — otherwise the registry
+    // would select the adapter and every sync would soft-error.
+    const existing = getConfig();
+    saveConfig({ ...existing, cortex: { hub: { url: HUB_URL, token: '' }, author: 'test' } });
+    expect(a.isAvailable()).toBe(false);
+
     configureHub();
     expect(a.isAvailable()).toBe(true);
   });

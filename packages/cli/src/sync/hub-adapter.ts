@@ -82,9 +82,14 @@ export class HubSyncAdapter implements SyncAdapter {
     this.fetchImpl = fetchImpl ?? fetch;
   }
 
+  // Available iff BOTH url and token are set. This MUST match the guard in
+  // getHub() (and the registry selection check): if selection were weaker than
+  // the operation guard, a url-only config would get the adapter selected and
+  // then soft-error on every push/pull — selected-but-inoperable, the worst
+  // UX. Requiring the token here means a half-configured hub is simply "not
+  // configured" and the user sees the actionable setup error at config time.
   isAvailable(): boolean {
-    const hub = getConfig().cortex?.hub;
-    return !!hub?.url;
+    return this.getHub() !== null;
   }
 
   // Cheap reachability probe. The contract (see SyncAdapter.isReachable)
