@@ -14,6 +14,27 @@ export interface FsBackendConfig {
 }
 
 /**
+ * Hub (HTTP) sync backend — the authenticated cortex-sync client (AGT-573,
+ * `sync/hub-adapter.ts`). Points think at a `think serve` instance running the
+ * AGT-572 cortex-sync routes. This is BYO-hub / open-core: a static-token
+ * client with NO paid logic. `token` is a static configured bearer token
+ * (matching the hub's `THINK_TOKEN`) — it is read from config, never logged,
+ * and never written to disk by any code path other than the user's own
+ * `config.json`.
+ */
+export interface HubBackendConfig {
+  /** Base URL of the hub (`think serve`), e.g. `https://hub.example.com`. */
+  url: string;
+  /** Static bearer token matching the hub's `THINK_TOKEN`. Never logged. */
+  token: string;
+  /**
+   * Optional remote cortex-name override. When omitted the local cortex name
+   * is used as the remote partition name (the common case).
+   */
+  cortex?: string;
+}
+
+/**
  * Tunable weights and thresholds for the composite retro value signal
  * (AGT-460 / design doc §5 M5). Every field is optional; omitted fields fall
  * back to the `DEFAULT_RETRO_VALUE_SIGNAL_*` constants in
@@ -55,6 +76,11 @@ export interface CortexConfig {
   repo?: string;
   /** Local-fs backend. Mutually exclusive with `repo`. */
   fs?: FsBackendConfig;
+  /**
+   * Hub (HTTP) backend — the authenticated cortex-sync client (AGT-573).
+   * BYO-hub / open-core: a static-token push/pull client, no paid logic.
+   */
+  hub?: HubBackendConfig;
   active?: string;
   author: string;
   curateEveryN?: number;
