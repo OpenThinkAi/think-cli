@@ -91,16 +91,17 @@ export interface CortexConfig {
    * reindex`).
    *
    * Set to `0` (or any value ≤ 0) to disable the scheduled loop entirely.
-   * Default 24 (see `DEFAULT_PRUNE_INTERVAL_HOURS` in
-   * `daemon/embedding-prune-loop.ts`). Requires a daemon restart to take effect.
+   * Default: 24. Requires a daemon restart to take effect.
    */
   pruneIntervalHours?: number;
   /**
    * Grace window, in days, before a superseded row's embedding becomes
    * eligible for pruning. Keeps a freshly-superseded row's vector around
    * briefly in case it is still a useful recall bridge. Tombstoned rows are
-   * pruned immediately and ignore this. Default 14 (see
-   * `DEFAULT_PRUNE_SUPERSEDED_GRACE_DAYS`).
+   * pruned immediately and ignore this. Default: 14. Set to `0` to prune
+   * superseded rows immediately with no grace period — this removes only the
+   * grace delay, not Tier 1 pruning itself (use `pruneIntervalHours = 0` to
+   * disable pruning entirely).
    */
   pruneSupersededGraceDays?: number;
   /**
