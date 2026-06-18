@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [2.3.1] — 2026-06-18
+
+### Changed
+
+- **`think init` no longer references retired `oteam` / role-pipeline tooling.** The onboarding block it writes into `CLAUDE.md`/`AGENTS.md` previously (a) told every agent, in the retro-reading section, that the `/assign-ticket` and `/implement-project` orchestrator skills "handle this deterministically" — unconditionally, in every init — and (b) appended an `oteam`-workspace cadence line when an `~/.open-team` config was detected. Both pointed at tooling that has been retired. The unconditional `/assign-ticket`·`/implement-project` line is removed, and the entire `oteam`-workspace detection feature (`detectOteamWorkspace`, the conditional segment, the `--minimal`/help text, and the related console notices) is dropped along with its tests. Existing managed blocks refresh on the next `think init` run.
+
 ## [2.3.0] — 2026-06-17
 
 ### Added

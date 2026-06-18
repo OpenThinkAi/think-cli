@@ -4,7 +4,6 @@ import path from 'node:path';
 import { tmpdir } from 'node:os';
 import {
   mkdtempSync,
-  mkdirSync,
   readFileSync,
   rmSync,
   writeFileSync,
@@ -48,12 +47,6 @@ describe('think init — scoped marker block', () => {
     return readFileSync(path.join(projectDir, 'CLAUDE.md'), 'utf-8');
   }
 
-  function writeOteamConfig(body: unknown): void {
-    const dir = path.join(homeRoot, '.open-team');
-    mkdirSync(dir, { recursive: true });
-    writeFileSync(path.join(dir, 'config.json'), JSON.stringify(body), 'utf-8');
-  }
-
   it('creates CLAUDE.md with begin/end markers on a fresh install', async () => {
     await run();
     const content = readClaude();
@@ -61,11 +54,6 @@ describe('think init — scoped marker block', () => {
     expect(content).toContain(END_MARKER);
     expect(content).toContain('# Work Logging');
     expect(content.indexOf(BEGIN_MARKER)).toBeLessThan(content.indexOf(END_MARKER));
-  });
-
-  it('omits the oteam line when no oteam config is present', async () => {
-    await run();
-    expect(readClaude()).not.toContain('oteam assign');
   });
 
   it('includes the iterative-learning and retro-read sections with generic <repo-basename> placeholder', async () => {
@@ -80,47 +68,15 @@ describe('think init — scoped marker block', () => {
     expect(content).not.toContain('--cortex fx-tracker');
   });
 
-  it('orders sections worklog → (oteam line if present) → retro inside the markers', async () => {
-    writeOteamConfig({ workspaces: { foo: '/tmp/foo' } });
+  it('orders sections worklog → retro inside the markers', async () => {
     await run();
     const content = readClaude();
     const worklogIdx = content.indexOf('# Work Logging');
-    const oteamIdx = content.indexOf('Under an `oteam` workspace');
     const iterativeIdx = content.indexOf('# Iterative Learning');
     const readIdx = content.indexOf('# Reading retros at task start');
     expect(worklogIdx).toBeGreaterThan(-1);
-    expect(oteamIdx).toBeGreaterThan(worklogIdx);
-    expect(iterativeIdx).toBeGreaterThan(oteamIdx);
+    expect(iterativeIdx).toBeGreaterThan(worklogIdx);
     expect(readIdx).toBeGreaterThan(iterativeIdx);
-  });
-
-  it('includes the oteam line when ~/.open-team/config.json has at least one workspace', async () => {
-    writeOteamConfig({ workspaces: { foo: '/tmp/foo' }, default: 'foo' });
-    await run();
-    const content = readClaude();
-    expect(content).toContain('think recall');
-    expect(content).toContain('oteam assign');
-    expect(content).toContain('think sync');
-  });
-
-  it('also accepts the legacy `vaults` config key', async () => {
-    writeOteamConfig({ vaults: { foo: '/tmp/foo' }, default: 'foo' });
-    await run();
-    expect(readClaude()).toContain('oteam assign');
-  });
-
-  it('treats an empty workspaces map as "no oteam"', async () => {
-    writeOteamConfig({ workspaces: {} });
-    await run();
-    expect(readClaude()).not.toContain('oteam assign');
-  });
-
-  it('treats malformed config.json as "no oteam" (no throw)', async () => {
-    const dir = path.join(homeRoot, '.open-team');
-    mkdirSync(dir, { recursive: true });
-    writeFileSync(path.join(dir, 'config.json'), '{ not json', 'utf-8');
-    await run();
-    expect(readClaude()).not.toContain('oteam assign');
   });
 
   it('is idempotent across re-runs (no growth, no diff outside markers)', async () => {
@@ -507,7 +463,7 @@ describe('think init — minimum-necessary defaults + --minimal flag (AGT-067)',
     return readFileSync(path.join(projectDir, 'CLAUDE.md'), 'utf-8');
   }
 
-  it('--minimal writes the minimal template (no decision narration, no oteam adaptation, no retro pattern)', async () => {
+  it('--minimal writes the minimal template (no decision narration, no retro pattern)', async () => {
     await initCommand.parseAsync(['--dir', projectDir, '--minimal'], { from: 'user' });
 
     const content = readClaude();
@@ -517,8 +473,6 @@ describe('think init — minimum-necessary defaults + --minimal flag (AGT-067)',
     expect(content).not.toContain('Decided against X because Y');
     // No retro pattern in minimal template
     expect(content).not.toContain('# Iterative Learning');
-    // No oteam adaptation in minimal template
-    expect(content).not.toContain('Under an `oteam` workspace');
   });
 
   it('default template (no --minimal) includes the privacy disclosure paragraph (AC #2)', async () => {

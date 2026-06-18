@@ -76,8 +76,6 @@ Three verbs for writing:
 \`think sync\` and \`think retro\` store on your home cortex (the active one, or \`-C <name>\`). \`think retro\` auto-tags the lesson with the repo you run it in (a \`repo:<basename>\` context) so \`think brief\` and recall surface it for that codebase — you don't pass a cortex per repo. Override the detected context with \`--context <name>\` when needed.
 `;
 
-const OTEAM_EXTRA_LINE = `\n**Under an \`oteam\` workspace:** run \`think recall\` before \`oteam assign\` and \`think sync\` after each role-pipeline hand-off.\n`;
-
 const RETRO_BLOCK = `# Iterative Learning
 
 When you observe a convention, invariant, prior decision, or gotcha worth remembering about a repo, leave a retro for the next agent who works on it:
@@ -104,7 +102,7 @@ Before non-trivial work in a repo (especially the first time touching it in a se
 think brief
 \`\`\`
 
-\`think brief\` auto-detects the repo and scopes retros to it. Optional, not required — orchestrator skills (\`/assign-ticket\`, \`/implement-project\`) handle this deterministically when applicable.
+\`think brief\` auto-detects the repo and scopes retros to it. Optional, not required.
 `;
 
 // Fingerprint that identifies a pre-marker (legacy) think block written by an
@@ -112,21 +110,6 @@ think brief
 // are distinctive enough that co-occurrence outside markers is the legacy signal.
 const LEGACY_FINGERPRINT_A = '**After every commit';
 const LEGACY_FINGERPRINT_B = 'think sync';
-
-function detectOteamWorkspace(home: string): boolean {
-  const cfgPath = path.join(home, '.open-team', 'config.json');
-  if (!fs.existsSync(cfgPath)) return false;
-  try {
-    const raw = fs.readFileSync(cfgPath, 'utf-8');
-    const parsed = JSON.parse(raw);
-    const workspaces = (parsed && typeof parsed === 'object' && (parsed.workspaces ?? parsed.vaults)) as
-      | Record<string, unknown>
-      | undefined;
-    return !!workspaces && typeof workspaces === 'object' && Object.keys(workspaces).length > 0;
-  } catch {
-    return false;
-  }
-}
 
 // Attempt a zero-byte connect to the v3 daemon socket with a short timeout.
 // Returns true only if the socket accepts the connection. Any error or timeout
@@ -156,7 +139,7 @@ function isV3DaemonReachable(home: string, timeoutMs = 300): Promise<boolean> {
   });
 }
 
-function buildBlock(oteamPresent: boolean, minimal = false, version: 'v2' | 'v3' = 'v2'): string {
+function buildBlock(minimal = false, version: 'v2' | 'v3' = 'v2'): string {
   if (minimal) {
     // Wrap the minimal body in the same begin/end markers as the default
     // path so `upsertBlock` can replace-in-place across re-runs and
@@ -166,12 +149,10 @@ function buildBlock(oteamPresent: boolean, minimal = false, version: 'v2' | 'v3'
     return `${BEGIN_MARKER}\n${MINIMAL_WORKLOG_BLOCK}${END_MARKER}\n`;
   }
   if (version === 'v3') {
-    const oteamSegment = oteamPresent ? OTEAM_EXTRA_LINE : '';
-    const body = `${V3_WORKLOG_BLOCK}${oteamSegment}`;
+    const body = `${V3_WORKLOG_BLOCK}`;
     return `${BEGIN_MARKER}\n${body}${END_MARKER}\n`;
   }
-  const oteamSegment = oteamPresent ? OTEAM_EXTRA_LINE : '';
-  const body = `${WORKLOG_BLOCK}${oteamSegment}\n${RETRO_BLOCK}`;
+  const body = `${WORKLOG_BLOCK}\n${RETRO_BLOCK}`;
   return `${BEGIN_MARKER}\n${body}${END_MARKER}\n`;
 }
 
@@ -367,11 +348,11 @@ function reportResult(filePath: string, result: UpsertResult, label: string): vo
 
 export const initCommand = new Command('init')
   .description(
-    'Set up Claude Code integration: upserts a marker-bracketed block in CLAUDE.md (and AGENTS.md if present) with work-logging guidance and generic iterative-learning instructions (read via `think brief`, write via `think retro`, cortex inferred from the repo basename); block adapts when an oteam workspace is detected. Pass --retro --cortex <name> to upsert a *separate* repo-scoped block that bakes the cortex name into the read/write commands literally — both blocks can coexist in the same file.',
+    'Set up Claude Code integration: upserts a marker-bracketed block in CLAUDE.md (and AGENTS.md if present) with work-logging guidance and generic iterative-learning instructions (read via `think brief`, write via `think retro`, cortex inferred from the repo basename). Pass --retro --cortex <name> to upsert a *separate* repo-scoped block that bakes the cortex name into the read/write commands literally — both blocks can coexist in the same file.',
   )
   .option('-d, --dir <path>', 'Target directory for CLAUDE.md')
   .option('-y, --yes', 'Skip confirmation, use defaults')
-  .option('--minimal', 'Write a conservative work-log template that logs only explicit shipped outcomes — no decision narration, no oteam adaptation, no retro pattern. Skips the disclosure prompt. Mutually exclusive with --retro.')
+  .option('--minimal', 'Write a conservative work-log template that logs only explicit shipped outcomes — no decision narration, no retro pattern. Skips the disclosure prompt. Mutually exclusive with --retro.')
   .option('--retro', 'Upsert the iterative-learning (retro) block instead of the work-logging block. Requires --cortex. When no -d is given: writes silently to the git repo root if inside a repo; prompts with cwd as the default otherwise.')
   .option('--cortex <name>', 'Cortex name baked into the retro block commands (required with --retro).')
   .option('--block-version <ver>', 'Force block version: v2 (fallback) or v3 (hook + MCP server). When omitted, v3 is used if the daemon is reachable; otherwise v2.')
@@ -381,8 +362,8 @@ Modes:
     Manages a single block in CLAUDE.md (and AGENTS.md if present)
     containing work-logging guidance plus generic retro pattern
     instructions (read with \`think brief\`, write with \`think retro\`,
-    cortex inferred from the repo's root basename). Block adapts when an
-    oteam workspace is detected. Best installed once at workspace level.
+    cortex inferred from the repo's root basename). Best installed once at
+    workspace level.
 
   --retro --cortex <name>:
     Manages a *separate* second block scoped to one cortex. The default
@@ -518,10 +499,10 @@ Examples:
     // The prompt names the data flow and bails on a No without writing
     // anything. `--retro` writes its own (separate) block and does NOT
     // get this disclosure today — retro-block setup is run per-repo and
-    // is invoked programmatically by orchestrator skills like
-    // /assign-ticket; adding interactive friction there would block
-    // those flows. The retro path's own data flow disclosure lives in
-    // SECURITY.md "Per-curation data envelope" + retro-recall docs.
+    // may be invoked programmatically by repo-setup automation; adding
+    // interactive friction there would block those flows. The retro
+    // path's own data flow disclosure lives in SECURITY.md
+    // "Per-curation data envelope" + retro-recall docs.
     if (!opts.yes && !opts.minimal) {
       const proceed = await promptLoggingConfirmation();
       if (!proceed) {
@@ -544,24 +525,15 @@ Examples:
       version = (await isV3DaemonReachable(home)) ? 'v3' : 'v2';
     }
 
-    const oteamPresent = detectOteamWorkspace(home);
-    const block = buildBlock(oteamPresent, opts.minimal, version);
+    const block = buildBlock(opts.minimal, version);
     const label = opts.minimal ? 'minimal work logging' : 'work logging';
 
     if (opts.minimal) {
-      console.log(chalk.dim('Writing the minimal work-log template — no oteam adaptation, no retro pattern, no decision narration.'));
+      console.log(chalk.dim('Writing the minimal work-log template — no retro pattern, no decision narration.'));
     } else if (version === 'v3') {
       console.log(chalk.dim('Writing v3 block (implicit recall via hook + MCP server).'));
-      if (oteamPresent) {
-        console.log(chalk.dim('Detected oteam workspace — oteam segment included.'));
-      }
-    } else {
-      if (forcedVersion === undefined) {
-        console.log(chalk.dim('Daemon not detected — writing v2 block.'));
-      }
-      if (oteamPresent) {
-        console.log(chalk.dim('Detected oteam workspace — block tuned for role-pipeline cadence.'));
-      }
+    } else if (forcedVersion === undefined) {
+      console.log(chalk.dim('Daemon not detected — writing v2 block.'));
     }
 
     const claudePath = path.join(targetDir, 'CLAUDE.md');
