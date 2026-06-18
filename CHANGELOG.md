@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- **Automatic embedding pruning to reclaim cortex L2 disk and per-query RAM.** A long-lived cortex accumulates embedding BLOBs (384-dim float32 ≈ 1.5 KB each) on tombstoned and superseded rows that recall no longer uses — pure dead weight that also inflates the brute-force search backend, which loads every embedding into memory on each recall. A new daemon-scheduled prune loop clears these stale, locally-rebuildable embeddings (Tier 0: tombstoned rows; Tier 1: rows superseded past a grace window) and VACUUMs to return the freed pages to the OS, on a configurable cadence (`cortex.pruneIntervalHours`, default 24h; `0` disables). It starts on daemon boot, so a `think update` is all that's needed — no manual command. Embeddings are not part of the L1 JSONL source of truth (`think reindex` recomputes them), so pruning preserves content, FTS keyword recall, and `sync_version`; only the vector for an already-dead row is dropped, and it can be re-embedded later. A safety guard refuses to clear a cortex's last embeddings (which would otherwise trigger a full reindex on the next boot), the grace window is tunable via `cortex.pruneSupersededGraceDays` (default 14), and the gated VACUUM also reclaims pre-existing free-list bloat from compaction/reindex churn.
+
 ## [2.2.0] — 2026-06-10
 
 Stable release. Includes everything from 2.2.0-alpha.0 — `think dashboard` and its `config.dashboard` customization surface now ship on the `latest` dist-tag (see the alpha entry below for the full description) — plus the following changes landed since the alpha.

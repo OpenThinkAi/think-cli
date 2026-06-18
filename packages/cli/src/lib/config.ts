@@ -82,6 +82,28 @@ export interface CortexConfig {
    */
   curationIntervalHours?: number;
   /**
+   * Cadence, in hours, at which the daemon prunes stale, locally-rebuildable
+   * embedding BLOBs from each cortex L2 and VACUUMs reclaimed space. The prune
+   * clears embeddings on tombstoned rows and on rows superseded longer than
+   * {@link pruneSupersededGraceDays} ago — neither of which recall still uses —
+   * so it frees disk and per-query RAM without losing content, keyword recall,
+   * or the L1 source of truth (cleared rows can be re-embedded via `think
+   * reindex`).
+   *
+   * Set to `0` (or any value ≤ 0) to disable the scheduled loop entirely.
+   * Default 24 (see `DEFAULT_PRUNE_INTERVAL_HOURS` in
+   * `daemon/embedding-prune-loop.ts`). Requires a daemon restart to take effect.
+   */
+  pruneIntervalHours?: number;
+  /**
+   * Grace window, in days, before a superseded row's embedding becomes
+   * eligible for pruning. Keeps a freshly-superseded row's vector around
+   * briefly in case it is still a useful recall bridge. Tombstoned rows are
+   * pruned immediately and ignore this. Default 14 (see
+   * `DEFAULT_PRUNE_SUPERSEDED_GRACE_DAYS`).
+   */
+  pruneSupersededGraceDays?: number;
+  /**
    * Minimum trimmed-character length for a `kind=retro` write (AGT-455).
    * Retros below this are rejected at intake unless `--force` is set.
    * Default 40 (see `DEFAULT_RETRO_MIN_LENGTH`).
