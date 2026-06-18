@@ -28,6 +28,39 @@ import type { DatabaseSync } from 'node:sqlite';
  * column. `ciphertext` carries the encrypted bytes with the 16-byte GCM
  * auth tag appended (see `vault/cipher.ts`); `nonce` is the 12-byte GCM
  * nonce. ON DELETE CASCADE keeps the row from outliving its subscription.
+ *
+ * `cortex_lines` (added in AGT-571, cortex-sync hub store) is the backing
+ * store for cursor-based pull. It holds the memory lines a hub seat has
+ * accepted, each stamped with a **per-cortex** monotonic `server_seq` — the
+ * pull cursor defined by the AGT-570 wire contract (`sync/hub-protocol.ts`
+ * `StoredLine.server_seq`, `docs/cortex-sync-protocol.md#server_seq`). The
+ * append/read functions and the full rationale live in
+ * `serve/cortex-lines-store.ts`.
+ *
+ * Why `server_seq` here is a plain `INTEGER` and NOT `AUTOINCREMENT` like
+ * `events.server_seq`: that column is a *global* rowid sequence, but the wire
+ * contract requires each cortex to own an *independent* sequence space
+ * ("sequences are not comparable across cortexes" — AGT-570 spec). So the
+ * store assigns it per cortex as `COALESCE(MAX(server_seq),0)+1 WHERE
+ * cortex=?` inside a single write transaction. That is collision-safe for the
+ * SAME reason `events` AUTOINCREMENT is safe: `think serve` is single-process
+ * / single-writer (the v2 single-tenant decision), so no two appends race for
+ * the same MAX. A future multi-writer hub would break this and need a
+ * dedicated per-cortex sequence table (`cortex_seq(cortex PK, next_seq)`)
+ * bumped under a row lock — out of scope for v1, called out so the invariant
+ * isn't silently relied on.
+ *
+ * `cortex_lines_cortex_seq` indexes `(cortex, server_seq)` — it covers BOTH
+ * the hot-path range read (`WHERE cortex=? AND server_seq > ? ORDER BY
+ * server_seq LIMIT N`) and the `MAX(server_seq) WHERE cortex=?` lookup the
+ * append uses to allocate the next seq.
+ *
+ * `cortex_lines_cortex_id_unique` enforces `(cortex, id)` uniqueness so an
+ * `INSERT OR IGNORE` tolerates a client replaying a line (memories have
+ * content-derived ids — re-pushing the same line MUST NOT duplicate it or
+ * reassign its seq). This mirrors `events_sub_id_unique` + `INSERT OR IGNORE`
+ * tolerating connector id replays; per-cortex scoping lets two cortexes
+ * legitimately share an id namespace.
  */
 export function ensureSchema(db: DatabaseSync): void {
   db.exec(`
@@ -214,5 +247,48 @@ export function ensureSchema(db: DatabaseSync): void {
       value TEXT NOT NULL,
       updated_at TEXT NOT NULL
     ) STRICT;
+  `);
+
+  // `cortex_lines` (AGT-571) — see the header block for why `server_seq` is a
+  // per-cortex sequence assigned in the store rather than AUTOINCREMENT. A
+  // brand-new table needs only CREATE IF NOT EXISTS; existing DBs from prior
+  // versions simply gain the empty table on next boot (additive, AC4).
+  //
+  // Columns mirror the AGT-570 wire `StoredLine` (`sync/hub-protocol.ts`):
+  //   - `id` is the content-derived `deterministicId(ts, author, content)`.
+  //   - the always-present wire fields (`ts`, `author`, `content`,
+  //     `source_ids`) are stored as their own columns; `source_ids` is a JSON
+  //     TEXT array since SQLite has no array type.
+  //   - the optional wire fields (`episode_key`, `decisions`,
+  //     `origin_peer_id`) are nullable; `decisions` is JSON TEXT when present.
+  //   - `created_at` is the server's wall-clock accept time, distinct from the
+  //     line's own `ts` (the memory's authored timestamp) — kept for audit /
+  //     debugging, never part of the wire contract.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS cortex_lines (
+      cortex TEXT NOT NULL,
+      id TEXT NOT NULL,
+      server_seq INTEGER NOT NULL,
+      ts TEXT NOT NULL,
+      author TEXT NOT NULL,
+      content TEXT NOT NULL,
+      source_ids TEXT NOT NULL,
+      episode_key TEXT,
+      decisions TEXT,
+      origin_peer_id TEXT,
+      created_at TEXT NOT NULL
+    ) STRICT;
+  `);
+  // Covers the range-read hot path AND the per-cortex MAX(server_seq) lookup
+  // the append uses to allocate the next seq.
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS cortex_lines_cortex_seq
+      ON cortex_lines(cortex, server_seq);
+  `);
+  // Idempotent re-append: a UNIQUE (cortex, id) lets `INSERT OR IGNORE`
+  // tolerate a replayed content-derived line without duplicating it.
+  db.exec(`
+    CREATE UNIQUE INDEX IF NOT EXISTS cortex_lines_cortex_id_unique
+      ON cortex_lines(cortex, id);
   `);
 }
