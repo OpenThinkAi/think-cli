@@ -185,6 +185,15 @@ describe('GET /v1/cortex-sync/pull', () => {
     expect(r.status).toBe(400);
   });
 
+  it('400 when limit=0 — schema enforces min(1), so the hasMore=full-page heuristic never sees a 0 limit', async () => {
+    // Guards the pull handler's `hasMore = lines.length === limit` logic: a
+    // limit of 0 would make that expression `0 === 0 = true` forever. The
+    // protocol schema's min(1) rejects it at the boundary before the handler
+    // runs, so the heuristic is only ever evaluated for limit >= 1.
+    const r = await pull({ limit: 0 });
+    expect(r.status).toBe(400);
+  });
+
   it('400 when cortex query param is missing', async () => {
     const r = await client.request({ path: '/v1/cortex-sync/pull?cursor=0' });
     expect(r.status).toBe(400);
