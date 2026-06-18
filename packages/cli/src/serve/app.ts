@@ -3,6 +3,7 @@ import { health } from './routes/health.js';
 import { bearerAuth } from './middleware/auth.js';
 import { credentialsRoute } from './routes/credentials.js';
 import { eventsRoute } from './routes/events.js';
+import { cortexSyncRoute } from './routes/cortex-sync.js';
 import { subscriptionsRoute } from './routes/subscriptions.js';
 import { VERSION } from './version.js';
 import type { ConnectorRegistry } from './connectors/registry.js';
@@ -50,6 +51,10 @@ export function createApp(deps: {
   const authed = new Hono();
   authed.use('*', bearerAuth());
   authed.route('/', eventsRoute(deps.db));
+  // Cortex-sync push/pull (AGT-572). Mounted INSIDE `authed` so the routes
+  // inherit `bearerAuth()` (AC2/AC3) without re-implementing auth. Lives under
+  // `/v1/cortex-sync/*`, distinct from the retired `/v1/cortexes` 410 shim.
+  authed.route('/', cortexSyncRoute(deps.db));
   authed.route('/', subscriptionsRoute(deps.db));
   authed.route('/', credentialsRoute(deps.db, deps.vault, deps.registry));
   app.route('/', authed);
@@ -60,7 +65,7 @@ export function createApp(deps: {
         error: 'endpoint not found',
         detail:
           `open-think serve v${VERSION} serves /v1/health, /v1/events, /v1/subscriptions, ` +
-          'and /v1/subscriptions/:id/credential.',
+          '/v1/subscriptions/:id/credential, /v1/cortex-sync/push, and /v1/cortex-sync/pull.',
       },
       404,
     ),
