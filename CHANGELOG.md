@@ -2,9 +2,16 @@
 
 ## [Unreleased]
 
+## [2.3.0] — 2026-06-17
+
 ### Added
 
-- **Automatic embedding pruning to reclaim cortex L2 disk and per-query RAM.** A long-lived cortex accumulates embedding BLOBs (384-dim float32 ≈ 1.5 KB each) on tombstoned and superseded rows that recall no longer uses — pure dead weight that also inflates the brute-force search backend, which loads every embedding into memory on each recall. A new daemon-scheduled prune loop clears these stale, locally-rebuildable embeddings (Tier 0: tombstoned rows; Tier 1: rows superseded past a grace window) and VACUUMs to return the freed pages to the OS, on a configurable cadence (`cortex.pruneIntervalHours`, default 24h; `0` disables). It starts on daemon boot, so a `think update` is all that's needed — no manual command. Embeddings are not part of the L1 JSONL source of truth (`think reindex` recomputes them), so pruning preserves content, FTS keyword recall, and `sync_version`; only the vector for an already-dead row is dropped, and it can be re-embedded later. A safety guard refuses to clear a cortex's last embeddings (which would otherwise trigger a full reindex on the next boot), the grace window is tunable via `cortex.pruneSupersededGraceDays` (default 14), and the gated VACUUM also reclaims pre-existing free-list bloat from compaction/reindex churn.
+- **Automatic embedding pruning reclaims cortex L2 disk and per-query RAM.** A long-lived cortex accumulates embedding BLOBs (384-dim float32 ≈ 1.5 KB each) on tombstoned and superseded rows that recall no longer uses — dead weight that also inflates the brute-force search backend, which loads every embedding into memory on each recall. A new daemon-scheduled prune loop clears these stale embeddings and VACUUMs to return the freed pages to the OS. Specifics:
+  - **Zero-touch:** the loop starts on daemon boot, so updating `think` is all you do — there is no manual command. The first pass fires shortly after boot.
+  - **What it prunes:** tombstoned rows (Tier 0) and rows superseded past a grace window (Tier 1) — never a row recall still uses.
+  - **Lossless and reversible:** embeddings are a local index, not part of the L1 JSONL source of truth, so pruning preserves content, keyword recall, and `sync_version`. `think reindex` re-embeds any cleared row.
+  - **Configurable:** `cortex.pruneIntervalHours` sets the cadence (default 24; `0` disables the loop). `cortex.pruneSupersededGraceDays` sets the Tier 1 grace window (default 14; `0` prunes superseded rows immediately).
+  - **Bonus reclaim:** the gated VACUUM also returns pre-existing free-list bloat from compaction/reindex churn to the OS, not just space freed by this pass.
 
 ## [2.2.0] — 2026-06-10
 
