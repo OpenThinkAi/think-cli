@@ -48,6 +48,7 @@ import { warmupEmbedModel, EMBEDDING_MODEL_NAME } from '../lib/embed.js';
 import { startProxySubscribe } from './proxy-subscribe.js';
 import { startPullLoop, notifyCliCall } from './pull-loop.js';
 import { startCurationLoop } from './curation-loop.js';
+import { startEmbeddingPruneLoop } from './embedding-prune-loop.js';
 
 // ---------------------------------------------------------------------------
 // Paths
@@ -513,6 +514,18 @@ export async function runDaemon(options: DaemonOptions): Promise<void> {
 
   const curationLoopHandle = startCurationLoop();
 
+  // ---------------------------------------------------------------------------
+  // Embedding prune loop — automatic disk/RAM reclamation per cortex.
+  //
+  // Clears stale, locally-rebuildable embedding BLOBs (tombstoned rows + rows
+  // superseded past a grace window) and VACUUMs reclaimed space, on a
+  // configurable cadence (cortex.pruneIntervalHours; 0 disables). Fires shortly
+  // after boot so pruning "just happens" after a `think update`. Self-guards
+  // against errors and never crashes the daemon.
+  // ---------------------------------------------------------------------------
+
+  const embeddingPruneLoopHandle = startEmbeddingPruneLoop();
+
   const proxySubscribeHandle = startProxySubscribe((_cortex, _commitSha) => {
     // TODO: call triggerImmediatePull(cortex) here once AGT-311 passes the
     // cortex name through to the callback (the exported pull-loop function
@@ -551,6 +564,8 @@ export async function runDaemon(options: DaemonOptions): Promise<void> {
     }
     // Stop the scheduled curation loop (no-op if disabled).
     curationLoopHandle.stop();
+    // Stop the scheduled embedding-prune loop (no-op if disabled).
+    embeddingPruneLoopHandle.stop();
     // Stop proxy-subscribe WS client (no-op if proxy not configured).
     proxySubscribeHandle.stop();
 
