@@ -161,6 +161,26 @@ describe('hub adapter pull (AC1, AC2)', () => {
     expect(getSyncCursor(pair.cortexName, 'hub', 'pull')).toBe('3');
   });
 
+  it('skips lines this peer authored — self-echo guard (AGT-574)', async () => {
+    // The hub is one shared stream: after a push, a pull from a cursor behind
+    // our own lines re-delivers them. The local original keeps its uuid id
+    // while the wire carries the content-derived id, so ingesting the echo
+    // would store a second copy of the same memory under a different id.
+    pair.peerA.activate();
+    const a = adapter();
+    insertMemory(pair.cortexName, { ts: '2026-06-18T00:00:00Z', author: 'a', content: 'own line' });
+    const pushRes = await a.push(pair.cortexName);
+    expect(pushRes.pushed).toBe(1);
+
+    // Pull cursor is still 0 — the pull page includes our own pushed line.
+    const pullRes = await a.pull(pair.cortexName);
+    expect(pullRes.errors).toEqual([]);
+    expect(pullRes.pulled).toBe(0); // echo skipped, not ingested
+    expect(getMemoryCount(pair.cortexName)).toBe(1); // no duplicate copy
+    // The cursor still advances past the skipped line — it was consumed.
+    expect(getSyncCursor(pair.cortexName, 'hub', 'pull')).toBe('1');
+  });
+
   it('drains a backlog larger than one page in a single run (hasMore loop)', async () => {
     // PULL_MAX_LIMIT is 1000; seed > 1000 to force a second page.
     for (let i = 0; i < 1001; i++) {
