@@ -16,6 +16,7 @@
     "dev": "tsx src/index.ts",
     "test": "vitest run",
     "test:watch": "vitest",
+    "e2e:hub": "tsx scripts/e2e-byo-hub.ts",
     "typecheck": "tsc --noEmit -p tsconfig.json"
   },
   "homepage": "https://openthink.dev",

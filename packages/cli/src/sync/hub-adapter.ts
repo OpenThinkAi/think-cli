@@ -245,6 +245,17 @@ export class HubSyncAdapter implements SyncAdapter {
     }
 
     const remoteCortex = hub.cortex ?? cortex;
+    // Self-echo guard (mirrors the push-side origin_peer_id guard, AGT-250):
+    // the hub is ONE shared per-cortex stream, so a pull from a cursor behind
+    // our own pushes re-delivers the lines this peer authored. Those must be
+    // skipped, not ingested — the local original keeps its locally-assigned
+    // uuid id while the wire carries the content-derived id, so re-ingesting
+    // our own line would store a second copy of the same memory under a
+    // different id. (The fs adapter never hits this for a fresh peer because
+    // its pull reads per-peer files; the hub stream has no such partitioning.)
+    // Lines without origin_peer_id (legacy/unstamped) can't be attributed and
+    // are ingested as before — our own pushes always stamp the field.
+    const localPeer = getPeerId();
     // Single integer cursor: the max server_seq consumed so far. Persisted as
     // a string in sync_cursors(cortex,'hub','pull'); 0 means "from the start".
     const cursorStr = getSyncCursor(cortex, this.name, 'pull');
@@ -284,6 +295,8 @@ export class HubSyncAdapter implements SyncAdapter {
       const { lines, nextCursor, hasMore } = parsed.data;
 
       for (const line of lines) {
+        // Self-echo guard — see the localPeer note above.
+        if (line.origin_peer_id === localPeer) continue;
         // Memories are immutable via sync — the wire shape carries no
         // tombstone, but guard defensively in case a future field appears.
         const { content: sanitizedContent, warnings } = validateEngramContent(line.content);
