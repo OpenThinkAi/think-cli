@@ -502,31 +502,56 @@ export function closeAllCortexDbs(): void {
 }
 
 /**
- * Enumerate cortex names by listing `<indexDir>/*.db` on disk. Used at daemon
- * boot to discover which cortices need an outbox-drain notify (see
- * `daemon/index.ts`); also useful anywhere that needs a name list without
- * opening every DB.
+ * Enumerate cortex names by walking `<indexDir>/**\/*.db` on disk. Used at
+ * daemon boot to discover which cortices need an outbox-drain notify (see
+ * `daemon/index.ts`), by the embedding-prune loop, and by `think cortex list`
+ * — anywhere that needs a name list without opening every DB.
  *
- * Returns names in stable lexical order (sorted basename without the `.db`
- * suffix). Returns `[]` if the index directory doesn't exist yet (fresh
- * install before any `cortex create`).
+ * The walk MUST be recursive: `sanitizeName()` deliberately permits `/` in
+ * cortex names (e.g. "cortex/engineering" → `<index>/cortex/engineering.db`,
+ * see `ensureCortexParentDirs()`), and names may have any number of segments,
+ * so a flat readdir — or even a one-level walk — silently hides them. That
+ * was exactly the bug in #78: slash-named cortexes were invisible to the
+ * prune loop and boot-time outbox replay.
+ *
+ * Returns names in stable lexical order: the path relative to `getIndexDir()`
+ * minus the `.db` suffix, with separators normalized to `/` so Windows
+ * callers see the same names `sanitizeName()` accepted.  Returns `[]` if the
+ * index directory doesn't exist yet (fresh install before any
+ * `cortex create`).
  *
  * Assumption: `getIndexDir()` contains ONLY per-cortex DB files written via
  * `getIndexDbPath()`. SQLite WAL sidecars (`*.db-wal`, `*.db-shm`) end with
- * `-wal`/`-shm` so the `.db` extension check already excludes them. No
- * non-cortex artifacts are written into this directory by the codebase as
- * of this writing — if that changes, tighten this filter accordingly.
+ * `-wal`/`-shm` so the `.db` extension check already excludes them; anything
+ * else (stray files, empty subdirs) is skipped. No non-cortex artifacts are
+ * written into this directory by the codebase as of this writing — if that
+ * changes, tighten this filter accordingly.
  */
 export function listKnownCortexes(): string[] {
   const indexDir = getIndexDir();
-  let entries: string[];
-  try {
-    entries = fs.readdirSync(indexDir);
-  } catch {
-    return [];
-  }
-  return entries
-    .filter((e) => e.endsWith('.db'))
-    .map((e) => path.basename(e, '.db'))
-    .sort();
+  const names: string[] = [];
+
+  const walk = (dir: string): void => {
+    let entries: fs.Dirent[];
+    try {
+      entries = fs.readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return; // missing/unreadable dir — treat as empty rather than throwing
+    }
+    for (const entry of entries) {
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        // Plain directories only — following symlinked dirs risks cycles and
+        // escaping the index tree, and nothing in the codebase creates them.
+        walk(full);
+      } else if (entry.isFile() && entry.name.endsWith('.db')) {
+        names.push(
+          path.relative(indexDir, full).slice(0, -'.db'.length).split(path.sep).join('/'),
+        );
+      }
+    }
+  };
+
+  walk(indexDir);
+  return names.sort();
 }
