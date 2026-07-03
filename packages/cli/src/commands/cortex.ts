@@ -5,10 +5,10 @@ import { Command, Option } from 'commander';
 import chalk from 'chalk';
 import readline from 'node:readline';
 import { getConfig, saveConfig, getPeerId } from '../lib/config.js';
-import { getCortexDb, closeCortexDb } from '../db/engrams.js';
+import { getCortexDb, closeCortexDb, listKnownCortexes } from '../db/engrams.js';
 import { getMemoryCount, getSyncCursor } from '../db/memory-queries.js';
 import { getRetroCount } from '../db/retro-queries.js';
-import { getIndexDbPath, getIndexDir } from '../lib/paths.js';
+import { getIndexDbPath } from '../lib/paths.js';
 import { getSyncAdapter } from '../sync/registry.js';
 import { LocalFsSyncAdapter } from '../sync/local-fs-adapter.js';
 import { installAgent, uninstallAgent, getAgentStatus } from '../lib/auto-curate.js';
@@ -228,24 +228,17 @@ cortexCommand.addCommand(new Command('list')
   .description('Show all cortexes')
   .action(async () => {
     const config = getConfig();
-    const indexDir = getIndexDir();
 
-    // List local cortex databases
-    const localCortexes: string[] = [];
-    if (fs.existsSync(indexDir)) {
-      for (const file of fs.readdirSync(indexDir)) {
-        if (file.endsWith('.db') && !file.endsWith('-shm') && !file.endsWith('-wal')) {
-          localCortexes.push(file.replace('.db', ''));
-        }
-      }
-    }
+    // List local cortex databases. listKnownCortexes walks subdirectories so
+    // slash-named cortexes (e.g. "cortex/engineering") show up too (#78).
+    const localCortexes = listKnownCortexes();
 
     if (localCortexes.length === 0) {
       console.log(chalk.dim('No cortexes found. Run: think cortex create <name>'));
       return;
     }
 
-    for (const name of localCortexes.sort()) {
+    for (const name of localCortexes) {
       const marker = name === config.cortex?.active ? chalk.green('* ') : '  ';
       const count = getMemoryCount(name);
       const countLabel = count > 0 ? chalk.dim(` (${count} memories)`) : '';
@@ -604,7 +597,7 @@ cortexCommand.addCommand(new Command('migrate')
       process.exit(1);
     }
 
-    const localCortexes = listLocalCortexes();
+    const localCortexes = listKnownCortexes();
     if (localCortexes.length === 0) {
       console.error(chalk.red('No local cortexes to migrate.'));
       console.error(chalk.dim('  Run `think cortex setup --fs <path>` to set up a fresh local-fs backend.'));
@@ -696,16 +689,6 @@ cortexCommand.addCommand(new Command('migrate')
   }));
 
 cortexCommand.addCommand(cortexMigrateLayoutCommand);
-
-function listLocalCortexes(): string[] {
-  const dir = getIndexDir();
-  if (!fs.existsSync(dir)) return [];
-  const out: string[] = [];
-  for (const file of fs.readdirSync(dir)) {
-    if (file.endsWith('.db')) out.push(file.replace(/\.db$/, ''));
-  }
-  return out.sort();
-}
 
 // think cortex auto-curate — scheduled background curation
 const autoCurateCommand = new Command('auto-curate')
