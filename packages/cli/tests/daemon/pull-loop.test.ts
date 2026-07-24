@@ -40,15 +40,24 @@ vi.mock('../../src/lib/embed.js', () => ({
 
 // Mock getCortexDb with an in-memory SQLite-like object.
 const insertedIds = new Set<string>();
+// id → deleted_at applied via the tombstone UPDATE path (issue #84).
+const tombstonedIds = new Map<string, string>();
 
 vi.mock('../../src/db/engrams.js', () => ({
   getCortexDb: vi.fn(() => ({
     prepare: (sql: string) => ({
-      get: (id: string) => (sql.includes('SELECT id FROM memories WHERE id = ?') && insertedIds.has(id) ? { id } : undefined),
+      get: (id: string) =>
+        (sql.includes('SELECT id, deleted_at FROM memories WHERE id = ?') && insertedIds.has(id)
+          ? { id, deleted_at: tombstonedIds.get(id) ?? null }
+          : undefined),
       run: (...args: unknown[]) => {
         // Capture the id (first positional arg after INSERT OR IGNORE)
         if (typeof args[0] === 'string' && sql.includes('INSERT OR IGNORE INTO memories')) {
           insertedIds.add(args[0] as string);
+        }
+        // Tombstone application (issue #84): UPDATE ... SET deleted_at = ? WHERE id = ?
+        if (sql.includes('UPDATE memories SET deleted_at')) {
+          tombstonedIds.set(args[1] as string, args[0] as string);
         }
         return { changes: 1 };
       },
@@ -176,6 +185,7 @@ async function runOneCycle(loop: PullLoop): Promise<void> {
 beforeEach(() => {
   logs.length = 0;
   insertedIds.clear();
+  tombstonedIds.clear();
   cursors.clear();
   vi.clearAllMocks();
 });
@@ -293,6 +303,46 @@ describe('PullLoop — new commits ingested', () => {
     // The entry was already in insertedIds — still just 1 entry for this id.
     const countForId = [...insertedIds].filter(id => id === 'dup-entry-001').length;
     expect(countForId).toBe(1);
+  });
+
+  it('applies an incoming tombstone to an already-ingested entry (issue #84)', async () => {
+    const newSha = 'ffff1111';
+    const commitSha = 'abab2222';
+
+    // A peer deleted entry tomb-001; the tombstone line re-uses the id with
+    // deleted_at set. The entry is already in our L2 from an earlier pull.
+    insertedIds.add('tomb-001');
+
+    const tombstone = JSON.stringify({
+      id: 'tomb-001',
+      ts: '2026-05-17T11:00:00Z',
+      author: 'peer',
+      content: 'Retracted fact',
+      origin_peer_id: 'peer-xyz',
+      kind: 'memory',
+      topics: [],
+      deleted_at: '2026-05-18T09:00:00.000Z',
+      tombstone_reason: 'user_delete',
+    });
+
+    const fileContents = new Map([[`${commitSha}:000001.jsonl`, tombstone]]);
+    const changedFiles = new Map([[commitSha, ['000001.jsonl']]]);
+
+    const { impl } = buildGitMock({
+      remoteHead: newSha,
+      newCommits: [commitSha],
+      changedFiles,
+      fileContents,
+    });
+
+    const loop = new PullLoop('tombcortex', writeLine);
+    (loop as unknown as { _gitOverride: typeof impl })._gitOverride = impl;
+    cursors.delete('tombcortex:git:pull');
+
+    await runOneCycle(loop);
+
+    // The already-ingested row was tombstoned via UPDATE, not skipped.
+    expect(tombstonedIds.get('tomb-001')).toBe('2026-05-18T09:00:00.000Z');
   });
 });
 

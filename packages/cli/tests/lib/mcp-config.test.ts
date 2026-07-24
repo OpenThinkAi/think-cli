@@ -193,9 +193,38 @@ describe('install -> verify -> re-install (no-op) -> uninstall -> verify flow', 
 });
 
 describe('path resolution', () => {
-  it('globalMcpConfigPath returns ~/.claude.json', () => {
+  const savedConfigDir = process.env['CLAUDE_CONFIG_DIR'];
+
+  afterEach(() => {
+    if (savedConfigDir === undefined) {
+      delete process.env['CLAUDE_CONFIG_DIR'];
+    } else {
+      process.env['CLAUDE_CONFIG_DIR'] = savedConfigDir;
+    }
+  });
+
+  it('globalMcpConfigPath returns ~/.claude.json when CLAUDE_CONFIG_DIR is unset', () => {
+    delete process.env['CLAUDE_CONFIG_DIR'];
     const p = globalMcpConfigPath();
     expect(p).toBe(path.join(os.homedir(), '.claude.json'));
+  });
+
+  it('globalMcpConfigPath returns $CLAUDE_CONFIG_DIR/.claude.json when set (issue #85)', () => {
+    process.env['CLAUDE_CONFIG_DIR'] = tmpDir;
+    const p = globalMcpConfigPath();
+    expect(p).toBe(path.join(tmpDir, '.claude.json'));
+  });
+
+  it('writeMcpConfig accepts a CLAUDE_CONFIG_DIR outside the home directory', () => {
+    const outsideDir = fs.mkdtempSync(path.join(os.tmpdir(), 'think-test-configdir-'));
+    try {
+      process.env['CLAUDE_CONFIG_DIR'] = outsideDir;
+      const file = globalMcpConfigPath();
+      writeMcpConfig(file, { mcpServers: { think: { command: 'node', args: ['/x.js'] } } });
+      expect(readMcpConfig(file).mcpServers?.think).toBeDefined();
+    } finally {
+      fs.rmSync(outsideDir, { recursive: true, force: true });
+    }
   });
 
   it('projectMcpConfigPath returns <cwd>/.mcp.json', () => {

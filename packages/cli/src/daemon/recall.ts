@@ -12,6 +12,12 @@
  *   topic    string   (optional) — exact-match (lowercase) on topics array
  *   since    string   (optional) — ISO-8601 lower bound on ts (format check, inclusive)
  *   no_embed boolean  (optional) — skip embedding model entirely; fall back to FTS ranking
+ *   relevance_floor number (optional) — per-call override of config.recall.relevanceFloor;
+ *            ≤ -1 disables the floor for this call (issue #83: enumeration-style callers)
+ *
+ * Filters (kind/topic/since) constrain the candidate set BEFORE ranking
+ * (issue #83): constrained recall pre-computes the matching id set and ranks
+ * inside it, so the top-N is the top-N among matching entries.
  *
  * Returns: RecallEntry[]
  *
@@ -65,7 +71,7 @@
 import type { DatabaseSync } from 'node:sqlite';
 import embed from '../lib/embed.js';
 import { getCortexDb } from '../db/engrams.js';
-import { searchVectors } from '../lib/search-vectors.js';
+import { searchVectors, searchVectorsAmong, type VectorSearchResult } from '../lib/search-vectors.js';
 import { searchMemories } from '../db/memory-queries.js';
 import { getConfig } from '../lib/config.js';
 import type { TrustTierRule, TrustTier } from '../lib/config.js';
@@ -835,15 +841,28 @@ function parseRecallParams(params: Record<string, unknown>): ParsedRecallParams 
   const cfg = getConfig();
   const decay = cfg.recall?.recencyDecay ?? DEFAULT_DECAY;
 
-  // AGT-456: validate the configured floor. Cosine ∈ [−1, 1], so any value
+  // AGT-456: validate the floor. Cosine ∈ [−1, 1], so any value
   // above 1 would suppress every candidate forever — a silent foot-gun.
   // Reject it with a clear error rather than returning empty results
   // indefinitely. Values in [−1, 1] are active floors; anything below −1 is
   // the "disabled" sentinel (no real cosine is < −1, so nothing is filtered).
-  const relevanceFloorRaw = cfg.recall?.relevanceFloor ?? DEFAULT_RELEVANCE_FLOOR;
+  //
+  // Issue #83: a per-call `relevance_floor` param wins over config. Callers
+  // doing enumeration rather than similarity search (`think brief` listing a
+  // repo's retros) pass ≤ -1 so a query orthogonal to the entries' text cannot
+  // floor-drop results that match the metadata filter.
+  const floorOverrideRaw = params['relevance_floor'];
+  if (floorOverrideRaw !== undefined && typeof floorOverrideRaw !== 'number') {
+    throw new Error(
+      `recall: 'relevance_floor' must be a number, got ${JSON.stringify(floorOverrideRaw)}`,
+    );
+  }
+  const relevanceFloorRaw = (floorOverrideRaw as number | undefined)
+    ?? cfg.recall?.relevanceFloor
+    ?? DEFAULT_RELEVANCE_FLOOR;
   if (typeof relevanceFloorRaw !== 'number' || !Number.isFinite(relevanceFloorRaw) || relevanceFloorRaw > 1) {
     throw new Error(
-      `recall: config.recall.relevanceFloor must be a number ≤ 1 (cosine range is [−1, 1]; use ≤ -1 to disable the floor), got ${JSON.stringify(relevanceFloorRaw)}`,
+      `recall: relevance floor must be a number ≤ 1 (cosine range is [−1, 1]; use ≤ -1 to disable the floor), got ${JSON.stringify(relevanceFloorRaw)}`,
     );
   }
   const relevanceFloor = relevanceFloorRaw;
@@ -1245,22 +1264,21 @@ async function recallOneCortexWithVec(
     ? limit * RECENCY_OVERFETCH_FACTOR
     : limit;
 
-  const vectorResults = searchVectors(cortexName, queryVec, fetchLimit);
-  if (vectorResults.length === 0) {
-    return [];
-  }
-
-  const vectorIds = vectorResults.map((r) => r.id);
-  const placeholders = vectorIds.map(() => '?').join(', ');
-
-  const conditions: string[] = ['deleted_at IS NULL', `id IN (${placeholders})`];
-  const binds: (string | number)[] = [...vectorIds];
+  // ── Metadata filters — built BEFORE retrieval (issue #83) ──────────────────
+  // kind/topic/since must constrain the candidate set the ranking runs over,
+  // not be applied to a globally-ranked top-N. Otherwise entries that match the
+  // filter but rank outside the KNN cut are silently dropped, and a filtered
+  // recall returns zero (or a fraction) with no signal that filtering — not
+  // absence — produced the empty result (the failure mode that emptied
+  // `think brief` repo lessons).
+  const filterConditions: string[] = ['deleted_at IS NULL'];
+  const filterBinds: (string | number)[] = [];
 
   // AGT-305: Filter superseded entries unless --full or --include-superseded.
   // The superseded_at column was added in migration 14; skip when absent so
   // older DBs that haven't migrated yet continue to work without filtering.
   if (!full && !includeSuperseded && hasSupersededAt) {
-    conditions.push('superseded_at IS NULL');
+    filterConditions.push('superseded_at IS NULL');
   }
 
   // AGT-305: Filter compacted-raw entries for kind=memory unless --full.
@@ -1277,12 +1295,12 @@ async function recallOneCortexWithVec(
     // memory rows in compaction_links.
     if (kind === 'memory') {
       // All returned rows are memories — safe to filter globally.
-      conditions.push(
+      filterConditions.push(
         'id NOT IN (SELECT raw_id FROM compaction_links)',
       );
     } else if (kind === undefined) {
       // Mixed results — apply only to memory rows. Non-memory kinds pass through.
-      conditions.push(
+      filterConditions.push(
         "(kind != 'memory' OR kind IS NULL OR id NOT IN (SELECT raw_id FROM compaction_links))",
       );
     }
@@ -1292,14 +1310,14 @@ async function recallOneCortexWithVec(
 
   // AGT-320: since filter — ISO-8601 lower bound (inclusive) on ts.
   if (since) {
-    conditions.push('ts >= ?');
-    binds.push(since);
+    filterConditions.push('ts >= ?');
+    filterBinds.push(since);
   }
 
   // AGT-320: kind filter — SQL parameterized, not string concat.
   if (kind) {
-    conditions.push('kind = ?');
-    binds.push(kind);
+    filterConditions.push('kind = ?');
+    filterBinds.push(kind);
   }
 
   // AGT-320: topic filter — exact-match (lowercase) on the topics array.
@@ -1309,11 +1327,43 @@ async function recallOneCortexWithVec(
     const topicsColName = hasTopics ? 'topics' : 'topics_json';
     // Case-insensitive match: lower() on both sides so stored topics like
     // "Auth" match user input "auth" (AGT-320 review feedback).
-    conditions.push(
+    filterConditions.push(
       `EXISTS (SELECT 1 FROM json_each(${topicsColName}) jt WHERE lower(jt.value) = ?)`,
     );
-    binds.push(topic.toLowerCase());
+    filterBinds.push(topic.toLowerCase());
   }
+
+  // ── Retrieval (issue #83) ──────────────────────────────────────────────────
+  // Constrained recall (any metadata filter set): compute the matching id set
+  // first, then rank exhaustively inside it via searchVectorsAmong — the top-N
+  // is the top-N among matching entries. Unconstrained recall keeps the
+  // engine-backed global KNN path unchanged.
+  const constrained = kind !== undefined || topic !== undefined || since !== undefined;
+  let vectorResults: VectorSearchResult[];
+  if (constrained) {
+    const candidateRows = db.prepare(
+      `SELECT id FROM memories WHERE ${filterConditions.join(' AND ')}`,
+    ).all(...filterBinds) as { id: string }[];
+    if (candidateRows.length === 0) {
+      return [];
+    }
+    vectorResults = searchVectorsAmong(
+      cortexName,
+      queryVec,
+      candidateRows.map((r) => r.id),
+      fetchLimit,
+    );
+  } else {
+    vectorResults = searchVectors(cortexName, queryVec, fetchLimit);
+  }
+  if (vectorResults.length === 0) {
+    return [];
+  }
+
+  const vectorIds = vectorResults.map((r) => r.id);
+  const placeholders = vectorIds.map(() => '?').join(', ');
+  const conditions: string[] = [...filterConditions, `id IN (${placeholders})`];
+  const binds: (string | number)[] = [...filterBinds, ...vectorIds];
 
   // AGT-320: topics_json wiring — alias topics_json as `topics` in the SELECT
   // so the rest of the pipeline (HydratedRow, JSON.parse) is uniform regardless

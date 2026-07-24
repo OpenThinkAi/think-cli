@@ -509,8 +509,20 @@ export class PullLoop {
 
     // Fast-path dedup check before the embed call (avoid embedding content
     // that's already indexed).
-    const existing = db.prepare('SELECT id FROM memories WHERE id = ?').get(entryId);
-    if (existing) return;
+    const existing = db.prepare(
+      'SELECT id, deleted_at FROM memories WHERE id = ?',
+    ).get(entryId) as { id: string; deleted_at: string | null } | undefined;
+    if (existing) {
+      // Tombstone lines (user delete #84, supersession duplicate) re-use the
+      // original entry's id with deleted_at set. When the row was already
+      // ingested live, apply the deletion — otherwise a peer's retraction
+      // never lands here and the entry stays live for this member forever.
+      if (deletedAt !== null && existing.deleted_at === null) {
+        db.prepare('UPDATE memories SET deleted_at = ? WHERE id = ?')
+          .run(deletedAt, entryId);
+      }
+      return;
+    }
 
     // Embed the content.
     let embeddingBytes: Buffer | null = null;

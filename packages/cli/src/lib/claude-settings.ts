@@ -86,10 +86,18 @@ export function projectSettingsPath(): string {
 }
 
 /**
- * Resolve the absolute path of the global MCP config file (`~/.claude.json`).
+ * Resolve the absolute path of the global MCP config file.
+ *
+ * Claude Code reads `$CLAUDE_CONFIG_DIR/.claude.json` when CLAUDE_CONFIG_DIR
+ * is set, and `~/.claude.json` otherwise (issue #85). Note the asymmetry with
+ * `globalSettingsPath()`: the settings default lives in the `~/.claude/`
+ * subdirectory, but `.claude.json` sits directly in the home directory.
  */
 export function globalMcpConfigPath(): string {
-  return path.join(os.homedir(), '.claude.json');
+  const configDir = process.env['CLAUDE_CONFIG_DIR'];
+  return configDir
+    ? path.join(configDir, '.claude.json')
+    : path.join(os.homedir(), '.claude.json');
 }
 
 /**
@@ -116,7 +124,13 @@ export function validateSettingsPath(target: string): void {
   const underHome = resolved.startsWith(homeDir + path.sep) || resolved === homeDir;
   const underCwd = resolved.startsWith(cwd + path.sep) || resolved === cwd;
 
-  if (!underHome && !underCwd) {
+  // An explicit CLAUDE_CONFIG_DIR is user intent — allow writes under it even
+  // when it sits outside the home directory (e.g. /opt/claude-config).
+  const configDir = process.env['CLAUDE_CONFIG_DIR'];
+  const underConfigDir = configDir !== undefined && configDir !== '' &&
+    (resolved.startsWith(path.resolve(configDir) + path.sep) || resolved === path.resolve(configDir));
+
+  if (!underHome && !underCwd && !underConfigDir) {
     throw new Error(
       `Refusing to write to ${resolved}: path is outside the home directory and the current working directory. ` +
         `This is a safety check — if you intended a different path, set CLAUDE_CONFIG_DIR.`,

@@ -33,7 +33,7 @@ const installSubcommand = new Command('install')
   .description('Register the think MCP server in Claude Code MCP config.')
   .option(
     '--project',
-    'Target <cwd>/.mcp.json instead of ~/.claude.json',
+    'Target <cwd>/.mcp.json instead of the global Claude Code MCP config ($CLAUDE_CONFIG_DIR/.claude.json when CLAUDE_CONFIG_DIR is set, else ~/.claude.json)',
   )
   .action((opts: { project?: boolean }) => {
     const configFile = opts.project ? projectMcpConfigPath() : globalMcpConfigPath();
@@ -91,7 +91,7 @@ const uninstallSubcommand = new Command('uninstall')
   .description('Remove the think MCP server from Claude Code MCP config.')
   .option(
     '--project',
-    'Target <cwd>/.mcp.json instead of ~/.claude.json',
+    'Target <cwd>/.mcp.json instead of the global Claude Code MCP config ($CLAUDE_CONFIG_DIR/.claude.json when CLAUDE_CONFIG_DIR is set, else ~/.claude.json)',
   )
   .action((opts: { project?: boolean }) => {
     const configFile = opts.project ? projectMcpConfigPath() : globalMcpConfigPath();

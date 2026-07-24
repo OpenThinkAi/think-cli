@@ -29,6 +29,7 @@ import { assignNextSeq } from '../../db/activity-seq.js';
 import { getConfig, getPeerId } from '../../lib/config.js';
 import embed, { EMBEDDING_MODEL_NAME } from '../../lib/embed.js';
 import { enqueueL1Outbox } from '../../lib/l1-page.js';
+import { isStructuralTopic, mergeTopics, parseTopicsJson } from '../../lib/topics.js';
 import { pushDebouncer } from '../push-debouncer.js';
 import type { CompactionSuccess, NewEntry } from './call.js';
 
@@ -62,6 +63,15 @@ export async function applyCompaction(
   const author = config.cortex?.author ?? 'unknown';
   const origin_peer_id = getPeerId();
 
+  // Issue #86: structural repo:<context> tags on the raw entry must survive
+  // compaction — `think brief` filters on them. Descriptive topics may be
+  // freely re-derived by the LLM, but structural ones carry scope, not prose.
+  const rawRow = getCortexDb(safeCortex).prepare(
+    `SELECT topics_json FROM memories WHERE id = ?`,
+  ).get(rawEntry.id) as { topics_json: string | null } | undefined;
+  const structuralTopics = parseTopicsJson(rawRow?.topics_json).filter(isStructuralTopic);
+  const topics = mergeTopics(structuralTopics, llmResult.topics);
+
   // ── Step 1: build the new compacted L1 entry ─────────────────────────────
   // The line is enqueued to `l1_outbox` (inside the L2 transaction below) and
   // appended to the cortex branch by the push-debouncer's serialized drain —
@@ -73,7 +83,7 @@ export async function applyCompaction(
     origin_peer_id,
     kind: 'memory',
     content: llmResult.compacted_text,
-    topics: llmResult.topics,
+    topics,
     supersedes: llmResult.supersedes,
     compacted_from: [rawEntry.id],
     decisions: [],
@@ -116,7 +126,7 @@ export async function applyCompaction(
       EMBEDDING_MODEL_NAME,
       activitySeq,
       'memory',
-      JSON.stringify(llmResult.topics),
+      JSON.stringify(topics),
     );
 
     // 3b. Insert compaction_links row for (rawEntry.id, compactedId)
@@ -154,7 +164,7 @@ export async function applyCompaction(
 
   log(
     `compaction applied (raw=${rawEntry.id}, compacted=${compactedId}, cortex=${safeCortex}): ` +
-    `supersedes=[${llmResult.supersedes.join(', ')}] topics=[${llmResult.topics.join(', ')}]`,
+    `supersedes=[${llmResult.supersedes.join(', ')}] topics=[${topics.join(', ')}]`,
   );
 }
 

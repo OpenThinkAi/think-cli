@@ -206,8 +206,39 @@ describe('handleRecall — relevance floor (AGT-456)', () => {
 
     vi.spyOn(embedModule, 'default').mockResolvedValue(axis(0));
     await expect(handleRecall({ cortex: CORTEX, query: 'q' })).rejects.toThrow(
-      /relevanceFloor must be a number/,
+      /relevance floor must be a number/,
     );
+  });
+
+  // ── per-call relevance_floor override (issue #83) ────────────────────────
+
+  it('relevance_floor: -1 in the RPC params disables the configured floor', async () => {
+    const belowFloor = insertAt(0.3, 1, 'below the default floor');
+
+    vi.spyOn(embedModule, 'default').mockResolvedValue(axis(0));
+    const results = await handleRecall({
+      cortex: CORTEX, query: 'q', limit: 50, relevance_floor: -1,
+    });
+    expect(results.map((r) => r.id)).toContain(belowFloor);
+  });
+
+  it('a per-call relevance_floor wins over the configured floor', async () => {
+    const midSimilarity = insertAt(0.7, 1, 'mid similarity entry');
+    saveConfig({ ...getConfig(), recall: { relevanceFloor: 0.2 } });
+
+    vi.spyOn(embedModule, 'default').mockResolvedValue(axis(0));
+    const results = await handleRecall({
+      cortex: CORTEX, query: 'q', limit: 50, relevance_floor: 0.9,
+    });
+    expect(results.map((r) => r.id)).not.toContain(midSimilarity);
+  });
+
+  it('rejects a non-numeric relevance_floor param', async () => {
+    insertAt(0.9, 1, 'entry');
+    vi.spyOn(embedModule, 'default').mockResolvedValue(axis(0));
+    await expect(handleRecall({
+      cortex: CORTEX, query: 'q', relevance_floor: 'nope',
+    })).rejects.toThrow(/'relevance_floor' must be a number/);
   });
 
   // ── AC2: FTS fallback (no_embed) is exempt — similarity=0 still surfaces ──

@@ -146,6 +146,40 @@ describe('handleRecall — filter flags (AGT-320)', () => {
     expect(results[0].topics).toEqual(['deploy', 'ci']);
   });
 
+  // ── filter-before-ranking (issue #83) ───────────────────────────────
+
+  it('--topic returns matching entries even when they rank outside the global KNN top-N (issue #83)', async () => {
+    const db = getCortexDb(CORTEX);
+    try { db.prepare('ALTER TABLE memories ADD COLUMN topics_json TEXT').run(); } catch { /* already exists */ }
+
+    // 40 decoys with perfect similarity to the query and no topic. With
+    // limit=3 the global KNN cut is 3 × RECENCY_OVERFETCH_FACTOR = 15 ids —
+    // all decoys — so a filter applied after retrieval sees no tagged entry.
+    for (let i = 0; i < 40; i++) {
+      const decoy = insertMemory(CORTEX, {
+        ts: '2026-05-02T00:00:00.000Z', author: 'test', content: `decoy entry ${i}`,
+      });
+      db.prepare('UPDATE memories SET embedding = ? WHERE id = ?')
+        .run(toBlob(axis(0)), decoy.id);
+    }
+
+    // The tagged entry is relevant (cosine ≈ 0.894, above the 0.6 relevance
+    // floor) but strictly below every decoy, so it can never make the global
+    // top-15. Pre-#83 this recall returned zero results.
+    const tagged = insertMemory(CORTEX, {
+      ts: '2026-05-01T00:00:00.000Z', author: 'test', content: 'repo-scoped lesson',
+    });
+    db.prepare('UPDATE memories SET embedding = ?, topics_json = ? WHERE id = ?')
+      .run(toBlob(new Float32Array([0.894, 0.447, 0])), JSON.stringify(['repo:hivedb']), tagged.id);
+
+    vi.spyOn(embedModule, 'default').mockResolvedValue(axis(0));
+
+    const results = await handleRecall({
+      cortex: CORTEX, query: 'lesson', topic: 'repo:hivedb', limit: 3,
+    });
+    expect(results.map(r => r.id)).toContain(tagged.id);
+  });
+
   // ── --since filter ──────────────────────────────────────────
 
   it('--since filters out entries before the given date', async () => {
