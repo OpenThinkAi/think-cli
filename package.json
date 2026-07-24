@@ -23,6 +23,9 @@
     "node": ">=22.5.0"
   },
   "overrides": {
-    "onnxruntime-web": "1.26.0"
+    "@modelcontextprotocol/sdk": {
+      "@hono/node-server": "^2.0.11"
+    },
+    "esbuild": "^0.28.1"
   }
 }
