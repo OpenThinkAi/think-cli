@@ -33,8 +33,11 @@
  *   Candidates whose RAW cosine similarity is below config.recall.relevanceFloor
  *   (default 0.6) are excluded BEFORE recency reweighting, so a sparse cortex
  *   returns zero entries instead of a top-K of garbage-tier matches. The floor
- *   does NOT apply to the FTS-fallback path (no cosine to compare). Set the
- *   config value ≤ -1 to disable.
+ *   does NOT apply to the FTS-fallback path (no cosine to compare), and the
+ *   config-default floor does NOT apply to constrained recall (kind/topic/since
+ *   set) — a metadata filter asserts set membership and the query only orders
+ *   the matching set (issue #83). An explicit per-call `relevance_floor` param
+ *   is always honored. Set either value ≤ -1 to disable.
  *
  * Quality-aware ranking (AGT-459, design doc §5 M4):
  *   After recency weighting, an additive curator-quality term is folded into the
@@ -713,6 +716,13 @@ interface ParsedRecallParams {
    */
   relevanceFloor: number;
   /**
+   * True when the caller passed a per-call `relevance_floor` param (issue #83).
+   * Constrained recall (kind/topic/since set) skips the config-default floor —
+   * but an explicitly passed floor is always honored, and this flag is how the
+   * two cases are told apart.
+   */
+  relevanceFloorExplicit: boolean;
+  /**
    * Additive boost for curator-promoted retros (AGT-459). Default
    * DEFAULT_QUALITY_BOOST (0.1); config-tunable via config.recall.qualityBoost.
    */
@@ -866,6 +876,7 @@ function parseRecallParams(params: Record<string, unknown>): ParsedRecallParams 
     );
   }
   const relevanceFloor = relevanceFloorRaw;
+  const relevanceFloorExplicit = floorOverrideRaw !== undefined;
 
   // AGT-459: quality-aware ranking terms. Both must be finite, non-negative
   // numbers — a negative boost or penalty would invert the curator's intent
@@ -950,7 +961,7 @@ function parseRecallParams(params: Record<string, unknown>): ParsedRecallParams 
   const excludeTiers = parseTierList(params['excludeTiers']);
   const includeQuarantined = params['includeQuarantined'] === true;
 
-  return { query, limit, kind, topic, context, since, decay, relevanceFloor, qualityBoost, qualityPenalty, contextBoost, full, includeSuperseded, noEmbed, sources, excludeSources, tiers, excludeTiers, includeQuarantined };
+  return { query, limit, kind, topic, context, since, decay, relevanceFloor, relevanceFloorExplicit, qualityBoost, qualityPenalty, contextBoost, full, includeSuperseded, noEmbed, sources, excludeSources, tiers, excludeTiers, includeQuarantined };
 }
 
 // ---------------------------------------------------------------------------
@@ -1191,6 +1202,7 @@ async function recallOneCortexWithVec(
   since: string | undefined,
   decay: number,
   relevanceFloor: number,
+  relevanceFloorExplicit: boolean,
   qualityBoost: number,
   qualityPenalty: number,
   contextBoost: number,
@@ -1412,7 +1424,15 @@ async function recallOneCortexWithVec(
   // Note: this is only reached on the vector path; the FTS fallback
   // (recallOneCortexWithFts) carries similarity=0 and is intentionally exempt,
   // since there is no cosine to compare against.
-  const floorActive = relevanceFloor > -1;
+  // Issue #83 (reopen): a metadata filter (kind/topic/since) asserts set
+  // membership — the query only orders the matching set. Constrained recall
+  // therefore skips the config-default floor: `--topic repo:x --limit 50` must
+  // return min(50, matching entries), independent of how the query happens to
+  // embed against them. An EXPLICIT per-call relevance_floor is still honored,
+  // so callers that want a floored, filtered recall can pass one.
+  const floorActive = constrained && !relevanceFloorExplicit
+    ? false
+    : relevanceFloor > -1;
   const flooredRows = floorActive
     ? rows.filter((row) => (simMap.get(row.id) ?? -Infinity) >= relevanceFloor)
     : rows;
@@ -1599,7 +1619,7 @@ async function recallSingleCortex(
   // caller gets a fast, clear error rather than a timeout waiting for embed().
   sanitizeName(cortexName);
 
-  const { query, limit, kind, topic, context, since, decay, relevanceFloor, qualityBoost, qualityPenalty, contextBoost, full, includeSuperseded, noEmbed, sources, excludeSources, tiers, excludeTiers, includeQuarantined } = parseRecallParams(params);
+  const { query, limit, kind, topic, context, since, decay, relevanceFloor, relevanceFloorExplicit, qualityBoost, qualityPenalty, contextBoost, full, includeSuperseded, noEmbed, sources, excludeSources, tiers, excludeTiers, includeQuarantined } = parseRecallParams(params);
 
   // AGT-465: activeCortex for provenance derivation.
   const activeCortex = getConfig().cortex?.active;
@@ -1634,7 +1654,7 @@ async function recallSingleCortex(
   }
 
   const entries = await recallOneCortexWithVec(
-    cortexName, queryVec, limit, kind, topic, context, since, decay, relevanceFloor, qualityBoost, qualityPenalty, contextBoost, full, includeSuperseded, activeCortex,
+    cortexName, queryVec, limit, kind, topic, context, since, decay, relevanceFloor, relevanceFloorExplicit, qualityBoost, qualityPenalty, contextBoost, full, includeSuperseded, activeCortex,
   );
   entries.sort((a, b) => b.score - a.score);
   // AGT-465: provenance filter applied post-rerank, post-limit-slice.
@@ -1679,7 +1699,7 @@ async function recallSingleCortex(
 async function recallFederated(
   params: Record<string, unknown>,
 ): Promise<RecallEntry[]> {
-  const { query, limit, kind, topic, context, since, decay, relevanceFloor, qualityBoost, qualityPenalty, contextBoost, full, includeSuperseded, noEmbed, sources, excludeSources, tiers, excludeTiers, includeQuarantined } = parseRecallParams(params);
+  const { query, limit, kind, topic, context, since, decay, relevanceFloor, relevanceFloorExplicit, qualityBoost, qualityPenalty, contextBoost, full, includeSuperseded, noEmbed, sources, excludeSources, tiers, excludeTiers, includeQuarantined } = parseRecallParams(params);
 
   // AGT-465: read activeCortex once for provenance derivation across all cortex legs.
   const activeCortex = getConfig().cortex?.active;
@@ -1767,7 +1787,7 @@ async function recallFederated(
     cortexNames.map(async (name) => {
       try {
         return await recallOneCortexWithVec(
-          name, queryVec, limit, kind, topic, context, since, decay, relevanceFloor, qualityBoost, qualityPenalty, contextBoost, full, includeSuperseded, activeCortex,
+          name, queryVec, limit, kind, topic, context, since, decay, relevanceFloor, relevanceFloorExplicit, qualityBoost, qualityPenalty, contextBoost, full, includeSuperseded, activeCortex,
         );
       } catch (err) {
         // Partial failure: cortex is unavailable or corrupt; contribute zero
