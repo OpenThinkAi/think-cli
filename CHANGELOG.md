@@ -2,6 +2,34 @@
 
 ## [Unreleased]
 
+## [2.4.0] — 2026-07-24
+
+Four fixes from the field, reported as issues #83–#86 (thanks @shallow-alchemy). Together they restore the `think brief` repo-lessons section, which was empty on any long-lived cortex.
+
+### Breaking
+
+Two deliberate behavior changes to `think delete`, both part of the #84 fix — audit any script that shells out to it:
+
+- **A zero-delete now exits 1** (previously 0, with `--match` even printing a success checkmark for deleting nothing). If a script treats any non-zero exit from `think delete` as fatal, it will now surface no-op deletions — which is the point, but plan for it.
+- **`--match` patterns hitting more than 20 live entries are refused without `--force`.** Broad retractions against a shared cortex must now be explicit. Previously the same pattern would have (attempted to) delete everything it touched with no guard.
+
+`--kind`/`--topic`/`--since` recall results also change shape in practice: filtered recalls that silently returned a fraction of matching entries (or none) now return the true top-N among matches. Consumers that had compensated with `--no-embed` workarounds can drop them.
+
+### Added
+
+- **`think delete` can finally retract entries from a shared cortex (#84).** The command now routes through a new daemon `delete` RPC that tombstones the entry in the active cortex index — the same store `recall` reads — and appends a tombstone line to the cortex branch, so the deletion reaches every peer and survives `think reindex`. Previously `delete` targeted an `entries` table in the legacy local `think.db` (a table that does not exist in cortex index DBs), so deleting any synced entry silently did nothing. Details:
+  - Peers apply incoming tombstones to already-ingested rows — the pull loop's id-dedup fast path previously skipped tombstone lines entirely, so even supersession tombstones never propagated to members who had already pulled the entry.
+  - A zero-delete is reported honestly: no green checkmark, exit code 1. `--match` previously printed `✓ Deleted 0 entry(ies)` for a total no-op.
+  - `--match` hits above 20 entries require `--force`, guarding a shared cortex against one broad pattern.
+  - The daemon must be running for cortex deletes (the tombstone is queued through it); installs with no cortex configured keep the old local-db behavior.
+
+### Fixed
+
+- **Recall filters no longer silently empty the result set (#83).** `--kind`/`--topic`/`--since` were applied *after* semantic retrieval, so entries matching the filter but ranking outside the embedding top-N were dropped — a filtered recall could return zero results while dozens of matching entries existed. Filters now constrain the candidate set *before* ranking: constrained recall pre-computes the matching id set and ranks exhaustively inside it, so the top-N is the top-N among matching entries. Unconstrained recall keeps the engine-backed KNN path unchanged.
+- **`think brief` repo lessons work again (#83).** Brief's repo-lessons recall is an enumeration (kind + topic identify the set; the query only orders it), so it now disables the relevance floor for that call via a new per-call `relevance_floor` RPC override — a query orthogonal to your retros' text can no longer floor-drop the whole section and mislabel the repo as having no retros.
+- **`think mcp install` registers where Claude Code actually reads (#85).** With `CLAUDE_CONFIG_DIR` set, Claude Code reads `$CLAUDE_CONFIG_DIR/.claude.json` — but the installer always wrote `~/.claude.json`, reporting success while the `think_recall`/`think_sync`/`think_expand` tools never appeared in any session. `install`/`uninstall` now resolve the env var (including config dirs outside `$HOME`) and print the path they wrote to.
+- **Curation no longer eats your topics (#86).** The supersession worker's post-write enrichment replaced an entry's `topics_json` wholesale with LLM-derived topics, dropping user-supplied `--topic` values and — worse — the structural `repo:<context>` tag that scopes a retro to its repo. Derived topics are now *merged* after existing ones (case-insensitive dedup, capped at the ingestion limit), and compaction carries structural `repo:*` tags from the raw entry onto the compacted one.
+
 ## [2.3.1] — 2026-06-18
 
 ### Changed
