@@ -523,6 +523,15 @@ export interface RecallEntry {
    */
   supersedes: string[];
   /**
+   * Id of the entry that superseded this one, when it has been superseded and
+   * the caller opted in via `--include-superseded`/`--full` (issue #87 —
+   * a hidden entry must be distinguishable from an absent one). Null for live
+   * entries and on schemas that pre-date migration 14.
+   */
+  superseded_by: string | null;
+  /** ISO-8601 timestamp of the supersession; null when not superseded. */
+  superseded_at: string | null;
+  /**
    * Stable integer position within this cortex (ORDER BY ts ASC, id ASC).
    * Null for entries that pre-date the AGT-291 activity_seq backfill.
    */
@@ -567,6 +576,9 @@ interface HydratedRow {
   activity_seq: number | null;
   /** The episode_key column value for proxy detection (AGT-465). Null when absent. */
   episode_key: string | null;
+  /** Supersession state (issue #87). Null for live rows / pre-migration-14 schemas. */
+  superseded_by: string | null;
+  superseded_at: string | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -1013,6 +1025,8 @@ function recallOneCortexWithFts(
       activity_seq: null,
       compacted_from: null,
       supersedes: [],
+      superseded_by: null,
+      superseded_at: null,
       provenance,
       trustTier,
     };
@@ -1399,6 +1413,8 @@ async function recallOneCortexWithVec(
     topicsSelectExpr,
     hasActivitySeq ? 'activity_seq' : 'NULL as activity_seq',
     hasEpisodeKey ? 'episode_key' : 'NULL as episode_key',
+    hasSupersededAt ? 'superseded_by' : 'NULL as superseded_by',
+    hasSupersededAt ? 'superseded_at' : 'NULL as superseded_at',
   ].join(', ');
 
   let rows: HydratedRow[];
@@ -1587,6 +1603,8 @@ async function recallOneCortexWithVec(
       activity_seq: row.activity_seq,
       compacted_from: compactedFrom,
       supersedes,
+      superseded_by: row.superseded_by ?? null,
+      superseded_at: row.superseded_at ?? null,
       provenance,
       trustTier,
     };

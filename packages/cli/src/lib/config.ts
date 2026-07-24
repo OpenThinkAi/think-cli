@@ -480,6 +480,17 @@ export interface CompactionConfig {
    * Default: 0.6
    */
   triageThreshold?: number;
+
+  /**
+   * Pairwise cosine floor for accepting an LLM-proposed supersession
+   * (issue #87). A candidate whose similarity to the new entry is below this
+   * is never superseded, regardless of what the LLM proposed. Backstops the
+   * structural evidence gate (shared topic / named entity), which is the
+   * primary guard. Set ≤ -1 to disable.
+   *
+   * Default: 0.4
+   */
+  supersedeMinCosine?: number;
 }
 
 export interface ProxyConfig {

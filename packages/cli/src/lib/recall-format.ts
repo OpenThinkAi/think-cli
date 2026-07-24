@@ -322,7 +322,12 @@ export function wrapForAgent(formatted: string, entries: RecallEntry[]): string 
     const provAttr   = escapeAttr(provRaw);
     // AGT-466: add trust tier attribute to the envelope tag.
     const trustAttr  = escapeAttr(tierRaw);
-    const wrapped    = `<recall-result cortex="${cortexAttr}" kind="${kindAttr}" id="${idAttr}" provenance="${provAttr}" trust="${trustAttr}">${escaped}</recall-result>`;
+    // Issue #87: mark superseded entries (visible only via --include-superseded
+    // or --full) so a hidden record is distinguishable from an absent one.
+    const supersededAttr = entry.superseded_by
+      ? ` superseded_by="${escapeAttr(entry.superseded_by)}"`
+      : '';
+    const wrapped    = `<recall-result cortex="${cortexAttr}" kind="${kindAttr}" id="${idAttr}" provenance="${provAttr}" trust="${trustAttr}"${supersededAttr}>${escaped}</recall-result>`;
 
     result = result.slice(0, contentStart) + wrapped + (lineEnd === -1 ? '' : result.slice(lineEnd));
 
