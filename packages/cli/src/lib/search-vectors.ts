@@ -148,6 +148,46 @@ function searchSqliteVec(
 // ─── public API ───────────────────────────────────────────────────────────────
 
 /**
+ * Search for the top-K most similar entries to `queryVec` AMONG the given ids
+ * (issue #83). Used when recall carries a metadata filter (kind/topic/since):
+ * the caller pre-computes the matching id set and ranking happens inside it,
+ * so filtered recall returns the top-K among matching entries — not the
+ * matching subset of a globally-ranked top-K.
+ *
+ * Always scores exhaustively (cosine per candidate) rather than going through
+ * a KNN engine: vec0 has no metadata hook inside the scan, and the candidate
+ * set is the filter's match set — typically far smaller than the corpus. Rows
+ * are fetched in chunks to stay under SQLite's bound-parameter limit.
+ */
+export function searchVectorsAmong(
+  cortexName: string,
+  queryVec: Float32Array,
+  ids: string[],
+  limit: number,
+): VectorSearchResult[] {
+  const db = getCortexDb(cortexName);
+  const CHUNK = 500;
+  const scored: VectorSearchResult[] = [];
+
+  for (let i = 0; i < ids.length; i += CHUNK) {
+    const chunk = ids.slice(i, i + CHUNK);
+    const placeholders = chunk.map(() => '?').join(', ');
+    const rows = db.prepare(
+      `SELECT id, embedding FROM memories
+       WHERE id IN (${placeholders}) AND embedding IS NOT NULL AND deleted_at IS NULL`,
+    ).all(...chunk) as { id: string; embedding: Uint8Array }[];
+
+    for (const row of rows) {
+      const vec = new Float32Array(row.embedding.buffer, row.embedding.byteOffset, row.embedding.byteLength / 4);
+      scored.push({ id: row.id, similarity: cosine(queryVec, vec) });
+    }
+  }
+
+  scored.sort((a, b) => b.similarity - a.similarity);
+  return scored.slice(0, limit);
+}
+
+/**
  * Search for the top-K most similar entries in `cortexName` to `queryVec`.
  *
  * The active backend is read from `config.search.engine` at call time, so

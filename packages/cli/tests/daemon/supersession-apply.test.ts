@@ -63,15 +63,15 @@ afterEach(() => {
  * Insert a minimal memory row into L2 for testing.
  * Bypasses the full sync pipeline — we only need the DB row.
  */
-function insertTestEntry(id: string, content: string, kind = 'retro'): void {
+function insertTestEntry(id: string, content: string, kind = 'retro', topics?: string[]): void {
   const db = getCortexDb(CORTEX);
   const now = new Date().toISOString();
   db.prepare(`
     INSERT OR IGNORE INTO memories
       (id, ts, author, content, source_ids, created_at, deleted_at,
-       sync_version, origin_peer_id, embedding, embedding_model, activity_seq, kind)
-    VALUES (?, ?, 'test-author', ?, '[]', ?, NULL, 1, 'test-peer', NULL, NULL, NULL, ?)
-  `).run(id, now, content, now, kind);
+       sync_version, origin_peer_id, embedding, embedding_model, activity_seq, kind, topics_json)
+    VALUES (?, ?, 'test-author', ?, '[]', ?, NULL, 1, 'test-peer', NULL, NULL, NULL, ?, ?)
+  `).run(id, now, content, now, kind, topics ? JSON.stringify(topics) : null);
 }
 
 function getMemoryRow(id: string): Record<string, unknown> | undefined {
@@ -128,6 +128,40 @@ describe('applySupersession (AGT-304)', () => {
 
     const row = getMemoryRow(newId);
     expect(row!['topics_json']).toBe(JSON.stringify(['build', 'testing']));
+  });
+
+  it('merges derived topics into existing ones instead of replacing (issue #86)', () => {
+    const newId = 'new-entry-086a';
+    insertTestEntry(newId, 'MCP setup requires CLAUDE.md edits.', 'retro',
+      ['mcp', 'claude-md', 'setup', 'repo:hivedb']);
+
+    applySupersession(newId, {
+      supersedes: [],
+      topics: ['hivedb', 'claude.md', 'mcp', 'think'],
+      isDuplicate: false,
+    }, CORTEX);
+
+    const row = getMemoryRow(newId);
+    // User-supplied topics + the structural repo: tag survive verbatim and in
+    // order; derived topics are appended, minus the case-insensitive dup 'mcp'.
+    expect(row!['topics_json']).toBe(JSON.stringify(
+      ['mcp', 'claude-md', 'setup', 'repo:hivedb', 'hivedb', 'claude.md', 'think'],
+    ));
+  });
+
+  it('never drops the structural repo: tag during enrichment (issue #86)', () => {
+    const newId = 'new-entry-086b';
+    insertTestEntry(newId, 'Some repo-scoped lesson.', 'retro', ['repo:hivedb']);
+
+    applySupersession(newId, {
+      supersedes: [],
+      topics: ['unrelated-derived-topic'],
+      isDuplicate: false,
+    }, CORTEX);
+
+    const topics = JSON.parse(getMemoryRow(newId)!['topics_json'] as string) as string[];
+    expect(topics).toContain('repo:hivedb');
+    expect(topics).toContain('unrelated-derived-topic');
   });
 
   it('tombstones the new entry in L2 when isDuplicate is true', () => {

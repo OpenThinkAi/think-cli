@@ -163,6 +163,10 @@ Examples:
       // repo context via the reserved repo:<context> topic (the v3 locality
       // model — no separate per-repo cortex). When no context is detected,
       // omit the topic filter and show all retros.
+      // relevance_floor: -1 — this call ENUMERATES the repo's lessons (kind +
+      // topic identify the set; the query only orders it). With the default
+      // floor active, a brief query orthogonal to the retros' text would drop
+      // every match and mislabel the repo as having no retros (issue #83).
       const repoRaw = await client.call("recall", {
         cortex: homeCortex,
         scope: "active",
@@ -170,6 +174,7 @@ Examples:
         limit,
         kind: "retro",
         ...(context ? { topic: contextTopic(context) } : {}),
+        relevance_floor: -1,
         source: "brief",
         ...(sessionId ? { session_id: sessionId } : {}),
       });

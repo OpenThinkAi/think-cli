@@ -8,19 +8,24 @@
  *   - result.isDuplicate true → tombstone the new entry (deleted_at = now) in L2
  *     and append a tombstone JSONL line to L1 so the canonical record reflects
  *     the skip. Logs a note: line.
- *   - result.topics → write topic tags to the new entry's topics_json column in L2
- *     (L2-only post-write enrichment; L1 is append-only and keeps the original
- *     empty topics from the sync write).
+ *   - result.topics → merge derived topic tags into the new entry's topics_json
+ *     column in L2 (L2-only post-write enrichment; L1 is append-only and keeps
+ *     the topics from the sync write).
  *
- * AC4 decision: topics are stored in L2 only for retros where they were
- * extracted post-write. L1 stays append-only; the original sync entry's topics
- * field remains []. If the L2 index is ever dropped and rebuilt (think reindex),
- * the topics would be re-extracted via a future reindex hook — for now they live
- * in L2 only and that is the accepted tradeoff (see ticket Note for spike).
+ * AC4 decision: derived topics are stored in L2 only, for retros where they
+ * were extracted post-write. L1 stays append-only. If the L2 index is ever
+ * dropped and rebuilt (think reindex), derived topics would be re-extracted via
+ * a future reindex hook — for now they live in L2 only and that is the accepted
+ * tradeoff (see ticket Note for spike).
+ *
+ * Issue #86: derived topics are merged into the existing array (which may carry
+ * user-supplied --topic values and the structural repo:<context> tag), never
+ * substituted for it.
  */
 
 import { getCortexDb } from '../../db/engrams.js';
 import { enqueueL1Outbox } from '../../lib/l1-page.js';
+import { mergeTopics, parseTopicsJson } from '../../lib/topics.js';
 import { pushDebouncer } from '../push-debouncer.js';
 import type { SupersessionResult } from './call.js';
 
@@ -139,12 +144,22 @@ export function applySupersession(
     // future queries understand why it was tombstoned.
   }
 
-  // --- AC4: update topics on the new entry in L2 (post-write enrichment) ---
-  // L1 is append-only; the original sync entry keeps its empty topics array.
-  // Topics live in L2 only for retros where they were extracted post-write.
+  // --- AC4: enrich topics on the new entry in L2 (post-write enrichment) ---
+  // L1 is append-only; the original sync entry keeps whatever topics it was
+  // written with. Derived topics are MERGED into the existing array, never
+  // substituted for it (issue #86): user-supplied --topic values and the
+  // structural repo:<context> tag that `think brief` filters on must survive
+  // curation.
   if (result.topics.length > 0) {
-    db.prepare(
-      `UPDATE memories SET topics_json = ? WHERE id = ?`,
-    ).run(JSON.stringify(result.topics), newEntryId);
+    const row = db.prepare(
+      `SELECT topics_json FROM memories WHERE id = ?`,
+    ).get(newEntryId) as { topics_json: string | null } | undefined;
+    const existing = parseTopicsJson(row?.topics_json);
+    const merged = mergeTopics(existing, result.topics);
+    if (merged.length !== existing.length) {
+      db.prepare(
+        `UPDATE memories SET topics_json = ? WHERE id = ?`,
+      ).run(JSON.stringify(merged), newEntryId);
+    }
   }
 }
