@@ -180,6 +180,54 @@ describe('handleRecall — filter flags (AGT-320)', () => {
     expect(results.map(r => r.id)).toContain(tagged.id);
   });
 
+  it('--topic returns every live matching entry regardless of query wording (issue #83 reopen)', async () => {
+    const db = getCortexDb(CORTEX);
+    try { db.prepare('ALTER TABLE memories ADD COLUMN topics_json TEXT').run(); } catch { /* already exists */ }
+
+    // Eight tagged entries that embed ORTHOGONALLY to the query (cosine 0,
+    // far below the default 0.6 relevance floor). A metadata filter asserts
+    // set membership, so the config-default floor must not apply: the
+    // acceptance criterion from the issue is min(limit, matching-count)
+    // results, independent of how the query embeds.
+    for (let i = 0; i < 8; i++) {
+      const entry = insertMemory(CORTEX, {
+        ts: '2026-05-01T00:00:00.000Z', author: 'test', content: `hivedb lesson ${i}`,
+      });
+      db.prepare('UPDATE memories SET embedding = ?, topics_json = ? WHERE id = ?')
+        .run(toBlob(axis(1)), JSON.stringify(['repo:hivedb']), entry.id);
+    }
+
+    vi.spyOn(embedModule, 'default').mockResolvedValue(axis(0));
+    const results = await handleRecall({
+      cortex: CORTEX, query: 'completely unrelated wording', topic: 'repo:hivedb', limit: 50,
+    });
+    expect(results).toHaveLength(8);
+  });
+
+  it('an explicit relevance_floor is still honored on a filtered recall', async () => {
+    const db = getCortexDb(CORTEX);
+    try { db.prepare('ALTER TABLE memories ADD COLUMN topics_json TEXT').run(); } catch { /* already exists */ }
+
+    const orthogonal = insertMemory(CORTEX, {
+      ts: '2026-05-01T00:00:00.000Z', author: 'test', content: 'orthogonal tagged entry',
+    });
+    db.prepare('UPDATE memories SET embedding = ?, topics_json = ? WHERE id = ?')
+      .run(toBlob(axis(1)), JSON.stringify(['repo:hivedb']), orthogonal.id);
+    const aligned = insertMemory(CORTEX, {
+      ts: '2026-05-02T00:00:00.000Z', author: 'test', content: 'aligned tagged entry',
+    });
+    db.prepare('UPDATE memories SET embedding = ?, topics_json = ? WHERE id = ?')
+      .run(toBlob(axis(0)), JSON.stringify(['repo:hivedb']), aligned.id);
+
+    vi.spyOn(embedModule, 'default').mockResolvedValue(axis(0));
+    const results = await handleRecall({
+      cortex: CORTEX, query: 'q', topic: 'repo:hivedb', limit: 50, relevance_floor: 0.5,
+    });
+    const ids = results.map(r => r.id);
+    expect(ids).toContain(aligned.id);
+    expect(ids).not.toContain(orthogonal.id);
+  });
+
   // ── --since filter ──────────────────────────────────────────
 
   it('--since filters out entries before the given date', async () => {
