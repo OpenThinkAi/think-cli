@@ -10,6 +10,14 @@ import { Command } from 'commander';
  * and `think recall`. Bundle size still grows by the proxy's deps; only
  * startup latency for non-serve commands is protected.
  *
+ * @hono/node-server is on 2.x (security advisory GHSA range <2.0.5; no
+ * patched 1.x exists). The `serve({ fetch, port })` surface this module and
+ * boot-entry.ts use is unchanged between 1.x and 2.x — the majors are a
+ * Node >=20 floor and internals — and the serve/boot smoke tests run
+ * against 2.x. A workspace override also forces 2.x under
+ * @modelcontextprotocol/sdk (its own pin is a vulnerable ^1.19.9); think
+ * only uses the MCP stdio transport, which never touches node-server.
+ *
  * All knobs are env-driven (`THINK_TOKEN`, `THINK_VAULT_KEY`, `PORT`,
  * `THINK_DB_PATH`, `THINK_POLL_INTERVAL_SECONDS`, `NODE_ENV`) — that's
  * load-bearing for Railway / docker-compose deployments where flags don't
