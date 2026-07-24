@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+## [2.5.1] — 2026-07-24
+
+### Security
+
+- **Dependency pass resolving 33 of the 37 open GitHub security alerts.** Semver-compatible fixes via `npm audit fix` (hono 4.12.27 — CORS wildcard-credential reflection among seven advisories — plus fast-uri, protobufjs, postcss, vite, body-parser, qs, ip-address, launch-editor), and two evaluated bumps: `@anthropic-ai/sdk` ^0.81 → ^0.115 and `@hono/node-server` ^1.13 → ^2.0.11 (serve() surface unchanged; serve tests pass on 2.x). Root `overrides` force patched `esbuild` ^0.28.1 under tsup and `@hono/node-server` ^2 under `@modelcontextprotocol/sdk`, whose own pins remain on vulnerable ranges.
+- **Known-open (no upstream patch):** `adm-zip` <0.6 and `sharp` <0.35, transitive via `@huggingface/transformers` → `onnxruntime-node`. think uses only the text-embedding pipeline — neither package's vulnerable code paths are reachable — and both resolve automatically when transformers bumps them.
+- **Policy note:** the GitHub repo is a read-only mirror of the stamp-gated origin — dependabot PRs there are treated as advisory signal and are never merged on GitHub. Dependency fixes land through the stamp flow (like this release), after which dependabot closes its PRs and alerts automatically.
+
 ## [2.5.0] — 2026-07-24
 
 Closes #87: LLM curation could supersede an entry with an unrelated one, silently hiding it from active recall with no way to discover or undo the link.
