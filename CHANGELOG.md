@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [2.4.1] — 2026-07-24
+
+### Fixed
+
+- **Filtered recall no longer loses matches to the relevance floor (#83, reopened).** 2.4.0 moved `--kind`/`--topic`/`--since` filtering ahead of ranking, but the config-default relevance floor (0.6 cosine) still applied afterward — so `recall --topic X` returned only the matching entries that happened to embed near the query wording. A metadata filter asserts set membership; the query only orders the matching set. Constrained recall now skips the config-default floor, so `--topic T --limit N` returns `min(N, live matching entries)` regardless of how the query is phrased. An explicit per-call `relevance_floor` is still honored, and unconstrained recall keeps the floor as before.
+
 ## [2.4.0] — 2026-07-24
 
 Four fixes from the field, reported as issues #83–#86 (thanks @shallow-alchemy). Together they restore the `think brief` repo-lessons section, which was empty on any long-lived cortex.
