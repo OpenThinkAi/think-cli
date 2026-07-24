@@ -16,6 +16,12 @@
  * each peer's curation. A revert therefore fully restores the entry on this
  * machine; other peers whose curation made the same link revert theirs
  * independently.
+ *
+ * Command shape: a noun-anchored subcommand group, following the established
+ * management-surface pattern in this CLI (`think cortex status`,
+ * `think daemon start`, `think mcp install`, `think hook install`). Flat
+ * verb-first commands are for the everyday write/read verbs (`sync`,
+ * `recall`, `retro`); grouped nouns are for management surfaces like this one.
  */
 
 import { Command } from 'commander';

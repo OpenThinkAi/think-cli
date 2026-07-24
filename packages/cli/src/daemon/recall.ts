@@ -527,10 +527,13 @@ export interface RecallEntry {
    * the caller opted in via `--include-superseded`/`--full` (issue #87 —
    * a hidden entry must be distinguishable from an absent one). Null for live
    * entries and on schemas that pre-date migration 14.
+   *
+   * Optional so the addition stays non-breaking for consumers that construct
+   * RecallEntry values; every producer in this package sets it.
    */
-  superseded_by: string | null;
-  /** ISO-8601 timestamp of the supersession; null when not superseded. */
-  superseded_at: string | null;
+  superseded_by?: string | null;
+  /** ISO-8601 timestamp of the supersession; null when not superseded. Optional, same rationale. */
+  superseded_at?: string | null;
   /**
    * Stable integer position within this cortex (ORDER BY ts ASC, id ASC).
    * Null for entries that pre-date the AGT-291 activity_seq backfill.
