@@ -17,10 +17,13 @@
  */
 
 import embed from '../../lib/embed.js';
+import { getConfig } from '../../lib/config.js';
 import { searchVectors } from '../../lib/search-vectors.js';
 import { getCortexDb } from '../../db/engrams.js';
 import { runSupersession } from './call.js';
 import { applySupersession } from './apply.js';
+import { gateSupersedes } from '../../lib/supersession-guard.js';
+import { parseTopicsJson } from '../../lib/topics.js';
 import type { RetroEntry, RetroCandidate } from './call.js';
 
 // ---------------------------------------------------------------------------
@@ -87,15 +90,18 @@ export async function runSupersessionWorker(
   // COEXISTS rather than REPLACES/DUPLICATE in that case.
   const db = getCortexDb(safeCortex);
   const candidateStmt = db.prepare(
-    `SELECT id, ts, content, kind FROM memories
+    `SELECT id, ts, content, kind, topics_json FROM memories
      WHERE id = ? AND deleted_at IS NULL AND (kind = 'retro' OR kind IS NULL)`,
   );
   const candidates: RetroCandidate[] = [];
+  // id → topics, for the structural evidence gate (issue #87) below.
+  const candidateTopics = new Map<string, string[]>();
   for (const { id } of aboveThreshold) {
     const row = candidateStmt.get(id) as
-      { id: string; ts: string; content: string; kind: string | null } | undefined;
+      { id: string; ts: string; content: string; kind: string | null; topics_json: string | null } | undefined;
     if (row) {
       candidates.push({ id: row.id, date: row.ts, content: row.content });
+      candidateTopics.set(row.id, parseTopicsJson(row.topics_json));
     }
   }
 
@@ -127,7 +133,40 @@ export async function runSupersessionWorker(
       droppedIds.join(', '),
     );
   }
-  const safeResult = { ...result, supersedes: filteredSupersedes };
+  // Step 6b: structural evidence gate (issue #87). Candidates arrive by
+  // embedding similarity — shared vocabulary — but superseding hides the
+  // target from active recall, so it requires evidence of a shared subject
+  // (common topic tag, e.g. the auto-applied repo:<context>, or a named
+  // entity). isDuplicate is deliberately NOT gated: it tombstones the NEW
+  // entry, not someone else's record.
+  const newTopicsRow = db.prepare(
+    'SELECT topics_json FROM memories WHERE id = ?',
+  ).get(newEntryId) as { topics_json: string | null } | undefined;
+  const similarityById = new Map(aboveThreshold.map((r) => [r.id, r.similarity]));
+  // Same config surface as the compaction path: a user who tightens
+  // compaction.supersedeMinCosine gets the floor on both supersession paths.
+  // Retro candidates already cleared SIMILARITY_THRESHOLD (0.6), so the
+  // default 0.4 floor is a no-op here — the wiring matters for stricter
+  // user-set values.
+  const minPairCosine = getConfig().compaction?.supersedeMinCosine ?? 0.4;
+  const gate = gateSupersedes(
+    { content, topics: parseTopicsJson(newTopicsRow?.topics_json) },
+    filteredSupersedes,
+    (id) => {
+      const candidate = candidates.find((c) => c.id === id);
+      return candidate
+        ? { content: candidate.content, topics: candidateTopics.get(id) ?? [], similarity: similarityById.get(id) }
+        : undefined;
+    },
+    minPairCosine,
+  );
+  for (const rejection of gate.rejected) {
+    console.warn(
+      `[supersession] evidence gate: rejected supersedes ${rejection.id} for retro ` +
+      `${newEntryId} (${rejection.reason}) — entry stays active`,
+    );
+  }
+  const safeResult = { ...result, supersedes: gate.accepted };
 
   // Step 7: apply
   applySupersession(newEntryId, safeResult, safeCortex);

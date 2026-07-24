@@ -25,6 +25,8 @@ import { getConfig } from '../../lib/config.js';
 import { LlmConsentError } from '../../lib/llm-consent.js';
 import { sanitizeForLog } from '../../lib/sanitize.js';
 import { searchVectors } from '../../lib/search-vectors.js';
+import { gateSupersedes } from '../../lib/supersession-guard.js';
+import { parseTopicsJson } from '../../lib/topics.js';
 import { daemonLog } from '../log.js';
 import type { NewEntry, CandidateEntry } from './call.js';
 
@@ -48,6 +50,13 @@ const BACKFILL_CAP = 100;
 const TRIAGE_TOP_K = 10;
 /** Default cosine similarity threshold below which LLM call is skipped. */
 const TRIAGE_THRESHOLD_DEFAULT = 0.6;
+/**
+ * Default pairwise cosine floor for accepting an LLM-proposed supersession
+ * (issue #87). Deliberately below the triage threshold: it only backstops the
+ * structural evidence gate against low-similarity stragglers inside the
+ * top-K, not re-litigates triage. Config: `compaction.supersedeMinCosine`.
+ */
+const SUPERSEDE_MIN_COSINE_DEFAULT = 0.4;
 
 // ---------------------------------------------------------------------------
 // Types
@@ -463,7 +472,37 @@ export class CompactionQueue {
         `candidate set for entry ${safeId}: ${droppedIds.join(', ')}`,
       );
     }
-    const safeResult = { ...result, supersedes: result.supersedes.filter(id => candidateIds.has(id)) };
+    const injectionFiltered = result.supersedes.filter(id => candidateIds.has(id));
+
+    // Structural evidence gate (issue #87): candidates are retrieved by
+    // embedding similarity — shared vocabulary — but superseding an entry
+    // hides it from active recall, so it demands evidence of a shared SUBJECT
+    // (common topic tag or named entity). A vocabulary-adjacent entry about a
+    // different repo/project must never be superseded; rejections are logged
+    // so a mislink attempt is visible in the daemon log.
+    const newEntryTopicsRow = db.prepare(
+      'SELECT topics_json FROM memories WHERE id = ?',
+    ).get(job.entry_id) as { topics_json: string | null } | undefined;
+    const similarityById = new Map(triageOthers.map(c => [c.id, c.similarity]));
+    const minPairCosine = getConfig().compaction?.supersedeMinCosine ?? SUPERSEDE_MIN_COSINE_DEFAULT;
+    const gate = gateSupersedes(
+      { content: newEntry.content, topics: parseTopicsJson(newEntryTopicsRow?.topics_json) },
+      injectionFiltered,
+      (id) => {
+        const candidate = candidates.find(c => c.id === id);
+        return candidate
+          ? { content: candidate.content, topics: candidate.topics, similarity: similarityById.get(id) }
+          : undefined;
+      },
+      minPairCosine,
+    );
+    for (const rejection of gate.rejected) {
+      log(
+        `supersession evidence gate: rejected supersedes ${rejection.id} for entry ${safeId} ` +
+        `(${rejection.reason}) — entry stays active`,
+      );
+    }
+    const safeResult = { ...result, supersedes: gate.accepted };
 
     const { applyCompaction } = await import('./apply.js');
     await applyCompaction(

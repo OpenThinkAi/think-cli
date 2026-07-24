@@ -32,6 +32,8 @@ function entry(
     activity_seq: null,
     compacted_from: null,
     supersedes: [],
+    superseded_by: null, // issue #87 default for test fixtures
+    superseded_at: null,
     provenance: 'unknown', // AGT-465 default for test fixtures
     trustTier: 'untrusted', // AGT-466 default for test fixtures (overridden per-entry as needed)
     ...overrides,
@@ -248,6 +250,28 @@ describe('wrapForAgent (AGT-464 / AGT-465)', () => {
     expect(wrapped).toContain('<recall-result cortex="think-cli" kind="memory" id="m-wrap-1" provenance="self" trust="trusted">');
     expect(wrapped).toContain('the quick brown fox');
     expect(wrapped).toContain('</recall-result>');
+  });
+
+  it('marks superseded entries with a superseded_by attribute (issue #87)', () => {
+    const superseded = entry({
+      id: 'm-wrap-sup',
+      ts: '2026-05-21T10:00:00Z',
+      kind: 'memory',
+      content: 'a decision that was later superseded',
+      cortex: 'think-cli',
+      provenance: 'self',
+      trustTier: 'trusted',
+      superseded_by: '019f6303-a139-70fc-8352-f7b69fe5e66a',
+      superseded_at: '2026-07-14T23:43:30.105Z',
+    });
+    const entries = [superseded];
+    const formatted = formatRecallOutput(entries, cortexSet(entries));
+    const wrapped = wrapForAgent(formatted, entries);
+    expect(wrapped).toContain('superseded_by="019f6303-a139-70fc-8352-f7b69fe5e66a"');
+    // Live entries carry no superseded_by attribute at all.
+    const live = [baseEntry];
+    const liveWrapped = wrapForAgent(formatRecallOutput(live, cortexSet(live)), live);
+    expect(liveWrapped).not.toContain('superseded_by=');
   });
 
   it('preserves the human-readable group header outside the tags', () => {
