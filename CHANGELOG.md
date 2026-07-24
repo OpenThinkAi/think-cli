@@ -2,6 +2,20 @@
 
 ## [Unreleased]
 
+## [2.5.0] — 2026-07-24
+
+Closes #87: LLM curation could supersede an entry with an unrelated one, silently hiding it from active recall with no way to discover or undo the link.
+
+### Added
+
+- **Structural evidence gate on supersession.** Curation retrieves supersession candidates by embedding similarity — shared vocabulary — but hiding a record demands evidence of a shared *subject*. An LLM-proposed supersession is now accepted only when the two entries share a topic tag or a named entity (repo slug, ticket id, `#N` ref, filename, hyphenated identifier). When both entries carry structure and none of it overlaps, the link is rejected and logged; plain structure-free prose (a "use pnpm" retro superseding "use npm") still defers to the LLM as before. A pairwise cosine floor (`compaction.supersedeMinCosine`, default 0.4, applied to both compaction and retro supersession) backstops the gate. The gate's test fixtures are the real mislinked and correctly-consolidated pairs from the issue report.
+- **`think supersession list | show <id> | revert <id>`.** Superseded entries were previously discoverable only by querying SQLite directly. `list` enumerates hidden entries (most recent first, with totals), `show` explains an entry's supersession state in both directions (what hid it, what it hid), and `revert` restores an entry to active recall. Supersession state is per-peer local index state, so a revert is complete on that machine.
+- **Recall marks superseded entries.** Entries returned via `--include-superseded`/`--full` now carry `superseded_by`/`superseded_at` in JSON output and a `superseded_by="<id>"` attribute on the `<recall-result>` envelope, so a hidden record is distinguishable from an absent one.
+
+### Breaking
+
+- **`RecallEntry` gains two required fields** (`superseded_by: string | null`, `superseded_at: string | null`). TypeScript consumers that construct or implement `RecallEntry` directly must add them (`superseded_by: null, superseded_at: null` for live entries). Consumers that only *read* recall responses are unaffected — the fields are additive on the wire.
+
 ## [2.4.1] — 2026-07-24
 
 ### Fixed
