@@ -17,6 +17,7 @@
  */
 
 import embed from '../../lib/embed.js';
+import { getConfig } from '../../lib/config.js';
 import { searchVectors } from '../../lib/search-vectors.js';
 import { getCortexDb } from '../../db/engrams.js';
 import { runSupersession } from './call.js';
@@ -142,6 +143,12 @@ export async function runSupersessionWorker(
     'SELECT topics_json FROM memories WHERE id = ?',
   ).get(newEntryId) as { topics_json: string | null } | undefined;
   const similarityById = new Map(aboveThreshold.map((r) => [r.id, r.similarity]));
+  // Same config surface as the compaction path: a user who tightens
+  // compaction.supersedeMinCosine gets the floor on both supersession paths.
+  // Retro candidates already cleared SIMILARITY_THRESHOLD (0.6), so the
+  // default 0.4 floor is a no-op here — the wiring matters for stricter
+  // user-set values.
+  const minPairCosine = getConfig().compaction?.supersedeMinCosine ?? 0.4;
   const gate = gateSupersedes(
     { content, topics: parseTopicsJson(newTopicsRow?.topics_json) },
     filteredSupersedes,
@@ -151,6 +158,7 @@ export async function runSupersessionWorker(
         ? { content: candidate.content, topics: candidateTopics.get(id) ?? [], similarity: similarityById.get(id) }
         : undefined;
     },
+    minPairCosine,
   );
   for (const rejection of gate.rejected) {
     console.warn(

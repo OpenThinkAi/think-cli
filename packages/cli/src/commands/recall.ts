@@ -529,6 +529,8 @@ Agent consumers:
           similarity: number | null;
           score: number | null;
           activity_seq: number | null;
+          /** Issue #87. Optional on the wire: an older daemon that predates
+           *  these fields omits them; the normalization below defaults to null. */
           superseded_by?: string | null;
           superseded_at?: string | null;
           fts_fallback?: true;

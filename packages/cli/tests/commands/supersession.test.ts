@@ -99,6 +99,38 @@ describe('think supersession show', () => {
   });
 });
 
+describe('think supersession list', () => {
+  it('lists superseded entries most recent first with a total count', async () => {
+    insertEntry('winner', 'the replacement');
+    insertEntry('hidden-1', 'first hidden record', 'winner');
+    insertEntry('hidden-2', 'second hidden record', 'winner');
+    insertEntry('live', 'a live record');
+
+    const lines = await runSupersession(['list']);
+    const output = lines.join('\n');
+    expect(output).toMatch(/2 superseded entries/);
+    expect(output).toContain('hidden-1');
+    expect(output).toContain('hidden-2');
+    expect(output).not.toContain('a live record');
+    expect(output).toContain('think supersession revert');
+  });
+
+  it('reports no superseded entries on a clean cortex', async () => {
+    insertEntry('live', 'a live record');
+    const lines = await runSupersession(['list']);
+    expect(lines.join('\n')).toContain('no superseded entries');
+  });
+
+  it('respects --limit while reporting the full total', async () => {
+    insertEntry('winner', 'the replacement');
+    for (let i = 0; i < 5; i++) insertEntry(`hidden-${i}`, `hidden record ${i}`, 'winner');
+
+    const lines = await runSupersession(['list', '--limit', '2']);
+    const output = lines.join('\n');
+    expect(output).toMatch(/5 superseded entries \(showing 2\)/);
+  });
+});
+
 describe('think supersession revert', () => {
   it('clears superseded_at/by and restores the entry', async () => {
     insertEntry('new-entry', 'replacement');

@@ -486,7 +486,10 @@ export interface CompactionConfig {
    * (issue #87). A candidate whose similarity to the new entry is below this
    * is never superseded, regardless of what the LLM proposed. Backstops the
    * structural evidence gate (shared topic / named entity), which is the
-   * primary guard. Set ≤ -1 to disable.
+   * primary guard. Applies to both compaction and retro supersession.
+   *
+   * To disable, set to -1: cosine similarity is never below -1, so nothing
+   * is filtered (the comparison is strict `similarity < floor`).
    *
    * Default: 0.4
    */

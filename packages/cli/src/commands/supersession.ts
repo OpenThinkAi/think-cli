@@ -63,7 +63,7 @@ const showSubcommand = new Command('show')
       ).get(id) as EntryRow | undefined;
 
       if (!row) {
-        console.log(chalk.yellow(`[${safeCortex}] no entry with id ${id}`));
+        console.error(chalk.yellow(`[${safeCortex}] no entry with id ${id}`));
         process.exitCode = 1;
         return;
       }
@@ -103,6 +103,53 @@ const showSubcommand = new Command('show')
     }
   });
 
+const listSubcommand = new Command('list')
+  .description('List superseded (hidden) entries in the active cortex, most recent first')
+  .option('--limit <n>', 'Maximum entries to show', '20')
+  .action(function (this: Command, opts: { limit: string }) {
+    const cortex = resolveCortex(this);
+    if (!cortex) {
+      console.error(chalk.red('No active cortex configured (and no -C given).'));
+      process.exitCode = 1;
+      return;
+    }
+    const limit = Number.parseInt(opts.limit, 10);
+    if (!Number.isInteger(limit) || limit <= 0) {
+      console.error(chalk.red(`--limit must be a positive integer, got "${opts.limit}"`));
+      process.exitCode = 1;
+      return;
+    }
+    const safeCortex = sanitizeName(cortex);
+    const db = getCortexDb(safeCortex);
+    try {
+      const total = (db.prepare(
+        'SELECT COUNT(*) AS n FROM memories WHERE superseded_at IS NOT NULL AND deleted_at IS NULL',
+      ).get() as { n: number }).n;
+      const rows = db.prepare(
+        `SELECT id, ts, kind, content, superseded_by, superseded_at FROM memories
+         WHERE superseded_at IS NOT NULL AND deleted_at IS NULL
+         ORDER BY superseded_at DESC LIMIT ?`,
+      ).all(limit) as unknown as EntryRow[];
+
+      if (total === 0) {
+        console.log(`${chalk.cyan(`[${safeCortex}]`)} no superseded entries`);
+        return;
+      }
+
+      console.log(`${chalk.cyan(`[${safeCortex}]`)} ${total} superseded entr${total === 1 ? 'y' : 'ies'}${total > rows.length ? ` (showing ${rows.length})` : ''}`);
+      for (const row of rows) {
+        console.log(
+          `  ${row.id}  ${chalk.gray((row.superseded_at ?? row.ts).slice(0, 10))}  [${row.kind ?? 'memory'}]  ` +
+          chalk.dim(`by ${row.superseded_by ?? 'unknown'}`),
+        );
+        console.log(`    ${chalk.dim(snippet(row.content, 90))}`);
+      }
+      console.log(chalk.dim('  inspect: think supersession show <id>   restore: think supersession revert <id>'));
+    } finally {
+      closeCortexDb(safeCortex);
+    }
+  });
+
 const revertSubcommand = new Command('revert')
   .description('Clear a supersession link, restoring the entry to active recall on this machine')
   .argument('<id>', 'Entry id to restore')
@@ -121,12 +168,12 @@ const revertSubcommand = new Command('revert')
       ).get(id) as Pick<EntryRow, 'id' | 'superseded_by' | 'superseded_at'> | undefined;
 
       if (!row) {
-        console.log(chalk.yellow(`[${safeCortex}] no entry with id ${id}`));
+        console.error(chalk.yellow(`[${safeCortex}] no entry with id ${id}`));
         process.exitCode = 1;
         return;
       }
       if (!row.superseded_at) {
-        console.log(chalk.yellow(`[${safeCortex}] entry ${id} is not superseded — nothing to revert`));
+        console.error(chalk.yellow(`[${safeCortex}] entry ${id} is not superseded — nothing to revert`));
         process.exitCode = 1;
         return;
       }
@@ -145,5 +192,6 @@ const revertSubcommand = new Command('revert')
 
 export const supersessionCommand = new Command('supersession')
   .description('Inspect and revert supersession links (superseded entries are hidden from active recall)')
+  .addCommand(listSubcommand)
   .addCommand(showSubcommand)
   .addCommand(revertSubcommand);
