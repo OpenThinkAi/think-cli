@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [2.5.2] — 2026-07-24
+
 Closes #91: `think update` replaced the CLI but left the resident daemon serving the previous version's code indefinitely, with no signal that anything was wrong — recall, sync, and compaction all run daemon-side, so an update could silently not take effect.
 
 ### Changed
