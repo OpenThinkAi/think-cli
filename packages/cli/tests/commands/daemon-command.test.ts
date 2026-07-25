@@ -264,6 +264,59 @@ describe.skipIf(process.platform === 'win32')('think daemon status', () => {
     }
   }, 15_000);
 
+  it('surfaces version drift (#91): cli_version line + stderr warning when daemon version differs', async () => {
+    const thinkHome = getThinkHome();
+    const socketPath = join(thinkHome, 'daemon.sock');
+    // '0.0.1' can never equal the real package version, so this always drifts.
+    const mock = await startMockDaemon(socketPath, {
+      status: { uptime_ms: 1000, version: '0.0.1' },
+    });
+
+    try {
+      writeFileSync(join(thinkHome, 'daemon.pid'), String(process.pid) + '\n');
+
+      const prog = await makeProg();
+      await prog.parseAsync(['node', 'think', 'daemon', 'status']);
+
+      const { readPackageVersion } = await import('../../src/lib/version.js');
+      const cliVersion = readPackageVersion();
+
+      const stdout = getStdout();
+      expect(stdout).toMatch(/version=0\.0\.1/);
+      // The drift flag: a cli_version= line, parseable as key=value.
+      expect(stdout).toContain(`cli_version=${cliVersion}\n`);
+      // Human-readable warning goes to stderr, keeping stdout script-clean.
+      expect(getStderr()).toMatch(/daemon is running 0\.0\.1 but this CLI is/);
+      expect(getStderr()).toMatch(/think daemon stop && think daemon start/);
+      expect(getExitSpy()).not.toHaveBeenCalledWith(1);
+    } finally {
+      await mock.close();
+    }
+  }, 15_000);
+
+  it('emits no drift signal when daemon and CLI versions match', async () => {
+    const thinkHome = getThinkHome();
+    const socketPath = join(thinkHome, 'daemon.sock');
+    const { readPackageVersion } = await import('../../src/lib/version.js');
+    const cliVersion = readPackageVersion();
+    const mock = await startMockDaemon(socketPath, {
+      status: { uptime_ms: 1000, version: cliVersion },
+    });
+
+    try {
+      writeFileSync(join(thinkHome, 'daemon.pid'), String(process.pid) + '\n');
+
+      const prog = await makeProg();
+      await prog.parseAsync(['node', 'think', 'daemon', 'status']);
+
+      expect(getStdout()).toMatch(/version=/);
+      expect(getStdout()).not.toMatch(/cli_version=/);
+      expect(getStderr()).not.toMatch(/restart to sync/);
+    } finally {
+      await mock.close();
+    }
+  }, 15_000);
+
   it('degrades gracefully when status RPC is not available (METHOD_NOT_FOUND)', async () => {
     const thinkHome = getThinkHome();
     const socketPath = join(thinkHome, 'daemon.sock');
