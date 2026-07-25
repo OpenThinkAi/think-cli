@@ -214,6 +214,9 @@ const statusSubcommand = new Command('status')
   .description(
     'Print the current running state, pid, socket path, and (when available) uptime and version. ' +
     'Output is key=value lines (a `--json` flag is planned in AGT-287+ as an additional format). ' +
+    'When the daemon is serving a different version than this CLI (e.g. after an update without ' +
+    'a restart), a `cli_version=` line is emitted — its presence is the drift signal — along with ' +
+    'a stderr warning. ' +
     'FORMAT NOTE: prior versions printed prose (`daemon running (pid N)`). v3 emits ' +
     'key=value lines (`pid=N`, `socket=…`, `status=running`); existing parsers must update.',
   )
@@ -282,9 +285,30 @@ const statusSubcommand = new Command('status')
         process.stdout.write(`uptime=${uptimeSec}s\n`);
       }
       if (r['version'] !== undefined) {
-        // Sanitize: strip newlines to preserve key=value output integrity.
-        const version = String(r['version']).split('\n')[0];
+        // Sanitize: first line only (preserves key=value output integrity),
+        // control characters stripped (a rogue daemon must not be able to
+        // spoof terminal output via \r or ANSI escapes — see #91 review).
+        const { sanitizeDaemonVersion } = await import('../lib/daemon-drift.js');
+        const version = sanitizeDaemonVersion(r['version']);
         process.stdout.write(`version=${version}\n`);
+
+        // Version drift (#91): the daemon keeps old code in memory across
+        // package upgrades, and recall/sync run daemon-side — so a daemon on
+        // an older version than the CLI silently withholds updated behavior.
+        // Surfaced here (not just in `think update`) because a direct
+        // `npm install -g` bypasses `update` entirely. The drift signal is a
+        // `cli_version=` line — emitted ONLY on drift, so its presence is the
+        // script-facing flag — plus a human-readable stderr warning (stderr
+        // keeps stdout's key=value contract clean).
+        const { readPackageVersion } = await import('../lib/version.js');
+        const cliVersion = readPackageVersion();
+        if (cliVersion !== '0.0.0' && version !== cliVersion) {
+          process.stdout.write(`cli_version=${cliVersion}\n`);
+          process.stderr.write(
+            `warning: daemon is running ${version} but this CLI is ${cliVersion} — ` +
+            `restart to sync: think daemon stop && think daemon start\n`,
+          );
+        }
       }
     } catch (err: unknown) {
       // Graceful degradation: if the `status` method doesn't exist yet

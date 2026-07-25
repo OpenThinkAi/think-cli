@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+Closes #91: `think update` replaced the CLI but left the resident daemon serving the previous version's code indefinitely, with no signal that anything was wrong — recall, sync, and compaction all run daemon-side, so an update could silently not take effect.
+
+### Changed
+
+- **`think update` now restarts the resident daemon when it is serving older code.** After a successful update — and also when the package is already current but the daemon drifted (e.g. a previous update, or a direct `npm install -g`) — the daemon is stopped and started again so it serves the freshly installed version. The restart shells out to the newly installed entry point rather than reusing the running process's in-memory modules, so the new daemon is guaranteed to be new code. If the restart fails, `update` prints the manual recovery commands (`think daemon stop && think daemon start`) instead of failing the update. No daemon running → no restart (the next `think daemon start` picks up the new code anyway).
+
+### Added
+
+- **`think daemon status` surfaces daemon/CLI version drift.** When the daemon's reported version differs from the CLI's, `status` emits a `cli_version=<version>` line — its presence is the script-facing drift flag, keeping the key=value stdout contract intact — plus a human-readable stderr warning with the restart commands. This catches drift no matter how the package was updated.
+
 ## [2.5.1] — 2026-07-24
 
 ### Security

@@ -23,8 +23,8 @@ import {
 import { mkdtempSync, rmSync, writeFileSync, unlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import net from 'node:net';
 import { Command } from 'commander';
+import { startMockDaemon } from '../helpers/mock-daemon.js';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -32,66 +32,6 @@ import { Command } from 'commander';
 
 function tmpThinkHome(): string {
   return mkdtempSync(join(tmpdir(), 'think-daemon-cmd-test-'));
-}
-
-/**
- * Start a minimal JSON-line server on `socketPath` that handles `method` calls.
- * `handlers` maps method names to fixed response values or handler functions.
- */
-function startMockDaemon(
-  socketPath: string,
-  handlers: Record<string, unknown>,
-): Promise<{ close: () => Promise<void> }> {
-  return new Promise((resolve, reject) => {
-    const sockets: net.Socket[] = [];
-    const server = net.createServer((socket) => {
-      sockets.push(socket);
-      let buf = '';
-      socket.setEncoding('utf8');
-      socket.on('data', (chunk: string) => {
-        buf += chunk;
-        let nl: number;
-        while ((nl = buf.indexOf('\n')) !== -1) {
-          const line = buf.slice(0, nl).trim();
-          buf = buf.slice(nl + 1);
-          if (!line) continue;
-          let req: Record<string, unknown>;
-          try { req = JSON.parse(line) as Record<string, unknown>; } catch { continue; }
-          const method = String(req['method']);
-          const handler = handlers[method];
-          let result: unknown;
-          if (typeof handler === 'function') {
-            result = (handler as (p: Record<string, unknown>) => unknown)(
-              (req['params'] ?? {}) as Record<string, unknown>,
-            );
-          } else if (handler !== undefined) {
-            result = handler;
-          } else {
-            const errResp = JSON.stringify({
-              request_id: req['request_id'],
-              error: { code: 'METHOD_NOT_FOUND', message: `unknown method: ${method}` },
-            });
-            socket.write(errResp + '\n');
-            continue;
-          }
-          socket.write(
-            JSON.stringify({ request_id: req['request_id'], result }) + '\n',
-          );
-        }
-      });
-      socket.on('error', () => { /* ignore */ });
-    });
-
-    server.listen(socketPath, () => resolve({
-      close: () =>
-        new Promise<void>((res) => {
-          for (const s of sockets) try { s.destroy(); } catch { /* */ }
-          server.close(() => res());
-        }),
-    }));
-
-    server.once('error', reject);
-  });
 }
 
 // ---------------------------------------------------------------------------
@@ -259,6 +199,59 @@ describe.skipIf(process.platform === 'win32')('think daemon status', () => {
       expect(stdout).toMatch(/uptime=12s/);
       expect(stdout).toMatch(/version=0.7.0/);
       expect(getExitSpy()).not.toHaveBeenCalledWith(1);
+    } finally {
+      await mock.close();
+    }
+  }, 15_000);
+
+  it('surfaces version drift (#91): cli_version line + stderr warning when daemon version differs', async () => {
+    const thinkHome = getThinkHome();
+    const socketPath = join(thinkHome, 'daemon.sock');
+    // '0.0.1' can never equal the real package version, so this always drifts.
+    const mock = await startMockDaemon(socketPath, {
+      status: { uptime_ms: 1000, version: '0.0.1' },
+    });
+
+    try {
+      writeFileSync(join(thinkHome, 'daemon.pid'), String(process.pid) + '\n');
+
+      const prog = await makeProg();
+      await prog.parseAsync(['node', 'think', 'daemon', 'status']);
+
+      const { readPackageVersion } = await import('../../src/lib/version.js');
+      const cliVersion = readPackageVersion();
+
+      const stdout = getStdout();
+      expect(stdout).toMatch(/version=0\.0\.1/);
+      // The drift flag: a cli_version= line, parseable as key=value.
+      expect(stdout).toContain(`cli_version=${cliVersion}\n`);
+      // Human-readable warning goes to stderr, keeping stdout script-clean.
+      expect(getStderr()).toMatch(/daemon is running 0\.0\.1 but this CLI is/);
+      expect(getStderr()).toMatch(/think daemon stop && think daemon start/);
+      expect(getExitSpy()).not.toHaveBeenCalledWith(1);
+    } finally {
+      await mock.close();
+    }
+  }, 15_000);
+
+  it('emits no drift signal when daemon and CLI versions match', async () => {
+    const thinkHome = getThinkHome();
+    const socketPath = join(thinkHome, 'daemon.sock');
+    const { readPackageVersion } = await import('../../src/lib/version.js');
+    const cliVersion = readPackageVersion();
+    const mock = await startMockDaemon(socketPath, {
+      status: { uptime_ms: 1000, version: cliVersion },
+    });
+
+    try {
+      writeFileSync(join(thinkHome, 'daemon.pid'), String(process.pid) + '\n');
+
+      const prog = await makeProg();
+      await prog.parseAsync(['node', 'think', 'daemon', 'status']);
+
+      expect(getStdout()).toMatch(/version=/);
+      expect(getStdout()).not.toMatch(/cli_version=/);
+      expect(getStderr()).not.toMatch(/restart to sync/);
     } finally {
       await mock.close();
     }
