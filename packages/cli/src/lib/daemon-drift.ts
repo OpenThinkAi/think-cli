@@ -33,6 +33,20 @@ export interface DaemonInspection {
 }
 
 /**
+ * Sanitize a daemon-reported version string for terminal-facing output.
+ *
+ * The daemon RPC is a separate trust boundary: a compromised package serving
+ * as the daemon could embed `\r` or ANSI escape sequences in `version` to
+ * overwrite or spoof the very warning that tells the user about it. Take the
+ * first line, then strip all remaining C0 control characters and DEL —
+ * killing carriage returns and the ESC that ANSI sequences need to activate.
+ */
+export function sanitizeDaemonVersion(raw: unknown): string {
+  // eslint-disable-next-line no-control-regex
+  return String(raw).split('\n')[0].replace(/[\x00-\x1f\x7f]/g, '');
+}
+
+/**
  * Probe the default socket and, if a daemon answers, ask it what version it
  * is running. Never spawns a daemon: `connectDaemon` is only called after a
  * successful probe, mirroring the guard in `think daemon status`.
@@ -48,10 +62,10 @@ export async function inspectDaemon(): Promise<DaemonInspection> {
       const r = (typeof rpcResult === 'object' && rpcResult !== null)
         ? rpcResult as Record<string, unknown>
         : {};
-      // Same newline sanitization as `daemon status` — the value flows into
-      // single-line console output.
+      // The value flows into single-line console output — see
+      // sanitizeDaemonVersion for the trust-boundary rationale.
       const version = r['version'] !== undefined
-        ? String(r['version']).split('\n')[0] ?? null
+        ? sanitizeDaemonVersion(r['version'])
         : null;
       return { reachable: true, version };
     } finally {

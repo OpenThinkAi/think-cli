@@ -21,58 +21,7 @@ import {
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import net from 'node:net';
-
-// ---------------------------------------------------------------------------
-// Mock daemon (same JSON-line protocol as tests/commands/daemon-command.test.ts)
-// ---------------------------------------------------------------------------
-
-function startMockDaemon(
-  socketPath: string,
-  handlers: Record<string, unknown>,
-): Promise<{ close: () => Promise<void> }> {
-  return new Promise((resolve, reject) => {
-    const sockets: net.Socket[] = [];
-    const server = net.createServer((socket) => {
-      sockets.push(socket);
-      let buf = '';
-      socket.setEncoding('utf8');
-      socket.on('data', (chunk: string) => {
-        buf += chunk;
-        let nl: number;
-        while ((nl = buf.indexOf('\n')) !== -1) {
-          const line = buf.slice(0, nl).trim();
-          buf = buf.slice(nl + 1);
-          if (!line) continue;
-          let req: Record<string, unknown>;
-          try { req = JSON.parse(line) as Record<string, unknown>; } catch { continue; }
-          const method = String(req['method']);
-          const requestId = req['request_id'];
-          if (method in handlers) {
-            const h = handlers[method];
-            const result = typeof h === 'function' ? (h as () => unknown)() : h;
-            socket.write(JSON.stringify({ request_id: requestId, result }) + '\n');
-          } else {
-            socket.write(JSON.stringify({
-              request_id: requestId,
-              error: { code: 'METHOD_NOT_FOUND', message: `no such method: ${method}` },
-            }) + '\n');
-          }
-        }
-      });
-      socket.on('error', () => { /* client hangup — ignore */ });
-    });
-    server.on('error', reject);
-    server.listen(socketPath, () => {
-      resolve({
-        close: () => new Promise<void>((res) => {
-          for (const s of sockets) s.destroy();
-          server.close(() => res());
-        }),
-      });
-    });
-  });
-}
+import { startMockDaemon } from '../helpers/mock-daemon.js';
 
 // ---------------------------------------------------------------------------
 // THINK_HOME isolation
@@ -138,10 +87,12 @@ describe.skipIf(process.platform === 'win32')('inspectDaemon', () => {
     }
   }, 15_000);
 
-  it('sanitizes newlines out of the reported version', async () => {
+  it('sanitizes newlines, carriage returns, and control chars out of the reported version', async () => {
     const socketPath = join(thinkHome, 'daemon.sock');
+    // \r and ESC could let a rogue daemon overwrite/spoof terminal output;
+    // \n would break the key=value line contract.
     const mock = await startMockDaemon(socketPath, {
-      status: { version: '2.4.1\ninjected=true' },
+      status: { version: '2.4.1\r\x1b\ninjected=true' },
     });
     try {
       writeFileSync(join(thinkHome, 'daemon.pid'), String(process.pid) + '\n');

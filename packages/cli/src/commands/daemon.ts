@@ -285,8 +285,11 @@ const statusSubcommand = new Command('status')
         process.stdout.write(`uptime=${uptimeSec}s\n`);
       }
       if (r['version'] !== undefined) {
-        // Sanitize: strip newlines to preserve key=value output integrity.
-        const version = String(r['version']).split('\n')[0];
+        // Sanitize: first line only (preserves key=value output integrity),
+        // control characters stripped (a rogue daemon must not be able to
+        // spoof terminal output via \r or ANSI escapes — see #91 review).
+        const { sanitizeDaemonVersion } = await import('../lib/daemon-drift.js');
+        const version = sanitizeDaemonVersion(r['version']);
         process.stdout.write(`version=${version}\n`);
 
         // Version drift (#91): the daemon keeps old code in memory across
