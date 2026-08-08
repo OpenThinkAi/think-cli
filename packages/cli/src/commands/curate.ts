@@ -32,7 +32,7 @@ export const curateCommand = new Command('curate')
   .option('--if-idle', 'Only curate if the user appears idle (used by auto-curation scheduler)')
   .option(
     '--include-quarantined',
-    'Include quarantined engrams in the curation envelope (default: quarantined engrams are excluded). A note is emitted to stderr when engrams are dropped.',
+    'Include quarantined events in the curation envelope (default: quarantined events are excluded). A note is emitted to stderr when events are dropped.',
   )
   .action(async (opts: { dryRun?: boolean; episode?: string; ifIdle?: boolean; includeQuarantined?: boolean }) => {
     const config = getConfig();

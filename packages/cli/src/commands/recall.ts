@@ -146,7 +146,7 @@ export function renderPersonalAll(cortex: string, { days, query }: { days: numbe
   }
 
   if (matchingEngrams.length > 0) {
-    console.log(chalk.cyan(`Matching engrams (local):`));
+    console.log(chalk.cyan(`Matching events (local):`));
     for (const e of matchingEngrams) {
       const ts = e.created_at.slice(0, 16).replace('T', ' ');
       console.log(`  ${chalk.gray(ts)} ${e.content}`);
@@ -238,7 +238,7 @@ function runFormattedFtsRecall(
     );
     if (matchingEngrams.length > 0) {
       console.log();
-      console.log(chalk.cyan(`Matching engrams (${matchingEngrams.length}):`));
+      console.log(chalk.cyan(`Matching events (${matchingEngrams.length}):`));
       for (const e of matchingEngrams) {
         const ts = e.created_at.slice(0, 16).replace("T", " ");
         console.log(`  ${chalk.gray(ts)} ${e.content}`);
@@ -249,8 +249,11 @@ function runFormattedFtsRecall(
 
 export const recallCommand = new Command('recall')
   .argument('<query>', 'What to recall')
-  .description('Search memories and local engrams')
-  .option('--engrams', 'Also search local engrams (not just memories)')
+  .description('Search memories and local events')
+  // AGT-883: the flag NAME stays `--engrams` (renaming is breaking for scripts),
+  // so the help line glosses the legacy term once to bridge it to the current
+  // "events" vocabulary. Prose elsewhere uses "events" only.
+  .option('--engrams', 'Also search raw local events (engrams), pending and curated (not just memories)')
   .option('--all', 'Dump all recent memories + long-term events (ignores query for memories)')
   .option('--days <n>', 'Days of memories to include (only with --all)', '14')
   .option('--limit <n>', 'Max results to return (default: 8)', String(DEFAULT_RECALL_LIMIT))
