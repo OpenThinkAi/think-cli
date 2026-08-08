@@ -61,7 +61,7 @@ think curate              # full run
 think curate --dry-run    # preview without saving
 
 # Recall what you (or another machine of yours) have stored
-think recall "auth"       # search memories + local engrams
+think recall "auth"       # search memories + local events
 think memory              # show all memories
 
 # Sync with the cortex folder
