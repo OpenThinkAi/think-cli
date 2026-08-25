@@ -31,6 +31,8 @@
  */
 
 import { getConfig, type LocalLlmConfig, type LlmConfig, type LlmProviderConfig } from '../config.js';
+import { getThinkConfigDir } from '../paths.js';
+import path from 'node:path';
 import { hasLlmConsent } from '../llm-consent.js';
 import {
   type LlmClient,
@@ -68,6 +70,10 @@ export const OP_EVENT_DETECTION = 'event-detection';
 // Egress
 // ---------------------------------------------------------------------------
 
+// `0.0.0.0` is a bind address, not really a connect address, but people do put
+// it in endpoint URLs after copying a server's listen line — and connecting to
+// it reaches the local host. Treating it as loopback matches what actually
+// happens on the wire; omitting it would demand consent for a purely local call.
 const LOOPBACK_HOSTS = new Set(['localhost', '127.0.0.1', '::1', '0.0.0.0', '[::1]']);
 
 /**
@@ -147,15 +153,32 @@ export function resolveRegistry(cfg?: LlmConfig): Map<string, ResolvedProvider> 
 /**
  * Pick the provider name for `operation`: an explicit per-operation mapping,
  * else `default`, else the sole provider when exactly one is registered.
- * `THINK_LLM_PROVIDER` overrides when it names a registered provider.
+ *
+ * `THINK_LLM_PROVIDER` overrides when it names a registered provider. NOTE the
+ * split semantics: in LEGACY mode that variable takes `auto|local|anthropic`,
+ * but here it must name a provider in the registry. A shell profile carrying
+ * the legacy value is ignored (with a warning) rather than silently honoured,
+ * because `local` is not a provider name unless the user made one.
  */
 export function selectProviderName(
   operation: string,
   cfg: LlmConfig | undefined,
   registry: Map<string, ResolvedProvider>,
+  warn: (msg: string) => void = defaultWarn,
 ): string | undefined {
   const envName = process.env.THINK_LLM_PROVIDER?.trim();
   if (envName && registry.has(envName)) return envName;
+  // THINK_LLM_PROVIDER has split semantics: in LEGACY mode it takes
+  // 'auto'|'local'|'anthropic'; here it must name a registered provider. A
+  // profile carrying the legacy value would otherwise be silently ignored the
+  // moment a registry is configured, which looks like the registry misbehaving.
+  if (envName && envName !== 'auto') {
+    warn(
+      `[think] THINK_LLM_PROVIDER="${envName}" does not name a provider in cortex.llm.providers ` +
+        `(${[...registry.keys()].join(', ') || 'none'}) — ignoring it. In registry mode this variable ` +
+        'must match a provider name, not the legacy "local"/"anthropic" values.',
+    );
+  }
   const mapped = cfg?.operations?.[operation];
   if (mapped) return mapped;
   if (cfg?.default) return cfg.default;
@@ -224,7 +247,8 @@ export interface CortexConfigSlice {
 export function isLocalCurationActive(cfg?: CortexConfigSlice): boolean {
   const registry = resolveRegistry(cfg?.llm);
   if (registry.size > 0) {
-    const name = selectProviderName(OP_CURATION, cfg?.llm, registry);
+    // No warn sink: this is a probe, and the real routing call warns already.
+    const name = selectProviderName(OP_CURATION, cfg?.llm, registry, () => {});
     const chosen = name ? registry.get(name) : undefined;
     return chosen?.kind === 'openai';
   }
@@ -260,9 +284,18 @@ function timeoutSkip(e: LlmTimeoutError): LlmSkippedError {
 function unavailableSkip(e: LlmUnavailableError): LlmSkippedError {
   return new LlmSkippedError(
     `can't reach your LLM server at ${e.endpoint} — is it running? (e.g. \`localqwen up\`)\n` +
-      '  If you don\'t intend to use it, set "llmProvider": "anthropic" in ' +
-      'your think config (or remove the cortex.local / cortex.llm block) to curate with Claude instead.',
+      `  If you don't intend to use it, set "llmProvider": "anthropic" in ${configFilePath()}\n` +
+      '  (or remove the cortex.local / cortex.llm block) to curate with Claude instead.',
   );
+}
+
+/**
+ * The config file this install actually reads. Resolved at call time rather
+ * than hardcoded: the location moves with THINK_HOME / XDG_CONFIG_HOME, and a
+ * message naming the wrong file is worse than no path at all.
+ */
+function configFilePath(): string {
+  return path.join(getThinkConfigDir(), 'config.json');
 }
 
 /** The consent refusal for a provider that would put content on the network. */
@@ -271,9 +304,9 @@ function egressSkip(p: { name: string; endpoint: string; kind: string }): LlmSki
   return new LlmSkippedError(
     `provider "${p.name}" sends cortex content off this machine (${where}) and LLM consent ` +
       'has not been granted. Skipping — nothing was sent.\n' +
-      '  Grant consent with THINK_LLM_CONSENT=1 (or "llmConsent": true in config), or point this\n' +
-      '  operation at an on-device provider. If this endpoint IS on your machine, declare it with\n' +
-      '  "offMachine": false on the provider.',
+      `  Grant consent with THINK_LLM_CONSENT=1 (or "cortex.llmConsent": true in ${configFilePath()}),\n` +
+      '  or point this operation at an on-device provider. If this endpoint IS on your machine,\n' +
+      `  set "cortex.llm.providers.${p.name}.offMachine": false.`,
   );
 }
 
@@ -305,7 +338,7 @@ export class RegistryLlmClient implements LlmClient {
     const consent = this.opts.consent ?? hasLlmConsent;
     const clientFor = this.opts.clientFor ?? buildClient;
 
-    const name = selectProviderName(operation, llm, registry);
+    const name = selectProviderName(operation, llm, registry, this.opts.warn ?? defaultWarn);
     const chosen = name ? registry.get(name) : undefined;
     if (!chosen) {
       throw new LlmSkippedError(

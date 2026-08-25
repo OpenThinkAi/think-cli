@@ -371,7 +371,15 @@ export interface LlmProviderConfig {
  * ```
  */
 export interface LlmConfig {
-  /** Named providers. Names are arbitrary; they are referenced below. */
+  /**
+   * Named providers. Names are arbitrary; they are referenced below.
+   *
+   * Setting this switches think into registry mode, which also changes what
+   * `THINK_LLM_PROVIDER` means: in legacy mode it takes `auto` / `local` /
+   * `anthropic`, but in registry mode it must name one of these providers. A
+   * shell profile still exporting the legacy value is ignored, with a warning
+   * on stderr — it is not silently treated as a provider name.
+   */
   providers?: Record<string, LlmProviderConfig>;
   /** Provider used by any operation without an explicit mapping. */
   default?: string;

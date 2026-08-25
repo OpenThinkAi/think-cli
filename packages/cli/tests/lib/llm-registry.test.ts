@@ -183,7 +183,25 @@ describe('selectProviderName', () => {
 
   it('ignores THINK_LLM_PROVIDER when it names nothing in the registry', () => {
     process.env.THINK_LLM_PROVIDER = 'nope';
-    expect(selectProviderName('curation', cfg, registry)).toBe('a');
+    expect(selectProviderName('curation', cfg, registry, () => {})).toBe('a');
+  });
+
+  it('WARNS when a legacy THINK_LLM_PROVIDER value is ignored in registry mode', () => {
+    // 'local' is meaningful in legacy mode and meaningless here. Silently
+    // dropping it makes the registry look broken to anyone with it in a profile.
+    process.env.THINK_LLM_PROVIDER = 'local';
+    const warnings: string[] = [];
+    expect(selectProviderName('curation', cfg, registry, (m) => warnings.push(m))).toBe('a');
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toMatch(/THINK_LLM_PROVIDER="local"/);
+    expect(warnings[0]).toMatch(/must match a provider name/);
+  });
+
+  it('does not warn for "auto", which is legitimately a no-op here', () => {
+    process.env.THINK_LLM_PROVIDER = 'auto';
+    const warnings: string[] = [];
+    selectProviderName('curation', cfg, registry, (m) => warnings.push(m));
+    expect(warnings).toHaveLength(0);
   });
 });
 
