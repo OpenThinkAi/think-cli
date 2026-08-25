@@ -182,6 +182,11 @@ export interface CortexConfig {
   /** Local OpenAI-compatible LLM backend (oMLX/Qwen). See `LocalLlmConfig`. */
   local?: LocalLlmConfig;
   /**
+   * Provider-agnostic LLM configuration. When `llm.providers` is set it
+   * supersedes `llmProvider` + `local`. See `LlmConfig`.
+   */
+  llm?: LlmConfig;
+  /**
    * Per-source trust tier policy (AGT-466). Declares a priority-ordered list
    * of `selector → tier` rules that classify every recall entry as one of
    * `trusted`, `untrusted`, or `quarantined`. First-match-wins. An implicit
@@ -261,6 +266,138 @@ export interface LocalLlmConfig {
    * Env override: `THINK_LOCAL_CTX_BUDGET`.
    */
   ctxBudget?: number;
+  /**
+   * Request deadline in ms. Default: 900_000. Without an explicit deadline
+   * Node/undici imposes ~300s and reports the abort as an unreachable server,
+   * which is badly misleading for a large model that is simply still working.
+   * Env override: `THINK_LOCAL_TIMEOUT_MS`.
+   */
+  timeoutMs?: number;
+  /**
+   * Send `chat_template_kwargs: { enable_thinking: false }` — stops Qwen-style
+   * reasoning models spending a structured-output budget on a preamble that is
+   * then discarded. Env override: `THINK_LOCAL_DISABLE_THINKING`.
+   */
+  disableThinking?: boolean;
+}
+
+/**
+ * One entry in the LLM provider registry (`cortex.llm.providers`). A provider
+ * is a place think can send a completion request. Two transports exist:
+ *
+ *   kind: 'openai'    — anything speaking OpenAI `/chat/completions`. An
+ *                       on-device oMLX/Qwen or LM Studio server, vLLM, OpenAI,
+ *                       DeepSeek, OpenRouter, Together. Requires `endpoint`.
+ *   kind: 'anthropic' — the Claude Agent SDK path (subscription billing).
+ *
+ * The registry is what makes think provider-agnostic: point `endpoint` wherever
+ * you like and give the entry a name, then reference that name from
+ * `cortex.llm.default` or `cortex.llm.operations`.
+ */
+export interface LlmProviderConfig {
+  /** Transport. `'openai'` covers every OpenAI-compatible server. */
+  kind: 'openai' | 'anthropic';
+  /** Base URL including the version segment, e.g. `http://127.0.0.1:8000/v1`. Required for `kind: 'openai'`. */
+  endpoint?: string;
+  /** Model id to request. For a single-model local server this is the served id. */
+  model?: string;
+  /**
+   * Literal bearer token. Prefer `apiKeyEnv` — a key written here lands in a
+   * config file that syncs. Defaults to `"lm-studio"` (servers that ignore auth).
+   */
+  apiKey?: string;
+  /** Name of an env var holding the bearer token. Takes precedence over `apiKey`. */
+  apiKeyEnv?: string;
+  /**
+   * Whether a call to this provider sends cortex content OFF this machine.
+   * This is the field the consent gate keys on — not the provider's name, and
+   * not whether it happens to be called "local".
+   *
+   * When omitted it is INFERRED from `endpoint`: a loopback host
+   * (localhost / 127.0.0.1 / ::1) is treated as on-machine, anything else as
+   * off-machine. `kind: 'anthropic'` is always off-machine. Set it explicitly
+   * to `false` to declare a trusted host on your own network as on-machine.
+   *
+   * Default-deny is deliberate: an unannotated `https://api.openai.com/v1`
+   * must not be able to quietly bypass a gate the user set precisely to stop
+   * their memory store leaving the machine.
+   */
+  offMachine?: boolean;
+  /**
+   * Token budget used to decide whether a task fits this provider. Estimated
+   * at ~`CHARS_PER_TOKEN` chars/token; over budget routes to the fallback or
+   * skips. Leave headroom below the true context window for the response.
+   * Default: 28_000.
+   */
+  ctxBudget?: number;
+  /**
+   * Request deadline in ms. Default: 900_000 (15 min). Raise for large prompts
+   * on slow local hardware — a 27B model prefilling 30k tokens and then
+   * generating can exceed ten minutes, and the old implicit 300s cutoff
+   * reported that as an unreachable server.
+   */
+  timeoutMs?: number;
+  /**
+   * Send `chat_template_kwargs: { enable_thinking: false }`. Useful for Qwen3
+   * and other reasoning models, whose preamble otherwise consumes the output
+   * budget of a structured-output call. Ignored by servers that don't know it.
+   */
+  disableThinking?: boolean;
+}
+
+/**
+ * Provider-agnostic LLM configuration (`cortex.llm`).
+ *
+ * Supersedes the two-provider `cortex.llmProvider` + `cortex.local` pair, which
+ * still works and is bridged onto this shape at load time — see
+ * `resolveLlmSettings` in lib/llm/router.ts. When `cortex.llm.providers` is
+ * present it wins.
+ *
+ * Example:
+ *
+ * ```json
+ * "llm": {
+ *   "providers": {
+ *     "qwen":     { "kind": "openai", "endpoint": "http://127.0.0.1:8000/v1",
+ *                   "model": "Qwen3.8-27B-MLX-4bit", "disableThinking": true },
+ *     "deepseek": { "kind": "openai", "endpoint": "https://api.deepseek.com/v1",
+ *                   "model": "deepseek-chat", "apiKeyEnv": "DEEPSEEK_API_KEY" },
+ *     "claude":   { "kind": "anthropic", "model": "claude-sonnet-4-6" }
+ *   },
+ *   "default": "qwen",
+ *   "operations": { "summary": "deepseek" },
+ *   "fallback": "claude"
+ * }
+ * ```
+ */
+export interface LlmConfig {
+  /**
+   * Named providers. Names are arbitrary; they are referenced below.
+   *
+   * Setting this switches think into registry mode, which also changes what
+   * `THINK_LLM_PROVIDER` means: in legacy mode it takes `auto` / `local` /
+   * `anthropic`, but in registry mode it must name one of these providers. A
+   * shell profile still exporting the legacy value is ignored, with a warning
+   * on stderr — it is not silently treated as a provider name.
+   */
+  providers?: Record<string, LlmProviderConfig>;
+  /** Provider used by any operation without an explicit mapping. */
+  default?: string;
+  /**
+   * Per-operation provider selection, keyed by operation name (`curation`,
+   * `event-detection`, `summary`, `compaction`, ...). Lets a cheap model handle
+   * summaries while curation runs somewhere stronger.
+   */
+  operations?: Record<string, string>;
+  /**
+   * Where to go when the chosen provider cannot handle a task (prompt over its
+   * `ctxBudget`, or a runtime context overflow). A provider name, or `'skip'`
+   * to leave the work pending. Default: `'skip'`.
+   *
+   * A fallback that is off-machine still requires LLM consent; without consent
+   * the router skips rather than sending.
+   */
+  fallback?: string;
 }
 
 export interface SubscriptionsConfig {

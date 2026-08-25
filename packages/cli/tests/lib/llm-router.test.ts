@@ -63,13 +63,16 @@ function bigReq(): LlmRequest {
 }
 
 describe('estimateTokens', () => {
-  it('counts ~chars/4 across system + messages + schema', () => {
+  it('counts ~chars/CHARS_PER_TOKEN across system + messages + schema', () => {
     const req: LlmRequest = {
       system: 'a'.repeat(40),
       messages: [{ role: 'user', content: 'b'.repeat(40) }],
       maxTokens: 10,
     };
-    expect(estimateTokens(req)).toBe(20); // 80 chars / 4
+    // 80 chars / 3.5 = 22.86 -> 23. Deliberately rounds AGAINST the caller:
+    // this gate decides what is allowed to run, so under-counting is the
+    // dangerous direction. See CHARS_PER_TOKEN in llm/client.ts.
+    expect(estimateTokens(req)).toBe(23);
   });
 });
 
@@ -111,6 +114,38 @@ describe('resolveLocalConfig', () => {
     expect(r.endpoint).toBe('http://env:1/v1');
     expect(r.model).toBe('m');
     delete process.env.THINK_LOCAL_ENDPOINT;
+  });
+});
+
+describe('resolveLocalConfig timeout + thinking', () => {
+  // These mutate env directly; restore so ordering can't leak into other blocks.
+  afterEach(() => {
+    delete process.env.THINK_LOCAL_TIMEOUT_MS;
+    delete process.env.THINK_LOCAL_DISABLE_THINKING;
+  });
+
+  it('defaults timeoutMs above undici\'s 300s cutoff', () => {
+    expect(resolveLocalConfig({ endpoint: 'http://localhost:1/v1', model: 'm' }).timeoutMs).toBeGreaterThan(300_000);
+  });
+
+  it('THINK_LOCAL_TIMEOUT_MS overrides config', () => {
+    process.env.THINK_LOCAL_TIMEOUT_MS = '1234';
+    expect(resolveLocalConfig({ timeoutMs: 999 }).timeoutMs).toBe(1234);
+  });
+
+  it('ignores a non-numeric or non-positive THINK_LOCAL_TIMEOUT_MS', () => {
+    process.env.THINK_LOCAL_TIMEOUT_MS = 'soon';
+    expect(resolveLocalConfig({ timeoutMs: 999 }).timeoutMs).toBe(999);
+    process.env.THINK_LOCAL_TIMEOUT_MS = '0';
+    expect(resolveLocalConfig({ timeoutMs: 999 }).timeoutMs).toBe(999);
+  });
+
+  it('disableThinking defaults off and honours the env var', () => {
+    expect(resolveLocalConfig({}).disableThinking).toBe(false);
+    process.env.THINK_LOCAL_DISABLE_THINKING = '1';
+    expect(resolveLocalConfig({}).disableThinking).toBe(true);
+    process.env.THINK_LOCAL_DISABLE_THINKING = 'no';
+    expect(resolveLocalConfig({ disableThinking: true }).disableThinking).toBe(false);
   });
 });
 
