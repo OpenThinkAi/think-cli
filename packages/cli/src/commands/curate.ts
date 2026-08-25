@@ -16,7 +16,7 @@ import {
   runLocalTwoPassCuration,
   runEpisodeCuration,
 } from '../lib/curator.js';
-import { getDefaultLlmClient, isLocalCurationActive } from '../lib/llm/router.js';
+import { getDefaultLlmClient, isLocalCurationActive, OP_CURATION } from '../lib/llm/router.js';
 import { getSyncAdapter } from '../sync/registry.js';
 import { formatSyncError } from '../sync/errors.js';
 import type { MemoryEntry } from '../lib/curator.js';
@@ -305,7 +305,7 @@ export const curateCommand = new Command('curate')
     // tier B memories→events) so small local models don't drop event detection;
     // Anthropic-only keeps the single combined pass (unchanged behaviour, one
     // call). Both share one client instance so both passes route consistently.
-    const llmClient = getDefaultLlmClient();
+    const llmClient = getDefaultLlmClient(OP_CURATION);
     let curationResult;
     try {
       curationResult = isLocalCurationActive(config.cortex)

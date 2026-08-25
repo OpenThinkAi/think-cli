@@ -115,15 +115,44 @@ export class LlmUnavailableError extends Error {
 }
 
 /**
- * Crude token estimate: ~4 chars/token across system + every message body +
- * the serialized schema. Deliberately the same order-of-magnitude heuristic
- * the curator's char-cap uses (curator.ts) — good enough to decide routing,
- * with the runtime `LlmContextOverflowError` as the real backstop when the
- * estimate is wrong at the margin.
+ * Chars-per-token divisor. Deliberately BELOW the familiar 4.0 so the estimate
+ * errs high: this number gates whether a task is allowed to run, so
+ * under-counting is the dangerous direction — it waves an oversized prompt
+ * through and the failure surfaces much later (a truncated response, or a
+ * multi-minute generation that blows the request timeout).
+ *
+ * Measured against a real curation envelope on Qwen3.8-27B: 109,252 prompt
+ * chars tokenized to 31,780 tokens — 3.44 chars/token. The old 4.0 divisor
+ * predicted 27,313 and cleared a 28,000 budget the prompt was in fact ~3,800
+ * tokens over. 3.5 keeps a margin without over-rejecting.
+ */
+export const CHARS_PER_TOKEN = 3.5;
+
+/**
+ * Thrown when a request exceeded its own deadline. Deliberately NOT an
+ * `LlmUnavailableError`: a slow-but-healthy backend is a different problem from
+ * an unreachable one, and conflating them produces the worst possible advice —
+ * "is it running?" when it is running fine and still generating.
+ *
+ * A big local model can legitimately need minutes (prefill + generation), so
+ * this is a tuning signal (`timeoutMs`), not an outage.
+ */
+export class LlmTimeoutError extends Error {
+  constructor(message: string, readonly endpoint: string, readonly timeoutMs: number) {
+    super(message);
+    this.name = 'LlmTimeoutError';
+  }
+}
+
+/**
+ * Crude token estimate across system + every message body + the serialized
+ * schema. Good enough to decide routing, with the runtime
+ * `LlmContextOverflowError` as the real backstop when the estimate is wrong at
+ * the margin. See `CHARS_PER_TOKEN` for why it rounds against the caller.
  */
 export function estimateTokens(req: LlmRequest): number {
   let chars = req.system.length;
   for (const m of req.messages) chars += m.content.length;
   if (req.schema) chars += JSON.stringify(req.schema.schema).length;
-  return Math.ceil(chars / 4);
+  return Math.ceil(chars / CHARS_PER_TOKEN);
 }

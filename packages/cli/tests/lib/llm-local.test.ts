@@ -76,7 +76,7 @@ describe('LocalLlmClient', () => {
     await c.complete(req()).catch((e) => {
       expect(e).toBeInstanceOf(LlmUnavailableError);
       expect((e as LlmUnavailableError).endpoint).toBe('http://x/v1');
-      expect((e as Error).message).toMatch(/cannot reach local LLM endpoint/);
+      expect((e as Error).message).toMatch(/cannot reach LLM endpoint/);
     });
   });
 });

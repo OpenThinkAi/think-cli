@@ -171,7 +171,13 @@ Re-audit this inventory whenever a new connector lands on the subscribe surface 
 
 ## Per-curation data envelope (LLM consent)
 
-`think curate`, `think long-term backfill`, `think curate --episode <key>`, `think curate-retros`, and `think summary` all ship cortex content to Anthropic via the Claude Agent SDK. As of AGT-065, that is **gated behind explicit opt-in** — the CLI fails closed by default and exits with an actionable error pointing at this section.
+`think curate`, `think long-term backfill`, `think curate --episode <key>`, `think curate-retros`, and `think summary` all ship cortex content to an LLM. As of AGT-065, that is **gated behind explicit opt-in** — the CLI fails closed by default and exits with an actionable error pointing at this section.
+
+**The gate keys on data egress, not on which provider you picked.** think can be pointed at any OpenAI-compatible endpoint (`cortex.llm.providers`, or the legacy `cortex.local`). Consent is required for any provider that puts cortex content on the network — Anthropic, OpenAI, DeepSeek, or an OpenAI-compatible server on another host — and is *not* required for a provider serving from loopback, because nothing leaves the machine.
+
+A provider's egress is declared by `offMachine`. When omitted it is inferred from the endpoint: loopback (`localhost`, `127.0.0.1`, `::1`) is on-machine, everything else is off-machine, and an unparseable endpoint fails closed to off-machine. Set `offMachine: false` explicitly to declare a host on your own network as trusted.
+
+> **Prior behaviour (fixed).** Consent used to be enforced inside the Anthropic client rather than at the routing layer, so the OpenAI-compatible client — then named "local" on the assumption it only ever talked to on-device servers — carried no gate. Pointing `THINK_LOCAL_ENDPOINT` at a public API therefore shipped the full curation envelope with no consent check. Egress is now evaluated in the router before any request is built. Loopback configurations are unaffected.
 
 **Opt in via either:**
 
@@ -211,6 +217,7 @@ Lowering the cap reduces volume but trims older recent-memory context the curato
 
 These are intentional design choices, not vulnerabilities:
 
+- **Consent is per-machine-boundary, not per-destination.** Granting `THINK_LLM_CONSENT=1` permits sends to *every* off-machine provider configured, not just the one you had in mind. If you route different operations to different vendors, that single flag covers all of them. Scope it per shell session, or keep sensitive cortexes on a loopback-only provider where no consent is needed.
 - **Claude Agent SDK consent is opt-in but irreversible per call.** Once consent is granted and a curate run completes, the data has reached Anthropic. There is no per-turn confirmation; the gate is at process entry. If you're working on a sensitive cortex, scope `THINK_LLM_CONSENT` to the shell session rather than committing it to your shell profile, and consider a separate cortex with consent disabled.
 - **Memory tombstones do not propagate across sync** — see SyncAdapter contract test `enforceImmutableMemories`. A `think memory delete <id>` removes the row locally; peers retain their copy. Right-to-erasure across machines is architecturally not supported (BLOOM-122 invariant). Use `think pause` to suppress engram creation if you don't want content to land in the first place.
 - **`cortex pull` / `push` operates directly on a git remote you configured.** No sandbox, no content review. You're trusting the remote to hold honest data.
