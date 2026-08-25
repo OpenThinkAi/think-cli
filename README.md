@@ -153,6 +153,30 @@ Operations you can assign: `curation`, `event-detection`, `episode`,
 `terminal-event`, `retro-dedupe`, `summary`, `dashboard`, `long-term`,
 `compaction`, `supersession`. Anything unassigned uses `default`.
 
+**Moving everything to one model** is just `default` — you don't have to
+enumerate operations at all:
+
+```jsonc
+"llm": {
+  "providers": {
+    "qwen": { "kind": "openai", "endpoint": "http://127.0.0.1:8000/v1",
+              "model": "<the id your server was started with>",
+              "ctxBudget": 40000, "timeoutMs": 1800000,
+              "disableThinking": true }
+  },
+  "default": "qwen"
+}
+```
+
+With no `fallback` and a loopback endpoint, think stops contacting Anthropic
+entirely (bar the dashboard's `ask`) and needs no LLM consent, because nothing
+leaves the machine. Read the structured-output note below before doing this —
+two operations are pickier than the rest.
+
+The `model` must match the id your server was launched with. `mlx_lm.server`
+loads whatever id a request names, so a mismatch silently unloads the running
+model and loads another — killing any generation in flight.
+
 `dashboard` here means the **status digest** — the panel summaries `think
 dashboard` renders. The dashboard's interactive **`ask`** is a different thing
 and is *not* assignable: it is agentic, running a multi-turn loop over MCP
@@ -188,10 +212,37 @@ or being skipped; raise `ctxBudget` to your model's real context window. When
 the fallback cannot take the task either, the work is left pending rather than
 retried elsewhere.
 
-Structured output matters for some operations: `compaction` and `supersession`
-demand server-side schema enforcement, and `curation`, `event-detection`,
-`terminal-event` and `retro-dedupe` rely on it when not on Anthropic. Prefer a
-server that honours `response_format: json_schema` for those.
+**Structured output — check this before routing everything.** Operations fall
+into three tiers:
+
+| Tier | Operations | Behaviour |
+| --- | --- | --- |
+| Strict | `compaction`, `supersession` | Demand server-side enforcement. Forced `tool_use` on Anthropic, `response_format: json_schema` elsewhere. |
+| Schema-assisted | `curation`, `event-detection`, `terminal-event`, `retro-dedupe` | Advisory on Anthropic (prompts are tuned to emit JSON unaided), enforced elsewhere. |
+| Prose | `episode`, `summary`, `dashboard`, `long-term` | No schema; output is prose or parsed leniently. |
+
+Not every OpenAI-compatible server implements `response_format`. Notably
+`mlx_lm.server` **accepts the field and ignores it** — no error, it simply
+returns whatever the model felt like. LM Studio and vLLM do honour it.
+
+On a server that ignores it, only the prompt holds the shape. For the prose tier
+that is fine. For the strict tier it is not: `compaction` marks entries
+`compaction-skipped` and `supersession` retries once then fails. Those failures
+are loud and skip-safe — they leave work pending rather than writing corrupted
+memories — but the operations will not do useful work. Either keep those two on
+a provider that enforces schemas, or verify yours does:
+
+```bash
+curl -s $ENDPOINT/chat/completions -H 'content-type: application/json' -d '{
+  "model":"<your-model>","max_tokens":100,
+  "messages":[{"role":"user","content":"Return the topics for: fixed a bug."}],
+  "response_format":{"type":"json_schema","json_schema":{"name":"t","strict":true,
+    "schema":{"type":"object","properties":{"topics":{"type":"array",
+    "items":{"type":"string"}}},"required":["topics"],
+    "additionalProperties":false}}}}'
+```
+
+JSON back means the strict tier is safe there. Prose back means it isn't.
 
 ### Curator guidance
 
