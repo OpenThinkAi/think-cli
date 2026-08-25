@@ -17,6 +17,25 @@ const END_MARKER = '<!-- think:end -->';
 const RETRO_BEGIN_MARKER = '<!-- think:retro:begin (managed by `think init --retro` — do not edit between markers) -->';
 const RETRO_END_MARKER = '<!-- think:retro:end -->';
 
+/**
+ * Extract the managed span delimited by `beginMarker`/`endMarker` (markers
+ * included), or `null` when the pair is missing or inverted.
+ *
+ * Returning `null` rather than `''` is what keeps a byte-identity assertion
+ * honest: two files that both *lack* the block would otherwise yield equal
+ * empty strings and pass a comparison that proves nothing.
+ */
+function extractManagedSpan(
+  content: string,
+  beginMarker: string,
+  endMarker: string,
+): string | null {
+  const beginIdx = content.indexOf(beginMarker);
+  const endIdx = content.indexOf(endMarker);
+  if (beginIdx === -1 || endIdx === -1 || endIdx < beginIdx) return null;
+  return content.slice(beginIdx, endIdx + endMarker.length);
+}
+
 describe('think init — scoped marker block', () => {
   let homeRoot: string;
   let projectDir: string;
@@ -713,5 +732,157 @@ describe('think init — v3 block (AGT-321)', () => {
     } finally {
       process.exit = prevExit;
     }
+  });
+});
+
+// AGT-1140: `think init` writes its managed block to CLAUDE.md and, when that
+// file already exists, to AGENTS.md as well — but nothing asserted the two land
+// byte-identical. The invariant has broken in the wild once already: a
+// pre-2.3.1 `~/.open-team` probe appended a conditional line to the block, so
+// on-disk copies of the two files drifted by three lines. The drift is
+// invisible to users because different harnesses read different files — Claude
+// Code reads CLAUDE.md, opencode/Cursor read AGENTS.md — so it has to be caught
+// here. These tests lock the guarantee across every variant the write path can
+// emit. They deliberately assert nothing about the block's *content*, which
+// stays free to change; only that whatever is emitted lands in both files
+// character for character.
+describe('think init — managed block is byte-identical in CLAUDE.md and AGENTS.md (AGT-1140)', () => {
+  let homeRoot: string;
+  let projectDir: string;
+  let prevHome: string | undefined;
+
+  beforeEach(() => {
+    homeRoot = mkdtempSync(path.join(tmpdir(), 'think-init-1140-home-'));
+    projectDir = mkdtempSync(path.join(tmpdir(), 'think-init-1140-project-'));
+    prevHome = process.env.HOME;
+    process.env.HOME = homeRoot;
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    rmSync(homeRoot, { recursive: true, force: true });
+    rmSync(projectDir, { recursive: true, force: true });
+    if (prevHome === undefined) delete process.env.HOME;
+    else process.env.HOME = prevHome;
+    vi.restoreAllMocks();
+  });
+
+  function read(file: string): string {
+    return readFileSync(path.join(projectDir, file), 'utf-8');
+  }
+
+  const CLAUDE_PREAMBLE = '# Personal preferences\n\nbe terse.\n';
+  const AGENTS_PREAMBLE = '# Existing agents file\n';
+
+  function seedBothTargets(): void {
+    // Distinct surrounding prose on purpose: it keeps the assertion scoped to
+    // the managed span, so an extraction bug that compared whole files (or
+    // returned the whole file on a marker miss) fails loudly here.
+    writeFileSync(path.join(projectDir, 'CLAUDE.md'), CLAUDE_PREAMBLE, 'utf-8');
+    writeFileSync(path.join(projectDir, 'AGENTS.md'), AGENTS_PREAMBLE, 'utf-8');
+  }
+
+  /** Assert both files carry the same span, and return it for variant pinning. */
+  function expectSpansIdentical(beginMarker: string, endMarker: string): string {
+    const claudeSpan = extractManagedSpan(read('CLAUDE.md'), beginMarker, endMarker);
+    const agentsSpan = extractManagedSpan(read('AGENTS.md'), beginMarker, endMarker);
+
+    // Guard before comparing: two missing blocks are both null and would
+    // otherwise compare equal.
+    expect(claudeSpan).not.toBeNull();
+    expect(agentsSpan).not.toBeNull();
+    expect(agentsSpan).toBe(claudeSpan);
+
+    // Untouched, still-distinct prose around the block.
+    expect(read('CLAUDE.md')).toContain('be terse.');
+    expect(read('AGENTS.md')).toContain('# Existing agents file');
+
+    return claudeSpan as string;
+  }
+
+  async function runInit(args: string[]): Promise<void> {
+    await initCommand.parseAsync(['--dir', projectDir, ...args], { from: 'user' });
+  }
+
+  it('default block (v2) is byte-identical between the two files', async () => {
+    seedBothTargets();
+    await runInit(['--yes']);
+    const span = expectSpansIdentical(BEGIN_MARKER, END_MARKER);
+    // Pin the variant so this case can't silently drift onto another template.
+    expect(span).toContain('# Work Logging');
+    expect(span).not.toContain('# think v3');
+  });
+
+  it('--minimal block is byte-identical between the two files', async () => {
+    seedBothTargets();
+    await runInit(['--minimal']);
+    const span = expectSpansIdentical(BEGIN_MARKER, END_MARKER);
+    expect(span).toContain('# Work Logging (minimal)');
+  });
+
+  it('--block-version v3 block is byte-identical between the two files', async () => {
+    seedBothTargets();
+    await runInit(['--yes', '--block-version', 'v3']);
+    const span = expectSpansIdentical(BEGIN_MARKER, END_MARKER);
+    expect(span).toContain('# think v3');
+  });
+
+  it('--retro block is byte-identical between the two files', async () => {
+    seedBothTargets();
+    await runInit(['--yes', '--retro', '--cortex', 'fx-tracker']);
+    const span = expectSpansIdentical(RETRO_BEGIN_MARKER, RETRO_END_MARKER);
+    expect(span).toContain('think brief --context fx-tracker');
+    expect(span).toContain('think retro "<observation>" --context fx-tracker');
+  });
+
+  it('stays identical when a re-run replaces an existing block in place', async () => {
+    // Replace-in-place is the other half of the write path, and the place a
+    // per-target branch would most plausibly diverge: the two files reach the
+    // replacement with different `before`/`after` context around the markers.
+    seedBothTargets();
+    await runInit(['--yes', '--block-version', 'v2']);
+    const v2Span = expectSpansIdentical(BEGIN_MARKER, END_MARKER);
+
+    await runInit(['--yes', '--block-version', 'v3']);
+    const v3Span = expectSpansIdentical(BEGIN_MARKER, END_MARKER);
+
+    // Sanity: the re-run really did swap the block, so identity above is not
+    // just the untouched v2 output being compared to itself.
+    expect(v3Span).not.toBe(v2Span);
+    expect(v3Span).toContain('# think v3');
+  });
+
+  it('keeps both blocks identical when the work-log and retro blocks coexist', async () => {
+    seedBothTargets();
+    await runInit(['--yes']);
+    await runInit(['--yes', '--retro', '--cortex', 'fx-tracker']);
+
+    expectSpansIdentical(BEGIN_MARKER, END_MARKER);
+    expectSpansIdentical(RETRO_BEGIN_MARKER, RETRO_END_MARKER);
+  });
+
+  it('extractManagedSpan has teeth: one differing character fails the comparison', () => {
+    // Guards the guarantee itself. If the extractor were lenient (returning ''
+    // or the whole file on a marker miss), every case above would pass while
+    // the files drifted.
+    const body = `${BEGIN_MARKER}\nline one\nline two\n${END_MARKER}`;
+    const a = `# preamble a\n\n${body}\n\ntrailing a\n`;
+    const b = `# totally different preamble\n\n${body}\n`;
+    expect(extractManagedSpan(b, BEGIN_MARKER, END_MARKER)).toBe(
+      extractManagedSpan(a, BEGIN_MARKER, END_MARKER),
+    );
+
+    const drifted = a.replace('line two', 'line twp');
+    expect(extractManagedSpan(drifted, BEGIN_MARKER, END_MARKER)).not.toBe(
+      extractManagedSpan(a, BEGIN_MARKER, END_MARKER),
+    );
+
+    // A missing marker is null, never an empty string that would compare equal
+    // to another missing block.
+    expect(extractManagedSpan('no markers here\n', BEGIN_MARKER, END_MARKER)).toBeNull();
+    expect(
+      extractManagedSpan(`${END_MARKER}\n${BEGIN_MARKER}\n`, BEGIN_MARKER, END_MARKER),
+    ).toBeNull();
   });
 });
