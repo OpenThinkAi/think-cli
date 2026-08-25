@@ -28,6 +28,7 @@
  * one is present; structured output goes through `response_format` instead.
  */
 
+import { fetch as undiciFetch, Agent } from 'undici';
 import {
   type LlmClient,
   type LlmRequest,
@@ -42,6 +43,31 @@ import {
  * undici's silent 300s cutoff killing a healthy generation mid-flight.
  */
 export const DEFAULT_TIMEOUT_MS = 900_000;
+
+/**
+ * Why this module uses undici's `fetch` rather than the global one.
+ *
+ * Node's built-in fetch applies its OWN `headersTimeout` (300s at time of
+ * writing) that an `AbortSignal` cannot raise — a signal is an upper bound, not
+ * a floor. So a long `timeoutMs` was silently capped: any request needing more
+ * than ~300s died with `UND_ERR_HEADERS_TIMEOUT`, which is a transport error
+ * and was therefore reported as "can't reach your LLM server — is it running?"
+ * about a server that was healthy and still generating. Measured: a 31,444-token
+ * prefill plus generation on a 27B model, killed at 304s with `timeoutMs` set to
+ * 40 minutes.
+ *
+ * A dispatcher fixes it, but Node's global fetch rejects a dispatcher from the
+ * standalone undici package (`UND_ERR_INVALID_ARG`) — the two undici copies are
+ * not interchangeable. Using undici's own `fetch` with undici's own `Agent` is
+ * what actually works.
+ *
+ * With both ceilings disabled, `timeoutMs` is the single deadline, and an abort
+ * is unambiguously ours — which is what lets the error say "timed out, raise
+ * timeoutMs" instead of blaming the server.
+ */
+export const NO_CEILING_AGENT_OPTIONS = { headersTimeout: 0, bodyTimeout: 0 } as const;
+
+const NO_CEILING_DISPATCHER = new Agent({ ...NO_CEILING_AGENT_OPTIONS });
 
 /** Qwen/oMLX chat-format markers that leak into completions — strip them. */
 const SPECIAL_TOKEN_RE = /<\|(?:im_end|im_start|endoftext|eot_id)\|>/g;
@@ -92,13 +118,21 @@ export class OpenAiCompatibleLlmClient implements LlmClient {
   private readonly apiKey: string;
   private readonly fetchImpl: typeof fetch;
   private readonly timeoutMs: number;
+  private readonly usesOwnFetch: boolean;
   private readonly disableThinking: boolean;
 
   constructor(opts: OpenAiCompatibleOptions) {
     this.baseURL = opts.endpoint.replace(/\/+$/, '');
     this.model = opts.model;
     this.apiKey = opts.apiKey ?? 'lm-studio';
-    this.fetchImpl = opts.fetchImpl ?? fetch;
+    // Attach the dispatcher ONLY to our own undici fetch. Node's global fetch
+    // rejects a dispatcher from the standalone undici package outright
+    // (UND_ERR_INVALID_ARG), so passing it to an injected implementation would
+    // break that caller rather than help them. An injected fetch is on its own
+    // for ceilings; the UND_ERR_*_TIMEOUT mapping below still classifies its
+    // failures correctly.
+    this.usesOwnFetch = opts.fetchImpl === undefined;
+    this.fetchImpl = opts.fetchImpl ?? (undiciFetch as unknown as typeof fetch);
     this.timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
     this.disableThinking = opts.disableThinking ?? false;
     this.name = opts.label ?? 'openai-compatible';
@@ -151,11 +185,19 @@ export class OpenAiCompatibleLlmClient implements LlmClient {
         },
         body: JSON.stringify(body),
         signal: ac.signal,
-      });
+        ...(this.usesOwnFetch ? { dispatcher: NO_CEILING_DISPATCHER } : {}),
+      } as RequestInit);
     } catch (e) {
       // Distinguish "we gave up waiting" from "nothing answered". Conflating
       // them is how a healthy-but-slow backend gets misreported as an outage.
-      if (ac.signal.aborted) {
+      // Belt and braces: if some other fetch implementation is injected and it
+      // imposes its own ceiling, surface that as a timeout too rather than as an
+      // unreachable server. UND_ERR_HEADERS_TIMEOUT is precisely "we waited and
+      // gave up", not "nothing answered".
+      const cause = (e as { cause?: { code?: string } }).cause?.code;
+      const undiciTimedOut =
+        cause === 'UND_ERR_HEADERS_TIMEOUT' || cause === 'UND_ERR_BODY_TIMEOUT';
+      if (ac.signal.aborted || undiciTimedOut) {
         throw new LlmTimeoutError(
           `LLM endpoint ${this.baseURL} did not respond within ${Math.round(
             this.timeoutMs / 1000,
