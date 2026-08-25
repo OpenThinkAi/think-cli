@@ -28,6 +28,20 @@
  * one is present; structured output goes through `response_format` instead.
  */
 
+// `undici` is a DIRECT dependency of this package, and it is load-bearing here
+// rather than a convenience — see NO_CEILING_DISPATCHER below for the full
+// reasoning. In short: Node's built-in fetch enforces its own 300s
+// `headersTimeout` that an AbortSignal cannot raise, and it rejects a
+// dispatcher constructed from the standalone undici package
+// (`UND_ERR_INVALID_ARG`). Configuring the ceiling therefore requires undici's
+// own `fetch` paired with undici's own `Agent`; neither half substitutes.
+//
+// This package runs on Node (`engines.node`, and a `bin` executed by node).
+// Bun appears in this repo only as the CI installer, so Bun's native fetch is
+// not an alternative for the shipped CLI.
+//
+// Pinned to ^7: undici 8.x requires Node >=22.19.0, above this package's
+// declared floor of >=22.5.0.
 import { fetch as undiciFetch, Agent } from 'undici';
 import {
   type LlmClient,
@@ -90,7 +104,11 @@ export interface OpenAiCompatibleOptions {
   model: string;
   /** Bearer token; defaults to `"lm-studio"`. */
   apiKey?: string;
-  /** Injectable for tests; defaults to global `fetch`. */
+  /**
+   * Injectable for tests. Defaults to undici's `fetch`, NOT the global one —
+   * see the import comment. An injected implementation does not receive the
+   * no-ceiling dispatcher, since Node's global fetch would reject it.
+   */
   fetchImpl?: typeof fetch;
   /**
    * Request deadline in ms. Defaults to `DEFAULT_TIMEOUT_MS`. Exceeding it
