@@ -62,9 +62,36 @@ export interface ResolvedLocalConfig {
 
 export const DEFAULT_CTX_BUDGET = 28_000;
 
-/** Operation names used for per-operation provider selection. */
+/**
+ * Operation names for per-operation provider selection
+ * (`cortex.llm.operations.<name>`). Every LLM-backed operation in think has an
+ * entry here; the string is the user-facing config key, so treat these as a
+ * published contract and don't rename one without a migration.
+ */
 export const OP_CURATION = 'curation';
 export const OP_EVENT_DETECTION = 'event-detection';
+export const OP_EPISODE = 'episode';
+export const OP_TERMINAL_EVENT = 'terminal-event';
+export const OP_RETRO_DEDUPE = 'retro-dedupe';
+export const OP_SUMMARY = 'summary';
+export const OP_DASHBOARD = 'dashboard';
+export const OP_LONG_TERM = 'long-term';
+export const OP_COMPACTION = 'compaction';
+export const OP_SUPERSESSION = 'supersession';
+
+/** Every operation name, for validation and `think config` help output. */
+export const ALL_OPERATIONS = [
+  OP_CURATION,
+  OP_EVENT_DETECTION,
+  OP_EPISODE,
+  OP_TERMINAL_EVENT,
+  OP_RETRO_DEDUPE,
+  OP_SUMMARY,
+  OP_DASHBOARD,
+  OP_LONG_TERM,
+  OP_COMPACTION,
+  OP_SUPERSESSION,
+] as const;
 
 // ---------------------------------------------------------------------------
 // Egress
@@ -179,11 +206,45 @@ export function selectProviderName(
         'must match a provider name, not the legacy "local"/"anthropic" values.',
     );
   }
+  warnUnknownOperationKeys(cfg, warn);
+
   const mapped = cfg?.operations?.[operation];
   if (mapped) return mapped;
   if (cfg?.default) return cfg.default;
   if (registry.size === 1) return [...registry.keys()][0];
   return undefined;
+}
+
+/** Operation-key typos we have already complained about, so a run that touches
+ * many operations doesn't repeat the same warning ten times. */
+const warnedOperationKeys = new Set<string>();
+
+/**
+ * Warn about `cortex.llm.operations` keys that name no known operation.
+ *
+ * Silently ignoring them is the worst option: `long_term` instead of
+ * `long-term` produces no error and no routing, so the user believes an
+ * operation is pinned to a provider it never reaches. That is the single most
+ * likely config mistake here, and the whole point of the block is precision.
+ */
+function warnUnknownOperationKeys(
+  cfg: LlmConfig | undefined,
+  warn: (msg: string) => void,
+): void {
+  const known = new Set<string>(ALL_OPERATIONS);
+  for (const key of Object.keys(cfg?.operations ?? {})) {
+    if (known.has(key) || warnedOperationKeys.has(key)) continue;
+    warnedOperationKeys.add(key);
+    warn(
+      `[think] cortex.llm.operations."${key}" is not a known operation and will be ignored. ` +
+        `Valid operations: ${ALL_OPERATIONS.join(', ')}.`,
+    );
+  }
+}
+
+/** Reset the warn-once cache. Test seam only. */
+export function resetOperationKeyWarnings(): void {
+  warnedOperationKeys.clear();
 }
 
 /** Instantiate the transport for a resolved provider. */

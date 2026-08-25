@@ -11,10 +11,14 @@
 
 // @anthropic-ai/sdk is a direct dep (not just a transitive dep via claude-agent-sdk)
 // because the agent SDK does not re-export the Anthropic class or Message types.
-import Anthropic from '@anthropic-ai/sdk';
 import type { Tool } from '@anthropic-ai/sdk/resources/messages/messages.js';
-import { requireLlmConsent } from '../../lib/llm-consent.js';
-import { resolveThinkApiKey } from '../../lib/api-key.js';
+import {
+  LlmStructuredOutputError,
+  type LlmClient,
+  type LlmJsonSchema,
+  type LlmResponse,
+} from '../../lib/llm/client.js';
+import { getDefaultLlmClient, OP_SUPERSESSION } from '../../lib/llm/router.js';
 import {
   SUPERSESSION_SYSTEM_PROMPT,
   buildSupersessionMessages,
@@ -57,6 +61,14 @@ const MODEL = 'claude-haiku-4-5';
 const MAX_TOKENS = 300;
 const TEMPERATURE = 0.1;
 
+/**
+ * Truncation is a budget problem, not a model problem, and retrying an
+ * identical call truncates identically — so both detection sites (a truncated
+ * shape failure, and a truncated-but-parseable response) report it the same way.
+ */
+const TRUNCATED_MESSAGE =
+  `Supersession response truncated at max_tokens=${MAX_TOKENS} — increase budget or reduce candidate count`;
+
 const SUPERSESSION_TOOL: Tool = {
   name: 'submit_supersession',
   description:
@@ -81,6 +93,18 @@ const SUPERSESSION_TOOL: Tool = {
     },
     required: ['supersedes', 'topics', 'is_duplicate'],
   },
+};
+
+/**
+ * Transport-neutral view of SUPERSESSION_TOOL: same name, description and JSON
+ * Schema, in the provider-agnostic shape `LlmClient` takes. Read directly off
+ * the Tool rather than retyped, so the Anthropic tool and the OpenAI
+ * `response_format` schema cannot drift apart.
+ */
+const SUPERSESSION_SCHEMA: LlmJsonSchema = {
+  name: SUPERSESSION_TOOL.name,
+  description: SUPERSESSION_TOOL.description,
+  schema: SUPERSESSION_TOOL.input_schema as unknown as Record<string, unknown>,
 };
 
 // ---------------------------------------------------------------------------
@@ -114,15 +138,6 @@ function parseSupersessionToolInput(input: unknown): SupersessionResult {
   return { supersedes, topics, isDuplicate };
 }
 
-function extractToolUseInput(response: Anthropic.Message): unknown {
-  for (const block of response.content) {
-    if (block.type === 'tool_use' && block.name === SUPERSESSION_TOOL.name) {
-      return block.input;
-    }
-  }
-  return null;
-}
-
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
@@ -149,40 +164,56 @@ export async function runSupersession(
   newRetro: RetroEntry,
   candidates: RetroCandidate[],
 ): Promise<SupersessionResult> {
-  requireLlmConsent();
-
-  const client = new Anthropic({ apiKey: resolveThinkApiKey() });
+  const client: LlmClient = getDefaultLlmClient(OP_SUPERSESSION);
   const { messages } = buildSupersessionMessages(newRetro, candidates);
 
-  const callClaude = (): Promise<Anthropic.Message> =>
-    client.messages.create({
-      model: MODEL,
-      temperature: TEMPERATURE,
-      max_tokens: MAX_TOKENS,
-      system: [
-        {
-          type: 'text',
-          text: SUPERSESSION_SYSTEM_PROMPT,
-          cache_control: { type: 'ephemeral' },
-        },
-      ],
-      tools: [SUPERSESSION_TOOL],
-      tool_choice: {
-        type: 'tool',
-        name: SUPERSESSION_TOOL.name,
-        disable_parallel_tool_use: true,
-      },
-      messages,
-    });
+  // strictSchema keeps the server-side shape enforcement this worker has always
+  // had (forced tool_use on Anthropic, response_format json_schema elsewhere).
+  // cacheSystem preserves the ephemeral prompt cache — the system prompt is
+  // fixed and re-sent once per retro.
+  // A shape failure is transient — surface it as a null payload so the existing
+  // retry-once path handles it. Transport errors propagate untouched.
+  const callModel = async (): Promise<LlmResponse | null> => {
+    try {
+      return await client.complete({
+        system: SUPERSESSION_SYSTEM_PROMPT,
+        messages: messages.map((m) => ({
+          role: m.role as 'user' | 'assistant',
+          content: typeof m.content === 'string' ? m.content : JSON.stringify(m.content),
+        })),
+        maxTokens: MAX_TOKENS,
+        temperature: TEMPERATURE,
+        schema: SUPERSESSION_SCHEMA,
+        strictSchema: true,
+        cacheSystem: true,
+        model: MODEL,
+      });
+    } catch (e) {
+      if (e instanceof LlmStructuredOutputError) {
+        // Truncation is not non-determinism: retrying an identical call
+        // truncates identically. Fail now with the actionable message.
+        if (e.truncated) {
+          throw new Error(TRUNCATED_MESSAGE);
+        }
+        return null;
+      }
+      throw e;
+    }
+  };
+
+  // Truncation is not worth retrying: an identical call truncates identically.
+  // `truncated` is the provider-neutral form of Anthropic's
+  // stop_reason === 'max_tokens' / OpenAI's finish_reason === 'length'.
+  const failIfTruncated = (r: LlmResponse | null): void => {
+    if (r?.truncated) {
+      throw new Error(TRUNCATED_MESSAGE);
+    }
+  };
 
   // First attempt
-  const response = await callClaude();
-  if (response.stop_reason === 'max_tokens') {
-    throw new Error(
-      `Supersession response truncated at max_tokens=${MAX_TOKENS} — increase budget or reduce candidate count`,
-    );
-  }
-  const toolInput = extractToolUseInput(response);
+  const response = await callModel();
+  failIfTruncated(response);
+  const toolInput = payloadOf(response);
   if (toolInput !== null) {
     try {
       return parseSupersessionToolInput(toolInput);
@@ -190,19 +221,30 @@ export async function runSupersession(
       console.warn(`[supersession] parse failed on attempt 1, retrying`, firstErr);
     }
   } else {
-    console.warn('[supersession] no tool_use block on attempt 1, retrying');
+    console.warn('[supersession] no structured payload on attempt 1, retrying');
   }
 
-  // Retry once on missing or unparseable tool_use (transient non-determinism).
-  const retryResponse = await callClaude();
-  if (retryResponse.stop_reason === 'max_tokens') {
-    throw new Error(
-      `Supersession response truncated at max_tokens=${MAX_TOKENS} — increase budget or reduce candidate count`,
-    );
-  }
-  const retryToolInput = extractToolUseInput(retryResponse);
+  // Retry once on missing or unparseable output (transient non-determinism).
+  const retryResponse = await callModel();
+  failIfTruncated(retryResponse);
+  const retryToolInput = payloadOf(retryResponse);
   if (retryToolInput === null) {
-    throw new Error('Supersession response missing tool_use block after retry');
+    throw new Error('Supersession response missing structured payload after retry');
   }
   return parseSupersessionToolInput(retryToolInput);
+}
+
+/**
+ * The structured payload, however the transport delivered it: `json` when the
+ * provider returned a validated object, else a JSON parse of `text`.
+ */
+function payloadOf(r: LlmResponse | null): unknown | null {
+  if (r === null) return null;
+  if (r.json !== undefined) return r.json;
+  if (!r.text) return null;
+  try {
+    return JSON.parse(r.text);
+  } catch {
+    return null;
+  }
 }

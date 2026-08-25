@@ -47,10 +47,34 @@ export interface LlmRequest {
   /** Structured-output hint — see `LlmJsonSchema`. */
   schema?: LlmJsonSchema;
   /**
-   * Preferred model id. The Anthropic client uses it; the local client ignores
-   * it in favour of its configured model (the endpoint serves one id).
+   * Preferred model id. The Anthropic client uses it; the OpenAI-compatible
+   * client ignores it in favour of its configured model (the endpoint serves
+   * one id).
    */
   model?: string;
+  /**
+   * Demand SERVER-SIDE enforcement of `schema`, not just a prompt instruction.
+   *
+   * Opt-in because the two families enforce differently and the difference is
+   * observable. Without it the Anthropic path leaves the schema advisory and
+   * relies on the prompt — which is correct for prompts tuned that way (the
+   * curation prompts are), and wrong for callers that depend on the shape
+   * (compaction's freeform-JSON attempt failed 100% of shape validations).
+   *
+   * With it: Anthropic forces `tool_use` via the Messages API, which needs an
+   * API key; OpenAI-compatible servers already receive `response_format:
+   * json_schema` either way. A caller that sets this is saying "a malformed
+   * response is a bug, not a retry" — so moving such an op between providers
+   * must not quietly downgrade it.
+   */
+  strictSchema?: boolean;
+  /**
+   * Ask the provider to cache the system prompt across calls where it can
+   * (Anthropic `cache_control: ephemeral`). A hint: providers without a cache
+   * ignore it. Worth setting for a long, fixed system prompt reused per item —
+   * the daemon workers hit the same prompt once per entry.
+   */
+  cacheSystem?: boolean;
 }
 
 export interface LlmResponse {
@@ -63,6 +87,17 @@ export interface LlmResponse {
    * caller parses `text`).
    */
   json?: unknown;
+  /**
+   * The provider stopped because the output hit `maxTokens`, not because the
+   * model finished. Anthropic reports `stop_reason: 'max_tokens'`; OpenAI-
+   * compatible servers report `finish_reason: 'length'`.
+   *
+   * Worth surfacing because a truncated structured response is usually
+   * unparseable, and "bad JSON" is a much less actionable diagnosis than
+   * "your token budget was too small". The supersession worker treats it as a
+   * hard error rather than retrying an identical call that will truncate again.
+   */
+  truncated?: boolean;
 }
 
 export interface LlmClient {
@@ -127,6 +162,30 @@ export class LlmUnavailableError extends Error {
  * tokens over. 3.5 keeps a margin without over-rejecting.
  */
 export const CHARS_PER_TOKEN = 3.5;
+
+/**
+ * Thrown when a `strictSchema` request came back without the structured payload
+ * the caller demanded — the model answered, but not in the required shape.
+ *
+ * Typed separately from a transport error on purpose: this one is transient
+ * model non-determinism and IS worth one retry, whereas a 5xx or a rate limit
+ * must propagate untouched. The daemon workers rely on exactly that
+ * distinction — they retry this and nothing else.
+ */
+export class LlmStructuredOutputError extends Error {
+  /**
+   * The shape failure was caused by hitting `maxTokens`, not by the model
+   * ignoring the schema. Carried on the error because the two demand opposite
+   * responses: non-determinism is worth a retry, truncation is not — an
+   * identical call truncates identically. Callers that retry must check this.
+   */
+  readonly truncated: boolean;
+  constructor(message: string, truncated = false) {
+    super(message);
+    this.name = 'LlmStructuredOutputError';
+    this.truncated = truncated;
+  }
+}
 
 /**
  * Thrown when a request exceeded its own deadline. Deliberately NOT an

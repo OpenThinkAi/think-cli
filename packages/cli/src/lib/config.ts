@@ -384,9 +384,46 @@ export interface LlmConfig {
   /** Provider used by any operation without an explicit mapping. */
   default?: string;
   /**
-   * Per-operation provider selection, keyed by operation name (`curation`,
-   * `event-detection`, `summary`, `compaction`, ...). Lets a cheap model handle
-   * summaries while curation runs somewhere stronger.
+   * Per-operation provider selection, keyed by operation name. Lets a cheap
+   * model handle summaries while curation runs somewhere stronger, or keeps
+   * one sensitive operation on-device while the rest use a hosted API.
+   *
+   * Recognised names (see `ALL_OPERATIONS` in lib/llm/router.ts):
+   *   `curation`         `think curate` — engrams to memories (tier A)
+   *   `event-detection`  `think curate` — memories to long-term events (tier B)
+   *   `episode`          `think curate --episode`
+   *   `terminal-event`   terminal-event curation
+   *   `retro-dedupe`     `think curate-retros`
+   *   `summary`          `think summary`
+   *   `dashboard`        `think dashboard` status digest
+   *   `long-term`        `think long-term backfill`
+   *   `compaction`       daemon compaction worker
+   *   `supersession`     daemon supersession worker
+   *
+   * NOT routable: the dashboard's `ask` is agentic (multi-turn, MCP tools) and
+   * does not fit the one-shot client contract — it stays on the Agent SDK. See
+   * `answerThinkQuestion` in lib/claude.ts.
+   *
+   * STRUCTURED OUTPUT — how hard the shape is enforced varies by operation, and
+   * it matters when picking a provider for one:
+   *
+   *   `compaction`, `supersession` — strict. Enforced server-side on BOTH
+   *     transports (forced tool_use on Anthropic, `response_format:
+   *     json_schema` elsewhere). A malformed response is treated as a bug.
+   *
+   *   `curation`, `event-detection`, `terminal-event`, `retro-dedupe` — send a
+   *     schema, but enforcement is ASYMMETRIC: advisory on Anthropic (whose
+   *     prompts are tuned to emit JSON unaided) and enforced on OpenAI-
+   *     compatible servers via `response_format`. Routing one of these to a
+   *     local model that ignores `response_format` leaves only the prompt
+   *     holding the shape — expect parse failures from a small model.
+   *
+   *   `episode`, `summary`, `dashboard`, `long-term` — no schema; the output is
+   *     prose or is parsed leniently.
+   *
+   * In short: for anything above `episode`, prefer a provider whose server
+   * honours `response_format: json_schema`. A model that ignores it fails shape
+   * validation and the work is skipped, not silently corrupted.
    */
   operations?: Record<string, string>;
   /**

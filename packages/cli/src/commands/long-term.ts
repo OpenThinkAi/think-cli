@@ -1,6 +1,6 @@
 import { Command } from 'commander';
 import chalk from 'chalk';
-import { query } from '../lib/claude-sdk.js';
+import { getDefaultLlmClient, OP_LONG_TERM } from '../lib/llm/router.js';
 import { getConfig } from '../lib/config.js';
 import { getMemories } from '../db/memory-queries.js';
 import {
@@ -123,20 +123,13 @@ async function runBackfillBatch(
     wrapData('month-memories', memoriesText),
   ].join('\n');
 
-  let result = '';
-  for await (const message of query({
-    prompt: userMessage,
-    options: {
-      systemPrompt: BACKFILL_SYSTEM_PROMPT,
-      tools: [],
-      model: 'claude-sonnet-4-6',
-      persistSession: false,
-    },
-  })) {
-    if ('result' in message && typeof message.result === 'string') {
-      result = message.result;
-    }
-  }
+  const response = await getDefaultLlmClient(OP_LONG_TERM).complete({
+    system: BACKFILL_SYSTEM_PROMPT,
+    messages: [{ role: 'user', content: userMessage }],
+    maxTokens: 8192,
+    model: 'claude-sonnet-4-6',
+  });
+  const result = response.text;
 
   if (!result) throw new Error('No result returned from backfill');
 

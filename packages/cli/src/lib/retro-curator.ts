@@ -1,4 +1,5 @@
-import { query } from './claude-sdk.js';
+import type { LlmClient, LlmJsonSchema } from './llm/client.js';
+import { getDefaultLlmClient, OP_RETRO_DEDUPE } from './llm/router.js';
 import { getCortexDb } from '../db/engrams.js';
 import { getPendingRetros } from '../db/retro-queries.js';
 import { wrapData } from './sanitize.js';
@@ -87,22 +88,58 @@ export function assembleRetroDedupePrompt(pairs: DedupeCandidate[]): string {
   return wrapData('retro-pairs', pairsText);
 }
 
-export async function runRetroDedupe(prompt: string): Promise<DedupeJudgment[]> {
-  let result = '';
-
-  for await (const message of query({
-    prompt,
-    options: {
-      systemPrompt: RETRO_DEDUPE_SYSTEM_PROMPT,
-      tools: [],
-      model: 'claude-haiku-4-5',
-      persistSession: false,
+/**
+ * Shape for the dedupe verdicts. Advisory on the Anthropic path (the prompt
+ * already asks for JSON and is tuned that way); OpenAI-compatible servers get
+ * it as `response_format: json_schema`, which is what makes a small local model
+ * emit conformant output instead of prose.
+ */
+const RETRO_DEDUPE_SCHEMA: LlmJsonSchema = {
+  name: 'retro_dedupe',
+  description: 'Duplicate judgments, one per candidate retro pair.',
+  schema: {
+    // DELIBERATELY not identical to the prompt. RETRO_DEDUPE_SYSTEM_PROMPT asks
+    // for a BARE ARRAY of {a, b, equivalent}; this schema wraps that array in
+    // { judgments: [...] } because OpenAI `response_format: json_schema`
+    // requires an object at the root and cannot express a top-level array.
+    //
+    // So the two shapes are both legitimate and both occur: Anthropic (schema
+    // advisory, prompt-driven) returns the bare array, a json_schema-enforcing
+    // server returns the wrapper. `runRetroDedupe` accepts either — see the
+    // parse below. If you change one of these three, change all three.
+    type: 'object',
+    additionalProperties: false,
+    properties: {
+      judgments: {
+        type: 'array',
+        items: {
+          type: 'object',
+          additionalProperties: false,
+          properties: {
+            a: { type: 'string' },
+            b: { type: 'string' },
+            equivalent: { type: 'boolean' },
+          },
+          required: ['a', 'b', 'equivalent'],
+        },
+      },
     },
-  })) {
-    if ('result' in message && typeof message.result === 'string') {
-      result = message.result;
-    }
-  }
+    required: ['judgments'],
+  },
+};
+
+export async function runRetroDedupe(
+  prompt: string,
+  client: LlmClient = getDefaultLlmClient(OP_RETRO_DEDUPE),
+): Promise<DedupeJudgment[]> {
+  const response = await client.complete({
+    system: RETRO_DEDUPE_SYSTEM_PROMPT,
+    messages: [{ role: 'user', content: prompt }],
+    maxTokens: 4096,
+    schema: RETRO_DEDUPE_SCHEMA,
+    model: 'claude-haiku-4-5',
+  });
+  const result = response.text;
 
   if (!result) {
     throw new Error('No result returned from retro dedupe');
@@ -113,8 +150,16 @@ export async function runRetroDedupe(prompt: string): Promise<DedupeJudgment[]> 
     cleaned = cleaned.replace(/^```(?:json)?\n?/, '').replace(/\n?```$/, '');
   }
 
-  const raw = JSON.parse(cleaned);
-  if (!Array.isArray(raw)) {
+  const parsed = JSON.parse(cleaned);
+  // The prompt asks for a bare array; a server enforcing RETRO_DEDUPE_SCHEMA
+  // returns { judgments: [...] } because json_schema needs an object root.
+  // Both are legitimate, so accept either rather than failing on the wrapper.
+  const raw =
+    Array.isArray(parsed) ? parsed
+    : parsed && typeof parsed === 'object' && Array.isArray((parsed as Record<string, unknown>).judgments)
+      ? ((parsed as Record<string, unknown>).judgments as unknown[])
+      : null;
+  if (raw === null) {
     throw new Error('Retro dedupe returned unexpected response shape');
   }
 

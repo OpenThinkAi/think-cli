@@ -310,7 +310,7 @@ describe('runSupersession — retry on missing tool_use', () => {
 
     const { runSupersession } = await import('../../../src/daemon/supersession/call.js');
     await expect(runSupersession(NEW_RETRO, CANDIDATES)).rejects.toThrow(
-      'Supersession response missing tool_use block after retry',
+      'Supersession response missing structured payload after retry',
     );
     expect(mockCreate).toHaveBeenCalledTimes(2);
   });
