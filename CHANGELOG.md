@@ -2,6 +2,24 @@
 
 ## [Unreleased]
 
+## [2.6.1] — 2026-08-25
+
+Fixes the request deadline shipped in 2.6.0, which could not exceed ~300 seconds no matter what it was set to.
+
+### Fixed
+
+- **`timeoutMs` above ~300s had no effect, and the resulting failure blamed the wrong thing.** Node's built-in `fetch` applies its own `headersTimeout` (300s), and an `AbortSignal` cannot raise it — a signal bounds a request from above, it does not extend one. So the deadline added in 2.6.0 could only ever make requests fail *sooner* than 300s, never later. Worse, the abort arrives as `UND_ERR_HEADERS_TIMEOUT`, a transport error, so it was reported as `LlmUnavailableError`: *"can't reach your LLM server — is it running?"* about a server that was healthy and mid-generation. Measured on a 27B local model: a 31,444-token prefill plus generation, killed at 304s with `timeoutMs` set to 40 minutes.
+
+  The client now issues requests through undici's own `fetch` with a dispatcher that disables both ceilings (`headersTimeout: 0`, `bodyTimeout: 0`), leaving the configured `timeoutMs` as the only deadline. `undici` is a new runtime dependency: Node's global `fetch` rejects a dispatcher from the standalone package with `UND_ERR_INVALID_ARG`, so the two are not interchangeable and importing undici's `fetch` is required rather than stylistic.
+
+  As a backstop, `UND_ERR_HEADERS_TIMEOUT` and `UND_ERR_BODY_TIMEOUT` are now classified as `LlmTimeoutError` regardless of which fetch implementation produced them, so a timeout always names the setting to raise instead of sending you to debug a working process.
+
+  **Scope.** Requests completing inside ~300s were never affected, which is essentially all Anthropic traffic and any modestly-sized local prompt. This was also not a regression: the 300s ceiling predates 2.6.0 and behaved identically in 2.5.2 — what 2.6.0 added was a knob that advertised control it did not have. Failure remained safe throughout (work left pending, nothing corrupted, nothing sent anywhere it should not go).
+
+### Note
+
+- **Local curation on a large model is verified end to end.** Against Qwen3.8-27B via `mlx_lm.server`, both curation passes returned JSON that parsed verbatim — no code fence, no prose preamble, no reasoning tokens — and produced seven well-formed memories from 29 events. Worth knowing: that server accepts `response_format: json_schema` and silently ignores it, so the shape came from the prompt, not from enforcement. Operations that genuinely require enforcement (`compaction`, `supersession`) should be pointed at a server that honours it — the README carries a one-line check.
+
 ## [2.6.0] — 2026-08-25
 
 think's LLM work becomes provider-agnostic: every operation can be pointed at Anthropic, an on-device model, or any OpenAI-compatible API, individually. Includes a fix for a consent gate that a non-Anthropic endpoint could bypass entirely.
