@@ -58,6 +58,12 @@ export class AnthropicLlmClient implements LlmClient {
   readonly name = 'anthropic';
   private readonly queryFn: QueryFn;
   private readonly messagesCreateOverride?: MessagesCreateFn;
+  /**
+   * Built on first strict call and reused. Lazy because constructing it reads
+   * the API key — an instance that never runs a strict request must not require
+   * one, which is what keeps the Agent SDK path usable with no key at all.
+   */
+  private messagesCreateCached?: MessagesCreateFn;
 
   /**
    * Back-compat: the original constructor took `queryFn` positionally. Both
@@ -127,7 +133,9 @@ export class AnthropicLlmClient implements LlmClient {
       ...(req.cacheSystem ? { cache_control: { type: 'ephemeral' as const } } : {}),
     };
 
-    const create = this.messagesCreateOverride ?? defaultMessagesCreate();
+    const create =
+      this.messagesCreateOverride ??
+      (this.messagesCreateCached ??= defaultMessagesCreate());
     const response = await create({
       model: req.model ?? DEFAULT_MODEL,
       max_tokens: req.maxTokens,

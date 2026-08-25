@@ -404,10 +404,26 @@ export interface LlmConfig {
    * does not fit the one-shot client contract — it stays on the Agent SDK. See
    * `answerThinkQuestion` in lib/claude.ts.
    *
-   * `compaction` and `supersession` request server-side schema enforcement. A
-   * provider serving them should support structured output (`response_format:
-   * json_schema`); a model that ignores it will fail shape validation and the
-   * work will be skipped rather than silently corrupted.
+   * STRUCTURED OUTPUT — how hard the shape is enforced varies by operation, and
+   * it matters when picking a provider for one:
+   *
+   *   `compaction`, `supersession` — strict. Enforced server-side on BOTH
+   *     transports (forced tool_use on Anthropic, `response_format:
+   *     json_schema` elsewhere). A malformed response is treated as a bug.
+   *
+   *   `curation`, `event-detection`, `terminal-event`, `retro-dedupe` — send a
+   *     schema, but enforcement is ASYMMETRIC: advisory on Anthropic (whose
+   *     prompts are tuned to emit JSON unaided) and enforced on OpenAI-
+   *     compatible servers via `response_format`. Routing one of these to a
+   *     local model that ignores `response_format` leaves only the prompt
+   *     holding the shape — expect parse failures from a small model.
+   *
+   *   `episode`, `summary`, `dashboard`, `long-term` — no schema; the output is
+   *     prose or is parsed leniently.
+   *
+   * In short: for anything above `episode`, prefer a provider whose server
+   * honours `response_format: json_schema`. A model that ignores it fails shape
+   * validation and the work is skipped, not silently corrupted.
    */
   operations?: Record<string, string>;
   /**

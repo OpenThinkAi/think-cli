@@ -63,22 +63,6 @@ const MODEL = 'claude-haiku-4-5';
 const MAX_TOKENS = 600;
 const TEMPERATURE = 0.2;
 
-/**
- * Transport-neutral view of COMPACTION_TOOL. Derived from it rather than
- * duplicated so the Anthropic tool and the OpenAI json_schema cannot drift.
- */
-const COMPACTION_SCHEMA: LlmJsonSchema = {
-  get name() {
-    return COMPACTION_TOOL.name;
-  },
-  get description() {
-    return COMPACTION_TOOL.description;
-  },
-  get schema() {
-    return COMPACTION_TOOL.input_schema as unknown as Record<string, unknown>;
-  },
-};
-
 const COMPACTION_TOOL: Tool = {
   name: 'submit_compaction',
   description:
@@ -103,6 +87,18 @@ const COMPACTION_TOOL: Tool = {
     },
     required: ['compacted_text', 'supersedes', 'topics'],
   },
+};
+
+/**
+ * Transport-neutral view of COMPACTION_TOOL: same name, description and JSON
+ * Schema, in the provider-agnostic shape `LlmClient` takes. Read directly off
+ * the Tool rather than retyped, so the Anthropic tool and the OpenAI
+ * `response_format` schema cannot drift apart.
+ */
+const COMPACTION_SCHEMA: LlmJsonSchema = {
+  name: COMPACTION_TOOL.name,
+  description: COMPACTION_TOOL.description,
+  schema: COMPACTION_TOOL.input_schema as unknown as Record<string, unknown>,
 };
 
 // ---------------------------------------------------------------------------

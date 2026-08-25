@@ -98,10 +98,15 @@ const RETRO_DEDUPE_SCHEMA: LlmJsonSchema = {
   name: 'retro_dedupe',
   description: 'Duplicate judgments, one per candidate retro pair.',
   schema: {
-    // Mirrors RETRO_DEDUPE_SYSTEM_PROMPT's documented output exactly: a bare
-    // array of {a, b, equivalent}. Keep the two in lockstep — a schema that
-    // disagrees with the prompt is worse than no schema, because the model is
-    // pulled two ways and the parser silently yields nothing.
+    // DELIBERATELY not identical to the prompt. RETRO_DEDUPE_SYSTEM_PROMPT asks
+    // for a BARE ARRAY of {a, b, equivalent}; this schema wraps that array in
+    // { judgments: [...] } because OpenAI `response_format: json_schema`
+    // requires an object at the root and cannot express a top-level array.
+    //
+    // So the two shapes are both legitimate and both occur: Anthropic (schema
+    // advisory, prompt-driven) returns the bare array, a json_schema-enforcing
+    // server returns the wrapper. `runRetroDedupe` accepts either — see the
+    // parse below. If you change one of these three, change all three.
     type: 'object',
     additionalProperties: false,
     properties: {

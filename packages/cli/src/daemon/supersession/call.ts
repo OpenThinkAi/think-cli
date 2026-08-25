@@ -62,20 +62,12 @@ const MAX_TOKENS = 300;
 const TEMPERATURE = 0.1;
 
 /**
- * Transport-neutral view of SUPERSESSION_TOOL — derived, not duplicated, so the
- * Anthropic tool and the OpenAI json_schema can't drift apart.
+ * Truncation is a budget problem, not a model problem, and retrying an
+ * identical call truncates identically — so both detection sites (a truncated
+ * shape failure, and a truncated-but-parseable response) report it the same way.
  */
-const SUPERSESSION_SCHEMA: LlmJsonSchema = {
-  get name() {
-    return SUPERSESSION_TOOL.name;
-  },
-  get description() {
-    return SUPERSESSION_TOOL.description;
-  },
-  get schema() {
-    return SUPERSESSION_TOOL.input_schema as unknown as Record<string, unknown>;
-  },
-};
+const TRUNCATED_MESSAGE =
+  `Supersession response truncated at max_tokens=${MAX_TOKENS} — increase budget or reduce candidate count`;
 
 const SUPERSESSION_TOOL: Tool = {
   name: 'submit_supersession',
@@ -101,6 +93,18 @@ const SUPERSESSION_TOOL: Tool = {
     },
     required: ['supersedes', 'topics', 'is_duplicate'],
   },
+};
+
+/**
+ * Transport-neutral view of SUPERSESSION_TOOL: same name, description and JSON
+ * Schema, in the provider-agnostic shape `LlmClient` takes. Read directly off
+ * the Tool rather than retyped, so the Anthropic tool and the OpenAI
+ * `response_format` schema cannot drift apart.
+ */
+const SUPERSESSION_SCHEMA: LlmJsonSchema = {
+  name: SUPERSESSION_TOOL.name,
+  description: SUPERSESSION_TOOL.description,
+  schema: SUPERSESSION_TOOL.input_schema as unknown as Record<string, unknown>,
 };
 
 // ---------------------------------------------------------------------------
@@ -189,9 +193,7 @@ export async function runSupersession(
         // Truncation is not non-determinism: retrying an identical call
         // truncates identically. Fail now with the actionable message.
         if (e.truncated) {
-          throw new Error(
-            `Supersession response truncated at max_tokens=${MAX_TOKENS} — increase budget or reduce candidate count`,
-          );
+          throw new Error(TRUNCATED_MESSAGE);
         }
         return null;
       }
@@ -204,9 +206,7 @@ export async function runSupersession(
   // stop_reason === 'max_tokens' / OpenAI's finish_reason === 'length'.
   const failIfTruncated = (r: LlmResponse | null): void => {
     if (r?.truncated) {
-      throw new Error(
-        `Supersession response truncated at max_tokens=${MAX_TOKENS} — increase budget or reduce candidate count`,
-      );
+      throw new Error(TRUNCATED_MESSAGE);
     }
   };
 

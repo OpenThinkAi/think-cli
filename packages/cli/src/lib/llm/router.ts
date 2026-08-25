@@ -206,11 +206,45 @@ export function selectProviderName(
         'must match a provider name, not the legacy "local"/"anthropic" values.',
     );
   }
+  warnUnknownOperationKeys(cfg, warn);
+
   const mapped = cfg?.operations?.[operation];
   if (mapped) return mapped;
   if (cfg?.default) return cfg.default;
   if (registry.size === 1) return [...registry.keys()][0];
   return undefined;
+}
+
+/** Operation-key typos we have already complained about, so a run that touches
+ * many operations doesn't repeat the same warning ten times. */
+const warnedOperationKeys = new Set<string>();
+
+/**
+ * Warn about `cortex.llm.operations` keys that name no known operation.
+ *
+ * Silently ignoring them is the worst option: `long_term` instead of
+ * `long-term` produces no error and no routing, so the user believes an
+ * operation is pinned to a provider it never reaches. That is the single most
+ * likely config mistake here, and the whole point of the block is precision.
+ */
+function warnUnknownOperationKeys(
+  cfg: LlmConfig | undefined,
+  warn: (msg: string) => void,
+): void {
+  const known = new Set<string>(ALL_OPERATIONS);
+  for (const key of Object.keys(cfg?.operations ?? {})) {
+    if (known.has(key) || warnedOperationKeys.has(key)) continue;
+    warnedOperationKeys.add(key);
+    warn(
+      `[think] cortex.llm.operations."${key}" is not a known operation and will be ignored. ` +
+        `Valid operations: ${ALL_OPERATIONS.join(', ')}.`,
+    );
+  }
+}
+
+/** Reset the warn-once cache. Test seam only. */
+export function resetOperationKeyWarnings(): void {
+  warnedOperationKeys.clear();
 }
 
 /** Instantiate the transport for a resolved provider. */

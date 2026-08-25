@@ -13,6 +13,7 @@ import {
   RegistryLlmClient,
   resolveRegistry,
   selectProviderName,
+  resetOperationKeyWarnings,
   ALL_OPERATIONS,
   OP_CURATION,
   OP_SUMMARY,
@@ -140,5 +141,41 @@ describe('per-operation provider selection', () => {
     expect(qwen.calls[0].strictSchema).toBe(true);
     expect(qwen.calls[0].cacheSystem).toBe(true);
     expect(qwen.calls[0].schema?.name).toBe('n');
+  });
+});
+
+describe('unknown operation keys are surfaced, not swallowed', () => {
+  it('warns when a key names no known operation (the long_term/long-term typo)', () => {
+    resetOperationKeyWarnings();
+    const cfg: LlmConfig = { ...TWO_PROVIDERS, operations: { long_term: 'qwen' } };
+    const warnings: string[] = [];
+    const chosen = selectProviderName('long-term', cfg, resolveRegistry(cfg), (m) =>
+      warnings.push(m),
+    );
+    // Still routes (to the default) rather than failing the run...
+    expect(chosen).toBe('claude');
+    // ...but the user is told their key did nothing, and what the valid ones are.
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toMatch(/long_term/);
+    expect(warnings[0]).toMatch(/long-term/);
+  });
+
+  it('does not warn for valid keys', () => {
+    resetOperationKeyWarnings();
+    const cfg: LlmConfig = { ...TWO_PROVIDERS, operations: { [OP_LONG_TERM]: 'qwen' } };
+    const warnings: string[] = [];
+    selectProviderName(OP_LONG_TERM, cfg, resolveRegistry(cfg), (m) => warnings.push(m));
+    expect(warnings).toHaveLength(0);
+  });
+
+  it('warns once per key, not once per operation looked up', () => {
+    resetOperationKeyWarnings();
+    const cfg: LlmConfig = { ...TWO_PROVIDERS, operations: { nope: 'qwen' } };
+    const warnings: string[] = [];
+    const registry = resolveRegistry(cfg);
+    for (const op of ALL_OPERATIONS) {
+      selectProviderName(op, cfg, registry, (m) => warnings.push(m));
+    }
+    expect(warnings).toHaveLength(1);
   });
 });
