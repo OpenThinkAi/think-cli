@@ -6,7 +6,7 @@ import { getCuratorMdPath } from './paths.js';
 import { wrapData } from './sanitize.js';
 import type { Engram } from '../db/engram-queries.js';
 import type { LlmClient, LlmJsonSchema } from './llm/client.js';
-import { getDefaultLlmClient } from './llm/router.js';
+import { getDefaultLlmClient, OP_EPISODE, OP_TERMINAL_EVENT } from './llm/router.js';
 
 // L1 entry kind discriminator (think-v3). v2 entries omit `kind` on the wire;
 // the parser defaults missing values to 'memory' so legacy JSONL keeps loading.
@@ -999,22 +999,18 @@ export function assembleEpisodeCurationPrompt(params: {
   };
 }
 
-export async function runEpisodeCuration(prompt: StructuredPrompt): Promise<string> {
-  let result = '';
-
-  for await (const message of query({
-    prompt: prompt.userMessage,
-    options: {
-      systemPrompt: prompt.systemPrompt,
-      tools: [],
-      model: 'claude-sonnet-4-6',
-      persistSession: false,
-    },
-  })) {
-    if ('result' in message && typeof message.result === 'string') {
-      result = message.result;
-    }
-  }
+export async function runEpisodeCuration(
+  prompt: StructuredPrompt,
+  client: LlmClient = getDefaultLlmClient(OP_EPISODE),
+): Promise<string> {
+  // No schema: this pass returns prose (a narrative memory), not JSON.
+  const response = await client.complete({
+    system: prompt.systemPrompt,
+    messages: [{ role: 'user', content: prompt.userMessage }],
+    maxTokens: 4096,
+    model: 'claude-sonnet-4-6',
+  });
+  const result = response.text;
 
   if (!result) {
     throw new Error('No result returned from episode curation');
@@ -1179,6 +1175,38 @@ function validateTerminalEventResult(raw: unknown): TerminalEventCurationResult 
 
 const TERMINAL_EVENT_MODEL = 'claude-sonnet-4-6';
 
+/**
+ * Output shape for terminal-event curation, mirroring
+ * `validateTerminalEventResult` — keep the two in step. Advisory on the
+ * Anthropic path (the prompt is tuned to emit this already); OpenAI-compatible
+ * servers receive it as `response_format: json_schema`, which is what keeps a
+ * small local model from answering in prose. `validateTerminalEventResult`
+ * still runs either way: the schema shapes the output, it does not vouch for it.
+ */
+const TERMINAL_EVENT_SCHEMA: LlmJsonSchema = {
+  name: 'terminal_event_curation',
+  description: 'Topical memories segmented from one terminal event.',
+  schema: {
+    type: 'object',
+    additionalProperties: false,
+    properties: {
+      memories: {
+        type: 'array',
+        items: {
+          type: 'object',
+          additionalProperties: false,
+          properties: {
+            content: { type: 'string' },
+            topics: { type: 'array', items: { type: 'string' } },
+          },
+          required: ['content'],
+        },
+      },
+    },
+    required: ['memories'],
+  },
+};
+
 // Re-export from the dedicated key-resolution module so callers that import
 // curator.ts (e.g. tests) can reach these without a second import path.
 export { resolveThinkApiKey, _resetDeprecationWarningForTests } from './api-key.js';
@@ -1203,26 +1231,25 @@ export function useDirectApiCuration(): boolean {
  * parse the response. Routes to the raw Messages API when opted in (see
  * `useDirectApiCuration`), else the Agent SDK. Throws on no-result, malformed
  * JSON, or shape-validation failure. `runTerminalEventCuration` retries once. */
-async function callTerminalEventCurator(prompt: StructuredPrompt): Promise<TerminalEventCurationResult> {
-  if (useDirectApiCuration()) {
+async function callTerminalEventCurator(
+  prompt: StructuredPrompt,
+  client?: LlmClient,
+): Promise<TerminalEventCurationResult> {
+  // THINK_CURATION_BACKEND=api predates the provider registry and pins this
+  // call to the raw Messages API. Honour it first so an existing opt-in keeps
+  // working exactly as before; the registry governs everything else.
+  if (!client && useDirectApiCuration()) {
     return callTerminalEventCuratorViaApi(prompt);
   }
 
-  let result = '';
-
-  for await (const message of query({
-    prompt: prompt.userMessage,
-    options: {
-      systemPrompt: prompt.systemPrompt,
-      tools: [],
-      model: TERMINAL_EVENT_MODEL,
-      persistSession: false,
-    },
-  })) {
-    if ('result' in message && typeof message.result === 'string') {
-      result = message.result;
-    }
-  }
+  const response = await (client ?? getDefaultLlmClient(OP_TERMINAL_EVENT)).complete({
+    system: prompt.systemPrompt,
+    messages: [{ role: 'user', content: prompt.userMessage }],
+    maxTokens: 4096,
+    schema: TERMINAL_EVENT_SCHEMA,
+    model: TERMINAL_EVENT_MODEL,
+  });
+  const result = response.text;
 
   if (!result) {
     throw new Error('No result returned from terminal-event curation');

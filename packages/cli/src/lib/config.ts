@@ -384,9 +384,30 @@ export interface LlmConfig {
   /** Provider used by any operation without an explicit mapping. */
   default?: string;
   /**
-   * Per-operation provider selection, keyed by operation name (`curation`,
-   * `event-detection`, `summary`, `compaction`, ...). Lets a cheap model handle
-   * summaries while curation runs somewhere stronger.
+   * Per-operation provider selection, keyed by operation name. Lets a cheap
+   * model handle summaries while curation runs somewhere stronger, or keeps
+   * one sensitive operation on-device while the rest use a hosted API.
+   *
+   * Recognised names (see `ALL_OPERATIONS` in lib/llm/router.ts):
+   *   `curation`         `think curate` — engrams to memories (tier A)
+   *   `event-detection`  `think curate` — memories to long-term events (tier B)
+   *   `episode`          `think curate --episode`
+   *   `terminal-event`   terminal-event curation
+   *   `retro-dedupe`     `think curate-retros`
+   *   `summary`          `think summary`
+   *   `dashboard`        `think dashboard` status digest
+   *   `long-term`        `think long-term backfill`
+   *   `compaction`       daemon compaction worker
+   *   `supersession`     daemon supersession worker
+   *
+   * NOT routable: the dashboard's `ask` is agentic (multi-turn, MCP tools) and
+   * does not fit the one-shot client contract — it stays on the Agent SDK. See
+   * `answerThinkQuestion` in lib/claude.ts.
+   *
+   * `compaction` and `supersession` request server-side schema enforcement. A
+   * provider serving them should support structured output (`response_format:
+   * json_schema`); a model that ignores it will fail shape validation and the
+   * work will be skipped rather than silently corrupted.
    */
   operations?: Record<string, string>;
   /**

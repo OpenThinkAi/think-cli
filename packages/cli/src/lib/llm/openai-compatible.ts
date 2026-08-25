@@ -82,7 +82,7 @@ export interface OpenAiCompatibleOptions {
 }
 
 interface ChatCompletionResponse {
-  choices?: Array<{ message?: { content?: unknown } }>;
+  choices?: Array<{ message?: { content?: unknown }; finish_reason?: string }>;
 }
 
 export class OpenAiCompatibleLlmClient implements LlmClient {
@@ -206,7 +206,9 @@ export class OpenAiCompatibleLlmClient implements LlmClient {
     }
 
     const text = content.replace(SPECIAL_TOKEN_RE, '').trim();
-    return { text };
+    // 'length' means the model was cut off at max_tokens, not that it finished.
+    const truncated = parsed?.choices?.[0]?.finish_reason === 'length';
+    return { text, ...(truncated ? { truncated: true } : {}) };
   }
 }
 

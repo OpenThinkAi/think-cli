@@ -86,6 +86,10 @@ vi.mock('@anthropic-ai/sdk', () => {
 
 vi.mock('../../../src/lib/llm-consent.js', () => ({
   requireLlmConsent: vi.fn(),
+  // The router probes consent non-throwingly to decide whether an off-machine
+  // provider may be used at all. Default true so these tests exercise the
+  // Anthropic path; the consent-failure cases drive requireLlmConsent instead.
+  hasLlmConsent: vi.fn(() => true),
   LlmConsentError: class LlmConsentError extends Error {
     constructor(message: string) {
       super(message);

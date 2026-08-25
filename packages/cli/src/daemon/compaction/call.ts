@@ -10,15 +10,15 @@
  * the queue layer (AGT-299) for retry with backoff.
  */
 
-import Anthropic from '@anthropic-ai/sdk';
-import type { TextBlockParam, Tool } from '@anthropic-ai/sdk/resources/messages/messages.js';
+import type { Tool } from '@anthropic-ai/sdk/resources/messages/messages.js';
+import { LlmStructuredOutputError, type LlmClient, type LlmJsonSchema } from '../../lib/llm/client.js';
+import { getDefaultLlmClient, OP_COMPACTION } from '../../lib/llm/router.js';
 import {
   COMPACTION_SYSTEM_PROMPT,
   buildCompactionMessages,
 } from './prompt.js';
 import type { NewEntry, CandidateEntry } from './prompt.js';
-import { requireLlmConsent } from '../../lib/llm-consent.js';
-import { resolveThinkApiKey } from '../../lib/api-key.js';
+
 
 // ---------------------------------------------------------------------------
 // Types
@@ -62,6 +62,22 @@ export type CompactionResult = CompactionSuccess | CompactionResponseInvalid;
 const MODEL = 'claude-haiku-4-5';
 const MAX_TOKENS = 600;
 const TEMPERATURE = 0.2;
+
+/**
+ * Transport-neutral view of COMPACTION_TOOL. Derived from it rather than
+ * duplicated so the Anthropic tool and the OpenAI json_schema cannot drift.
+ */
+const COMPACTION_SCHEMA: LlmJsonSchema = {
+  get name() {
+    return COMPACTION_TOOL.name;
+  },
+  get description() {
+    return COMPACTION_TOOL.description;
+  },
+  get schema() {
+    return COMPACTION_TOOL.input_schema as unknown as Record<string, unknown>;
+  },
+};
 
 const COMPACTION_TOOL: Tool = {
   name: 'submit_compaction',
@@ -125,38 +141,55 @@ function validateShape(parsed: unknown): CompactionSuccess | null {
 // ---------------------------------------------------------------------------
 
 async function attemptCompaction(
-  client: Anthropic,
+  client: LlmClient,
   newEntry: NewEntry,
   candidates: CandidateEntry[],
 ): Promise<CompactionSuccess | null> {
   const { messages } = buildCompactionMessages(newEntry, candidates);
 
-  const systemBlock: TextBlockParam = {
-    type: 'text',
-    text: COMPACTION_SYSTEM_PROMPT,
-    cache_control: { type: 'ephemeral' },
-  };
+  // strictSchema: this worker treats a malformed response as a bug, not a
+  // retry-and-hope — an earlier freeform-JSON iteration failed 100% of shape
+  // validations. On Anthropic that means forced tool_use with a server-side
+  // input_schema; on an OpenAI-compatible server, response_format json_schema.
+  // cacheSystem preserves the ephemeral prompt cache this worker relies on:
+  // the system prompt is fixed and re-sent once per entry.
+  let response;
+  try {
+    response = await client.complete({
+      system: COMPACTION_SYSTEM_PROMPT,
+      messages: messages.map((m) => ({
+        role: m.role as 'user' | 'assistant',
+        content: typeof m.content === 'string' ? m.content : JSON.stringify(m.content),
+      })),
+      maxTokens: MAX_TOKENS,
+      temperature: TEMPERATURE,
+      schema: COMPACTION_SCHEMA,
+      strictSchema: true,
+      cacheSystem: true,
+      model: MODEL,
+    });
+  } catch (e) {
+    // A shape failure is transient model non-determinism — return null so the
+    // caller's retry-once path runs. Everything else (5xx, rate limit, consent)
+    // propagates untouched, which the tests pin.
+    if (e instanceof LlmStructuredOutputError) return null;
+    throw e;
+  }
 
-  const response = await client.messages.create({
-    model: MODEL,
-    max_tokens: MAX_TOKENS,
-    temperature: TEMPERATURE,
-    system: [systemBlock],
-    tools: [COMPACTION_TOOL],
-    tool_choice: {
-      type: 'tool',
-      name: COMPACTION_TOOL.name,
-      disable_parallel_tool_use: true,
-    },
-    messages,
-  });
+  const payload = response.json ?? safeParse(response.text);
+  if (payload === undefined) return null;
 
-  const toolUse = response.content.find(
-    (b): b is Anthropic.ToolUseBlock => b.type === 'tool_use' && b.name === COMPACTION_TOOL.name,
-  );
-  if (!toolUse) return null;
+  return validateShape(payload);
+}
 
-  return validateShape(toolUse.input);
+/** Parse a text response for backends that don't return structured `json`. */
+function safeParse(text: string): unknown {
+  if (!text) return undefined;
+  try {
+    return JSON.parse(text);
+  } catch {
+    return undefined;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -179,9 +212,7 @@ export async function runCompaction(
   newEntry: NewEntry,
   candidates: CandidateEntry[],
 ): Promise<CompactionResult> {
-  requireLlmConsent();
-
-  const client = new Anthropic({ apiKey: resolveThinkApiKey() });
+  const client = getDefaultLlmClient(OP_COMPACTION);
 
   const first = await attemptCompaction(client, newEntry, candidates);
   if (first !== null) return first;

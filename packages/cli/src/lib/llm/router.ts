@@ -62,9 +62,36 @@ export interface ResolvedLocalConfig {
 
 export const DEFAULT_CTX_BUDGET = 28_000;
 
-/** Operation names used for per-operation provider selection. */
+/**
+ * Operation names for per-operation provider selection
+ * (`cortex.llm.operations.<name>`). Every LLM-backed operation in think has an
+ * entry here; the string is the user-facing config key, so treat these as a
+ * published contract and don't rename one without a migration.
+ */
 export const OP_CURATION = 'curation';
 export const OP_EVENT_DETECTION = 'event-detection';
+export const OP_EPISODE = 'episode';
+export const OP_TERMINAL_EVENT = 'terminal-event';
+export const OP_RETRO_DEDUPE = 'retro-dedupe';
+export const OP_SUMMARY = 'summary';
+export const OP_DASHBOARD = 'dashboard';
+export const OP_LONG_TERM = 'long-term';
+export const OP_COMPACTION = 'compaction';
+export const OP_SUPERSESSION = 'supersession';
+
+/** Every operation name, for validation and `think config` help output. */
+export const ALL_OPERATIONS = [
+  OP_CURATION,
+  OP_EVENT_DETECTION,
+  OP_EPISODE,
+  OP_TERMINAL_EVENT,
+  OP_RETRO_DEDUPE,
+  OP_SUMMARY,
+  OP_DASHBOARD,
+  OP_LONG_TERM,
+  OP_COMPACTION,
+  OP_SUPERSESSION,
+] as const;
 
 // ---------------------------------------------------------------------------
 // Egress
