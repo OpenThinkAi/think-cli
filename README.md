@@ -151,9 +151,19 @@ With no configuration, everything runs on Anthropic exactly as before.
 
 Operations you can assign: `curation`, `event-detection`, `episode`,
 `terminal-event`, `retro-dedupe`, `summary`, `dashboard`, `long-term`,
-`compaction`, `supersession`. Anything unassigned uses `default`. (The
-dashboard's `ask` is agentic — a multi-turn loop over MCP tools — so it stays on
-the Claude Agent SDK and is not assignable.)
+`compaction`, `supersession`. Anything unassigned uses `default`.
+
+`dashboard` here means the **status digest** — the panel summaries `think
+dashboard` renders. The dashboard's interactive **`ask`** is a different thing
+and is *not* assignable: it is agentic, running a multi-turn loop over MCP
+tools, so it stays on the Claude Agent SDK. There is no operation name for it,
+and adding one has no effect.
+
+**Upgrading from `cortex.local`.** If you already have a `cortex.local` block
+(or `THINK_LOCAL_*` set), it keeps the scope it has always had — curation only.
+Upgrading does not move `summary`, `compaction`, `supersession` or anything else
+onto your local model. To widen it, name each operation in `cortex.llm`
+explicitly; nothing is routed implicitly.
 
 **Consent follows the data, not the vendor.** A provider that sends cortex
 content off this machine requires `THINK_LLM_CONSENT=1` — Anthropic, OpenAI and
@@ -169,6 +179,14 @@ prefill plus generation can run for minutes, and the failure is reported as a
 timeout naming the setting, not as an unreachable server. If curation keeps
 skipping as too large, lower `cortex.curatorPromptCharCap` to shrink the
 envelope.
+
+Prompt size is estimated at ~3.5 characters per token, deliberately erring high
+— this gate decides what is allowed to run, so under-counting is the dangerous
+direction. If you sized a `ctxBudget` against the older, looser 4.0 estimate
+(pre-2.6.0), the same prompt now measures larger and may start using `fallback`
+or being skipped; raise `ctxBudget` to your model's real context window. When
+the fallback cannot take the task either, the work is left pending rather than
+retried elsewhere.
 
 Structured output matters for some operations: `compaction` and `supersession`
 demand server-side schema enforcement, and `curation`, `event-detection`,

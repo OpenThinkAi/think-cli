@@ -8,8 +8,9 @@
  * the bug that makes `cortex.llm.operations` a lie.
  */
 
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, afterEach } from 'vitest';
 import {
+  getDefaultLlmClient,
   RegistryLlmClient,
   resolveRegistry,
   selectProviderName,
@@ -177,5 +178,52 @@ describe('unknown operation keys are surfaced, not swallowed', () => {
       selectProviderName(op, cfg, registry, (m) => warnings.push(m));
     }
     expect(warnings).toHaveLength(1);
+  });
+});
+
+/**
+ * A pre-registry `cortex.local` config must not silently acquire nine new
+ * operations on upgrade. When it was written, curation was the ONLY operation
+ * that consulted the router, so that is the whole of what the user opted into.
+ * Broad routing requires `cortex.llm` — new surface, therefore a real choice.
+ */
+describe('legacy cortex.local stays scoped to curation', () => {
+  afterEach(() => {
+    delete process.env.THINK_LOCAL_ENDPOINT;
+    delete process.env.THINK_LOCAL_MODEL;
+    delete process.env.THINK_LLM_PROVIDER;
+  });
+
+  it('routes curation and event-detection through the router', () => {
+    process.env.THINK_LOCAL_ENDPOINT = 'http://127.0.0.1:8000/v1';
+    process.env.THINK_LOCAL_MODEL = 'q';
+    expect(getDefaultLlmClient(OP_CURATION).name).toBe('router');
+    expect(getDefaultLlmClient(OP_EVENT_DETECTION).name).toBe('router');
+  });
+
+  it('sends every OTHER operation straight to Anthropic, unchanged by the local block', () => {
+    process.env.THINK_LOCAL_ENDPOINT = 'http://127.0.0.1:8000/v1';
+    process.env.THINK_LOCAL_MODEL = 'q';
+    for (const op of ALL_OPERATIONS) {
+      if (op === OP_CURATION || op === OP_EVENT_DETECTION) continue;
+      expect(getDefaultLlmClient(op).name).toBe('anthropic');
+    }
+  });
+
+  it('even with llmProvider pinned to local — pinning predates per-op routing too', () => {
+    process.env.THINK_LOCAL_ENDPOINT = 'http://127.0.0.1:8000/v1';
+    process.env.THINK_LOCAL_MODEL = 'q';
+    process.env.THINK_LLM_PROVIDER = 'local';
+    expect(getDefaultLlmClient(OP_COMPACTION).name).toBe('anthropic');
+    expect(getDefaultLlmClient(OP_SUMMARY).name).toBe('anthropic');
+  });
+
+  it('with no local config at all, everything is Anthropic', () => {
+    for (const op of ALL_OPERATIONS) {
+      const c = getDefaultLlmClient(op);
+      // curation still builds a router, but one with no local endpoint, which
+      // delegates straight to Anthropic — the pre-existing inert behaviour.
+      expect(['anthropic', 'router']).toContain(c.name);
+    }
   });
 });
