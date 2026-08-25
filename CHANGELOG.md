@@ -2,6 +2,32 @@
 
 ## [Unreleased]
 
+## [2.6.0] — 2026-08-25
+
+think's LLM work becomes provider-agnostic: every operation can be pointed at Anthropic, an on-device model, or any OpenAI-compatible API, individually. Includes a fix for a consent gate that a non-Anthropic endpoint could bypass entirely.
+
+### Security
+
+- **The LLM consent gate now keys on data egress rather than on provider identity.** `requireLlmConsent` was enforced inside the Anthropic client, so it protected the Anthropic path and nothing else. The OpenAI-compatible client — named `LocalLlmClient` on the assumption it only ever addressed on-device servers — carried no gate at all. Pointing `THINK_LOCAL_ENDPOINT` (or `cortex.local.endpoint`) at a public API therefore shipped the full curation envelope to a third party with no consent check, while the identical send to Anthropic was refused. Egress is now a declared property of each provider (`offMachine`), evaluated in the router before any request is built, and covers both the new `cortex.llm` config and the legacy `cortex.local` block. When `offMachine` is omitted it is inferred from the endpoint: loopback (`localhost`, `127.0.0.1`, `::1`) is on-machine, everything else is off-machine, and an unparseable endpoint fails closed. Loopback configurations are unaffected and still need no consent.
+
+### Added
+
+- **`cortex.llm` — a provider registry with per-operation routing.** Declare any number of named providers (`kind: "openai"` for anything speaking `/chat/completions`, or `kind: "anthropic"`), pick a `default`, and assign individual operations via `operations`. Assignable: `curation`, `event-detection`, `episode`, `terminal-event`, `retro-dedupe`, `summary`, `dashboard`, `long-term`, `compaction`, `supersession`. `fallback` names where to go when a task exceeds a provider's `ctxBudget`; a fallback that leaves the machine still requires consent. `apiKeyEnv` reads the key from an environment variable rather than storing it in a config file that syncs. Unknown keys in `operations` now warn instead of being silently ignored.
+- **Per-provider `timeoutMs` (default 900,000).** The OpenAI-compatible client previously passed no deadline, so Node/undici aborted at its own 300s default and the abort surfaced as `LlmUnavailableError` — "is it running?" about a server that was running fine and still generating. A 27B model doing a 30k-token prefill plus generation exceeds 300s routinely. Timeouts are now a distinct `LlmTimeoutError` whose message names the setting to raise.
+- **`disableThinking`** sends `chat_template_kwargs: { enable_thinking: false }`, so reasoning models don't spend a structured-output budget on a preamble the caller discards. Ignored by servers that don't implement it.
+
+### Changed
+
+- **Every LLM operation routes through the provider abstraction.** Previously only `think curate` consulted it; `summary`, `dashboard`, `long-term`, `curate-retros`, episode and terminal-event curation, and the daemon's compaction and supersession workers each built their own Anthropic call. Anthropic is now one provider among others rather than the floor beneath them. With no `cortex.llm` block, behaviour is unchanged.
+- **An existing `cortex.local` block now covers every operation, not just curation.** For a loopback endpoint this is strictly more privacy, but it is a real change in where those envelopes go, and a local model is asked to do work it was not asked to do before. Pin operations back with `cortex.llm.operations` to restore the old split — see SECURITY.md.
+- **Prompt-size estimation is now deliberately conservative (~3.5 chars/token, was 4.0).** Measured against a real curation envelope: 109,252 chars tokenized to 31,780 tokens, which the old divisor predicted as 27,313 — 14% low, enough to wave a prompt 3,780 tokens over a 28,000 budget straight through. Tasks that previously cleared a hand-tuned `ctxBudget` may now route to `fallback` or be left pending; raise `ctxBudget` to match the model's real context window.
+- **The daemon's compaction and supersession workers keep their guarantees while routed.** `strictSchema` demands server-side shape enforcement (forced `tool_use` on Anthropic, `response_format: json_schema` elsewhere) and stays opt-in so the curation prompts, tuned to emit JSON unaided, keep their advisory behaviour. `cacheSystem` preserves their ephemeral prompt cache. `LlmResponse.truncated` generalises `stop_reason: max_tokens` / `finish_reason: length`, keeping supersession's truncation check — which fails rather than retrying, since an identical call truncates identically. `LlmStructuredOutputError` separates a shape failure worth one retry from a transport error that must propagate.
+- **`LocalLlmClient` is renamed `OpenAiCompatibleLlmClient`**, which is what it always was: a configurable base URL and bearer token. `lib/llm/local.ts` remains as a deprecated re-export.
+
+### Not changed
+
+- **The dashboard's `ask` stays on the Claude Agent SDK** and is not assignable via `cortex.llm.operations`. It is agentic rather than one-shot — a multi-turn loop calling MCP tools — and the one-shot client contract cannot express it without either dropping its tools or carrying MCP servers, turn caps and tool allowlists no other caller needs.
+
 ## [2.5.2] — 2026-07-24
 
 Closes #91: `think update` replaced the CLI but left the resident daemon serving the previous version's code indefinitely, with no signal that anything was wrong — recall, sync, and compaction all run daemon-side, so an update could silently not take effect.

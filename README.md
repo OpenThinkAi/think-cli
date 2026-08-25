@@ -125,6 +125,56 @@ think pause    # suppress all writes (sync / log / event / subscribe poll silent
 think resume   # re-enable
 ```
 
+### Choosing which model runs what
+
+think's LLM work is provider-agnostic. Each operation can be pointed at Anthropic,
+at an on-device model, or at any API speaking the OpenAI `/chat/completions`
+shape (OpenAI, DeepSeek, OpenRouter, vLLM, LM Studio, oMLX/Qwen).
+
+With no configuration, everything runs on Anthropic exactly as before.
+
+```jsonc
+// ~/.config/think/config.json  →  "cortex": { ... }
+"llm": {
+  "providers": {
+    "qwen":     { "kind": "openai", "endpoint": "http://127.0.0.1:8000/v1",
+                  "model": "Qwen3.8-27B-MLX-4bit", "disableThinking": true },
+    "deepseek": { "kind": "openai", "endpoint": "https://api.deepseek.com/v1",
+                  "model": "deepseek-chat", "apiKeyEnv": "DEEPSEEK_API_KEY" },
+    "claude":   { "kind": "anthropic", "model": "claude-sonnet-4-6" }
+  },
+  "default": "claude",
+  "operations": { "curation": "qwen", "compaction": "qwen", "summary": "deepseek" },
+  "fallback": "claude"
+}
+```
+
+Operations you can assign: `curation`, `event-detection`, `episode`,
+`terminal-event`, `retro-dedupe`, `summary`, `dashboard`, `long-term`,
+`compaction`, `supersession`. Anything unassigned uses `default`. (The
+dashboard's `ask` is agentic — a multi-turn loop over MCP tools — so it stays on
+the Claude Agent SDK and is not assignable.)
+
+**Consent follows the data, not the vendor.** A provider that sends cortex
+content off this machine requires `THINK_LLM_CONSENT=1` — Anthropic, OpenAI and
+DeepSeek alike. A provider on loopback does not, because nothing leaves. Egress
+is inferred from the endpoint (`localhost`/`127.0.0.1`/`::1` are on-machine,
+everything else is not, an unparseable endpoint fails closed); declare
+`"offMachine": false` to trust a host on your own network.
+
+**Sizing a local model.** `ctxBudget` (default 28,000 tokens) is the prompt
+ceiling — over it, think uses `fallback`, or skips if none is set. `timeoutMs`
+(default 900,000) is the request deadline: a large model doing a 30k-token
+prefill plus generation can run for minutes, and the failure is reported as a
+timeout naming the setting, not as an unreachable server. If curation keeps
+skipping as too large, lower `cortex.curatorPromptCharCap` to shrink the
+envelope.
+
+Structured output matters for some operations: `compaction` and `supersession`
+demand server-side schema enforcement, and `curation`, `event-detection`,
+`terminal-event` and `retro-dedupe` rely on it when not on Anthropic. Prefer a
+server that honours `response_format: json_schema` for those.
+
 ### Curator guidance
 
 Each contributor can guide their curator with a personal prompt:
