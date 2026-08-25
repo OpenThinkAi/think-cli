@@ -18,7 +18,8 @@ Fixes the request deadline shipped in 2.6.0, which could not exceed ~300 seconds
 
 ### Note
 
-- **Local curation on a large model is verified end to end.** Against Qwen3.8-27B via `mlx_lm.server`, both curation passes returned JSON that parsed verbatim — no code fence, no prose preamble, no reasoning tokens — and produced seven well-formed memories from 29 events. Worth knowing: that server accepts `response_format: json_schema` and silently ignores it, so the shape came from the prompt, not from enforcement. Operations that genuinely require enforcement (`compaction`, `supersession`) should be pointed at a server that honours it — the README carries a one-line check.
+- **`undici` is a new runtime dependency, pinned to `^7`.** undici 8.x requires Node ≥22.19.0, which is above this package's declared floor of ≥22.5.0; 7.x requires ≥20.18.1 and is comfortably inside it. Raising the supported Node floor in a patch release would be the wrong trade, so 7.x it is. The dispatcher behaviour was verified on 7.29.0, not assumed from the 8.x check.
+- **Choosing a provider for the strict-schema operations.** `compaction` and `supersession` need a server that honours `response_format: json_schema`. Not every OpenAI-compatible server does — `mlx_lm.server` accepts the field and ignores it, so the response shape rests on the prompt alone. The README's provider section carries a one-line curl to test whichever server you plan to use.
 
 ## [2.6.0] — 2026-08-25
 
