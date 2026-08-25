@@ -221,14 +221,7 @@ Lowering the cap reduces volume but trims older recent-memory context the curato
 
 These are intentional design choices, not vulnerabilities:
 
-- **An existing `cortex.local` block now covers more than it used to.** Before this change only `think curate` consulted the router, so a configured local endpoint served curation and nothing else — `summary`, `dashboard`, `long-term`, and the daemon's compaction/supersession workers went to Anthropic regardless. They now all route through the same provider selection. For a loopback endpoint this is strictly more privacy, but it is a real change in where those envelopes go, and a local model will be asked to do work it was not previously asked to do. Pin them back with `cortex.llm.operations` if you want the old split — the five affected keys are `summary`, `dashboard`, `long-term`, `compaction`, `supersession` (`curation` was already routed):
-
-  ```json
-  "operations": {
-    "summary": "claude", "dashboard": "claude", "long-term": "claude",
-    "compaction": "claude", "supersession": "claude"
-  }
-  ```
+- **Legacy `cortex.local` keeps its original scope.** It governed curation before per-operation routing existed, and it still governs exactly that — upgrading does not silently start sending `summary`, `dashboard`, `long-term`, `compaction` or `supersession` envelopes to a local model. Widening it is done by writing `cortex.llm.operations`, where each destination is named explicitly.
 - **Token estimates round against you, and that can change routing.** The prompt-size gate estimates ~3.5 chars/token (measured, not assumed: a real curation envelope of 109,252 chars tokenized to 31,780 on Qwen3.8-27B). The previous 4.0 under-counted by ~14% and let oversized prompts through. If you had tuned `ctxBudget` against the old estimate, tasks that used to fit may now route to your configured `fallback` — or be left pending when there isn't one. Raise `ctxBudget` to match your model's real context window.
 - **Consent is per-machine-boundary, not per-destination.** Granting `THINK_LLM_CONSENT=1` permits sends to *every* off-machine provider configured, not just the one you had in mind. If you route different operations to different vendors, that single flag covers all of them. Scope it per shell session, or keep sensitive cortexes on a loopback-only provider where no consent is needed.
 - **Claude Agent SDK consent is opt-in but irreversible per call.** Once consent is granted and a curate run completes, the data has reached Anthropic. There is no per-turn confirmation; the gate is at process entry. If you're working on a sensitive cortex, scope `THINK_LLM_CONSENT` to the shell session rather than committing it to your shell profile, and consider a separate cortex with consent disabled.

@@ -93,6 +93,18 @@ export const ALL_OPERATIONS = [
   OP_SUPERSESSION,
 ] as const;
 
+/**
+ * The operations the pre-registry config (`cortex.local` / `llmProvider`) is
+ * allowed to route. Exactly what it routed before per-operation selection
+ * existed: the curation pass and its tier-B sibling, which is part of the same
+ * `think curate` run. Everything else stays on Anthropic until the user opts in
+ * via `cortex.llm`.
+ */
+const LEGACY_ROUTED_OPERATIONS: ReadonlySet<string> = new Set([
+  OP_CURATION,
+  OP_EVENT_DETECTION,
+]);
+
 // ---------------------------------------------------------------------------
 // Egress
 // ---------------------------------------------------------------------------
@@ -614,6 +626,19 @@ export function getDefaultLlmClient(operation: string = OP_CURATION): LlmClient 
   if (registry.size > 0) {
     return new RegistryLlmClient({ operation, registry, llm: cfg?.llm });
   }
+
+  // LEGACY MODE. `cortex.local` + `llmProvider` predate per-operation routing:
+  // when a user set them, the only thing they could possibly have been opting
+  // into was curation, because curation was the only operation that consulted
+  // the router at all. Honouring that literally — rather than extending an old
+  // config to cover nine operations it never named — means an upgrade cannot
+  // silently move summary, dashboard, long-term or the daemon workers onto a
+  // local model. Broad routing is available, but you ask for it by writing
+  // `cortex.llm`, which is new surface and therefore genuinely opt-in.
+  if (!LEGACY_ROUTED_OPERATIONS.has(operation)) {
+    return new AnthropicLlmClient();
+  }
+
   const local = resolveLocalConfig(cfg?.local);
   const provider = resolveProvider(cfg?.llmProvider);
   return new RouterLlmClient({

@@ -125,6 +125,125 @@ think pause    # suppress all writes (sync / log / event / subscribe poll silent
 think resume   # re-enable
 ```
 
+### Choosing which model runs what
+
+think's LLM work is provider-agnostic. Each operation can be pointed at Anthropic,
+at an on-device model, or at any API speaking the OpenAI `/chat/completions`
+shape (OpenAI, DeepSeek, OpenRouter, vLLM, LM Studio, oMLX/Qwen).
+
+With no configuration, everything runs on Anthropic exactly as before.
+
+```jsonc
+// ~/.config/think/config.json  →  "cortex": { ... }
+"llm": {
+  "providers": {
+    "qwen":     { "kind": "openai", "endpoint": "http://127.0.0.1:8000/v1",
+                  "model": "Qwen3.8-27B-MLX-4bit", "disableThinking": true },
+    "deepseek": { "kind": "openai", "endpoint": "https://api.deepseek.com/v1",
+                  "model": "deepseek-chat", "apiKeyEnv": "DEEPSEEK_API_KEY" },
+    "claude":   { "kind": "anthropic", "model": "claude-sonnet-4-6" }
+  },
+  "default": "claude",
+  "operations": { "curation": "qwen", "compaction": "qwen", "summary": "deepseek" },
+  "fallback": "claude"
+}
+```
+
+Operations you can assign: `curation`, `event-detection`, `episode`,
+`terminal-event`, `retro-dedupe`, `summary`, `dashboard`, `long-term`,
+`compaction`, `supersession`. Anything unassigned uses `default`.
+
+**Moving everything to one model** is just `default` — you don't have to
+enumerate operations at all:
+
+```jsonc
+"llm": {
+  "providers": {
+    "qwen": { "kind": "openai", "endpoint": "http://127.0.0.1:8000/v1",
+              "model": "<the id your server was started with>",
+              "ctxBudget": 40000, "timeoutMs": 1800000,
+              "disableThinking": true }
+  },
+  "default": "qwen"
+}
+```
+
+With no `fallback` and a loopback endpoint, think stops contacting Anthropic
+entirely (bar the dashboard's `ask`) and needs no LLM consent, because nothing
+leaves the machine. Read the structured-output note below before doing this —
+two operations are pickier than the rest.
+
+The `model` must match the id your server was launched with. `mlx_lm.server`
+loads whatever id a request names, so a mismatch silently unloads the running
+model and loads another — killing any generation in flight.
+
+`dashboard` here means the **status digest** — the panel summaries `think
+dashboard` renders. The dashboard's interactive **`ask`** is a different thing
+and is *not* assignable: it is agentic, running a multi-turn loop over MCP
+tools, so it stays on the Claude Agent SDK. There is no operation name for it,
+and adding one has no effect.
+
+**Upgrading from `cortex.local`.** If you already have a `cortex.local` block
+(or `THINK_LOCAL_*` set), it keeps the scope it has always had — curation only.
+Upgrading does not move `summary`, `compaction`, `supersession` or anything else
+onto your local model. To widen it, name each operation in `cortex.llm`
+explicitly; nothing is routed implicitly.
+
+**Consent follows the data, not the vendor.** A provider that sends cortex
+content off this machine requires `THINK_LLM_CONSENT=1` — Anthropic, OpenAI and
+DeepSeek alike. A provider on loopback does not, because nothing leaves. Egress
+is inferred from the endpoint (`localhost`/`127.0.0.1`/`::1` are on-machine,
+everything else is not, an unparseable endpoint fails closed); declare
+`"offMachine": false` to trust a host on your own network.
+
+**Sizing a local model.** `ctxBudget` (default 28,000 tokens) is the prompt
+ceiling — over it, think uses `fallback`, or skips if none is set. `timeoutMs`
+(default 900,000) is the request deadline: a large model doing a 30k-token
+prefill plus generation can run for minutes, and the failure is reported as a
+timeout naming the setting, not as an unreachable server. If curation keeps
+skipping as too large, lower `cortex.curatorPromptCharCap` to shrink the
+envelope.
+
+Prompt size is estimated at ~3.5 characters per token, deliberately erring high
+— this gate decides what is allowed to run, so under-counting is the dangerous
+direction. If you sized a `ctxBudget` against the older, looser 4.0 estimate
+(pre-2.6.0), the same prompt now measures larger and may start using `fallback`
+or being skipped; raise `ctxBudget` to your model's real context window. When
+the fallback cannot take the task either, the work is left pending rather than
+retried elsewhere.
+
+**Structured output — check this before routing everything.** Operations fall
+into three tiers:
+
+| Tier | Operations | Behaviour |
+| --- | --- | --- |
+| Strict | `compaction`, `supersession` | Demand server-side enforcement. Forced `tool_use` on Anthropic, `response_format: json_schema` elsewhere. |
+| Schema-assisted | `curation`, `event-detection`, `terminal-event`, `retro-dedupe` | Advisory on Anthropic (prompts are tuned to emit JSON unaided), enforced elsewhere. |
+| Prose | `episode`, `summary`, `dashboard`, `long-term` | No schema; output is prose or parsed leniently. |
+
+Not every OpenAI-compatible server implements `response_format`. Notably
+`mlx_lm.server` **accepts the field and ignores it** — no error, it simply
+returns whatever the model felt like. LM Studio and vLLM do honour it.
+
+On a server that ignores it, only the prompt holds the shape. For the prose tier
+that is fine. For the strict tier it is not: `compaction` marks entries
+`compaction-skipped` and `supersession` retries once then fails. Those failures
+are loud and skip-safe — they leave work pending rather than writing corrupted
+memories — but the operations will not do useful work. Either keep those two on
+a provider that enforces schemas, or verify yours does:
+
+```bash
+curl -s $ENDPOINT/chat/completions -H 'content-type: application/json' -d '{
+  "model":"<your-model>","max_tokens":100,
+  "messages":[{"role":"user","content":"Return the topics for: fixed a bug."}],
+  "response_format":{"type":"json_schema","json_schema":{"name":"t","strict":true,
+    "schema":{"type":"object","properties":{"topics":{"type":"array",
+    "items":{"type":"string"}}},"required":["topics"],
+    "additionalProperties":false}}}}'
+```
+
+JSON back means the strict tier is safe there. Prose back means it isn't.
+
 ### Curator guidance
 
 Each contributor can guide their curator with a personal prompt:
