@@ -172,8 +172,15 @@ describe.skipIf(process.platform === 'win32')(
       ]);
       expect(stamped.find((r) => r.id === 'row-subscribe')!.evaluated_at).toBeNull();
 
-      const { pruneExpiredEngrams } = await import('../../src/db/engram-queries.js');
-      expect(pruneExpiredEngrams(CORTEX)).toBe(2); // the two expired, now-migrated rows
+      // AGT-1303 deleted `pruneExpiredEngrams` along with the rest of the
+      // tier — nothing prunes the table any more. The property it guarded is
+      // still the point of this assertion, so we apply its predicate inline:
+      // only rows the migration stamped (evaluated_at set) are reachable by an
+      // expiry sweep, so no unmigrated row can be deleted by one.
+      const pruned = db
+        .prepare(`DELETE FROM engrams WHERE expires_at < ? AND evaluated_at IS NOT NULL`)
+        .run(new Date().toISOString());
+      expect(Number(pruned.changes)).toBe(2); // the two expired, now-migrated rows
     }, 30_000);
   },
 );

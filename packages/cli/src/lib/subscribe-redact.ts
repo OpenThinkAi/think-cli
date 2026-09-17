@@ -95,7 +95,7 @@ export function parseSelector(selector: string): string[] | null {
   if (/[*\[\]?()]/.test(trimmed) || trimmed.includes('..')) return null;
 
   // Reject the bare root selector `$` — the impl can't safely "redact
-  // the entire payload" (would land empty engrams that mask the data
+  // the entire payload" (would land empty entries that mask the data
   // flow rather than block it), and the actual clear-all path is
   // `subscribe redact-set <id>` with zero paths. Without this, `$`
   // would silently no-op via the empty-path-array branch downstream,

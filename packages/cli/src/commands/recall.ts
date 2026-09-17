@@ -1,7 +1,6 @@
 import { Command, Option } from 'commander';
 import chalk from 'chalk';
 import { getConfig } from '../lib/config.js';
-import { searchEngrams } from '../db/engram-queries.js';
 import { searchMemories, getMemories } from '../db/memory-queries.js';
 import {
   searchLongTermEvents,
@@ -94,12 +93,10 @@ function renderLongTermEvents(cortex: string, events: LongTermEventRow[]): void 
   for (const s of standalone) printChain(s);
 }
 
-// Long-term events dedupe by id (deterministic, append-only). Memories and
-// engrams have no stable dedupe id — same (ts, author, content) can land
-// twice with distinct uuidv7s when the curate flow promotes overlapping
-// engrams across runs. Callers pick the visible-identity key. First
-// occurrence wins, preserving FTS rank in the default path and recency in
-// --all.
+// Long-term events dedupe by id (deterministic, append-only). Memories have no
+// stable dedupe id — the same (ts, author, content) can land twice with
+// distinct uuidv7s. Callers pick the visible-identity key. First occurrence
+// wins, preserving FTS rank in the default path and recency in --all.
 function dedupeBy<T>(rows: T[], key: (r: T) => string): T[] {
   const seen = new Set<string>();
   const out: T[] = [];
@@ -117,17 +114,13 @@ function dedupeBy<T>(rows: T[], key: (r: T) => string): T[] {
  * Extracted so `think brief` can reuse it for its personal-context section.
  * Does NOT close the cortex DB — the caller is responsible for that.
  */
-export function renderPersonalAll(cortex: string, { days, query }: { days: number; query?: string }): void {
+export function renderPersonalAll(cortex: string, { days }: { days: number }): void {
   const cutoff = new Date(Date.now() - days * 86400000).toISOString();
   const recentMemories = dedupeBy(
     getMemories(cortex, { since: cutoff }),
     m => JSON.stringify([m.ts, m.author, m.content]),
   );
   const allEvents = getLongTermEvents(cortex, { since: cutoff, limit: 200 });
-  const matchingEngrams = dedupeBy(
-    searchEngrams(cortex, query ?? ''),
-    e => JSON.stringify([e.created_at, e.content]),
-  );
 
   if (allEvents.length > 0) {
     console.log(chalk.cyan('Long-term history:'));
@@ -145,16 +138,7 @@ export function renderPersonalAll(cortex: string, { days, query }: { days: numbe
     console.log();
   }
 
-  if (matchingEngrams.length > 0) {
-    console.log(chalk.cyan(`Matching events (local):`));
-    for (const e of matchingEngrams) {
-      const ts = e.created_at.slice(0, 16).replace('T', ' ');
-      console.log(`  ${chalk.gray(ts)} ${e.content}`);
-    }
-    console.log();
-  }
-
-  if (recentMemories.length === 0 && matchingEngrams.length === 0 && allEvents.length === 0) {
+  if (recentMemories.length === 0 && allEvents.length === 0) {
     console.log(chalk.dim('No results found.'));
   }
 }
@@ -172,7 +156,7 @@ export function renderPersonalAll(cortex: string, { days, query }: { days: numbe
 function runFormattedFtsRecall(
   cortex: string,
   query: string,
-  opts: { engrams?: boolean; limit: number; full?: boolean; forAgent?: boolean; sources?: string[]; excludeSources?: string[]; tiers?: string[]; excludeTiers?: string[]; includeQuarantined?: boolean },
+  opts: { limit: number; full?: boolean; forAgent?: boolean; sources?: string[]; excludeSources?: string[]; tiers?: string[]; excludeTiers?: string[]; includeQuarantined?: boolean },
 ): void {
   const { limit } = opts;
 
@@ -229,31 +213,17 @@ function runFormattedFtsRecall(
   // AGT-464: wrap in <recall-result> delimiters for agent consumers.
   const output = opts.forAgent ? wrapForAgent(formatted, filteredEntries) : formatted;
   console.log(output);
-
-  // Optionally include engrams (legacy v2 local index not part of the v3 kind model).
-  if (opts.engrams) {
-    const matchingEngrams = dedupeBy(
-      searchEngrams(cortex, query, limit),
-      e => JSON.stringify([e.created_at, e.content]),
-    );
-    if (matchingEngrams.length > 0) {
-      console.log();
-      console.log(chalk.cyan(`Matching events (${matchingEngrams.length}):`));
-      for (const e of matchingEngrams) {
-        const ts = e.created_at.slice(0, 16).replace("T", " ");
-        console.log(`  ${chalk.gray(ts)} ${e.content}`);
-      }
-    }
-  }
 }
 
 export const recallCommand = new Command('recall')
   .argument('<query>', 'What to recall')
   .description('Search memories and local events')
-  // AGT-883: the flag NAME stays `--engrams` (renaming is breaking for scripts),
-  // so the help line glosses the legacy term once to bridge it to the current
-  // "events" vocabulary. Prose elsewhere uses "events" only.
-  .option('--engrams', 'Also search raw local events (engrams), pending and curated (not just memories)')
+  // think-3 (AGT-1303): --engrams searched the retired engram tier. Kept
+  // registered-but-hidden (rather than dropped outright) so passing it gets
+  // our own one-line removal note instead of commander's generic "unknown
+  // option" — same pattern as the removed `think sync` fields (AGT-1297).
+  // Always exits non-zero.
+  .addOption(new Option('--engrams', 'Removed — recall reads memories, events and retros').hideHelp())
   .option('--all', 'Dump all recent memories + long-term events (ignores query for memories)')
   .option('--days <n>', 'Days of memories to include (only with --all)', '14')
   .option('--limit <n>', 'Max results to return (default: 8)', String(DEFAULT_RECALL_LIMIT))
@@ -398,6 +368,16 @@ Agent consumers:
   --json ignores --for-agent: JSON output is already a self-delimited envelope.`,
   )
   .action(async function (this: Command, query: string, opts: { engrams?: boolean; all?: boolean; days: string; limit: string; full?: boolean; json?: boolean; includeSuperseded?: boolean; scope: string; embed: boolean; kind?: string; topic?: string; context?: string | boolean; since?: string; forAgent?: boolean; source: string[]; excludeSource: string[]; trustTier: string[]; excludeTrustTier: string[]; includeQuarantined?: boolean }) {
+    // think-3 (AGT-1303): hard-remove --engrams. Checked first and
+    // unconditionally, before the cortex lookup, so the flag never silently
+    // degrades into an ordinary recall that quietly returns fewer results
+    // than the caller asked for.
+    if (opts.engrams !== undefined) {
+      process.stderr.write('error: --engrams has been removed along with the engram tier; recall reads memories, events and retros\n');
+      process.exitCode = 1;
+      return;
+    }
+
     const config = getConfig();
     const cortex = config.cortex?.active;
 
@@ -446,7 +426,7 @@ Agent consumers:
 
     if (opts.all) {
       const days = parseInt(opts.days, 10);
-      renderPersonalAll(cortex, { days, query });
+      renderPersonalAll(cortex, { days });
       closeCortexDb(cortex);
       return;
     }
@@ -665,6 +645,6 @@ Agent consumers:
     // AGT-466: pass trust tier filters to the FTS path.
     const tiers = opts.trustTier.length > 0 ? opts.trustTier : undefined;
     const excludeTiers = opts.excludeTrustTier.length > 0 ? opts.excludeTrustTier : undefined;
-    runFormattedFtsRecall(cortex, query, { engrams: opts.engrams, limit, full: opts.full, forAgent, sources, excludeSources, tiers, excludeTiers, includeQuarantined: opts.includeQuarantined });
+    runFormattedFtsRecall(cortex, query, { limit, full: opts.full, forAgent, sources, excludeSources, tiers, excludeTiers, includeQuarantined: opts.includeQuarantined });
     closeCortexDb(cortex);
   });

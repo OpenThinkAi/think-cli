@@ -28,8 +28,8 @@ import { fileURLToPath } from 'node:url';
 import { Command } from 'commander';
 import chalk from 'chalk';
 import { subDays, startOfDay } from 'date-fns';
-import { getEngrams } from '../db/engram-queries.js';
 import { getEntries, type Entry } from '../db/queries.js';
+import { getMemories } from '../db/memory-queries.js';
 import { getConfig, type DashboardConfig, type DashboardPanel } from '../lib/config.js';
 import {
   generateStatusDigest,
@@ -108,15 +108,18 @@ function resolveView(custom: string | undefined): { viewsRoot: string; view: str
   return null;
 }
 
-/** Pull the recent work-log window as a normalized Entry[]. */
+/**
+ * Pull the recent work-log window as a normalized Entry[]. AGT-1303 repointed
+ * the cortex branch off the retired engrams table onto the entry store.
+ */
 function loadWindow(cortex: string | null, since: Date): Entry[] {
   if (cortex) {
-    return getEngrams(cortex, { since }).map((e) => ({
-      id: e.id,
-      timestamp: e.created_at,
+    return getMemories(cortex, { since: since.toISOString() }).map((m) => ({
+      id: m.id,
+      timestamp: m.ts,
       source: 'manual',
       category: 'note',
-      content: e.content,
+      content: m.content,
       tags: '[]',
     }));
   }

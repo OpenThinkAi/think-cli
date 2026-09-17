@@ -1,9 +1,7 @@
-import { Command } from 'commander';
+import { Command, Option } from 'commander';
 import chalk from 'chalk';
 import { getConfig, saveConfig, type SubscriptionsConfig } from '../lib/config.js';
-import { insertEngram } from '../db/engram-queries.js';
-import { closeCortexDb } from '../db/engrams.js';
-import { stripBaselinePii, applyRedactSelectors, parseSelector } from '../lib/subscribe-redact.js';
+import { parseSelector } from '../lib/subscribe-redact.js';
 import {
   ProxyError,
   createSubscription,
@@ -11,7 +9,6 @@ import {
   deleteSubscription,
   setCredential,
   testCredential,
-  getEvents,
   type ProxyConfig,
 } from '../lib/proxy-client.js';
 import {
@@ -163,11 +160,11 @@ subscribeCommand.addCommand(new Command('add')
   .description('Create a subscription on the proxy (e.g. `think subscribe add mock 3`)')
   .argument('<kind>', 'Source kind (today only `mock` is registered; github/linear/... land in follow-ups)')
   .argument('<pattern>', 'Pattern the connector understands (kind-specific)')
-  .option('--accept-data-flow', 'Acknowledge that ingested events flow into the curator (and to Anthropic if curator consent is granted). Required for non-interactive use; interactive sessions get a y/N prompt instead.')
+  .option('--accept-data-flow', 'Acknowledge that ingested events flow into the proxy-side curator (and to Anthropic if curator consent is granted). Required for non-interactive use; interactive sessions get a y/N prompt instead.')
   .action(async (kind: string, pattern: string, opts: { acceptDataFlow?: boolean }) => {
     // AGT-066 AC #1: explicit acknowledgment that third-party events
-    // (commenter words, ticket bodies, webhook payloads) will land in
-    // local engrams and flow to the curator. Friction is the point.
+    // (commenter words, ticket bodies, webhook payloads) will flow through
+    // the proxy's curator into the team cortex. Friction is the point.
     const acknowledged = opts.acceptDataFlow ?? (await promptDataFlowConsent(kind, pattern));
     if (!acknowledged) {
       console.error(chalk.red('subscribe add: declined; no subscription created.'));
@@ -320,157 +317,31 @@ subscribeCommand.addCommand(new Command('set-credential')
   }));
 
 // `think subscribe poll [--quiet]`
-//
-// Bound the per-subscription pagination loop so a misbehaving proxy
-// (e.g. one that always returns a non-null `next_since` even when no
-// progress is being made) can't pin the tick forever. 100 pages × 1000
-// events/page = 100k events per tick — plenty of headroom for healthy
-// catch-up, fast-fails on a buggy proxy.
-const MAX_PAGES_PER_TICK = 100;
-
 subscribeCommand.addCommand(new Command('poll')
-  .description('[DEPRECATED] Pull events from the proxy and store them locally (see --legacy-engrams)')
-  .option('--quiet', 'Suppress non-actionable output: per-tick line on no-op, paused-state hint, no-cortex error, and offline network errors. Used by the LaunchAgent so a backgrounded poll on an offline machine stays silent.')
-  .option('--legacy-engrams', 'Run the pre-think-proxy-events event-write path. Kept for users still on the old per-machine ingest model; will be removed once all team members have migrated to proxy-curated team cortex pulls.')
-  .action(async function (this: Command, opts: { quiet?: boolean; legacyEngrams?: boolean }) {
-    // think-proxy-events (AGT-389): default `subscribe poll` is now a
-    // deprecation no-op pointing at `think pull <team-cortex>`. The proxy
-    // curates centrally and publishes memories to the team cortex; team
-    // members just pull. The local engram-write path stays available
-    // behind --legacy-engrams during the migration window so v2 installs
-    // don't break.
-    if (!opts.legacyEngrams) {
-      if (!opts.quiet) {
-        console.log(chalk.yellow('[subscribe poll] deprecated:') + ' external events are now team-shared via the proxy-curated team cortex.');
-        console.log(chalk.dim('  Replacement: `think pull <team-cortex>` (just like any other cortex).'));
-        console.log(chalk.dim('  To keep the old local event-write path during migration, re-run with `--legacy-engrams`.'));
-      }
+  .description('[DEPRECATED] No-op — pull the proxy-curated team cortex with `think pull <team-cortex>` instead')
+  .option('--quiet', 'Suppress the deprecation notice. Used by the LaunchAgent so a backgrounded poll stays silent.')
+  // think-3 (AGT-1303): --legacy-engrams drove the pre-think-proxy-events
+  // local engram-write path. The engram tier is gone, so the flag is kept
+  // registered-but-hidden (rather than dropped outright) purely so passing it
+  // gets our own one-line removal note instead of commander's generic
+  // "unknown option" — same pattern as the removed `think sync` fields
+  // (AGT-1297). It always exits non-zero, even under --quiet.
+  .addOption(new Option('--legacy-engrams', 'Removed — use `think pull <team-cortex>`').hideHelp())
+  .action((opts: { quiet?: boolean; legacyEngrams?: boolean }) => {
+    // Checked first and unconditionally, before --quiet is read: a silent
+    // no-op here would look like a successful ingest to a scheduler.
+    if (opts.legacyEngrams !== undefined) {
+      process.stderr.write('error: --legacy-engrams has been removed along with the engram tier; use `think pull <team-cortex>` instead\n');
+      process.exitCode = 1;
       return;
     }
 
+    // think-proxy-events (AGT-389): the proxy curates centrally and publishes
+    // memories to the team cortex; team members just pull.
     if (!opts.quiet) {
-      console.log(chalk.yellow('[subscribe poll] --legacy-engrams:') + ' running the pre-think-proxy-events event-write path. This path will be removed once all team members migrate to proxy-curated team cortex pulls.');
+      console.log(chalk.yellow('[subscribe poll] deprecated:') + ' external events are now team-shared via the proxy-curated team cortex.');
+      console.log(chalk.dim('  Replacement: `think pull <team-cortex>` (just like any other cortex).'));
     }
-
-    const globalOpts = this.optsWithGlobals() as { cortex?: string };
-    const config = getConfig();
-
-    if (config.paused) {
-      if (!opts.quiet) {
-        console.log(chalk.dim('[subscribe poll] skipped: think is paused (`think resume` to re-enable)'));
-      }
-      return;
-    }
-
-    const cortex = globalOpts.cortex ?? config.cortex?.active ?? null;
-    if (!cortex) {
-      // No active cortex: poll has nowhere to write. Silent under
-      // --quiet (LaunchAgent friendly); loud otherwise.
-      if (!opts.quiet) {
-        fail('subscribe poll: no active cortex. Run `think cortex create <name>` and select it first.');
-      }
-      return;
-    }
-
-    const sub = config.subscriptions;
-    if (!sub || !sub.proxyUrl || !sub.token) {
-      if (!opts.quiet) {
-        fail('subscribe poll: no proxy configured. Run `think subscribe configure --proxy <url>` first.');
-      }
-      return;
-    }
-
-    const proxy: ProxyConfig = { proxyUrl: sub.proxyUrl, token: sub.token };
-    let subscriptions;
-    try {
-      subscriptions = await listSubscriptions(proxy);
-    } catch (err) {
-      if (err instanceof ProxyError) {
-        if (opts.quiet && err.status === 0) return; // offline + quiet → silent
-        fail(`subscribe poll: ${err.message}`);
-      }
-      throw err;
-    }
-
-    let totalInserted = 0;
-    const updatedCursors: Record<string, number> = { ...(sub.cursors ?? {}) };
-
-    for (const s of subscriptions) {
-      let cursor = updatedCursors[s.id] ?? 0;
-      // Page until next_since is null (proxy contract: null = empty page,
-      // non-null = `since` to use for the next call). Bound the per-tick
-      // loop so a misbehaving proxy can't pin us forever.
-      for (let page = 0; page < MAX_PAGES_PER_TICK; page += 1) {
-        let resp;
-        try {
-          resp = await getEvents(proxy, s.id, cursor);
-        } catch (err) {
-          if (err instanceof ProxyError) {
-            if (!opts.quiet) console.error(chalk.yellow(`[subscribe poll] ${s.id}: ${err.message}`));
-            break;
-          }
-          throw err;
-        }
-        if (resp.events.length === 0) break;
-        for (const ev of resp.events) {
-          // AGT-066: baseline PII strip (email, GPG, IP headers, phone)
-          // followed by per-subscription redact selectors (JSONPath subset).
-          // Both produce new objects rather than mutating ev.payload.
-          // Strings pass through unchanged — both layers are no-ops on
-          // primitives. The redacted shape is what lands as engram content
-          // and what subsequent context blocks reference.
-          const subRedact = sub.redact?.[s.id] ?? [];
-          const stripped = stripBaselinePii(ev.payload);
-          const redacted = applyRedactSelectors(stripped, subRedact);
-          const contentForEngram = typeof redacted === 'string' ? redacted : JSON.stringify(redacted);
-
-          // insertEngram validates internally (AGT-059); proxy event payloads
-          // are adversary-controllable so warnings here close the audit gap
-          // for #12 and #13. Surface them via the same yellow-prefix pattern
-          // used elsewhere; quiet mode suppresses since this is a poll loop.
-          const { warnings } = insertEngram(cortex, {
-            content: contentForEngram,
-            episodeKey: `subscribe:${s.kind}`,
-            context: JSON.stringify({
-              source: 'subscribe',
-              kind: s.kind,
-              subscription_id: s.id,
-              server_seq: ev.server_seq,
-              event_id: ev.id,
-            }),
-          });
-          if (!opts.quiet) {
-            for (const w of warnings) {
-              console.error(chalk.yellow(`[subscribe poll] ${s.id}: ${w}`));
-            }
-          }
-          totalInserted += 1;
-          if (ev.server_seq > cursor) cursor = ev.server_seq;
-        }
-        updatedCursors[s.id] = cursor;
-        if (resp.next_since === null) break;
-        cursor = resp.next_since;
-      }
-    }
-
-    rewriteSubscriptions((existing) => {
-      // We just successfully completed `getProxyConfig()` (which reads
-      // `existing` to assemble `proxy`), so this branch is unreachable.
-      // Match `remove`'s discipline rather than silently substituting
-      // back what we passed in (which papers over real bugs).
-      if (!existing) {
-        throw new Error('subscriptions config vanished mid-call (unreachable)');
-      }
-      return { ...existing, cursors: updatedCursors };
-    });
-
-    if (totalInserted > 0) {
-      console.log(chalk.green('✓') + ` [subscribe poll] inserted ${totalInserted} event${totalInserted === 1 ? '' : 's'}`);
-    } else if (!opts.quiet) {
-      console.log(chalk.dim('[subscribe poll] no new events'));
-    }
-
-    closeCortexDb(cortex);
   }));
 
 // `think subscribe install-agent`

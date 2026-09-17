@@ -106,7 +106,7 @@ describe('renderPersonalAll — events-only (AGT-479)', () => {
     expect(combined).not.toContain('legacy summary');
   });
 
-  it('shows "No results found." when there are no memories, events, or engrams', () => {
+  it('shows "No results found." when there are no memories or long-term events', () => {
     renderPersonalAll(cortex, { days: 30 });
 
     const combined = logLines.join('\n');

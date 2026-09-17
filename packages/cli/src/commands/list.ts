@@ -1,7 +1,7 @@
 import { Command } from 'commander';
 import chalk from 'chalk';
 import { getEntries, getEntriesByWeek, type Entry } from '../db/queries.js';
-import { getEngrams, type Engram } from '../db/engram-queries.js';
+import { getMemories, type MemoryRow } from '../db/memory-queries.js';
 import { closeDb } from '../db/client.js';
 import { closeCortexDb } from '../db/engrams.js';
 import { getConfig } from '../lib/config.js';
@@ -22,10 +22,10 @@ function formatEntry(entry: Entry): string {
   return `${chalk.gray(ts)}  ${badge} ${entry.content}`;
 }
 
-function formatEngram(engram: Engram): string {
-  const ts = engram.created_at.slice(0, 16).replace('T', ' ');
-  const badge = chalk.green('[event]'.padEnd(12));
-  return `${chalk.gray(ts)}  ${badge} ${engram.content}`;
+function formatMemory(row: MemoryRow): string {
+  const ts = row.ts.slice(0, 16).replace('T', ' ');
+  const badge = chalk.green(`[${row.kind ?? 'memory'}]`.padEnd(12));
+  return `${chalk.gray(ts)}  ${badge} ${row.content}`;
 }
 
 export const listCommand = new Command('list')
@@ -51,9 +51,10 @@ export const listCommand = new Command('list')
     const cortex = globalOpts.cortex ?? config.cortex?.active;
 
     if (cortex) {
-      // Read from cortex event store
+      // Read from the cortex entry store (memories/events/retros). AGT-1303
+      // repointed this off the retired engrams table.
       if (opts.category || opts.tag) {
-        console.log(chalk.yellow('Note: --category and --tag filters are not supported for cortex events.'));
+        console.log(chalk.yellow('Note: --category and --tag filters are not supported for cortex entries.'));
       }
 
       let since: Date | undefined;
@@ -69,19 +70,19 @@ export const listCommand = new Command('list')
         if (opts.until) until = new Date(opts.until);
       }
 
-      const engrams = getEngrams(cortex, {
-        since,
-        until,
+      const rows = getMemories(cortex, {
+        since: since?.toISOString(),
+        until: until?.toISOString(),
         limit: parseInt(opts.limit, 10),
       });
 
-      if (engrams.length === 0) {
-        console.log(chalk.dim('No events found.'));
+      if (rows.length === 0) {
+        console.log(chalk.dim('No entries found.'));
       } else {
-        for (const engram of engrams) {
-          console.log(formatEngram(engram));
+        for (const row of rows) {
+          console.log(formatMemory(row));
         }
-        console.log(chalk.dim(`\n${engrams.length} events`));
+        console.log(chalk.dim(`\n${rows.length} entries`));
       }
 
       closeCortexDb(cortex);
