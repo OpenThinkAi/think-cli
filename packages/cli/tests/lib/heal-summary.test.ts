@@ -220,6 +220,26 @@ describe('heal-summary', () => {
     expect(consumeHealSummary()!.counts.migratedRows).toBe(1);
   });
 
+  it('honours a --json defined on a PARENT command, not just the leaf (optsWithGlobals, not opts)', () => {
+    // A leaf command's plain .opts() would miss this — it only sees options
+    // defined directly on itself, not ones inherited from an ancestor. This
+    // pins the fix a product review caught: the suppression check must use
+    // .optsWithGlobals().
+    setTTY(true);
+    recordHealAction('migratedRows', 1);
+
+    const parent = new Command('cortex');
+    const leaf = new Command('status'); // does NOT define --json itself
+    parent.option('--json').setOptionValueWithSource('json', true, 'cli');
+    parent.addCommand(leaf);
+
+    expect(leaf.opts().json).toBeUndefined(); // sanity: the naive check would miss it
+    reportPendingHeal(leaf);
+    expect(logSpy).not.toHaveBeenCalled();
+    expect(existsSync(daemonLogPath())).toBe(false);
+    expect(consumeHealSummary()!.counts.migratedRows).toBe(1);
+  });
+
   // -------------------------------------------------------------------------
   // formatHealSummaryLines — plain-text rendering used by both paths
   // -------------------------------------------------------------------------

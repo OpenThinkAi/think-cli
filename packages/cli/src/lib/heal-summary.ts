@@ -165,6 +165,15 @@ export function recordHealAction(kind: HealActionKind, count: number): void {
  * crash-safety choice here. Returns null when there is nothing pending: no
  * file, an unparseable file, a record already shown, or (defensively —
  * `recordHealAction` never writes this) a record whose counts are all zero.
+ *
+ * Known limitation: this is read-modify-write with no cross-process lock.
+ * Two `think` invocations racing on the exact same unshown record (two
+ * terminal sessions running a command in the same instant) could both read
+ * `shown: false` before either writes `shown: true`, printing the banner
+ * twice. Accepted rather than fixed: a per-user CLI's commands are normally
+ * sequential, `block-registry.ts`'s atomic write has the same non-goal, and
+ * a lock file would add real complexity to close a window that, even if hit,
+ * degrades to "the banner appeared twice" rather than any loss of data.
  */
 export function consumeHealSummary(): PendingHealSummary | null {
   const record = readRecord();
@@ -191,7 +200,17 @@ export function consumeHealSummary(): PendingHealSummary | null {
  * Plain-text lines, shared between the colorized stdout banner and the
  * `daemon.log` fallback so the message is the same information either way.
  * Never mentions "v2"/"v3" — user-facing text says just "think" (think-3
- * design doc, "Version and vocabulary").
+ * design doc, "Version and vocabulary"). The `think doctor` hint in the last
+ * line is a forward reference to AGT-1308, built in parallel with this
+ * ticket — the design doc's "Self-heal first, `think doctor` second" pairs
+ * them deliberately, so the hint ships now rather than waiting on merge order.
+ *
+ * Precondition: called with at least one nonzero count. Every production
+ * caller only ever reaches this via `consumeHealSummary()`'s output, which
+ * already guarantees that; exported chiefly so tests can assert on the
+ * rendered text directly. Called directly with all-zero counts it renders a
+ * header and hint with no bullets in between — harmless, just not a shape
+ * anything in this module produces on its own.
  */
 export function formatHealSummaryLines(counts: HealCounts): string[] {
   const { migratedRows, removedLaunchAgents, refreshedBlocks } = counts;
@@ -250,7 +269,12 @@ function appendToDaemonLog(lines: string[]): void {
  * qualifies as "the next interactive `think` command" (AC1).
  */
 function isExemptFromHealReporting(actionCommand: Command): boolean {
-  if (actionCommand.opts().json === true) return true;
+  // optsWithGlobals(), not opts(): opts() only returns options defined on
+  // this exact command, so a --json/--silent that a future refactor hoists
+  // onto a parent (or the root `program`) as a shared/inherited option would
+  // silently stop being seen here. No command defines either flag globally
+  // today, but this is the version that stays correct if one ever does.
+  if (actionCommand.optsWithGlobals().json === true) return true;
   let cmd: Command | null = actionCommand;
   while (cmd) {
     if (cmd.name() === 'daemon' || cmd.name() === 'refresh-blocks-internal') return true;
@@ -272,7 +296,7 @@ export function reportPendingHeal(actionCommand: Command): void {
 
   const lines = formatHealSummaryLines(summary.counts);
 
-  const silent = actionCommand.opts().silent === true;
+  const silent = actionCommand.optsWithGlobals().silent === true; // see isExemptFromHealReporting above
   const isTTY = process.stdout.isTTY === true;
   if (silent || !isTTY) {
     appendToDaemonLog(lines);
