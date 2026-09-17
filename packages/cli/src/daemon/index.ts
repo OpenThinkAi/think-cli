@@ -367,8 +367,8 @@ export async function runDaemon(options: DaemonOptions): Promise<void> {
   // LaunchAgent reaper (AGT-1301) — self-heal, unconditional
   //
   // Pre-daemon curator/sync LaunchAgents are labelled by a hash of THINK_HOME
-  // (lib/launch-agent.ts) and nothing ever removed one. Once `think curate`
-  // and the daemon-down sync bypass are deleted (think-3), a stranded agent
+  // (lib/launch-agent.ts) and nothing ever removed one. With `think curate`
+  // and the daemon-down sync bypass now deleted (AGT-1303), a stranded agent
   // invokes a nonexistent command forever. Reap by label PREFIX so agents
   // installed under *other* THINK_HOMEs on this machine are cleaned up too,
   // not just the one this daemon process happens to be running under.
@@ -402,8 +402,8 @@ export async function runDaemon(options: DaemonOptions): Promise<void> {
   //
   // The v2 `engrams` table still holds every write made by `think sync
   // -d/--context/-e` and by every daemon-unreachable write before AGT-1298.
-  // Nothing drains it and `think curate` deleted the expired ones unevaluated,
-  // so this re-submits them through the v3 write path — see
+  // Nothing drains it, and the retired `think curate` deleted the expired ones
+  // unevaluated, so this re-submits them through the v3 write path — see
   // lib/engram-migration.ts for the entry model, idempotency and crash safety.
   //
   // Ordering is load-bearing:
@@ -414,9 +414,10 @@ export async function runDaemon(options: DaemonOptions): Promise<void> {
   //   * BEFORE the socket is bound, so the first recall after the upgrade
   //     already sees the rescued entries — and before the drain scheduled
   //     below, which deletes outbox rows once pushed.
-  //   * BEFORE anything that prunes engrams. Nothing in the daemon prunes;
-  //     `think curate` does, and it runs this first (and pruneExpiredEngrams
-  //     now refuses to delete unevaluated rows outright).
+  //   * BEFORE anything that prunes engrams. Since AGT-1303 deleted `think
+  //     curate` and its prune, nothing prunes the table at all — but keep the
+  //     ordering: it is what makes "no unmigrated row is ever deleted" a
+  //     property of this function's position rather than of a caller's care.
   //
   // Deliberately NOT gated on `config.paused`: pause suppresses new event
   // creation by the CLI, it does not mean "leave a year of decisions

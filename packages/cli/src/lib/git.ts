@@ -850,7 +850,7 @@ export function appendAndCommit(
       return;
     } catch {
       if (attempt === maxRetries) {
-        throw new Error(`Push failed after ${maxRetries} attempts. Run 'think curate' again.`);
+        throw new Error(`Push failed after ${maxRetries} attempts. Run 'think cortex sync' again.`);
       }
       pullRebaseOrAbort(branchName);
     }

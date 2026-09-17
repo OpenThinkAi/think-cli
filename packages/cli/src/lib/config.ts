@@ -167,8 +167,8 @@ export interface CortexConfig {
   retroValueSignal?: RetroValueSignalConfig;
   /**
    * Persistent opt-in to ship cortex content to Anthropic via the Claude
-   * Agent SDK (`think curate`, `think long-term backfill`, episode
-   * curation, retro dedupe). The CLI fails closed if this is `false`/
+   * Agent SDK (`think long-term backfill`, terminal-event curation,
+   * retro dedupe). The CLI fails closed if this is `false`/
    * unset AND `THINK_LLM_CONSENT` env var is also unset (AGT-065).
    */
   llmConsent?: boolean;

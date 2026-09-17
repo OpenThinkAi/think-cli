@@ -96,7 +96,7 @@ async function showMemories(opts: { history?: boolean }): Promise<void> {
   const memories = getMemories(cortex, { limit: opts.history ? 50 : undefined });
 
   if (memories.length === 0) {
-    console.log(chalk.dim('No memories yet. Run: think curate'));
+    console.log(chalk.dim('No memories yet. Run: think sync "<what happened>"'));
     closeCortexDb(cortex);
     return;
   }
