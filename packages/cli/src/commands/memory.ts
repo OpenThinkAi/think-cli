@@ -1,4 +1,4 @@
-import { Command } from 'commander';
+import { Command, Option } from 'commander';
 import chalk from 'chalk';
 import { getConfig } from '../lib/config.js';
 import { getMemories, insertMemory } from '../db/memory-queries.js';
@@ -13,8 +13,18 @@ const addCommand = new Command('add')
   .argument('<message>', 'The memory content')
   .option('--no-push', 'Skip pushing to remote after adding')
   .option('--silent', 'Suppress output')
-  .option('-d, --decision <text>', 'Record a decision (repeatable)', (val: string, prev: string[]) => [...prev, val], [] as string[])
-  .action(async function (this: Command, message: string, opts: { push: boolean; silent?: boolean; decision: string[] }) {
+  // think-3 (AGT-1297): -d/--decision is a hard-removed engram-tier field —
+  // see the matching rejection in commands/log.ts. Kept registered-but-hidden
+  // so passing it gets our own one-line pointer instead of commander's
+  // generic "unknown option".
+  .addOption(new Option('-d, --decision <text>', 'Removed — use `think event`').hideHelp())
+  .action(async function (this: Command, message: string, opts: { push: boolean; silent?: boolean; decision?: string }) {
+    if (opts.decision !== undefined) {
+      process.stderr.write('error: --decision has been removed; use `think event "Decided ..."` instead\n');
+      process.exitCode = 1;
+      return;
+    }
+
     const globalOpts = this.optsWithGlobals() as { cortex?: string };
     const config = getConfig();
     const cortex = globalOpts.cortex ?? config.cortex?.active;
@@ -40,7 +50,6 @@ const addCommand = new Command('add')
       author,
       content: message,
       source_ids: [],
-      decisions: opts.decision.length > 0 ? opts.decision : undefined,
     });
 
     if (!opts.silent) {
