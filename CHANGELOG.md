@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- **A write made while the daemon is down now lands somewhere the daemon reads.** `think sync` and `think event` used to fall back to the v2 `engrams` table when the daemon was unreachable. Nothing drains that table and `think recall` does not read it, so those entries were stranded — silently, with the same `✓ … stored memory <id>` line a real write prints. They now go to the active cortex's `l1_outbox`, the durable hand-off every other L1 writer already uses, with `kind` preserved (the `engrams` table has no `kind` column, so an offline `think event` was also being demoted to a plain engram). The daemon indexes pending rows into L2 at startup, before it binds its socket, so the first `think recall` after `think daemon start` already sees them — no `think reindex` needed.
+
+### Changed
+
+- **`think retro` no longer exits non-zero just because the daemon is down.** It writes the retro to L1 like `sync` and `event`, prints its normal `✓ … stored retro <id>` line, and exits 0. A shell caller doing `think retro … || handle_daemon_down` will stop seeing a failure there; a non-zero exit from `think retro` now means the write itself failed — an unwritable cortex, or content the quality gate rejects. That gate still runs on this path, and a daemon that *answers* and refuses is still fatal: only a daemon we cannot reach degrades.
+- **`--silent` no longer suppresses one line.** On the daemon-unreachable path `think sync` and `think event` write a single note to stderr even under `--silent`, because a `--silent` auto-logging hook would otherwise have no trace that the daemon was down. stdout is byte-for-byte unchanged, so `OUT=$(think sync …)` callers are unaffected; a wrapper that treats any stderr output as a failure is the case to check.
+
 ## [2.6.1] — 2026-08-25
 
 Fixes the request deadline shipped in 2.6.0, which could not exceed ~300 seconds no matter what it was set to.

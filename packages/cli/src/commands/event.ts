@@ -15,12 +15,11 @@ import chalk from 'chalk';
 import { insertEntry } from '../db/queries.js';
 import { closeDb } from '../db/client.js';
 import { getConfig } from '../lib/config.js';
-import { insertEngram } from '../db/engram-queries.js';
-import { closeCortexDb } from '../db/engrams.js';
 import { validateEngramContent, stripControls } from '../lib/sanitize.js';
 import { connectDaemon, DaemonUnavailableError } from '../lib/daemon-client.js';
 import type { SyncResult as DaemonSyncResult } from '../daemon/sync-handler.js';
 import { addWriteOptions, extractWriteOpts } from '../lib/write-options.js';
+import { writeDaemonDownEntry } from '../lib/l1-fallback.js';
 
 // Factory returns a fresh Command instance per call. Tests build a new program
 // per test and need an unparented event command; production calls it once at
@@ -29,7 +28,7 @@ export function makeEventCommand(): Command {
   return addWriteOptions(new Command('event')
     .description('Record a notable event to the active cortex (milestone, deploy, decision, incident)')
     .argument('<message>', 'The event to record'))
-    .option('--silent', 'Suppress output')
+    .option('--silent', 'Suppress output (the daemon-unreachable note still goes to stderr)')
     .option('--no-push', 'Skip the remote git push after writing (only applies when a daemon is running)')
     .addHelpText('after', `
 Use 'sync' for the ongoing work stream; use 'event' for one-off notable things
@@ -114,18 +113,16 @@ Examples:
         }
 
         if (!daemonSucceeded) {
-          // --- v2 direct-write path (insertEngram) ---
+          // --- daemon-unreachable path: write to L1 (AGT-1298) ---
           // Entered when:
           //  (a) daemon is unavailable (DaemonUnavailableError) -- silent degrade, or
           //  (b) unexpected daemon fault -- surface on stderr before degrading.
           //
-          // NOTE: The v2 `engrams` table has no `kind` column, so kind="event" is
-          // NOT preserved on this path. The entry is stored as a plain engram.
-          // This is an acknowledged limitation of the degraded fallback: the v2
-          // schema predates the v3 kind system. The daemon is the canonical write
-          // path; the fallback exists only to prevent data loss when the daemon is
-          // unavailable. A future schema migration (out of scope here) will align
-          // the v2 table with the v3 entry model.
+          // The entry is enqueued to the cortex's l1_outbox with kind="event"
+          // intact; the daemon drains it into L1 and indexes it into L2 on its
+          // next start. (Until AGT-1298 this wrote to the v2 `engrams` table,
+          // which has no `kind` column -- so every offline event was silently
+          // demoted to an unrecallable engram.)
           if (daemonErr && !(daemonErr instanceof DaemonUnavailableError) && !opts.silent) {
             const msg = daemonErr instanceof Error ? daemonErr.message : String(daemonErr);
             const cleaned = stripControls(msg);
@@ -134,18 +131,23 @@ Examples:
             process.stderr.write(chalk.yellow(`  daemon error: ${display}; falling back to local write\n`));
           }
 
-          const { engram } = insertEngram(cortex, { content: message });
+          let written: { id: string; ts: string };
+          try {
+            written = writeDaemonDownEntry({ cortex, content: message, kind: 'event', topics });
+          } catch (writeErr: unknown) {
+            // Nowhere durable to put the entry -- fail loudly rather than
+            // reporting a write that did not happen (AGT-1298 AC4).
+            const msg = writeErr instanceof Error ? writeErr.message : String(writeErr);
+            process.stderr.write(chalk.red(`  error: daemon unavailable and the L1 write failed: ${stripControls(msg)}\n`));
+            process.exitCode = 1;
+            return;
+          }
 
           if (!opts.silent) {
             const badge = chalk.cyan(`[${cortex}]`);
-            console.log(`${chalk.green('✓')} ${badge} stored event ${engram.id}`);
-            console.log(`  ${engram.content}`);
-            if (daemonErr instanceof DaemonUnavailableError) {
-              process.stderr.write(chalk.dim('  note: daemon unavailable -- wrote via local path\n'));
-            }
+            console.log(`${chalk.green('✓')} ${badge} stored event ${written.id}`);
+            console.log(`  ${message}`);
           }
-
-          closeCortexDb(cortex);
         }
       } else {
         // No cortex configured -- fall back to local think.db.

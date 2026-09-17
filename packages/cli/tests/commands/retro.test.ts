@@ -23,6 +23,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Command } from 'commander';
 import { retroCommand } from '../../src/commands/retro.js';
+import { getCortexDb, closeAllCortexDbs } from '../../src/db/engrams.js';
 import * as daemonClientModule from '../../src/lib/daemon-client.js';
 import { DaemonUnavailableError } from '../../src/lib/daemon-client.js';
 import * as workingContext from '../../src/lib/working-context.js';
@@ -56,6 +57,9 @@ describe('think retro — v3 locality', () => {
     originalHome = process.env.THINK_HOME;
     tmpHome = mkdtempSync(join(tmpdir(), 'think-retro-v3-test-'));
     process.env.THINK_HOME = tmpHome;
+    // Cortex DB handles are cached per process — drop any held over from a
+    // prior test's (now-deleted) THINK_HOME.
+    closeAllCortexDbs();
     vi.spyOn(console, 'log').mockImplementation(() => {});
     vi.spyOn(console, 'error').mockImplementation(() => {});
     // Default: behave as if run outside a git repo so topic assertions are
@@ -64,6 +68,7 @@ describe('think retro — v3 locality', () => {
   });
 
   afterEach(() => {
+    closeAllCortexDbs();
     if (originalHome === undefined) delete process.env.THINK_HOME;
     else process.env.THINK_HOME = originalHome;
     rmSync(tmpHome, { recursive: true, force: true });
@@ -237,17 +242,108 @@ describe('think retro — v3 locality', () => {
     expect(callArgs.kind).toBe('retro');
   });
 
-  it('exits non-zero when daemon is unavailable', async () => {
+  it('writes the retro to L1 when the daemon is unavailable (AGT-1298)', async () => {
+    vi.spyOn(daemonClientModule, 'connectDaemon').mockRejectedValue(
+      new DaemonUnavailableError('daemon failed to start', '/tmp/think/daemon.log'),
+    );
+    const stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+
+    const cortex = 'unavail-test';
+    const prog = makeProgram();
+    await prog.parseAsync([
+      'node', 'think', '-C', cortex, 'retro',
+      'the plumbing writer never checks the shared worktree out — that is the point',
+    ]);
+
+    // A daemon-down retro is no longer an error: it is written to L1 and
+    // indexed on the next daemon start.
+    expect(process.exitCode).toBeFalsy();
+    const db = getCortexDb(cortex);
+    const row = db.prepare('SELECT line FROM l1_outbox LIMIT 1').get() as { line: string } | undefined;
+    expect(row).toBeDefined();
+    expect((JSON.parse(row!.line) as Record<string, unknown>).kind).toBe('retro');
+    expect(stderrSpy.mock.calls.flat().join('')).toContain('daemon unavailable');
+    const output = (console.log as ReturnType<typeof vi.fn>).mock.calls.flat().join('\n');
+    expect(output).toContain('stored retro');
+  });
+
+  it('also writes to L1 when the connect fails with a raw socket error', async () => {
+    // A stale/garbage socket path fails with ENOTSOCK etc., not
+    // DaemonUnavailableError — still "unreachable", so still an L1 write.
+    vi.spyOn(daemonClientModule, 'connectDaemon').mockRejectedValue(
+      Object.assign(new Error('connect ENOTSOCK /tmp/think/daemon.sock'), { code: 'ENOTSOCK' }),
+    );
+    vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+
+    const cortex = 'raw-connect-error';
+    const prog = makeProgram();
+    await prog.parseAsync([
+      'node', 'think', '-C', cortex, 'retro',
+      'a socket that is not a socket is still a daemon you cannot reach',
+    ]);
+
+    expect(process.exitCode).toBeFalsy();
+    const db = getCortexDb(cortex);
+    const row = db.prepare('SELECT COUNT(*) as count FROM l1_outbox').get() as { count: number };
+    expect(row.count).toBe(1);
+  });
+
+  it('a daemon that ANSWERS with an error is not routed around', async () => {
+    // The quality gate and every other daemon-side refusal must stay fatal —
+    // degrading here would let a rejected retro in through the back door.
+    const client = {
+      call: vi.fn().mockRejectedValue(new Error('retro rejected: content is too short')),
+      close: vi.fn(),
+    };
+    vi.spyOn(daemonClientModule, 'connectDaemon').mockResolvedValue(client);
+
+    const cortex = 'daemon-refusal';
+    const prog = makeProgram();
+    await prog.parseAsync([
+      'node', 'think', '-C', cortex, 'retro',
+      'a lesson the daemon will refuse for its own reasons entirely',
+    ]);
+
+    expect(process.exitCode).toBe(1);
+    const errOutput = (console.error as ReturnType<typeof vi.fn>).mock.calls.flat().join('\n');
+    expect(errOutput).toContain('daemon error');
+    const db = getCortexDb(cortex);
+    const row = db.prepare('SELECT COUNT(*) as count FROM l1_outbox').get() as { count: number };
+    expect(row.count).toBe(0);
+  });
+
+  it('still applies the AGT-455 quality gate on the daemon-down path', async () => {
     vi.spyOn(daemonClientModule, 'connectDaemon').mockRejectedValue(
       new DaemonUnavailableError('daemon failed to start', '/tmp/think/daemon.log'),
     );
 
+    const cortex = 'unavail-gate-test';
     const prog = makeProgram();
-    await prog.parseAsync(['node', 'think', '-C', 'unavail-test', 'retro', 'some obs']);
+    await prog.parseAsync(['node', 'think', '-C', cortex, 'retro', 'too short']);
 
     expect(process.exitCode).toBe(1);
     const errOutput = (console.error as ReturnType<typeof vi.fn>).mock.calls.flat().join('\n');
-    expect(errOutput).toContain('daemon unavailable');
+    expect(errOutput).toContain('retro rejected');
+    const db = getCortexDb(cortex);
+    const outbox = db.prepare('SELECT COUNT(*) as count FROM l1_outbox').get() as { count: number };
+    expect(outbox.count).toBe(0);
+  });
+
+  it('exits non-zero when the daemon is unavailable AND the L1 write fails (AC #4)', async () => {
+    vi.spyOn(daemonClientModule, 'connectDaemon').mockRejectedValue(
+      new DaemonUnavailableError('daemon failed to start', '/tmp/think/daemon.log'),
+    );
+
+    // sanitizeName rejects path separators, so the outbox insert cannot happen.
+    const prog = makeProgram();
+    await prog.parseAsync([
+      'node', 'think', '-C', '../escape', 'retro',
+      'a lesson long enough to clear the quality gate but with nowhere to go',
+    ]);
+
+    expect(process.exitCode).toBe(1);
+    const errOutput = (console.error as ReturnType<typeof vi.fn>).mock.calls.flat().join('\n');
+    expect(errOutput).toContain('L1 write failed');
   });
 
   it('surfaces advisory warnings from daemon', async () => {
