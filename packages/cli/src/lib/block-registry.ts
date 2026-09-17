@@ -104,7 +104,7 @@ function slotFor(kind: BlockKind): 'worklog' | 'retro' {
  * that was deleted or hand-edited to remove the markers falls out of the
  * registry rather than being reported as still-managed forever.
  */
-export function pruneStaleEntries(entries: BlockRegistryEntry[]): BlockRegistryEntry[] {
+function pruneStaleEntries(entries: BlockRegistryEntry[]): BlockRegistryEntry[] {
   return entries.filter((entry) => {
     let content: string;
     try {
