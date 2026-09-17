@@ -83,15 +83,31 @@ export interface CortexConfig {
   hub?: HubBackendConfig;
   active?: string;
   author: string;
+  /**
+   * @deprecated think-3 (AGT-1303): nothing reads this. It paced the removed
+   * `think curate`. Declared so a config that still carries it type-checks and
+   * round-trips through `saveConfig` untouched; `getConfig` prints a one-line
+   * "no longer used" note instead of failing. See RETIRED_CORTEX_KEYS.
+   */
   curateEveryN?: number;
+  /** @deprecated think-3 (AGT-1303): unread — see `curateEveryN`. */
   confirmBeforeCommit?: boolean;
+  /** @deprecated think-3 (AGT-1303): unread — see `curateEveryN`. */
   selectivity?: 'low' | 'medium' | 'high';
+  /** @deprecated think-3 (AGT-1303): unread — see `curateEveryN`. */
   granularity?: 'detailed' | 'summary';
+  /** @deprecated think-3 (AGT-1303): unread — see `curateEveryN`. */
   maxMemoriesPerRun?: number;
   bucketSize?: number;
   onboardingDepth?: number;
+  /**
+   * @deprecated think-3 (AGT-1303): nothing reads this. It set the engram
+   * tier's TTL. See `curateEveryN` for why it is still declared.
+   */
   engramTTLDays?: number;
+  /** @deprecated think-3 (AGT-1303): unread — see `curateEveryN`. */
   idleWindowMinutes?: number;
+  /** @deprecated think-3 (AGT-1303): unread — see `curateEveryN`. */
   staleWindowMinutes?: number;
   retroRelegateAfterRuns?: number;
   /**
@@ -157,9 +173,8 @@ export interface CortexConfig {
    */
   llmConsent?: boolean;
   /**
-   * Hard ceiling on the assembled curation prompt size in characters.
-   * Default 50_000 (~12k tokens). When exceeded, the assembler trims
-   * recent-memories oldest-first and prints a warning. AGT-065 INFO #20.
+   * @deprecated think-3 (AGT-1303): nothing reads this. It capped the removed
+   * engram-curation prompt. See `curateEveryN` for why it is still declared.
    */
   curatorPromptCharCap?: number;
   /**
@@ -172,8 +187,7 @@ export interface CortexConfig {
    *   pre-local-first think did (Anthropic via the Claude Agent SDK) — so the
    *   feature is inert until a user opts in by configuring an endpoint.
    * - `'local'` — local only. Never ships to Anthropic; if a task overflows the
-   *   local context budget the call is skipped with a warning (engrams stay
-   *   pending for a later run).
+   *   local context budget the call is skipped with a warning.
    * - `'anthropic'` — Anthropic only (the legacy path).
    *
    * Env override: `THINK_LLM_PROVIDER`.
@@ -389,10 +403,10 @@ export interface LlmConfig {
    * one sensitive operation on-device while the rest use a hosted API.
    *
    * Recognised names (see `ALL_OPERATIONS` in lib/llm/router.ts):
-   *   `curation`         `think curate` — engrams to memories (tier A)
-   *   `event-detection`  `think curate` — memories to long-term events (tier B)
-   *   `episode`          `think curate --episode`
-   *   `terminal-event`   terminal-event curation
+   *   `curation`         unrouted since AGT-1303 (the default operation)
+   *   `event-detection`  unrouted since AGT-1303
+   *   `episode`          unrouted since AGT-1303
+   *   `terminal-event`   terminal-event curation (`think serve`)
    *   `retro-dedupe`     `think curate-retros`
    *   `summary`          `think summary`
    *   `dashboard`        `think dashboard` status digest
@@ -760,6 +774,37 @@ export function saveConfig(config: Config): void {
 // rewritten on the first call so subsequent processes never re-warn.
 let legacyServerWarned = false;
 
+/**
+ * Config keys that think-3 (AGT-1303) stopped reading when the engram write
+ * tier was deleted, with the reason to show the owner.
+ *
+ * Unlike `cortex.server` above, these are NOT pruned from the file: they are
+ * inert, the user may have set them deliberately, and rewriting someone's
+ * config to delete a harmless key is a worse trade than one line of stderr.
+ * The note is advisory — never an error, never a non-zero exit — so a config
+ * carrying one keeps working exactly as it does without it.
+ */
+const RETIRED_CORTEX_KEYS: Readonly<Record<string, string>> = {
+  // The three AC6 names explicitly...
+  curateEveryN: 'paced `think curate`',
+  engramTTLDays: 'set the engram tier TTL',
+  curatorPromptCharCap: 'capped the engram curation prompt',
+  // ...plus every other cortex key the same deletion orphaned. They were all
+  // read only by `think curate` or its prompt assembler, so a user who set
+  // one has exactly the same dead setting and deserves the same one line.
+  selectivity: 'tuned the engram curator',
+  granularity: 'tuned the engram curator',
+  maxMemoriesPerRun: 'capped memories per `think curate` run',
+  confirmBeforeCommit: 'prompted before `think curate` wrote memories',
+  idleWindowMinutes: 'gated `think curate --if-idle`',
+  staleWindowMinutes: 'gated `think curate --if-idle`',
+};
+
+// Same once-per-process guard as legacyServerWarned: getConfig() is called
+// many times per invocation (every command, plus the daemon's loops), and the
+// note is a nudge, not a log stream.
+let retiredKeysWarned = false;
+
 export function getConfig(): Config {
   const fp = configPath();
   if (fs.existsSync(fp)) {
@@ -809,6 +854,17 @@ export function getConfig(): Config {
         );
       }
       saveConfig(parsed);
+    }
+    if (!retiredKeysWarned && parsed.cortex) {
+      const cortex = parsed.cortex as unknown as Record<string, unknown>;
+      const present = Object.keys(RETIRED_CORTEX_KEYS).filter((k) => cortex[k] !== undefined);
+      if (present.length > 0) {
+        retiredKeysWarned = true;
+        const listed = present.map((k) => `cortex.${k} (${RETIRED_CORTEX_KEYS[k]})`).join(', ');
+        process.stderr.write(
+          `think: ${listed} ${present.length === 1 ? 'is' : 'are'} no longer used — the engram tier was removed in think 3. Safe to delete from ${fp}.\n`,
+        );
+      }
     }
     return parsed;
   }

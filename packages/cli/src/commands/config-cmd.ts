@@ -13,6 +13,7 @@ const ALLOWED_KEYS = new Set([
   'cortex.repo',
   'cortex.active',
   'cortex.engramTTLDays',
+  'cortex.curatorPromptCharCap',
   'cortex.idleWindowMinutes',
   'cortex.staleWindowMinutes',
   'cortex.retroRelegateAfterRuns',
@@ -22,6 +23,24 @@ const ALLOWED_KEYS = new Set([
   'paused',
   'proxy.url',
   'search.engine',
+]);
+
+/**
+ * Keys think-3 (AGT-1303) stopped reading when the engram write tier was
+ * removed. They stay in ALLOWED_KEYS on purpose: a script or shell history
+ * that still sets one must keep exiting 0 (AC6 — note, don't fail). The write
+ * goes through and a one-line note explains it will have no effect.
+ */
+const RETIRED_KEYS = new Set([
+  'cortex.curateEveryN',
+  'cortex.engramTTLDays',
+  'cortex.curatorPromptCharCap',
+  'cortex.selectivity',
+  'cortex.granularity',
+  'cortex.maxMemoriesPerRun',
+  'cortex.confirmBeforeCommit',
+  'cortex.idleWindowMinutes',
+  'cortex.staleWindowMinutes',
 ]);
 
 /** Keys whose values must be one of a known enum. Checked at set time. */
@@ -46,7 +65,7 @@ configCommand.addCommand(new Command('show')
   }));
 
 configCommand.addCommand(new Command('set')
-  .argument('<key>', 'Config key (e.g., cortex.curateEveryN, cortex.confirmBeforeCommit)')
+  .argument('<key>', 'Config key (e.g., cortex.author, cortex.confirmBeforeCommit)')
   .argument('<value>', 'Value to set')
   .description('Set a configuration value')
   .action((key: string, value: string) => {
@@ -92,6 +111,9 @@ configCommand.addCommand(new Command('set')
     saveConfig(config);
 
     console.log(chalk.green('✓') + ` ${key} = ${JSON.stringify(parsed)}`);
+    if (RETIRED_KEYS.has(key)) {
+      process.stderr.write(`think: ${key} is no longer used — the engram tier was removed in think 3.\n`);
+    }
     if (DAEMON_RESTART_KEYS.has(key)) {
       console.log(chalk.dim('  Restart the daemon for this change to take effect (`think daemon restart`).'));
     }

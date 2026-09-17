@@ -10,10 +10,26 @@
 
 ### Changed
 
-- **`think curate` no longer deletes expired entries that were never read.** Pruning used to remove every expired row regardless of whether anything had evaluated it — and since the curator was retired years before the tier was, what it removed was unread decision logs (one reported run deleted 20). It now prunes only rows that have been evaluated or migrated.
+- **Nothing prunes the legacy `engrams` table any more.** Pruning used to remove every expired row regardless of whether anything had evaluated it — and since the curator was retired years before the tier was, what it removed was unread decision logs (one reported run deleted 20). Its only caller, `think curate`, is now gone (see Removed) and the prune went with it, so an expired row simply waits for the rescue above.
 - **New: `think migrate-engrams`.** Runs the rescue above on demand, for machines whose daemon has not restarted since the upgrade, or with `--dry-run` to see what it would move first. You normally never need it — daemon start does this by itself.
 - **`think retro` no longer exits non-zero just because the daemon is down.** It writes the retro to L1 like `sync` and `event`, prints its normal `✓ … stored retro <id>` line, and exits 0. A shell caller doing `think retro … || handle_daemon_down` will stop seeing a failure there; a non-zero exit from `think retro` now means the write itself failed — an unwritable cortex, or content the quality gate rejects. That gate still runs on this path, and a daemon that *answers* and refuses is still fatal: only a daemon we cannot reach degrades.
 - **`--silent` no longer suppresses one line.** On the daemon-unreachable path `think sync` and `think event` write a single note to stderr even under `--silent`, because a `--silent` auto-logging hook would otherwise have no trace that the daemon was down. stdout is byte-for-byte unchanged, so `OUT=$(think sync …)` callers are unaffected; a wrapper that treats any stderr output as a failure is the case to check.
+
+### Removed
+
+- **The engram write tier is gone.** Every write command now produces a memory, an event or a retro, through the daemon — there is no other write tier. `insertEngram` and every call site are deleted, and nothing reads the `engrams` table except the one-shot rescue described above. Together with the `think sync` flag removals, this closes [#95](https://github.com/OpenThinkAi/think-cli/issues/95).
+
+  **Commands removed** — `think <cmd>` now reports an unknown command: `curate` (including `--episode` and the local two-pass split), `monitor`, `curator edit|show`, `migrate-data`, and `log`. `think log` wrote local entries rather than engrams, but it is the retired pre-cortex write command and `think sync` has been its replacement since v3. `think cortex auto-curate` and `think cortex auto-sync` are removed with their LaunchAgent installers; if you have either agent loaded, the daemon unloads and deletes it on its next start.
+
+  **Flags removed** — `think recall --engrams` and `think subscribe poll --legacy-engrams` each exit non-zero with a one-line pointer rather than a generic "unknown option". Bare `think subscribe poll` is unchanged: it still prints its `think pull <team-cortex>` pointer.
+
+  **Episodes are removed.** The episode curation flow had no path to a memory that did not go through an engram. `episode_key` remains on entries — `think subscribe` still stamps it, and recall still reads it for proxy provenance.
+
+  **What stayed.** `think curate-retros` and the daemon's retro curation loop never touched engrams and are untouched. `think migrate-engrams --dry-run` stays — it is the rescue, and it has to outlive the tier it drains. The `engrams` table and its schema migrations stay in place, read-only, for one major; dropping them is a later change and **no schema migration is added here**.
+
+  **`think list`, `think summary` and `think dashboard`** read the cortex entry store instead of the engrams table. On a cortex whose entries were written through the daemon these were previously showing an empty or stale table; they now show what `think recall` shows.
+
+- **Nine `cortex.*` config keys are no longer read.** `curateEveryN`, `engramTTLDays`, `curatorPromptCharCap`, `selectivity`, `granularity`, `maxMemoriesPerRun`, `confirmBeforeCommit`, `idleWindowMinutes` and `staleWindowMinutes` were all read only by `think curate` or its prompt assembler. Setting one is not an error and nothing is rewritten in your config file: think prints one line on stderr naming the dead keys, once per invocation, and carries on.
 
 ## [2.6.1] — 2026-08-25
 

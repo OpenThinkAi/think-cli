@@ -212,3 +212,84 @@ describe('getConfig — legacy cortex.server pruning', () => {
     stderr.mockRestore();
   });
 });
+
+describe('getConfig — retired engram-tier keys (AGT-1303 AC6)', () => {
+  let originalHome: string | undefined;
+  let tmpHome: string;
+
+  beforeEach(() => {
+    originalHome = process.env.THINK_HOME;
+    tmpHome = mkdtempSync(join(tmpdir(), 'think-config-retired-test-'));
+    process.env.THINK_HOME = tmpHome;
+    // Reset the module's once-per-process retiredKeysWarned guard so each
+    // test observes a fresh "first call" — same reason as the block above.
+    vi.resetModules();
+  });
+
+  afterEach(() => {
+    if (originalHome === undefined) delete process.env.THINK_HOME;
+    else process.env.THINK_HOME = originalHome;
+    rmSync(tmpHome, { recursive: true, force: true });
+  });
+
+  function writeCortexConfig(cortex: Record<string, unknown>): string {
+    const configDir = getConfigDir();
+    mkdirSync(configDir, { recursive: true, mode: 0o700 });
+    const configPath = join(configDir, 'config.json');
+    writeFileSync(
+      configPath,
+      JSON.stringify({ peerId: 'retired-key-peer', syncPort: 47821, cortex }) + '\n',
+      { encoding: 'utf-8', mode: 0o600 },
+    );
+    return configPath;
+  }
+
+  it('notes a retired key once on stderr, without failing or pruning it', async () => {
+    const { getConfig: freshGetConfig } = await import('../../src/lib/config.js');
+    const configPath = writeCortexConfig({
+      author: 'someone',
+      curateEveryN: 5,
+      engramTTLDays: 30,
+      repo: 'git@github.com:org/repo.git',
+    });
+    const original = readFileSync(configPath, 'utf-8');
+
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+
+    const config = freshGetConfig();
+
+    // Advisory only: the config loads, the live fields are intact, and the
+    // process exit code is untouched.
+    expect(config.cortex?.author).toBe('someone');
+    expect(config.cortex?.repo).toBe('git@github.com:org/repo.git');
+    expect(process.exitCode).toBeFalsy();
+
+    // Exactly one line, naming every retired key present.
+    expect(stderr).toHaveBeenCalledTimes(1);
+    const note = String(stderr.mock.calls[0][0]);
+    expect(note.trimEnd().split('\n')).toHaveLength(1);
+    expect(note).toMatch(/cortex\.curateEveryN/);
+    expect(note).toMatch(/cortex\.engramTTLDays/);
+    expect(note).toMatch(/no longer used/);
+
+    // Once per invocation, not once per getConfig() call.
+    freshGetConfig();
+    freshGetConfig();
+    expect(stderr).toHaveBeenCalledTimes(1);
+
+    // Unlike cortex.server, retired keys are NOT pruned — the file is
+    // byte-for-byte unchanged.
+    expect(readFileSync(configPath, 'utf-8')).toBe(original);
+    stderr.mockRestore();
+  });
+
+  it('says nothing when no retired key is set', async () => {
+    const { getConfig: freshGetConfig } = await import('../../src/lib/config.js');
+    writeCortexConfig({ author: 'someone', active: 'personal' });
+
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    expect(freshGetConfig().cortex?.active).toBe('personal');
+    expect(stderr).not.toHaveBeenCalled();
+    stderr.mockRestore();
+  });
+});
