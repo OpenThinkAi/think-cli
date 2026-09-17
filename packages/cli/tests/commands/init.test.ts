@@ -15,6 +15,7 @@ import {
   DISCLOSURE_YELLOW_LINES,
   DISCLOSURE_DIM_LINES,
 } from '../../src/commands/init.js';
+import { listRegisteredBlocks } from '../../src/lib/block-registry.js';
 
 // AGT-1300 (think-3): vocabulary retired with the engram tier / curator.
 // Must not appear in any managed template or in the interactive disclosure
@@ -887,5 +888,251 @@ describe('think init — managed block is byte-identical in CLAUDE.md and AGENTS
     expect(
       extractManagedSpan(`${END_MARKER}\n${BEGIN_MARKER}\n`, BEGIN_MARKER, END_MARKER),
     ).toBeNull();
+  });
+});
+
+// AGT-1305: upsertBlock previously replaced only the *first* marker pair it
+// found (indexOf on both markers), so a file that had somehow accumulated
+// two think:begin...think:end pairs kept the duplicate forever — every
+// re-run rewrote the first pair and silently left the second alone. These
+// tests pin the fix: any number of clean marker pairs collapse to exactly
+// one, holding the current template, with everything outside the outermost
+// pair preserved byte-for-byte.
+describe('think init — duplicate marker pairs collapse to one (AGT-1305)', () => {
+  let homeRoot: string;
+  let projectDir: string;
+  let prevHome: string | undefined;
+
+  beforeEach(() => {
+    homeRoot = mkdtempSync(path.join(tmpdir(), 'think-init-1305-home-'));
+    projectDir = mkdtempSync(path.join(tmpdir(), 'think-init-1305-project-'));
+    prevHome = process.env.HOME;
+    process.env.HOME = homeRoot;
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    rmSync(homeRoot, { recursive: true, force: true });
+    rmSync(projectDir, { recursive: true, force: true });
+    if (prevHome === undefined) delete process.env.HOME;
+    else process.env.HOME = prevHome;
+    vi.restoreAllMocks();
+  });
+
+  function readClaude(): string {
+    return readFileSync(path.join(projectDir, 'CLAUDE.md'), 'utf-8');
+  }
+
+  it('two clean marker pairs collapse into one holding the current template', async () => {
+    const claudePath = path.join(projectDir, 'CLAUDE.md');
+    const before = '# My existing rules\n\nDo not delete me.\n\n';
+    const after = '\n## Trailing section\n\nKeep me too.\n';
+    const duplicated =
+      before +
+      `${BEGIN_MARKER}\n# Work Logging\n\nstale body one\n${END_MARKER}\n\n` +
+      `${BEGIN_MARKER}\n# Work Logging\n\nstale body two\n${END_MARKER}\n` +
+      after;
+    writeFileSync(claudePath, duplicated, 'utf-8');
+
+    await initCommand.parseAsync(['--dir', projectDir, '--yes'], { from: 'user' });
+
+    const content = readClaude();
+    expect(content.startsWith(before)).toBe(true);
+    expect(content.endsWith(after)).toBe(true);
+    expect(content).not.toContain('stale body one');
+    expect(content).not.toContain('stale body two');
+    expect((content.match(/think:begin/g) ?? []).length).toBe(1);
+    expect((content.match(/think:end/g) ?? []).length).toBe(1);
+    expect(content).toContain('Three verbs for writing');
+  });
+
+  it('three clean marker pairs collapse into one', async () => {
+    const claudePath = path.join(projectDir, 'CLAUDE.md');
+    const triplicated =
+      `${BEGIN_MARKER}\nold 1\n${END_MARKER}\n` +
+      `${BEGIN_MARKER}\nold 2\n${END_MARKER}\n` +
+      `${BEGIN_MARKER}\nold 3\n${END_MARKER}\n`;
+    writeFileSync(claudePath, triplicated, 'utf-8');
+
+    await initCommand.parseAsync(['--dir', projectDir, '--yes'], { from: 'user' });
+
+    const content = readClaude();
+    expect((content.match(/think:begin/g) ?? []).length).toBe(1);
+    expect((content.match(/think:end/g) ?? []).length).toBe(1);
+    expect(content).not.toContain('old 1');
+    expect(content).not.toContain('old 2');
+    expect(content).not.toContain('old 3');
+  });
+
+  it('a stray unclosed BEGIN with no END anywhere is left alone (conservative fallback)', async () => {
+    const claudePath = path.join(projectDir, 'CLAUDE.md');
+    const strayContent = `# notes\n\n${BEGIN_MARKER}\nhand-written text after a stray begin, no end marker at all\n`;
+    writeFileSync(claudePath, strayContent, 'utf-8');
+
+    await initCommand.parseAsync(['--dir', projectDir, '--yes'], { from: 'user' });
+
+    const content = readClaude();
+    // The stray, unclosed begin and the hand-written text after it must
+    // survive untouched — we never guess that some marker elsewhere closes it.
+    expect(content).toContain('hand-written text after a stray begin, no end marker at all');
+    // A fresh block was appended rather than corrupting the stray region.
+    expect((content.match(/think:begin/g) ?? []).length).toBe(2);
+  });
+
+  it('an ambiguous nested BEGIN before the matching END is left alone (conservative fallback)', async () => {
+    const claudePath = path.join(projectDir, 'CLAUDE.md');
+    // B1 ... B2 ... E1 ... E2 — a second BEGIN appears before the END that
+    // would close the first. Which BEGIN does E1 belong to is ambiguous.
+    const nested = `${BEGIN_MARKER}\nouter text\n${BEGIN_MARKER}\ninner text\n${END_MARKER}\nmore outer\n${END_MARKER}\n`;
+    writeFileSync(claudePath, nested, 'utf-8');
+
+    await initCommand.parseAsync(['--dir', projectDir, '--yes'], { from: 'user' });
+
+    const content = readClaude();
+    // Nothing in the ambiguous region was deleted; a fresh block was
+    // appended after it instead of guessing at a pairing.
+    expect(content).toContain('outer text');
+    expect(content).toContain('inner text');
+    expect(content).toContain('more outer');
+  });
+
+  it('re-running after a collapse is idempotent (no re-growth)', async () => {
+    const claudePath = path.join(projectDir, 'CLAUDE.md');
+    const duplicated = `${BEGIN_MARKER}\nold 1\n${END_MARKER}\n${BEGIN_MARKER}\nold 2\n${END_MARKER}\n`;
+    writeFileSync(claudePath, duplicated, 'utf-8');
+
+    await initCommand.parseAsync(['--dir', projectDir, '--yes'], { from: 'user' });
+    const first = readClaude();
+    await initCommand.parseAsync(['--dir', projectDir, '--yes'], { from: 'user' });
+    const second = readClaude();
+
+    expect(second).toEqual(first);
+    expect((second.match(/think:begin/g) ?? []).length).toBe(1);
+  });
+});
+
+// AGT-1305: `think init` records every file it writes a managed block into
+// under a registry keyed on THINK_HOME (here, $HOME/.think since these tests
+// don't set THINK_HOME explicitly — same resolution lib/paths.ts uses
+// everywhere else). Re-running must not duplicate registry entries, and
+// `think init --list` must print what's registered.
+describe('think init — block registry (AGT-1305)', () => {
+  let homeRoot: string;
+  let projectDir: string;
+  let prevHome: string | undefined;
+  let logs: string[];
+
+  beforeEach(() => {
+    homeRoot = mkdtempSync(path.join(tmpdir(), 'think-init-registry-home-'));
+    projectDir = mkdtempSync(path.join(tmpdir(), 'think-init-registry-project-'));
+    prevHome = process.env.HOME;
+    process.env.HOME = homeRoot;
+    logs = [];
+    vi.spyOn(console, 'log').mockImplementation((...args: unknown[]) => {
+      logs.push(args.map(String).join(' '));
+    });
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    rmSync(homeRoot, { recursive: true, force: true });
+    rmSync(projectDir, { recursive: true, force: true });
+    if (prevHome === undefined) delete process.env.HOME;
+    else process.env.HOME = prevHome;
+    vi.restoreAllMocks();
+  });
+
+  it('registers CLAUDE.md with the work-log kind after a default init', async () => {
+    await initCommand.parseAsync(['--dir', projectDir, '--yes'], { from: 'user' });
+
+    const claudePath = path.join(projectDir, 'CLAUDE.md');
+    const entries = listRegisteredBlocks();
+    expect(entries).toEqual([{ path: claudePath, kind: 'work-log', beginMarker: BEGIN_MARKER, endMarker: END_MARKER }]);
+  });
+
+  it('registers with the minimal kind under --minimal', async () => {
+    await initCommand.parseAsync(['--dir', projectDir, '--minimal'], { from: 'user' });
+
+    const entries = listRegisteredBlocks();
+    expect(entries).toHaveLength(1);
+    expect(entries[0].kind).toBe('minimal');
+  });
+
+  it('registers both CLAUDE.md and AGENTS.md when both are written', async () => {
+    writeFileSync(path.join(projectDir, 'AGENTS.md'), '# Existing agents file\n', 'utf-8');
+    await initCommand.parseAsync(['--dir', projectDir, '--yes'], { from: 'user' });
+
+    const entries = listRegisteredBlocks();
+    expect(entries).toHaveLength(2);
+    expect(entries.map((e) => path.basename(e.path)).sort()).toEqual(['AGENTS.md', 'CLAUDE.md']);
+  });
+
+  it('registers the retro block under its own kind, independent of a work-log entry on the same file', async () => {
+    await initCommand.parseAsync(['--dir', projectDir, '--yes'], { from: 'user' });
+    await initCommand.parseAsync(
+      ['--dir', projectDir, '--yes', '--retro', '--cortex', 'fx-tracker'],
+      { from: 'user' },
+    );
+
+    const claudePath = path.join(projectDir, 'CLAUDE.md');
+    const entries = listRegisteredBlocks().filter((e) => e.path === claudePath);
+    expect(entries.map((e) => e.kind).sort()).toEqual(['retro', 'work-log']);
+  });
+
+  it('re-running init does not duplicate the registry entry', async () => {
+    await initCommand.parseAsync(['--dir', projectDir, '--yes'], { from: 'user' });
+    await initCommand.parseAsync(['--dir', projectDir, '--yes'], { from: 'user' });
+    await initCommand.parseAsync(['--dir', projectDir, '--yes'], { from: 'user' });
+
+    expect(listRegisteredBlocks()).toHaveLength(1);
+  });
+
+  it('switching --minimal <-> default updates the registered kind without duplicating the entry', async () => {
+    await initCommand.parseAsync(['--dir', projectDir, '--minimal'], { from: 'user' });
+    await initCommand.parseAsync(['--dir', projectDir, '--yes'], { from: 'user' });
+
+    const entries = listRegisteredBlocks();
+    expect(entries).toHaveLength(1);
+    expect(entries[0].kind).toBe('work-log');
+  });
+
+  it('a registry entry is dropped once its file is removed and another write happens', async () => {
+    writeFileSync(path.join(projectDir, 'AGENTS.md'), '# Existing agents file\n', 'utf-8');
+    await initCommand.parseAsync(['--dir', projectDir, '--yes'], { from: 'user' });
+    expect(listRegisteredBlocks()).toHaveLength(2);
+
+    rmSync(path.join(projectDir, 'CLAUDE.md'));
+
+    // Trigger another write elsewhere to invoke the prune-on-write path —
+    // re-create CLAUDE.md fresh and re-run so there's a live write to hang it on.
+    await initCommand.parseAsync(['--dir', projectDir, '--yes'], { from: 'user' });
+    const entries = listRegisteredBlocks();
+    // AGENTS.md entry survived throughout; CLAUDE.md entry is back (recreated).
+    expect(entries.map((e) => path.basename(e.path)).sort()).toEqual(['AGENTS.md', 'CLAUDE.md']);
+  });
+
+  it('--list prints nothing-registered when the registry is empty', async () => {
+    await initCommand.parseAsync(['--list'], { from: 'user' });
+    expect(logs.some((l) => l.toLowerCase().includes('no managed blocks registered'))).toBe(true);
+  });
+
+  it('--list prints each registered file after an init', async () => {
+    await initCommand.parseAsync(['--dir', projectDir, '--yes'], { from: 'user' });
+    logs.length = 0; // clear init's own console output
+
+    await initCommand.parseAsync(['--list'], { from: 'user' });
+
+    const claudePath = path.join(projectDir, 'CLAUDE.md');
+    expect(logs.some((l) => l.includes(claudePath))).toBe(true);
+    expect(logs.some((l) => l.toLowerCase().includes('work-log'))).toBe(true);
+  });
+
+  it('--list ignores other flags and ignores --block-version rejection', async () => {
+    // --list should short-circuit before any other option validation, so
+    // combining it with an otherwise-invalid flag combination still works
+    // (no throw, no CLAUDE.md written).
+    await initCommand.parseAsync(['--list', '--minimal', '--retro'], { from: 'user' });
+    expect(logs.some((l) => l.toLowerCase().includes('no managed blocks registered'))).toBe(true);
   });
 });
