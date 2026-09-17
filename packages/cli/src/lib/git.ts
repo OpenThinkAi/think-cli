@@ -46,6 +46,31 @@ function runGit(args: string[], cwd?: string): string {
   }).trim();
 }
 
+/**
+ * Raw-bytes sibling of `runGit`. `runGit` decodes as UTF-8 and trims, which
+ * destroys both trailing newlines and NUL record separators — fatal when the
+ * output is blob content or `-z` plumbing output. Same hardening flags and
+ * sanitized env; only the decoding differs.
+ *
+ * `maxBuffer` is raised above Node's 1 MiB default because the payload here is
+ * an L1 page (up to `L1_PAGE_SIZE` JSONL rows). 64 MiB is far above any
+ * realistic page and still bounds memory on a pathological blob.
+ */
+function runGitBuffer(args: string[]): Buffer {
+  const safeArgs = [
+    '-c', 'core.hooksPath=/dev/null',
+    '-c', 'core.fsmonitor=',
+    ...args,
+  ];
+  return execFileSync('git', safeArgs, {
+    cwd: getRepoPath(),
+    stdio: ['pipe', 'pipe', 'pipe'],
+    env: safeGitEnv(),
+    maxBuffer: 64 * 1024 * 1024,
+    windowsHide: true,
+  });
+}
+
 // Reject values that could be misinterpreted as git CLI flags
 // (`--upload-pack=<cmd>`, `-o`, etc.). Call on any value that flows into a
 // git subprocess as a positional argument — branch names, repo URLs, refs,
@@ -311,6 +336,234 @@ function tryFfOnly(branchName: string): void {
   }
 }
 
+/** Object names as git prints them (SHA-1 today, SHA-256 on a `--object-format` repo). */
+const GIT_OID = /^[0-9a-f]{40,64}$/;
+
+/** One record of `git diff-index`/`git diff-files` raw (`-z`) output. */
+interface RawDiffEntry {
+  /** Blob id on the "source" side — HEAD for `diff-index --cached`, the index for `diff-files`. */
+  srcSha: string;
+  /** Blob id on the "destination" side — the index, or all-zeros for an unhashed worktree file. */
+  dstSha: string;
+  status: string;
+  path: string;
+}
+
+/**
+ * Parse raw (`-z`) diff output: repeated `:<srcmode> <dstmode> <srcsha>
+ * <dstsha> <status>\0<path>\0` records. Returns `null` on anything that does
+ * not match that shape — including rename/copy records, whose second path field
+ * is read as the next record's meta, fails the `:` prefix check and bails.
+ * Callers treat `null` as
+ * "cannot reason about this state" and fall back to the legacy salvage path,
+ * so a parse failure is never silently acted upon.
+ */
+function parseRawDiffZ(out: Buffer): RawDiffEntry[] | null {
+  const fields = out.toString('utf-8').split('\0');
+  const entries: RawDiffEntry[] = [];
+  let i = 0;
+  while (i < fields.length) {
+    const meta = fields[i];
+    if (meta === undefined || meta === '') break; // trailing separator
+    if (!meta.startsWith(':')) return null;
+    const parts = meta.slice(1).split(' ');
+    if (parts.length !== 5) return null;
+    const [, , srcSha, dstSha, status] = parts;
+    const filePath = fields[i + 1];
+    if (!filePath) return null;
+    entries.push({ srcSha, dstSha, status, path: filePath });
+    i += 2;
+  }
+  return entries;
+}
+
+/**
+ * Resolve a repo-relative path from git's `-z` output to an absolute path,
+ * refusing anything that escapes the repo. Git only emits repo-relative paths
+ * here, so this is belt-and-braces against a crafted path (`../..`, absolute)
+ * ever reaching `fs.writeFileSync`.
+ */
+function resolveInsideRepo(relPath: string): string | null {
+  if (!relPath || relPath.startsWith('-') || path.isAbsolute(relPath)) return null;
+  const repoPath = path.resolve(getRepoPath());
+  const abs = path.resolve(repoPath, relPath);
+  if (!abs.startsWith(repoPath + path.sep)) return null;
+  return abs;
+}
+
+/** Read a blob's exact bytes. `sha` must already have passed `GIT_OID`. */
+function catBlob(sha: string): Buffer {
+  return runGitBuffer(['cat-file', 'blob', sha]);
+}
+
+/**
+ * `a` is a byte-prefix of `b` (equal counts).
+ *
+ * An EMPTY `a` is a prefix of everything, and that is load-bearing rather than
+ * an oversight: `createOrphanBranch` opens each cortex with a zero-byte page, so
+ * "index holds the empty blob, HEAD holds the daemon's first append" is the
+ * ordinary first-write shape of the bug this guards. The cost is that a
+ * deliberately *staged* truncation-to-empty of a page would read as a lag and be
+ * reset away — unreachable for a cortex repo, where the only writers append
+ * JSONL lines and nothing ever empties a page. Anything reusing this outside
+ * that domain needs its own empty-blob guard.
+ */
+function isPrefixOf(a: Buffer, b: Buffer): boolean {
+  return a.length <= b.length && b.subarray(0, a.length).equals(a);
+}
+
+/**
+ * AGT-1299 / think-cli#95 — refuse to salvage an index that is merely BEHIND a
+ * plumbing-advanced HEAD.
+ *
+ * The daemon's L1 writer (`lib/git-plumbing.ts`) advances `refs/heads/<cortex>`
+ * with `commit-tree` + `update-ref` and deliberately never touches the index or
+ * the worktree. When that branch happens to be the checked-out one, HEAD moves
+ * out from under a now-stale index, and `git status` reports the daemon's own
+ * appends inverted: the appended lines look like staged deletions and every
+ * page the writer created looks like a staged file deletion. The legacy salvage
+ * (`git add -u` + `commit`) then commits that stale index as the new tree —
+ * a commit that reverts the daemon's writes. think-cli#95 saw ~6,000 deleted
+ * lines from exactly this.
+ *
+ * `git status` alone cannot tell "stale" from "edited", so this proves it from
+ * content before mutating anything:
+ *
+ *  1. HEAD ↔ index: every difference must be the index LAGGING. A path present
+ *     in HEAD and absent from the index (`D`) is a page the writer created —
+ *     the index records nothing there, so nothing can be lost. A modified path
+ *     (`M`) must have an index blob that is a byte-prefix of HEAD's blob, i.e.
+ *     HEAD holds the index's bytes plus an append. Anything else (a path the
+ *     index has and HEAD does not, a type change, a rename, an unparseable
+ *     record) means the index carries state HEAD does not, and we bail.
+ *  2. index ↔ worktree: each difference must be a plain modification whose
+ *     worktree bytes EXTEND the index blob — a genuine in-flight append. The
+ *     new bytes (the suffix past the index blob) are the only thing the
+ *     worktree holds that git does not, so they are hashed into the object
+ *     database before any mutation and re-applied on top of HEAD's content
+ *     afterwards. A worktree deletion or type change is not an append, cannot
+ *     be merged onto HEAD, and bails.
+ *
+ * Only once both proofs hold do we mutate: `git reset --hard HEAD` (safe here
+ * and only here — proof 1 showed the index holds nothing HEAD lacks, proof 2
+ * captured everything the worktree holds beyond the index), then rewrite each
+ * genuinely-appended page as HEAD's content + the captured suffix. The result:
+ *
+ *  - pure stale state → index and worktree land on HEAD, `git status -s` is
+ *    empty, no commit is created and HEAD's tree is untouched;
+ *  - stale + a genuine append → the caller's salvage commit still happens and
+ *    its diff against HEAD is the append alone, never the stale deletions.
+ *
+ * Bailing returns `false` and leaves the tree exactly as found, so the legacy
+ * salvage path runs unchanged — the conservative direction, since that path
+ * commits (never discards) whatever it finds.
+ *
+ * Note: `git checkout -- .` does NOT clear this state (it copies the stale
+ * index back onto the worktree); resetting to HEAD is what clears it.
+ *
+ * @returns the worktree files to rewrite after the reset (empty for the pure
+ *          stale state), or `null` when the state is not provably stale.
+ */
+function planStaleIndexReconcile(): Array<{ absPath: string; content: Buffer }> | null {
+  // Unborn HEAD: there is no tree to be behind.
+  let head: string;
+  try {
+    head = runGit(['rev-parse', '--verify', '--quiet', 'HEAD']);
+  } catch {
+    return null;
+  }
+  if (!head) return null;
+
+  // Cheap gate for the steady state: `diff-index --cached --quiet` exits 0 when
+  // the index matches HEAD, in which case nothing is stale and any dirt is a
+  // plain worktree edit for the legacy path to salvage.
+  try {
+    runGit(['diff-index', '--cached', '--quiet', 'HEAD']);
+    return null;
+  } catch {
+    /* index differs from HEAD — prove which direction below */
+  }
+
+  // --- Proof 1: every HEAD ↔ index difference is the index lagging ---------
+  const headVsIndex = parseRawDiffZ(runGitBuffer(['diff-index', '--cached', '-z', 'HEAD']));
+  if (headVsIndex === null || headVsIndex.length === 0) return null;
+  const headBlobs = new Map<string, string>();
+  for (const entry of headVsIndex) {
+    // `D` here means "in HEAD, not in the index" — a page the plumbing writer
+    // added. The index holds no bytes for it, so there is nothing to lose.
+    if (entry.status === 'D') continue;
+    if (entry.status !== 'M') return null;
+    if (!GIT_OID.test(entry.srcSha) || !GIT_OID.test(entry.dstSha)) return null;
+    const headContent = catBlob(entry.srcSha);
+    const indexContent = catBlob(entry.dstSha);
+    if (!isPrefixOf(indexContent, headContent)) return null;
+    headBlobs.set(entry.path, entry.srcSha);
+  }
+
+  // --- Proof 2: capture genuine worktree appends ---------------------------
+  const indexVsWorktree = parseRawDiffZ(runGitBuffer(['diff-files', '-z']));
+  if (indexVsWorktree === null) return null;
+  const restores: Array<{ absPath: string; content: Buffer }> = [];
+  for (const entry of indexVsWorktree) {
+    if (entry.status !== 'M') return null;
+    if (!GIT_OID.test(entry.srcSha)) return null;
+    const absPath = resolveInsideRepo(entry.path);
+    if (absPath === null) return null;
+    // Hash the worktree bytes into the object database BEFORE anything is
+    // reset, so the in-flight append is recoverable (`git cat-file blob <sha>`)
+    // even if a later step throws. `--no-filters` keeps the blob byte-identical
+    // to what is on disk, which is what the prefix proof compares.
+    const worktreeSha = runGit(['hash-object', '-w', '--no-filters', '--', entry.path]);
+    if (!GIT_OID.test(worktreeSha)) return null;
+    const worktreeContent = catBlob(worktreeSha);
+    const indexContent = catBlob(entry.srcSha);
+    // Not an append (rewritten or truncated in place) — we cannot merge it onto
+    // HEAD without guessing, so hand the whole situation to the legacy path.
+    if (!isPrefixOf(indexContent, worktreeContent)) return null;
+    const suffix = worktreeContent.subarray(indexContent.length);
+    // Identical bytes: `diff-files` also reports merely stat-dirty entries.
+    if (suffix.length === 0) continue;
+    const headSha = headBlobs.get(entry.path);
+    // No HEAD↔index entry for this path ⇒ HEAD and the index agree on it.
+    const headContent = headSha === undefined ? indexContent : catBlob(headSha);
+    restores.push({ absPath, content: Buffer.concat([headContent, suffix]) });
+  }
+
+  return restores;
+}
+
+/**
+ * Run `planStaleIndexReconcile`'s verdict. Split from the analysis so the two
+ * halves have different error policies: the analysis is read-only, so a
+ * surprise from git there is non-fatal and simply hands the tree to the legacy
+ * salvage path; the mutation below must never be swallowed — a half-applied
+ * reconcile has to surface, not fall through into a commit of whatever state
+ * it left behind.
+ *
+ * @returns true when the reconciliation ran, false when the state was not
+ *          provably stale.
+ */
+function reconcilePlumbingStaleIndex(): boolean {
+  let restores: Array<{ absPath: string; content: Buffer }> | null;
+  try {
+    restores = planStaleIndexReconcile();
+  } catch {
+    // Read-only probe failed (unreadable object, oversized blob, unmerged
+    // index, ...). Nothing has been touched — let the legacy path decide.
+    return false;
+  }
+  if (restores === null) return false;
+
+  // Proven safe above: `reset --hard` discards only bytes HEAD already holds,
+  // and every genuine append is both hashed into the object database and
+  // rewritten on top of HEAD's content immediately after.
+  runGit(['reset', '--hard', 'HEAD']);
+  for (const restore of restores) {
+    fs.writeFileSync(restore.absPath, restore.content);
+  }
+  return true;
+}
+
 /**
  * Self-heal (#69): bring the shared worktree to a clean state before a
  * `git switch` or `git merge --ff-only` — both hard-fail when the tree carries
@@ -338,9 +591,17 @@ function tryFfOnly(branchName: string): void {
  * No-op on a clean (or untracked-only) tree — the steady state — and outside a
  * git repo. Best-effort on detached HEAD: the salvage commit is created anyway
  * so the switch can proceed; it stays reachable via the reflog.
+ *
+ * AGT-1299: "dirty" is not the same as "carries data". When HEAD was advanced
+ * under a stale index by the plumbing writer, `git status` inverts the daemon's
+ * own appends into staged deletions and committing them would revert real
+ * writes. `reconcilePlumbingStaleIndex` catches that case first and brings the
+ * index and worktree to HEAD instead; what it leaves behind (if anything) is a
+ * genuine append, which the commit below salvages as before.
  */
 function salvageDirtyWorktree(): void {
   if (!fs.existsSync(path.join(getRepoPath(), '.git'))) return;
+  reconcilePlumbingStaleIndex();
   runGit(['add', '-u']);
   // `diff --cached --quiet` exits 0 when nothing is staged (clean or
   // untracked-only → no wedge) and non-zero when tracked changes are staged.
