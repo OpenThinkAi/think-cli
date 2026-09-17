@@ -6,7 +6,7 @@ import { Command } from 'commander';
  *
  * The serve module (hono / @hono/node-server / zod / scheduler / vault)
  * is **lazy-imported** from inside the action handler so users who never
- * run `serve` don't pay the cold-start cost on hot paths like `think log`
+ * run `serve` don't pay the cold-start cost on hot paths like `think sync`
  * and `think recall`. Bundle size still grows by the proxy's deps; only
  * startup latency for non-serve commands is protected.
  *

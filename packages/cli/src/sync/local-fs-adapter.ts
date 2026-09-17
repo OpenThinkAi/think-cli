@@ -57,7 +57,7 @@ interface PullCursorMap {
  * peers writing concurrently never touch the same path, which sidesteps
  * the multi-writer races that external sync tools resolve poorly.
  *
- * Single-writer-per-peer-per-cortex is required: two `think log` runs by
+ * Single-writer-per-peer-per-cortex is required: two `think sync` runs by
  * the same peer can interleave bytes on the same active bucket. The
  * design doc punts on `flock` — add only if real-world collisions show
  * up. See `~/Ideas/think-cli-v2/01-local-fs-adapter.md`.

@@ -23,7 +23,7 @@ export interface RunServeOptions {
 /**
  * Boot entrypoint for the proxy. Imported lazily from the `think serve`
  * command handler so users who never run `serve` don't pay the hono /
- * @hono/node-server / zod cold-start cost on `think log`/`think recall`.
+ * @hono/node-server / zod cold-start cost on `think sync`/`think recall`.
  *
  * Pre-AGT-030 this file was the server's `bin` entry and ran `main()` on
  * import. v0.5.0 wraps the same logic in `runServe()` so the CLI command
