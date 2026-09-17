@@ -352,8 +352,9 @@ interface RawDiffEntry {
 /**
  * Parse raw (`-z`) diff output: repeated `:<srcmode> <dstmode> <srcsha>
  * <dstsha> <status>\0<path>\0` records. Returns `null` on anything that does
- * not match that shape — including rename/copy records, which carry a second
- * path field and would desynchronise the parse. Callers treat `null` as
+ * not match that shape — including rename/copy records, whose second path field
+ * is read as the next record's meta, fails the `:` prefix check and bails.
+ * Callers treat `null` as
  * "cannot reason about this state" and fall back to the legacy salvage path,
  * so a parse failure is never silently acted upon.
  */
@@ -395,7 +396,18 @@ function catBlob(sha: string): Buffer {
   return runGitBuffer(['cat-file', 'blob', sha]);
 }
 
-/** `a` is a byte-prefix of `b` (equal counts). */
+/**
+ * `a` is a byte-prefix of `b` (equal counts).
+ *
+ * An EMPTY `a` is a prefix of everything, and that is load-bearing rather than
+ * an oversight: `createOrphanBranch` opens each cortex with a zero-byte page, so
+ * "index holds the empty blob, HEAD holds the daemon's first append" is the
+ * ordinary first-write shape of the bug this guards. The cost is that a
+ * deliberately *staged* truncation-to-empty of a page would read as a lag and be
+ * reset away — unreachable for a cortex repo, where the only writers append
+ * JSONL lines and nothing ever empties a page. Anything reusing this outside
+ * that domain needs its own empty-blob guard.
+ */
 function isPrefixOf(a: Buffer, b: Buffer): boolean {
   return a.length <= b.length && b.subarray(0, a.length).equals(a);
 }

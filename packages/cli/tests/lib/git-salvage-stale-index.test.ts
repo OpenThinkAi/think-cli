@@ -80,7 +80,12 @@ function setupHarness(): Harness {
   };
 }
 
-/** Real async git runner for the plumbing writer (same hardening flags as lib/git.ts). */
+/**
+ * Real async git runner for the plumbing writer (same hardening flags as
+ * lib/git.ts). Test-harness only: it spreads `process.env` rather than going
+ * through `safeGitEnv()` because the fixture's identity and `GIT_INDEX_FILE`
+ * have to reach git. Production code must use `safeGitEnv()` — don't copy this.
+ */
 const gitRunner: GitRunner = async (args, cwd, opts) =>
   execFileSync('git', ['-c', 'core.hooksPath=/dev/null', '-c', 'core.fsmonitor=', ...args], {
     cwd,
