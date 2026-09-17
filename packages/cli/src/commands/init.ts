@@ -81,8 +81,8 @@ function buildBlock(minimal = false): string {
 // through readline end-to-end.
 export const DISCLOSURE_YELLOW_LINES: readonly string[] = [
   'Heads up: this writes a CLAUDE.md block instructing Claude Code to run `think sync`/`think event` on shipped outcomes and decisions.',
-  'Entries write to your local cortex only. Compaction later runs through the configured LLM provider;',
-  'an off-machine provider needs `THINK_LLM_CONSENT=1` (or `cortex.llmConsent`) before anything is sent.',
+  'Entries write to your local cortex only. Compaction later runs through the configured LLM provider.',
+  'An off-machine provider needs `THINK_LLM_CONSENT=1` (or `cortex.llmConsent`) before anything is sent.',
 ];
 
 export const DISCLOSURE_DIM_LINES: readonly string[] = [
@@ -286,10 +286,7 @@ export const initCommand = new Command('init')
   .option('--minimal', 'Write a conservative work-log template that logs only explicit shipped outcomes — no decision narration, no retro pattern. Skips the disclosure prompt. Mutually exclusive with --retro.')
   .option('--retro', 'Upsert the iterative-learning (retro) block instead of the work-logging block. Requires --cortex. When no -d is given: writes silently to the git repo root if inside a repo; prompts with cwd as the default otherwise.')
   .option('--cortex <name>', 'Cortex name baked into the retro block commands (required with --retro).')
-  .option(
-    '--block-version <ver>',
-    'Removed in 3.0.0 — think init now writes one template regardless of daemon reachability. Kept registered only so this exits with an actionable error instead of a generic unknown-option one.',
-  )
+  .option('--block-version <ver>', 'Removed in 3.0.0. Use `think init` without this flag.')
   .addHelpText('after', `
 Modes:
   Default (no --retro):
