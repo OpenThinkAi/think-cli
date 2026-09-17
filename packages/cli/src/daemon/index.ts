@@ -45,6 +45,7 @@ import { compactionQueue, scanAndEnqueueUncompacted } from './compaction/queue.j
 import { pushDebouncer } from './push-debouncer.js';
 import { indexPendingOutboxEntries } from './outbox-index.js';
 import { migrateStrandedEngrams } from '../lib/engram-migration.js';
+import { recordHealAction } from '../lib/heal-summary.js';
 import { sanitizeForLog } from '../lib/sanitize.js';
 import { getCortexDb, listKnownCortexes } from '../db/engrams.js';
 import { backfillActivitySeqIfNeeded } from '../db/activity-seq.js';
@@ -380,6 +381,7 @@ export async function runDaemon(options: DaemonOptions): Promise<void> {
     const reaped = reapStaleLaunchAgents({ log: writeLine });
     if (reaped.length > 0) {
       writeLine(`launch-agent reap: removed ${reaped.length} stale curate/sync agent(s)`);
+      recordHealAction('removedLaunchAgents', reaped.length); // AGT-1307
     }
   } catch (reapErr: unknown) {
     const msg = reapErr instanceof Error ? reapErr.message : String(reapErr);
@@ -443,6 +445,7 @@ export async function runDaemon(options: DaemonOptions): Promise<void> {
             ? `, ${failed} ${failed === 1 ? 'row' : 'rows'} deferred to the next start`
             : ''),
       );
+      recordHealAction('migratedRows', rescued); // AGT-1307
     }
   } catch (migrateErr: unknown) {
     const msg = sanitizeForLog(migrateErr instanceof Error ? migrateErr.message : String(migrateErr));
