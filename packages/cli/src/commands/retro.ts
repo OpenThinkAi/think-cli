@@ -202,6 +202,10 @@ Examples:
         return;
       }
 
+      // Printed unconditionally, exactly as the daemon path below does:
+      // `think retro` has no --silent flag (unlike sync/event), so there is no
+      // quiet mode to respect here. Add the guard to BOTH sites if one ever
+      // lands, or the degraded path starts talking when the live one does not.
       const ctxTag = context ? chalk.dim(` (context: ${context})`) : chalk.dim(' (untagged — not in a git repo)');
       const badge = chalk.cyan(`[${storageCortex}]`) + ctxTag;
       const excerpt = content.length > 60 ? content.slice(0, 60) + '…' : content;

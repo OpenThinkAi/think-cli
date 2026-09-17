@@ -77,7 +77,7 @@ export function makeSyncCommand(): Command {
     .argument('<message>', 'The message to log')
     .option('-s, --source <source>', 'Source of the entry', 'manual')
     .option('-t, --tags <tags>', 'Comma-separated tags')
-    .option('--silent', 'Suppress output')
+    .option('--silent', 'Suppress output (the daemon-unreachable note still goes to stderr)')
     .option('--no-push', 'Skip the remote git push after writing (only applies when a daemon is running)'))
     .addOption(new Option('--no-sync', 'Deprecated alias for --no-push (preserved for v2 compat)').hideHelp())
     // think-3 (AGT-1297): -e/--episode, --context and -d/--decision are
