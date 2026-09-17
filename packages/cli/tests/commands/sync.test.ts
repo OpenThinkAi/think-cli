@@ -10,8 +10,9 @@
  *     eventual L2 storage time)
  *  3. --silent suppresses output
  *  4. --no-sync flag forwarded to daemon as skipPush:true
- *  5. When daemon unavailable (DaemonUnavailableError), falls back to v2 direct-write
- *     with "note: daemon unavailable — wrote via local path" after the ✓ line
+ *  5. When daemon unavailable (DaemonUnavailableError), the entry is written to
+ *     the cortex's L1 outbox — never the engrams table — with a one-line stderr
+ *     note that survives --silent (AGT-1298)
  *  6. AGT-1297: -e/--episode, --context and -d/--decision are hard-removed —
  *     each exits non-zero with a one-line stderr pointer to `think event`,
  *     even under --silent, and writes nothing (daemon never contacted, no
@@ -346,23 +347,35 @@ describe('think sync — daemon-routed path (AGT-293)', () => {
   });
 });
 
-describe('think sync — degraded fallback when daemon unavailable (AC #5)', () => {
+describe('think sync — daemon-down write goes to L1 (AGT-1298, AC #5)', () => {
   withFreshThinkHome('think-sync-fallback-test-');
 
-  it('falls back to direct L2 write when connectDaemon rejects', async () => {
+  /** Read the pending l1_outbox lines for a cortex, parsed. */
+  function outboxEntries(cortex: string): Record<string, unknown>[] {
+    const db = getCortexDb(cortex);
+    const rows = db.prepare('SELECT line FROM l1_outbox ORDER BY id ASC').all() as unknown as { line: string }[];
+    return rows.map(r => JSON.parse(r.line) as Record<string, unknown>);
+  }
+
+  it('enqueues a kind="memory" L1 entry — and writes nothing to engrams', async () => {
     vi.spyOn(daemonClientModule, 'connectDaemon').mockRejectedValue(new DaemonUnavailableError('daemon failed to start; check ~/.think/daemon.log'));
 
     const cortex = 'fallback-test';
     const prog = makeProgram();
-    await prog.parseAsync(['node', 'think', '-C', cortex, 'sync', 'fallback content']);
+    await prog.parseAsync(['node', 'think', '-C', cortex, 'sync', 'fallback content', '--topic', 'auth']);
 
-    // Should still write to L2 via insertEngram (v2 degraded path writes to engrams table)
+    const entries = outboxEntries(cortex);
+    expect(entries).toHaveLength(1);
+    expect(entries[0].kind).toBe('memory');
+    expect(entries[0].content).toBe('fallback content');
+    expect(entries[0].topics).toEqual(['auth']);
+    // The whole point of AGT-1298: the v2 engrams table nothing drains stays empty.
     const db = getCortexDb(cortex);
-    const row = db.prepare('SELECT COUNT(*) as count FROM engrams').get() as { count: number };
-    expect(row.count).toBe(1);
+    const engrams = db.prepare('SELECT COUNT(*) as count FROM engrams').get() as { count: number };
+    expect(engrams.count).toBe(0);
   });
 
-  it('shows "daemon unavailable" note AFTER the success line (AC #5)', async () => {
+  it('shows "daemon unavailable" note on stderr, success line on stdout (AC #3)', async () => {
     vi.spyOn(daemonClientModule, 'connectDaemon').mockRejectedValue(new DaemonUnavailableError('daemon failed to start; check ~/.think/daemon.log'));
 
     const stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
@@ -377,9 +390,10 @@ describe('think sync — degraded fallback when daemon unavailable (AC #5)', () 
     expect(stdout).toContain('stored memory');
     expect(stdout).not.toContain('daemon unavailable');
     expect(stderr).toContain('daemon unavailable');
+    expect(stderr).toContain('indexed on next daemon start');
   });
 
-  it('--silent suppresses degraded note too', async () => {
+  it('--silent keeps stdout empty but STILL emits the one-line note (AC #3)', async () => {
     vi.spyOn(daemonClientModule, 'connectDaemon').mockRejectedValue(new DaemonUnavailableError('daemon failed to start; check ~/.think/daemon.log'));
     const stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
 
@@ -388,14 +402,15 @@ describe('think sync — degraded fallback when daemon unavailable (AC #5)', () 
     await prog.parseAsync(['node', 'think', '-C', cortex, 'sync', 'fallback silent', '--silent']);
 
     expect((console.log as ReturnType<typeof vi.fn>).mock.calls.length).toBe(0);
-    expect(stderrSpy.mock.calls.flat().join('')).not.toContain('daemon unavailable');
-    // Still wrote to L2 via v2 engrams table
-    const db = getCortexDb(cortex);
-    const row = db.prepare('SELECT COUNT(*) as count FROM engrams').get() as { count: number };
-    expect(row.count).toBe(1);
+    // Unlike every other diagnostic, this one survives --silent: a --silent
+    // auto-logging hook must still leave a trace that the daemon was down.
+    const stderr = stderrSpy.mock.calls.flat().join('');
+    expect(stderr).toContain('daemon unavailable');
+    expect(stderr.trim().split('\n')).toHaveLength(1);
+    expect(outboxEntries(cortex)).toHaveLength(1);
   });
 
-  it('exits 0 even when degraded (write succeeded locally)', async () => {
+  it('exits 0 when the L1 write succeeds', async () => {
     vi.spyOn(daemonClientModule, 'connectDaemon').mockRejectedValue(new DaemonUnavailableError('daemon failed to start; check ~/.think/daemon.log'));
 
     const cortex = 'degraded-exit-test';
@@ -405,7 +420,24 @@ describe('think sync — degraded fallback when daemon unavailable (AC #5)', () 
     expect(process.exitCode).toBeFalsy();
   });
 
-  it('surfaces unexpected daemon error on stderr and falls back to local write', async () => {
+  it('exits non-zero and reports when the L1 write itself fails (AC #4)', async () => {
+    vi.spyOn(daemonClientModule, 'connectDaemon').mockRejectedValue(new DaemonUnavailableError('daemon failed to start; check ~/.think/daemon.log'));
+    const stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+
+    // An unwritable cortex name: sanitizeName rejects path separators, so the
+    // outbox insert can never happen.
+    const prog = makeProgram();
+    await prog.parseAsync(['node', 'think', '-C', '../escape', 'sync', 'unwritable content']);
+
+    expect(process.exitCode).toBe(1);
+    const stderr = stderrSpy.mock.calls.flat().join('');
+    expect(stderr).toContain('L1 write failed');
+    // No phantom success line.
+    const stdout = (console.log as ReturnType<typeof vi.fn>).mock.calls.flat().join('\n');
+    expect(stdout).not.toContain('stored memory');
+  });
+
+  it('surfaces unexpected daemon error on stderr and still writes to L1', async () => {
     vi.spyOn(daemonClientModule, 'connectDaemon').mockRejectedValue(
       new Error('unexpected protocol error: malformed response'),
     );
@@ -415,22 +447,20 @@ describe('think sync — degraded fallback when daemon unavailable (AC #5)', () 
     const prog = makeProgram();
     await prog.parseAsync(['node', 'think', '-C', cortex, 'sync', 'test content']);
 
-    // (a) entry still written
-    const db = getCortexDb(cortex);
-    const row = db.prepare('SELECT COUNT(*) as count FROM engrams').get() as { count: number };
-    expect(row.count).toBe(1);
+    // (a) entry still written — to L1, not engrams
+    expect(outboxEntries(cortex)).toHaveLength(1);
 
     // (b) error surfaced on stderr
     const stderrOutput = stderrSpy.mock.calls.flat().join('');
     expect(stderrOutput).toContain('daemon error');
     expect(stderrOutput).toContain('unexpected protocol error');
 
-    // (c) "daemon unavailable" note NOT emitted (that's for DaemonUnavailableError only)
+    // (c) the diagnostic stays off stdout
     const logOutput = (console.log as ReturnType<typeof vi.fn>).mock.calls.flat().join('\n');
-    expect(logOutput).not.toContain('daemon unavailable');
+    expect(logOutput).not.toContain('daemon error');
   });
 
-  it('--silent suppresses unexpected daemon error stderr too', async () => {
+  it('--silent suppresses the unexpected-daemon-error line (but not the L1 note)', async () => {
     vi.spyOn(daemonClientModule, 'connectDaemon').mockRejectedValue(
       new Error('unexpected protocol error: malformed response'),
     );
@@ -441,13 +471,11 @@ describe('think sync — degraded fallback when daemon unavailable (AC #5)', () 
     await prog.parseAsync(['node', 'think', '-C', cortex, 'sync', 'silent fallback', '--silent']);
 
     // Entry still written
-    const db = getCortexDb(cortex);
-    const row = db.prepare('SELECT COUNT(*) as count FROM engrams').get() as { count: number };
-    expect(row.count).toBe(1);
+    expect(outboxEntries(cortex)).toHaveLength(1);
 
-    // Nothing on stderr under --silent
     const stderrOutput = stderrSpy.mock.calls.flat().join('');
     expect(stderrOutput).not.toContain('daemon error');
+    expect(stderrOutput).toContain('daemon unavailable');
   });
 });
 

@@ -38,26 +38,11 @@ import { pushDebouncer } from './push-debouncer.js';
 import { runSupersessionWorker } from './supersession/worker.js';
 import { searchVectors } from '../lib/search-vectors.js';
 import { validateRetroContent, getRetroNearDupThreshold } from './retro-gate.js';
-
-// ---------------------------------------------------------------------------
-// Constants
-// ---------------------------------------------------------------------------
-
-const ALLOWED_KINDS = ['memory', 'retro', 'event'] as const;
-type EntryKind = (typeof ALLOWED_KINDS)[number];
-
-/**
- * Maximum accepted byte length for `content`. Prevents DoS via oversized
- * payloads that would spin the embedding model CPU indefinitely. The embed
- * module already truncates at 32 KB chars; this gate fires before even
- * reaching the embed call.
- */
-const MAX_CONTENT_BYTES = 64 * 1024; // 64 KB
-
-/** Maximum number of topics accepted per entry. */
-const MAX_TOPICS = 20;
-/** Maximum characters per topic string. */
-const MAX_TOPIC_LENGTH = 128;
+import {
+  buildL1Entry,
+  validateEntryFields,
+  type EntryKind,
+} from '../lib/l1-entry.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -145,45 +130,16 @@ function validateSyncParams(raw: Record<string, unknown>): SyncParams {
     throw new Error("invalid field 'cortex': must be a non-empty string");
   }
 
-  if (typeof content !== 'string' || content.trim().length === 0) {
-    throw new Error("invalid field 'content': must be a non-empty string");
-  }
+  // Shared with the daemon-down CLI fallback (lib/l1-fallback.ts) so an
+  // offline write can never enqueue an entry this handler would reject.
+  // `topics` is checked for array-of-strings inside.
+  validateEntryFields(content, kind, topics);
 
-  if (Buffer.byteLength(content, 'utf-8') > MAX_CONTENT_BYTES) {
-    throw new Error(
-      `invalid field 'content': must be at most 64 KB (${MAX_CONTENT_BYTES} bytes)`,
-    );
-  }
-
-  if (typeof kind !== 'string' || !(ALLOWED_KINDS as readonly string[]).includes(kind)) {
-    throw new Error(
-      `invalid field 'kind': invalid kind '${String(kind)}'; expected memory|retro|event`,
-    );
-  }
-
-  let parsedTopics: string[] | undefined;
-  if (topics !== undefined) {
-    if (!Array.isArray(topics) || !topics.every(t => typeof t === 'string')) {
-      throw new Error("invalid field 'topics': must be an array of strings when provided");
-    }
-    if ((topics as string[]).length > MAX_TOPICS) {
-      throw new Error(
-        `invalid field 'topics': at most ${MAX_TOPICS} topics allowed per entry`,
-      );
-    }
-    for (const t of topics as string[]) {
-      if (t.length > MAX_TOPIC_LENGTH) {
-        throw new Error(
-          `invalid field 'topics': each topic must be at most ${MAX_TOPIC_LENGTH} characters`,
-        );
-      }
-    }
-    parsedTopics = topics as string[];
-  }
+  const parsedTopics = topics === undefined ? undefined : (topics as string[]);
 
   return {
     cortex,
-    content,
+    content: content as string,
     kind: kind as EntryKind,
     topics: parsedTopics,
     skipPush: skipPush === true,
@@ -312,24 +268,11 @@ export async function handleSync(params: Record<string, unknown>): Promise<SyncR
   const author = config.cortex?.author ?? 'unknown';
   const origin_peer_id = getPeerId();
 
-  const entry = {
-    id,
-    ts,
-    author,
-    origin_peer_id,
-    kind,
-    content,
-    topics: topics ?? [],
-    // Schema placeholders required by the v3 entry model (README § "The entry model").
-    // `supersedes` and `compacted_from` are set by AGT-299 compaction; `decisions`
-    // and `source_ids` are v2 compat fields; `deleted_at` is the tombstone sentinel.
-    // AGT-299's compaction reader will look for these keys — do not strip them.
-    supersedes: [],
-    compacted_from: null,
-    decisions: [],
-    source_ids: [],
-    deleted_at: null,
-  };
+  // Shared builder (lib/l1-entry.ts) — it owns the schema placeholders the
+  // v3 entry model requires (README § "The entry model") and is the same
+  // builder the daemon-down CLI fallback uses, so the two writers can never
+  // emit different shapes.
+  const entry = buildL1Entry({ id, ts, author, origin_peer_id, kind, content, topics });
 
   const line = JSON.stringify(entry);
 

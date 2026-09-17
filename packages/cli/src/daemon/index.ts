@@ -43,6 +43,7 @@ import { handleRetroMigrate } from './retro-migrate-handler.js';
 import { handleStatus } from './status.js';
 import { compactionQueue, scanAndEnqueueUncompacted } from './compaction/queue.js';
 import { pushDebouncer } from './push-debouncer.js';
+import { indexPendingOutboxEntries } from './outbox-index.js';
 import { getCortexDb, listKnownCortexes } from '../db/engrams.js';
 import { backfillActivitySeqIfNeeded } from '../db/activity-seq.js';
 import { runEmbedModelChecks } from './embed-model-check.js';
@@ -392,6 +393,33 @@ export async function runDaemon(options: DaemonOptions): Promise<void> {
     writeLine(`embed-model: WARN warmup failed — starting in FTS-only mode: ${msg}`);
   }
 
+  // ---------------------------------------------------------------------------
+  // Index entries written while the daemon was down — AGT-1298
+  //
+  // `think sync` / `event` / `retro` with the daemon unreachable enqueue their
+  // L1 line to the cortex's `l1_outbox` and nothing else: a short-lived CLI
+  // process cannot afford to load the embedding model, and an L2 row without
+  // an embedding is not recallable. Here — with the model resident and BEFORE
+  // the socket is bound — each such row is embedded and inserted into L2, so
+  // the first recall after `think daemon start` already sees those writes.
+  //
+  // Ordered ahead of the bind deliberately: binding first would open a window
+  // where a recall answers without the offline writes. The cost is one embed
+  // per pending offline entry (normally none — the daemon's own outbox rows
+  // already have their L2 row and are skipped).
+  //
+  // Must also run BEFORE the drain scheduled below: the push-debouncer deletes
+  // outbox rows once it has pushed them.
+  // ---------------------------------------------------------------------------
+
+  const knownCortexes = listKnownCortexes();
+  try {
+    await indexPendingOutboxEntries(knownCortexes, writeLine);
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    writeLine(`outbox-index: startup indexing failed (continuing): ${msg}`);
+  }
+
   // Now safe to accept connections — model is resident (or fallback logged).
   try {
     await bindServer();
@@ -437,9 +465,12 @@ export async function runDaemon(options: DaemonOptions): Promise<void> {
   // Best-effort: any DB error during the scan is logged but does not block
   // daemon startup. The next regular write to that cortex would trigger a
   // notify() and drain the stragglers along with the new entry.
+  //
+  // Rows the CLI enqueued while the daemon was down were already indexed into
+  // L2 above (AGT-1298); this loop is what gets them into the L1 page.
   // ---------------------------------------------------------------------------
 
-  for (const cortex of listKnownCortexes()) {
+  for (const cortex of knownCortexes) {
     try {
       const db = getCortexDb(cortex);
       const row = db.prepare('SELECT COUNT(*) AS n FROM l1_outbox').get() as { n: number };

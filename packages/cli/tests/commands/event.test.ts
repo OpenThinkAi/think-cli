@@ -8,7 +8,8 @@
  *  4. --silent suppresses output
  *  5. --topic flag forwarded as topics array
  *  6. --cortex local flag overrides global -C
- *  7. When daemon unavailable (DaemonUnavailableError), falls back to v2 direct-write
+ *  7. When daemon unavailable (DaemonUnavailableError), the entry is written to
+ *     the cortex's L1 outbox with kind="event" intact (AGT-1298)
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
@@ -226,10 +227,10 @@ describe('think event -- L1 entry shape via daemon params (AC #3)', () => {
     expect(callArgs).not.toHaveProperty('supersedes');
   });
 
-  it('fallback path (no daemon) stores content in v2 engrams table (kind field not preserved -- v2 schema limitation)', async () => {
-    // The v2 engrams table predates the v3 kind system and has no kind column.
-    // The fallback path writes the content to prevent data loss, but kind="event"
-    // is not stored. This is documented behavior, not a bug.
+  it('fallback path (no daemon) keeps kind="event" on the L1 entry (AGT-1298)', async () => {
+    // Until AGT-1298 this wrote to the v2 engrams table, which has no kind
+    // column -- every offline event was silently demoted. The fallback now
+    // enqueues the same L1 line the daemon would have written.
     vi.spyOn(daemonClientModule, 'connectDaemon').mockRejectedValue(
       new DaemonUnavailableError('daemon failed to start; check ~/.think/daemon.log', '~/.think/daemon.log'),
     );
@@ -239,24 +240,23 @@ describe('think event -- L1 entry shape via daemon params (AC #3)', () => {
     await prog.parseAsync(['node', 'think', '-C', cortex, 'event', 'fallback event for L1 shape test']);
 
     const db = getCortexDb(cortex);
-    const row = db.prepare('SELECT id, content FROM engrams LIMIT 1').get() as {
-      id: string;
-      content: string;
-    } | undefined;
+    const row = db.prepare('SELECT line FROM l1_outbox LIMIT 1').get() as { line: string } | undefined;
 
     expect(row).toBeDefined();
-    expect(row!.content).toBe('fallback event for L1 shape test');
-    // kind column does not exist on the v2 engrams table -- this expectation
-    // documents the known limitation of the fallback path.
-    const cols = (db.prepare("PRAGMA table_info(engrams)").all() as Array<{ name: string }>).map(c => c.name);
-    expect(cols).not.toContain('kind');
+    const entry = JSON.parse(row!.line) as Record<string, unknown>;
+    expect(entry.content).toBe('fallback event for L1 shape test');
+    expect(entry.kind).toBe('event');
+    // Same schema placeholders the daemon writes (shared lib/l1-entry.ts).
+    expect(entry.compacted_from).toBeNull();
+    expect(entry.supersedes).toEqual([]);
+    expect(entry.deleted_at).toBeNull();
   });
 });
 
-describe('think event -- degraded fallback when daemon unavailable (AC #7)', () => {
+describe('think event -- daemon-down write goes to L1 (AGT-1298, AC #7)', () => {
   withFreshThinkHome('think-event-fallback-test-');
 
-  it('falls back to direct L2 write when connectDaemon rejects', async () => {
+  it('enqueues the entry to l1_outbox -- and writes nothing to engrams', async () => {
     vi.spyOn(daemonClientModule, 'connectDaemon').mockRejectedValue(
       new DaemonUnavailableError('daemon failed to start; check ~/.think/daemon.log', '~/.think/daemon.log'),
     );
@@ -265,10 +265,40 @@ describe('think event -- degraded fallback when daemon unavailable (AC #7)', () 
     const prog = makeProgram();
     await prog.parseAsync(['node', 'think', '-C', cortex, 'event', 'fallback event content']);
 
-    // Should still write to L2 via insertEngram (v2 degraded path)
     const db = getCortexDb(cortex);
-    const row = db.prepare('SELECT COUNT(*) as count FROM engrams').get() as { count: number };
-    expect(row.count).toBe(1);
+    const outbox = db.prepare('SELECT COUNT(*) as count FROM l1_outbox').get() as { count: number };
+    expect(outbox.count).toBe(1);
+    const engrams = db.prepare('SELECT COUNT(*) as count FROM engrams').get() as { count: number };
+    expect(engrams.count).toBe(0);
+  });
+
+  it('emits the one-line L1 note on stderr even under --silent (AC #3)', async () => {
+    vi.spyOn(daemonClientModule, 'connectDaemon').mockRejectedValue(
+      new DaemonUnavailableError('daemon failed to start; check ~/.think/daemon.log', '~/.think/daemon.log'),
+    );
+    const stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+
+    const cortex = 'event-silent-note-test';
+    const prog = makeProgram();
+    await prog.parseAsync(['node', 'think', '-C', cortex, 'event', 'silent degraded event', '--silent']);
+
+    expect((console.log as ReturnType<typeof vi.fn>).mock.calls.length).toBe(0);
+    const stderr = stderrSpy.mock.calls.flat().join('');
+    expect(stderr).toContain('daemon unavailable');
+    expect(stderr).toContain('indexed on next daemon start');
+  });
+
+  it('exits non-zero when the L1 write itself fails (AC #4)', async () => {
+    vi.spyOn(daemonClientModule, 'connectDaemon').mockRejectedValue(
+      new DaemonUnavailableError('daemon failed to start; check ~/.think/daemon.log', '~/.think/daemon.log'),
+    );
+    vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+
+    // sanitizeName rejects path separators, so the outbox insert cannot happen.
+    const prog = makeProgram();
+    await prog.parseAsync(['node', 'think', '-C', '../escape', 'event', 'unwritable event']);
+
+    expect(process.exitCode).toBe(1);
   });
 
   it('shows "stored event" in output even when degraded', async () => {

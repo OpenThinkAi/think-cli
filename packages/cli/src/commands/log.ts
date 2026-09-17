@@ -1,16 +1,14 @@
 import { Command, Option } from 'commander';
-import { spawn } from 'node:child_process';
 import chalk from 'chalk';
 import { insertEntry } from '../db/queries.js';
 import { closeDb } from '../db/client.js';
 import { getConfig } from '../lib/config.js';
-import { insertEngram, getPendingEngrams } from '../db/engram-queries.js';
-import { closeCortexDb } from '../db/engrams.js';
 import { checkForUpdate } from '../lib/update-check.js';
 import { validateEngramContent, stripControls } from '../lib/sanitize.js';
 import { connectDaemon, DaemonUnavailableError } from '../lib/daemon-client.js';
 import type { SyncResult as DaemonSyncResult } from '../daemon/sync-handler.js';
 import { addWriteOptions, extractWriteOpts } from '../lib/write-options.js';
+import { writeDaemonDownEntry } from '../lib/l1-fallback.js';
 
 /**
  * @deprecated AGT-390 / think-proxy-events PE-10: `think log` is the v2-engram
@@ -198,17 +196,18 @@ Examples:
             }
           }
           // No closeCortexDb() here: the daemon path never opens a cortex
-          // SQLite handle (the daemon owns L1/L2 writes via its RPC). The
-          // v2 fallback below opens via insertEngram and closes there.
+          // SQLite handle (the daemon owns L1/L2 writes via its RPC).
         } catch (err: unknown) {
           daemonErr = err;
         }
 
         if (!daemonSucceeded) {
-          // --- v2 direct-write path (insertEngram) ---
-          // Entered when:
-          //  (a) daemon is unavailable (DaemonUnavailableError) — silent degrade, or
-          //  (b) unexpected daemon fault — surface on stderr before degrading.
+          // --- daemon-unreachable path: write to L1 (AGT-1298) ---
+          // Entered when the daemon is unavailable (DaemonUnavailableError —
+          // silent degrade) or faulted unexpectedly (surfaced on stderr first).
+          // The entry goes to the cortex's l1_outbox, which the daemon drains
+          // into L1 and indexes into L2 on its next start — never to the
+          // engrams table, which nothing drains and nothing recalls.
           if (daemonErr && !(daemonErr instanceof DaemonUnavailableError) && !opts.silent) {
             const msg = daemonErr instanceof Error ? daemonErr.message : String(daemonErr);
             // Strip controls on the daemon-sourced error message — Error.message
@@ -222,42 +221,27 @@ Examples:
             process.stderr.write(chalk.yellow(`  daemon error: ${display}; falling back to local write\n`));
           }
 
-          // Note: --no-push is a no-op on this path. insertEngram is a local
-          // SQLite write only; the daemon's git push-debounce loop (AGT-309)
-          // owns remote pushes and is bypassed entirely here. The --no-push
-          // help text documents this caveat.
-          const { engram } = insertEngram(cortex, { content: message });
+          // Note: --no-push is a no-op on this path. The daemon's git
+          // push-debounce loop (AGT-309) owns remote pushes and is bypassed
+          // entirely here. The --no-push help text documents this caveat.
+          let written: { id: string; ts: string };
+          try {
+            written = writeDaemonDownEntry({ cortex, content: message, kind: 'memory', topics });
+          } catch (writeErr: unknown) {
+            // Nowhere durable to put the entry — say so and fail loudly rather
+            // than reporting a write that did not happen (AGT-1298 AC4).
+            const msg = writeErr instanceof Error ? writeErr.message : String(writeErr);
+            process.stderr.write(chalk.red(`  error: daemon unavailable and the L1 write failed: ${stripControls(msg)}\n`));
+            process.exitCode = 1;
+            return;
+          }
 
           if (!opts.silent) {
             const badge = chalk.cyan(`[${cortex}]`);
-            const ts = chalk.gray(engram.created_at.slice(0, 16).replace('T', ' '));
-            console.log(`${chalk.green('✓')} ${badge} ${ts} stored memory ${engram.id}`);
-            console.log(`  ${engram.content}`);
-            // Diagnostic — goes to stderr so callers capturing stdout (e.g.
-            // `OUTPUT=$(think sync …)`) don't embed it in their parsed value.
-            if (daemonErr instanceof DaemonUnavailableError) {
-              process.stderr.write(chalk.dim('  note: daemon unavailable — wrote via local path\n'));
-            }
+            const ts = chalk.gray(written.ts.slice(0, 16).replace('T', ' '));
+            console.log(`${chalk.green('✓')} ${badge} ${ts} stored memory ${written.id}`);
+            console.log(`  ${message}`);
           }
-
-          // Auto-curate if threshold is set and reached (v2 compat)
-          const curateEveryN = config.cortex?.curateEveryN;
-          if (curateEveryN && curateEveryN > 0) {
-            const pending = getPendingEngrams(cortex);
-            if (pending.length >= curateEveryN) {
-              if (!opts.silent) {
-                console.log(chalk.dim(`  ${pending.length} pending memories — triggering curation...`));
-              }
-              // Close DB before spawning — the child process will open its own connection
-              // WAL mode ensures the child can read what we just wrote
-              closeCortexDb(cortex);
-              // Use process.execPath + process.argv[1] so it works regardless of how think was invoked
-              spawn(process.execPath, [process.argv[1], 'curate'], { detached: true, stdio: 'ignore' }).unref();
-              return;
-            }
-          }
-
-          closeCortexDb(cortex);
         }
       } else {
         // No cortex configured — original local think.db path

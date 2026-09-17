@@ -3,7 +3,9 @@
  *
  * Routes through the daemon sync RPC with kind="retro". Text is never
  * rewritten (no compaction); supersession check runs asynchronously on
- * the daemon side (AGT-305, out of scope here).
+ * the daemon side (AGT-305, out of scope here). When the daemon is
+ * unreachable the retro is written to the cortex's L1 outbox instead and
+ * indexed on the next daemon start (AGT-1298).
  *
  * Flags:
  *   --cortex <name>     Override active cortex (retros may target any cortex)
@@ -19,6 +21,8 @@
 import { Command } from 'commander';
 import chalk from 'chalk';
 import { connectDaemon, DaemonUnavailableError } from '../lib/daemon-client.js';
+import { writeDaemonDownEntry } from '../lib/l1-fallback.js';
+import { validateRetroContent } from '../daemon/retro-gate.js';
 import { addWriteOptions, extractWriteOpts } from '../lib/write-options.js';
 import { getConfig } from '../lib/config.js';
 import { detectWorkingContext, contextTopic, normalizeContext } from '../lib/working-context.js';
@@ -65,7 +69,9 @@ export const retroCommand = addWriteOptions(new Command('retro')
   .option('--context <name>', 'Context this lesson is about (default: the git repo you are in)')
   .addHelpText('after', `
 Requirements:
-  Requires the think daemon (start it with: think daemon start).
+  Routes through the think daemon (start it with: think daemon start). With the
+  daemon down the retro is still written — to L1, and indexed into recall when
+  the daemon next starts.
 
 Storage model (iterative-learning v3 — see docs/iterative-learning-v3-locality.md):
   A retro is stored on your HOME cortex (the active cortex, or -C <name>) and
@@ -155,8 +161,67 @@ Examples:
     const baseTopics = topics ?? [];
     const finalTopics = context ? [...baseTopics, contextTopic(context)] : baseTopics;
 
+    /**
+     * Degraded write — the daemon could not be reached (AGT-1298).
+     *
+     * The retro is enqueued to the cortex's l1_outbox with kind="retro"
+     * intact; the daemon drains it into L1 and indexes it into L2 on its next
+     * start. The near-duplicate fold needs an embedding so it cannot run here
+     * — the entry is indexed as a fresh retro and `think curate-retros` merges
+     * duplicates later. Sets a non-zero exit code if the entry cannot be made
+     * durable.
+     */
+    const writeRetroToL1WhileDaemonDown = (connectErr: unknown): void => {
+      // The content-only half of the AGT-455 intake gate still runs, so a junk
+      // retro cannot walk past it just because the daemon happened to be down.
+      try {
+        validateRetroContent(content, opts.force === true);
+      } catch (gateErr: unknown) {
+        const msg = gateErr instanceof Error ? gateErr.message : String(gateErr);
+        console.error(chalk.red(`think retro: ${stripControls(msg)}`));
+        process.exitCode = 1;
+        return;
+      }
+
+      let written: { id: string; ts: string };
+      try {
+        written = writeDaemonDownEntry({
+          cortex: storageCortex,
+          content,
+          kind: 'retro',
+          topics: finalTopics.length > 0 ? finalTopics : undefined,
+        });
+      } catch (writeErr: unknown) {
+        const msg = writeErr instanceof Error ? writeErr.message : String(writeErr);
+        console.error(chalk.red('think retro: daemon unavailable and the L1 write failed.'));
+        console.error(chalk.red(`  ${stripControls(msg)}`));
+        if (connectErr instanceof DaemonUnavailableError) {
+          console.error(chalk.dim(`  (daemon log: ${stripControls(connectErr.logPath)})`));
+        }
+        process.exitCode = 1;
+        return;
+      }
+
+      const ctxTag = context ? chalk.dim(` (context: ${context})`) : chalk.dim(' (untagged — not in a git repo)');
+      const badge = chalk.cyan(`[${storageCortex}]`) + ctxTag;
+      const excerpt = content.length > 60 ? content.slice(0, 60) + '…' : content;
+      console.log(`${chalk.green('✓')} ${badge} stored retro ${written.id}`);
+      console.log(`  ${excerpt}`);
+    };
+
+    // Connecting and calling are caught separately on purpose: a daemon we
+    // could not REACH degrades to an L1 write (AGT-1298), while a daemon that
+    // answered and refused (e.g. the AGT-455 quality gate) is a real refusal —
+    // routing around it would defeat the gate.
+    let client: Awaited<ReturnType<typeof connectDaemon>>;
     try {
-      const client = await connectDaemon();
+      client = await connectDaemon();
+    } catch (err: unknown) {
+      writeRetroToL1WhileDaemonDown(err);
+      return;
+    }
+
+    try {
       let result: DaemonSyncResult;
       try {
         result = await client.call('sync', {
@@ -191,19 +256,14 @@ Examples:
         }
       }
     } catch (err: unknown) {
-      if (err instanceof DaemonUnavailableError) {
-        console.error(chalk.red('think retro: daemon unavailable.'));
-        console.error(chalk.red(`  Start it with: think daemon start`));
-        console.error(chalk.dim(`  (log: ${stripControls(err.logPath)})`));
-        process.exitCode = 1;
-      } else {
-        const msg = err instanceof Error ? err.message : String(err);
-        const cleaned = stripControls(msg);
-        // Generous cap so git's remediation hint (e.g. "Please commit your
-        // changes or stash them…") survives instead of being cut mid-sentence (#69).
-        const display = cleaned.length > 1000 ? cleaned.slice(0, 1000) + '…' : cleaned;
-        console.error(chalk.red(`think retro: daemon error — ${display}`));
-        process.exitCode = 1;
-      }
+      // The daemon answered and refused (or the response was malformed). Not a
+      // reachability problem — surfaced, not routed around.
+      const msg = err instanceof Error ? err.message : String(err);
+      const cleaned = stripControls(msg);
+      // Generous cap so git's remediation hint (e.g. "Please commit your
+      // changes or stash them…") survives instead of being cut mid-sentence (#69).
+      const display = cleaned.length > 1000 ? cleaned.slice(0, 1000) + '…' : cleaned;
+      console.error(chalk.red(`think retro: daemon error — ${display}`));
+      process.exitCode = 1;
     }
   });
