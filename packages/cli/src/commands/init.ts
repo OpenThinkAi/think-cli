@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import readline from 'node:readline';
 import chalk from 'chalk';
+import { recordBlockWrite, listRegisteredBlocks, type BlockKind } from '../lib/block-registry.js';
 
 const BEGIN_MARKER = '<!-- think:begin (managed by `think init` — do not edit between markers) -->';
 const END_MARKER = '<!-- think:end -->';
@@ -146,6 +147,7 @@ Loose guidance — you decide when to emit. Examples:
 type UpsertResult =
   | { kind: 'created' }
   | { kind: 'replaced' }
+  | { kind: 'deduped'; count: number }
   | { kind: 'appended' }
   | { kind: 'migrated'; backupPath: string }
   | { kind: 'unchanged' };
@@ -160,6 +162,42 @@ interface UpsertOptions {
   };
 }
 
+/**
+ * Find every *unambiguous* begin/end marker pair in `content`, in order.
+ * "Unambiguous" means a BEGIN immediately followed — with no other BEGIN in
+ * between — by an END. Collection stops the moment that shape breaks:
+ *
+ *   - a BEGIN with no END anywhere after it (a stray, unclosed marker), or
+ *   - a second BEGIN appearing before the END that would close the first
+ *     (nested/interleaved markers — we can't tell which END belongs to
+ *     which BEGIN).
+ *
+ * In either case nothing found from that point on is reported, and
+ * upsertBlock falls back to append/legacy-migration for the file (AGT-1305:
+ * decide conservatively — never guess that a far-away END closes a stray
+ * BEGIN and delete whatever hand-written text sits between them).
+ */
+function findCleanMarkerPairs(
+  content: string,
+  beginMarker: string,
+  endMarker: string,
+): Array<{ start: number; end: number }> {
+  const pairs: Array<{ start: number; end: number }> = [];
+  let cursor = 0;
+  for (;;) {
+    const beginIdx = content.indexOf(beginMarker, cursor);
+    if (beginIdx === -1) break;
+    const searchFrom = beginIdx + beginMarker.length;
+    const endIdx = content.indexOf(endMarker, searchFrom);
+    if (endIdx === -1) break; // stray BEGIN, nothing closes it.
+    const nextBeginIdx = content.indexOf(beginMarker, searchFrom);
+    if (nextBeginIdx !== -1 && nextBeginIdx < endIdx) break; // ambiguous nesting.
+    pairs.push({ start: beginIdx, end: endIdx + endMarker.length });
+    cursor = endIdx + endMarker.length;
+  }
+  return pairs;
+}
+
 function upsertBlock(filePath: string, block: string, opts: UpsertOptions): UpsertResult {
   const { beginMarker, endMarker, legacyMigration } = opts;
 
@@ -169,19 +207,24 @@ function upsertBlock(filePath: string, block: string, opts: UpsertOptions): Upse
   }
 
   const existing = fs.readFileSync(filePath, 'utf-8');
-  const beginIdx = existing.indexOf(beginMarker);
-  const endIdx = existing.indexOf(endMarker);
+  const pairs = findCleanMarkerPairs(existing, beginMarker, endMarker);
 
-  if (beginIdx !== -1 && endIdx !== -1 && endIdx > beginIdx) {
-    const before = existing.slice(0, beginIdx);
-    const afterStart = endIdx + endMarker.length;
-    // Drop a single trailing newline after the END marker so the replacement
-    // (which itself ends in "\n") doesn't compound blank lines on every run.
+  if (pairs.length > 0) {
+    const first = pairs[0];
+    const last = pairs[pairs.length - 1];
+    const before = existing.slice(0, first.start);
+    const afterStart = last.end;
+    // Drop a single trailing newline after the last END marker so the
+    // replacement (which itself ends in "\n") doesn't compound blank lines
+    // on every run. Everything strictly between the first BEGIN and the
+    // last END — including, when there was more than one pair, whatever
+    // sat between the duplicates — is replaced by the single new block;
+    // only text outside the outermost pair is preserved byte-for-byte.
     const after = existing.slice(existing[afterStart] === '\n' ? afterStart + 1 : afterStart);
     const next = before + block + after;
     if (next === existing) return { kind: 'unchanged' };
     fs.writeFileSync(filePath, next, 'utf-8');
-    return { kind: 'replaced' };
+    return pairs.length > 1 ? { kind: 'deduped', count: pairs.length } : { kind: 'replaced' };
   }
 
   // No markers — check for a legacy unscoped block to migrate in place
@@ -262,6 +305,12 @@ function reportResult(filePath: string, result: UpsertResult, label: string): vo
     case 'replaced':
       console.log(chalk.green('✓') + ` Updated ${label} block in ${filePath}`);
       break;
+    case 'deduped':
+      console.log(
+        chalk.green('✓') +
+          ` Collapsed ${result.count} duplicate ${label} blocks in ${filePath} into one`,
+      );
+      break;
     case 'appended':
       console.log(chalk.green('✓') + ` Appended ${label} instructions to ${filePath}`);
       break;
@@ -287,6 +336,7 @@ export const initCommand = new Command('init')
   .option('--retro', 'Upsert the iterative-learning (retro) block instead of the work-logging block. Requires --cortex. When no -d is given: writes silently to the git repo root if inside a repo; prompts with cwd as the default otherwise.')
   .option('--cortex <name>', 'Cortex name baked into the retro block commands (required with --retro).')
   .option('--block-version <ver>', 'Removed in 3.0.0. Use `think init` without this flag.')
+  .option('--list', 'List every file with a registered managed block (AGT-1305), and exit. Ignores all other flags.')
   .addHelpText('after', `
 Modes:
   Default (no --retro):
@@ -314,8 +364,26 @@ Examples:
   think init --dir . --yes                # work-log block in ./CLAUDE.md
   think init --retro --cortex fx-tracker  # retro block at git root (silent)
   think init --dir . --retro --cortex my-repo  # retro block in ./CLAUDE.md
+  think init --list                       # print files with a registered managed block
 `)
-  .action(async function (this: Command, opts: { dir?: string; yes?: boolean; minimal?: boolean; retro?: boolean; cortex?: string; blockVersion?: string }) {
+  .action(async function (this: Command, opts: { dir?: string; yes?: boolean; minimal?: boolean; retro?: boolean; cortex?: string; blockVersion?: string; list?: boolean }) {
+    // --list is a standalone query mode: print the registry and exit before
+    // any of the write-path option validation below, since it's meaningful
+    // with no other flags at all (and combining it with e.g. --retro would
+    // otherwise force the --cortex requirement for a call that writes nothing).
+    if (opts.list) {
+      const entries = listRegisteredBlocks();
+      if (entries.length === 0) {
+        console.log(chalk.dim('No managed blocks registered.'));
+        return;
+      }
+      console.log('Registered managed blocks:');
+      for (const entry of entries) {
+        console.log(`  ${chalk.cyan(entry.kind.padEnd(8))} ${entry.path}`);
+      }
+      return;
+    }
+
     // --block-version was removed in 3.0.0 (AGT-1300 / think-3 design doc
     // decision 5): think init no longer probes the daemon and there is
     // exactly one non-minimal template, so there is nothing left to select.
@@ -397,13 +465,16 @@ Examples:
     if (opts.retro) {
       const block = buildRetroBlock(cortex!);
       const label = 'iterative learning';
+      const kind: BlockKind = 'retro';
 
       const claudePath = path.join(targetDir, 'CLAUDE.md');
       reportResult(claudePath, upsertBlock(claudePath, block, RETRO_UPSERT), label);
+      recordBlockWrite(claudePath, kind, RETRO_UPSERT.beginMarker, RETRO_UPSERT.endMarker);
 
       const agentsPath = path.join(targetDir, 'AGENTS.md');
       if (fs.existsSync(agentsPath)) {
         reportResult(agentsPath, upsertBlock(agentsPath, block, RETRO_UPSERT), label);
+        recordBlockWrite(agentsPath, kind, RETRO_UPSERT.beginMarker, RETRO_UPSERT.endMarker);
       }
 
       console.log(
@@ -436,6 +507,7 @@ Examples:
 
     const block = buildBlock(opts.minimal);
     const label = opts.minimal ? 'minimal work logging' : 'work logging';
+    const kind: BlockKind = opts.minimal ? 'minimal' : 'work-log';
 
     if (opts.minimal) {
       console.log(chalk.dim('Writing the minimal work-log template — no decision example, no per-verb breakdown.'));
@@ -443,10 +515,12 @@ Examples:
 
     const claudePath = path.join(targetDir, 'CLAUDE.md');
     reportResult(claudePath, upsertBlock(claudePath, block, WORKLOG_UPSERT), label);
+    recordBlockWrite(claudePath, kind, WORKLOG_UPSERT.beginMarker, WORKLOG_UPSERT.endMarker);
 
     const agentsPath = path.join(targetDir, 'AGENTS.md');
     if (fs.existsSync(agentsPath)) {
       reportResult(agentsPath, upsertBlock(agentsPath, block, WORKLOG_UPSERT), label);
+      recordBlockWrite(agentsPath, kind, WORKLOG_UPSERT.beginMarker, WORKLOG_UPSERT.endMarker);
     }
 
     console.log(chalk.dim('  Claude Code sessions under this directory will now auto-log with think sync.'));

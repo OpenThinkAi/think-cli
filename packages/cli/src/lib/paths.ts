@@ -95,6 +95,16 @@ export function getCuratorMdPath(): string {
   return path.join(getThinkDir(), 'curator.md');
 }
 
+/**
+ * Registry of every file `think init` has written a managed block into (AGT-1305).
+ * Lives beside the other per-THINK_HOME state so `think update` (AGT-1306) and
+ * `think doctor` (AGT-1308) can enumerate and refresh managed blocks without
+ * re-deriving where they might be.
+ */
+export function getBlockRegistryPath(): string {
+  return path.join(getThinkDir(), 'block-registry.json');
+}
+
 /** Module-level guard so the migration check runs at most once per process. */
 let _migrationChecked = false;
 
