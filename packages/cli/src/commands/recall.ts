@@ -217,7 +217,7 @@ function runFormattedFtsRecall(
 
 export const recallCommand = new Command('recall')
   .argument('<query>', 'What to recall')
-  .description('Search memories and local events')
+  .description('Search memories, events and retros')
   // think-3 (AGT-1303): --engrams searched the retired engram tier. Kept
   // registered-but-hidden (rather than dropped outright) so passing it gets
   // our own one-line removal note instead of commander's generic "unknown
