@@ -1,7 +1,6 @@
 import { execSync } from 'node:child_process';
 import { Command } from 'commander';
 import fs from 'node:fs';
-import net from 'node:net';
 import path from 'node:path';
 import readline from 'node:readline';
 import chalk from 'chalk';
@@ -12,58 +11,18 @@ const END_MARKER = '<!-- think:end -->';
 const RETRO_BEGIN_MARKER = '<!-- think:retro:begin (managed by `think init --retro` — do not edit between markers) -->';
 const RETRO_END_MARKER = '<!-- think:retro:end -->';
 
-// Default work-log template, reframed toward minimum-necessary. The
-// previous version instructed agents to log "every meaningful action
-// and decisions made in conversation" with "this is not optional"
-// framing — biased toward over-collection of context that often
-// included customer names, internal architecture, and personnel
-// discussions. The privacy paragraph below names the events →
-// curation → Anthropic data flow so users can choose informedly.
+// Default work-log template (AGT-1300 / think-3). Before this, `think init`
+// probed the daemon socket and wrote one of two templates depending on
+// whether it answered — daemon down meant an older block that taught
+// `--decision` and `think curate`, both retired write paths. There is now
+// exactly one template regardless of daemon reachability, and user-facing
+// text doesn't say "v2"/"v3" — it's just think (think-3 design doc,
+// decision 5). Recall is implicit via the UserPromptSubmit hook + MCP
+// server; writing has three verbs (sync/retro/event, no `--decision` flag).
+// The privacy paragraph names what actually leaves the machine: compaction
+// and supersession, gated by THINK_LLM_CONSENT for off-machine providers —
+// not "the curator", which no longer exists as a write path.
 const WORKLOG_BLOCK = `# Work Logging
-
-After shipping a change (commit pushed, PR opened, deploy completed, or a decision committed to and acted on), run \`think sync\` to record the outcome:
-
-\`\`\`
-think sync "concise summary of what shipped" --silent
-think sync "Decided against X because Y" --decision "Decided against X because Y" --silent
-\`\`\`
-
-**Do log:** shipped outcomes — features built, bugs fixed, PRs created/reviewed, deploys, config changes, refactors completed, decisions committed to (including decisions to NOT do something), documents written, Linear/external system updates.
-
-**Don't log:** conversational deliberation, exploration, failed attempts, reading code, debugging dead ends, clarifying questions, anything that didn't produce a shipped outcome.
-
-**Privacy: where these entries go.** Each \`think sync\` writes a local event. The curator (\`think curate\`) consolidates events into memories; with curator consent granted (\`THINK_LLM_CONSENT=1\` or \`cortex.llmConsent\` in \`~/.config/think/config.json\`), curated content is sent to Anthropic for synthesis. Choose what to log accordingly — anything about customers, internal architecture, or personnel ends up in the same pipeline as anything else. \`think pause\` suppresses event creation if you need a pause window.
-
-**How to log:**
-- One entry per shipped outcome, not per tool call or file edit
-- Frame as accomplishments: "Implemented X", "Fixed Y", "Reviewed Z"
-- Decisions not to pursue something: "Decided against X because Y"
-- If a task spans the whole session, log at the end
-- If multiple distinct things shipped, log each separately
-- Keep entries concise but specific enough to be useful in a weekly summary
-`;
-
-// `--minimal` template. Even more conservative than the default —
-// only explicit shipped outcomes, no decision-narration, no example
-// showing how to log negative decisions. For users who want the
-// absolute floor of what gets sent to Anthropic if they grant curator
-// consent later.
-const MINIMAL_WORKLOG_BLOCK = `# Work Logging (minimal)
-
-When you ship a change, log the outcome:
-
-\`\`\`
-think sync "shipped X" --silent
-\`\`\`
-
-That's all. Don't run \`think sync\` for exploration, debugging, decisions that weren't acted on, or anything mid-conversation. Logged entries become events; with curator consent granted (\`THINK_LLM_CONSENT=1\`), curated content reaches Anthropic. The minimal template keeps that pipeline narrow by design — augment with the default template (\`think init --yes\`) if you decide you want richer logging later.
-`;
-
-// v3 work-log template. Recall is now implicit via the hook + MCP server,
-// so the "you MUST recall per-activity" hard rule from v2 shrinks to a
-// brief note. The three verbs (sync/retro/event) replace the v2 sync-only
-// model. Cortex inference is unchanged.
-const V3_WORKLOG_BLOCK = `# think v3
 
 Context is auto-injected via the UserPromptSubmit hook on every turn (additionalContext field); call the \`think_recall\` MCP tool mid-conversation when you need to drill into a specific topic. You don't need to manually run \`think recall\` unless you want to inspect what's stored.
 
@@ -74,91 +33,66 @@ Three verbs for writing:
 - \`think event "<content>"\` — notable thing happened; kind=event. Use for milestones, decisions, incidents. Events accumulate and are never superseded.
 
 \`think sync\` and \`think retro\` store on your home cortex (the active one, or \`-C <name>\`). \`think retro\` auto-tags the lesson with the repo you run it in (a \`repo:<basename>\` context) so \`think brief\` and recall surface it for that codebase — you don't pass a cortex per repo. Override the detected context with \`--context <name>\` when needed.
+
+Log a decision with \`think event\`, not narration inside \`think sync\`:
+
+\`\`\`
+think event "Decided against X because Y" --silent
+\`\`\`
+
+**Privacy: what leaves the machine.** \`think sync\`, \`think retro\`, and \`think event\` write to your local cortex only — nothing is sent anywhere at write time. Compaction (consolidating near-duplicate memories) and supersession (retro dedupe) later run through the configured LLM provider; an off-machine provider (e.g. Anthropic) is only used once \`THINK_LLM_CONSENT=1\` (or \`cortex.llmConsent\` in \`~/.config/think/config.json\`) grants consent. An on-device provider needs no consent, and nothing leaves the machine.
 `;
 
-const RETRO_BLOCK = `# Iterative Learning
+// `--minimal` template: only explicit shipped outcomes, no decision example,
+// no per-verb breakdown. Same vocabulary rules as the default template —
+// see the forbidden-vocabulary tests.
+const MINIMAL_WORKLOG_BLOCK = `# Work Logging (minimal)
 
-When you observe a convention, invariant, prior decision, or gotcha worth remembering about a repo, leave a retro for the next agent who works on it:
-
-\`\`\`
-think retro "<observation>"
-\`\`\`
-
-The retro is stored on your home cortex and auto-tagged with the repo you're in (its root basename, e.g. \`repo:fx-tracker\`) so it surfaces for that codebase. Override with \`--context <name>\` if you're writing about a different repo. Outside a git repo it's stored untagged.
-
-Loose triggers — you decide when to emit. Examples:
-
-- an undocumented convention you had to figure out
-- a missing or stale type contract that blocked work
-- a surprising invariant in the code
-- a gotcha that looks like a bug but is intentional
-- a prior decision worth not re-litigating
-
-# Reading retros at task start
-
-Before non-trivial work in a repo (especially the first time touching it in a session), load prior retros + personal context:
+When you ship a change, log the outcome:
 
 \`\`\`
-think brief
+think sync "shipped X" --silent
 \`\`\`
 
-\`think brief\` auto-detects the repo and scopes retros to it. Optional, not required.
+That's all. Don't run \`think sync\` for exploration, debugging, decisions that weren't acted on, or anything mid-conversation.
+
+**Privacy: what leaves the machine.** Entries write to your local cortex only — nothing is sent anywhere at write time. Compaction later runs through the configured LLM provider; an off-machine provider needs \`THINK_LLM_CONSENT=1\` (or \`cortex.llmConsent\`) before anything is sent. The minimal template keeps what's logged narrow by design — augment with the default template (\`think init --yes\`) if you want richer logging later.
 `;
 
 // Fingerprint that identifies a pre-marker (legacy) think block written by an
-// older version of this command. Both substrings come from WORKLOG_BLOCK and
-// are distinctive enough that co-occurrence outside markers is the legacy signal.
+// older version of this command. Both substrings come from a retired
+// template and are distinctive enough that co-occurrence outside markers is
+// the legacy signal.
 const LEGACY_FINGERPRINT_A = '**After every commit';
 const LEGACY_FINGERPRINT_B = 'think sync';
 
-// Attempt a zero-byte connect to the v3 daemon socket with a short timeout.
-// Returns true only if the socket accepts the connection. Any error or timeout
-// is treated as "daemon not reachable" — safe fallback to v2 block.
-// Accepts home so tests can override via process.env.HOME without re-deriving.
-function isV3DaemonReachable(home: string, timeoutMs = 300): Promise<boolean> {
-  const socketPath = path.join(home, '.think', 'daemon.sock');
-  // Latency fast-path: skip the async connect machinery entirely when the socket
-  // file is absent. The error handler below already handles ENOENT correctly;
-  // this just avoids queuing a connect that will immediately error out.
-  if (!fs.existsSync(socketPath)) return Promise.resolve(false);
-  return new Promise((resolve) => {
-    const socket = net.createConnection(socketPath);
-    const timer = setTimeout(() => {
-      socket.destroy();
-      resolve(false);
-    }, timeoutMs);
-    socket.once('connect', () => {
-      clearTimeout(timer);
-      socket.destroy();
-      resolve(true);
-    });
-    socket.once('error', () => {
-      clearTimeout(timer);
-      resolve(false);
-    });
-  });
-}
-
-function buildBlock(minimal = false, version: 'v2' | 'v3' = 'v2'): string {
-  if (minimal) {
-    // Wrap the minimal body in the same begin/end markers as the default
-    // path so `upsertBlock` can replace-in-place across re-runs and
-    // `--minimal` ↔ default switches. Without the markers, every
-    // re-invocation would append a fresh block (no marker → no
-    // existing-block detection → fall through to plain append).
-    return `${BEGIN_MARKER}\n${MINIMAL_WORKLOG_BLOCK}${END_MARKER}\n`;
-  }
-  if (version === 'v3') {
-    const body = `${V3_WORKLOG_BLOCK}`;
-    return `${BEGIN_MARKER}\n${body}${END_MARKER}\n`;
-  }
-  const body = `${WORKLOG_BLOCK}\n${RETRO_BLOCK}`;
+function buildBlock(minimal = false): string {
+  // Wrap the minimal body in the same begin/end markers as the default path
+  // so `upsertBlock` can replace-in-place across re-runs and `--minimal` ↔
+  // default switches. Without the markers, every re-invocation would append
+  // a fresh block (no marker → no existing-block detection → plain append).
+  const body = minimal ? MINIMAL_WORKLOG_BLOCK : WORKLOG_BLOCK;
   return `${BEGIN_MARKER}\n${body}${END_MARKER}\n`;
 }
 
-// Pre-write disclosure of the events → curation → Anthropic data flow
-// for interactive sessions. Returns true if the user confirms; false to
-// abort. `--yes` and `--minimal` skip this entirely (non-interactive
+// Interactive disclosure copy for the pre-write confirmation prompt below.
+// Exported as data (rather than only printed inline) so tests can assert
+// vocabulary/content directly instead of having to drive the TTY prompt
+// through readline end-to-end.
+export const DISCLOSURE_YELLOW_LINES: readonly string[] = [
+  'Heads up: this writes a CLAUDE.md block instructing Claude Code to run `think sync`/`think event` on shipped outcomes and decisions.',
+  'Entries write to your local cortex only. Compaction later runs through the configured LLM provider.',
+  'An off-machine provider needs `THINK_LLM_CONSENT=1` (or `cortex.llmConsent`) before anything is sent.',
+];
+
+export const DISCLOSURE_DIM_LINES: readonly string[] = [
+  'This template (the non-minimal default) logs shipped outcomes + decisions, no conversational deliberation.',
+  'To skip this prompt: `think init --yes` (this template) or `think init --minimal` (more conservative).',
+];
+
+// Pre-write disclosure of the write → compaction/supersession → LLM provider
+// data flow for interactive sessions. Returns true if the user confirms;
+// false to abort. `--yes` and `--minimal` skip this entirely (non-interactive
 // bypass). Non-interactive sessions without a bypass flag refuse with
 // an actionable error before printing any disclosure text.
 async function promptLoggingConfirmation(): Promise<boolean> {
@@ -170,12 +104,9 @@ async function promptLoggingConfirmation(): Promise<boolean> {
     return false;
   }
 
-  console.log(chalk.yellow(`Heads up: this writes a CLAUDE.md block instructing Claude Code to run \`think sync\` on shipped outcomes.`));
-  console.log(chalk.yellow(`Each \`think sync\` is a local event. With curator consent (\`THINK_LLM_CONSENT=1\` or`));
-  console.log(chalk.yellow(`\`cortex.llmConsent\`), curated content flows to Anthropic for synthesis.`));
+  for (const line of DISCLOSURE_YELLOW_LINES) console.log(chalk.yellow(line));
   console.log();
-  console.log(chalk.dim(`This template (the non-minimal default) logs shipped outcomes + decisions, no conversational deliberation.`));
-  console.log(chalk.dim(`To skip this prompt: \`think init --yes\` (this template) or \`think init --minimal\` (more conservative).`));
+  for (const line of DISCLOSURE_DIM_LINES) console.log(chalk.dim(line));
   console.log();
 
   const answer = await prompt(`Write the CLAUDE.md block? [Y/n] `, 'y');
@@ -355,7 +286,7 @@ export const initCommand = new Command('init')
   .option('--minimal', 'Write a conservative work-log template that logs only explicit shipped outcomes — no decision narration, no retro pattern. Skips the disclosure prompt. Mutually exclusive with --retro.')
   .option('--retro', 'Upsert the iterative-learning (retro) block instead of the work-logging block. Requires --cortex. When no -d is given: writes silently to the git repo root if inside a repo; prompts with cwd as the default otherwise.')
   .option('--cortex <name>', 'Cortex name baked into the retro block commands (required with --retro).')
-  .option('--block-version <ver>', 'Force block version: v2 (fallback) or v3 (hook + MCP server). When omitted, v3 is used if the daemon is reachable; otherwise v2.')
+  .option('--block-version <ver>', 'Removed in 3.0.0. Use `think init` without this flag.')
   .addHelpText('after', `
 Modes:
   Default (no --retro):
@@ -381,38 +312,27 @@ Modes:
 Examples:
   think init                              # work-log block in ~/CLAUDE.md
   think init --dir . --yes                # work-log block in ./CLAUDE.md
-  think init --block-version v3           # force v3 block even without daemon
   think init --retro --cortex fx-tracker  # retro block at git root (silent)
   think init --dir . --retro --cortex my-repo  # retro block in ./CLAUDE.md
 `)
   .action(async function (this: Command, opts: { dir?: string; yes?: boolean; minimal?: boolean; retro?: boolean; cortex?: string; blockVersion?: string }) {
+    // --block-version was removed in 3.0.0 (AGT-1300 / think-3 design doc
+    // decision 5): think init no longer probes the daemon and there is
+    // exactly one non-minimal template, so there is nothing left to select.
+    // The flag stays declared as an option above only so it reaches this
+    // check and gets a one-line, actionable note — an undeclared option
+    // would instead hit commander's generic "unknown option" error.
+    if (opts.blockVersion !== undefined) {
+      console.error(chalk.red('think init: --block-version was removed in 3.0.0 — think init now writes a single template.'));
+      process.exit(1);
+    }
+
     // The program declares a global `-C, --cortex <name>` option which shadows
     // the subcommand-local `--cortex` when invoked through the full CLI. Fall
     // back to the global so both `think -C foo init --retro` and
     // `think init --retro --cortex foo` resolve to the same value.
     const globalOpts = this.optsWithGlobals() as { cortex?: string };
     const cortex = opts.cortex ?? globalOpts.cortex;
-
-    // Validate --block-version flag early.
-    const versionFlag = opts.blockVersion;
-    if (versionFlag !== undefined && versionFlag !== 'v2' && versionFlag !== 'v3') {
-      console.error(chalk.red(`think init: --block-version must be 'v2' or 'v3', got '${versionFlag}'.`));
-      process.exit(1);
-    }
-    const forcedVersion = versionFlag as 'v2' | 'v3' | undefined;
-
-    // --minimal and --block-version are mutually exclusive: minimal always writes the minimal
-    // v2-style template; a --block-version flag would be silently ignored by buildBlock.
-    if (opts.minimal && forcedVersion !== undefined) {
-      console.error(chalk.red('think init: --minimal and --block-version are mutually exclusive.'));
-      process.exit(1);
-    }
-
-    // --retro and --block-version are mutually exclusive: the retro block has no version variant.
-    if (opts.retro && forcedVersion !== undefined) {
-      console.error(chalk.red('think init: --block-version has no effect with --retro (retro block has no version variant).'));
-      process.exit(1);
-    }
 
     if (opts.minimal && opts.retro) {
       console.error(chalk.red('think init: --minimal and --retro are mutually exclusive (one writes the work-log block, the other writes the retro block).'));
@@ -514,26 +434,11 @@ Examples:
       }
     }
 
-    // Determine which block version to write:
-    //   1. --block-version v3 → always v3
-    //   2. --block-version v2 → always v2
-    //   3. No flag → probe daemon; v3 if reachable, v2 otherwise
-    let version: 'v2' | 'v3';
-    if (forcedVersion !== undefined) {
-      version = forcedVersion;
-    } else {
-      version = (await isV3DaemonReachable(home)) ? 'v3' : 'v2';
-    }
-
-    const block = buildBlock(opts.minimal, version);
+    const block = buildBlock(opts.minimal);
     const label = opts.minimal ? 'minimal work logging' : 'work logging';
 
     if (opts.minimal) {
-      console.log(chalk.dim('Writing the minimal work-log template — no retro pattern, no decision narration.'));
-    } else if (version === 'v3') {
-      console.log(chalk.dim('Writing v3 block (implicit recall via hook + MCP server).'));
-    } else if (forcedVersion === undefined) {
-      console.log(chalk.dim('Daemon not detected — writing v2 block.'));
+      console.log(chalk.dim('Writing the minimal work-log template — no decision example, no per-verb breakdown.'));
     }
 
     const claudePath = path.join(targetDir, 'CLAUDE.md');

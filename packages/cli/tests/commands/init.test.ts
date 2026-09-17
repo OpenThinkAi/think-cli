@@ -3,13 +3,23 @@ import { execSync } from 'node:child_process';
 import path from 'node:path';
 import { tmpdir } from 'node:os';
 import {
+  mkdirSync,
   mkdtempSync,
   readFileSync,
   rmSync,
   writeFileSync,
   existsSync,
 } from 'node:fs';
-import { initCommand } from '../../src/commands/init.js';
+import {
+  initCommand,
+  DISCLOSURE_YELLOW_LINES,
+  DISCLOSURE_DIM_LINES,
+} from '../../src/commands/init.js';
+
+// AGT-1300 (think-3): vocabulary retired with the engram tier / curator.
+// Must not appear in any managed template or in the interactive disclosure
+// copy — see the "forbidden vocabulary" describe block below.
+const FORBIDDEN_STRINGS = ['--decision', 'think curate', 'local event', 'curator consent'];
 
 const BEGIN_MARKER = '<!-- think:begin (managed by `think init` — do not edit between markers) -->';
 const END_MARKER = '<!-- think:end -->';
@@ -75,27 +85,29 @@ describe('think init — scoped marker block', () => {
     expect(content.indexOf(BEGIN_MARKER)).toBeLessThan(content.indexOf(END_MARKER));
   });
 
-  it('includes the iterative-learning and retro-read sections with generic <repo-basename> placeholder', async () => {
+  it('describes all three write verbs and auto-detects context (no baked cortex)', async () => {
     await run();
     const content = readClaude();
-    expect(content).toContain('# Iterative Learning');
-    expect(content).toContain('# Reading retros at task start');
-    expect(content).toContain('think retro "<observation>"');
+    expect(content).toContain('think sync "<content>"');
+    expect(content).toContain('think retro "<content>"');
+    expect(content).toContain('think event "<content>"');
     expect(content).toContain('think brief');
-    // v3: the base block auto-detects the repo context — no baked cortex/context.
+    // The base block auto-detects the repo context — no baked cortex/context.
     expect(content).not.toContain('--context fx-tracker');
     expect(content).not.toContain('--cortex fx-tracker');
   });
 
-  it('orders sections worklog → retro inside the markers', async () => {
+  it('orders sections hook/verbs → decision example → privacy inside the markers', async () => {
     await run();
     const content = readClaude();
-    const worklogIdx = content.indexOf('# Work Logging');
-    const iterativeIdx = content.indexOf('# Iterative Learning');
-    const readIdx = content.indexOf('# Reading retros at task start');
-    expect(worklogIdx).toBeGreaterThan(-1);
-    expect(iterativeIdx).toBeGreaterThan(worklogIdx);
-    expect(readIdx).toBeGreaterThan(iterativeIdx);
+    const headingIdx = content.indexOf('# Work Logging');
+    const verbsIdx = content.indexOf('Three verbs for writing');
+    const decisionIdx = content.indexOf('Log a decision with `think event`');
+    const privacyIdx = content.indexOf('Privacy: what leaves the machine');
+    expect(headingIdx).toBeGreaterThan(-1);
+    expect(verbsIdx).toBeGreaterThan(headingIdx);
+    expect(decisionIdx).toBeGreaterThan(verbsIdx);
+    expect(privacyIdx).toBeGreaterThan(decisionIdx);
   });
 
   it('is idempotent across re-runs (no growth, no diff outside markers)', async () => {
@@ -121,10 +133,9 @@ describe('think init — scoped marker block', () => {
     expect(content.startsWith(before)).toBe(true);
     expect(content.endsWith(after)).toBe(true);
     expect(content).not.toContain('stale body');
-    // AGT-067: WORKLOG_BLOCK reframed from "After every commit, push, …
-    // this is not optional" to a minimum-necessary-shaped "After
-    // shipping a change … run think sync to record the outcome".
-    expect(content).toContain('After shipping a change');
+    // AGT-1300: WORKLOG_BLOCK collapsed onto the single (formerly "v3")
+    // shape — hook/MCP recall note plus the three write verbs.
+    expect(content).toContain('Three verbs for writing');
   });
 
   it('migrates a legacy unscoped block in place, writes a backup, and prints a notice', async () => {
@@ -189,6 +200,29 @@ think sync "summary"
     expect(agents).toContain('# Existing agents file');
     expect(agents).toContain(BEGIN_MARKER);
     expect(agents).toContain(END_MARKER);
+  });
+
+  // AGT-1300: `think init` used to probe `$HOME/.think/daemon.sock`
+  // (`isV3DaemonReachable`) and write a different template depending on
+  // whether the daemon answered. That probe is deleted — this pins the
+  // observable behavior that motivated deleting it: the block written does
+  // not depend on daemon reachability at all.
+  it('writes the same block whether or not a daemon socket is present', async () => {
+    await run();
+    const withoutSocket = readClaude();
+
+    // Simulate what the old isV3DaemonReachable() treated as "daemon up":
+    // a live socket at $HOME/.think/daemon.sock. think init no longer reads
+    // this path at all; recreating it here proves that, rather than just
+    // asserting on the absence of the deleted function.
+    const thinkDir = path.join(homeRoot, '.think');
+    mkdirSync(thinkDir, { recursive: true });
+    writeFileSync(path.join(thinkDir, 'daemon.sock'), '');
+
+    await run();
+    const withSocket = readClaude();
+
+    expect(withSocket).toEqual(withoutSocket);
   });
 });
 
@@ -498,14 +532,18 @@ describe('think init — minimum-necessary defaults + --minimal flag (AGT-067)',
     await initCommand.parseAsync(['--dir', projectDir, '--yes'], { from: 'user' });
 
     const content = readClaude();
-    expect(content).toContain('Privacy: where these entries go');
+    // AGT-1300: paragraph reframed to name what actually leaves the machine
+    // (compaction/supersession through the configured LLM provider), not
+    // "the curator".
+    expect(content).toContain('Privacy: what leaves the machine');
+    expect(content).toContain('Compaction');
     expect(content).toContain('THINK_LLM_CONSENT');
     expect(content).toContain('cortex.llmConsent');
     // Reframed away from over-collection — old framing should be gone
     expect(content).not.toContain('this is not optional');
     expect(content).not.toContain('non-trivial tool-assisted action');
-    // New "shipped outcomes" framing should be present
-    expect(content).toContain('After shipping a change');
+    // New three-verbs framing should be present
+    expect(content).toContain('Three verbs for writing');
   });
 
   it('--minimal and --retro are mutually exclusive', async () => {
@@ -531,12 +569,12 @@ describe('think init — minimum-necessary defaults + --minimal flag (AGT-067)',
 
   it('--yes (existing flag) skips the disclosure prompt and writes the new default template (AC #5)', async () => {
     // Pre-AGT-067 callers passing --yes got the maximal "every meaningful
-    // action" template. Post-AGT-067 they get the new minimum-necessary
-    // default (still skipping the prompt, but with the toned-down framing).
+    // action" template. Post-AGT-067/AGT-1300 they get the current
+    // minimum-necessary default (still skipping the prompt).
     await initCommand.parseAsync(['--dir', projectDir, '--yes'], { from: 'user' });
 
     const content = readClaude();
-    expect(content).toContain('After shipping a change');
+    expect(content).toContain('Three verbs for writing');
     expect(content).not.toContain('this is not optional');
   });
 
@@ -562,19 +600,100 @@ describe('think init — minimum-necessary defaults + --minimal flag (AGT-067)',
     // the minimal header is replaced (not appended alongside).
     expect(content).not.toContain('# Work Logging (minimal)');
     expect(content).toContain('# Work Logging\n');
-    expect(content).toContain('After shipping a change');
+    expect(content).toContain('Three verbs for writing');
   });
 });
 
-// AGT-321: v3 block detection, --version flag, daemon-reachability fallback.
-describe('think init — v3 block (AGT-321)', () => {
+// AGT-1300 (think-3): `think init` used to probe the daemon socket and write
+// one of two templates (`v2`/`v3`) depending on reachability, selectable by
+// force via `--block-version`. Both the probe and the flag are gone — there
+// is exactly one non-minimal template, and user-facing text never says
+// "v2"/"v3" (think-3 design doc, decision 5).
+describe('think init — one template, --block-version removed (AGT-1300)', () => {
+  let homeRoot: string;
+  let projectDir: string;
+  let prevHome: string | undefined;
+  let prevExit: typeof process.exit;
+
+  beforeEach(() => {
+    homeRoot = mkdtempSync(path.join(tmpdir(), 'think-init-1300-home-'));
+    projectDir = mkdtempSync(path.join(tmpdir(), 'think-init-1300-project-'));
+    prevHome = process.env.HOME;
+    process.env.HOME = homeRoot;
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    prevExit = process.exit;
+    process.exit = ((code?: number) => {
+      throw new Error(`process.exit:${code ?? 0}`);
+    }) as typeof process.exit;
+  });
+
+  afterEach(() => {
+    rmSync(homeRoot, { recursive: true, force: true });
+    rmSync(projectDir, { recursive: true, force: true });
+    if (prevHome === undefined) delete process.env.HOME;
+    else process.env.HOME = prevHome;
+    process.exit = prevExit;
+    vi.restoreAllMocks();
+  });
+
+  function readClaude(): string {
+    return readFileSync(path.join(projectDir, 'CLAUDE.md'), 'utf-8');
+  }
+
+  it('the default template contains no "v2"/"v3" user-facing wording', async () => {
+    await initCommand.parseAsync(['--dir', projectDir, '--yes'], { from: 'user' });
+    const content = readClaude();
+    expect(content).not.toMatch(/\bv2\b/i);
+    expect(content).not.toMatch(/\bv3\b/i);
+    // Shape that used to be gated behind daemon reachability is now always present.
+    expect(content).toContain('think_recall');
+    expect(content).toContain('UserPromptSubmit hook');
+    expect(content).toContain('kind=memory');
+    expect(content).toContain('kind=retro');
+    expect(content).toContain('kind=event');
+  });
+
+  it('passing --block-version exits non-zero with a one-line note, not a generic unknown-option error, and writes nothing', async () => {
+    const errors: string[] = [];
+    vi.mocked(console.error).mockImplementation((...args: unknown[]) => {
+      errors.push(args.map(String).join(' '));
+    });
+
+    await expect(
+      initCommand.parseAsync(['--dir', projectDir, '--yes', '--block-version', 'v3'], { from: 'user' }),
+    ).rejects.toThrow('process.exit:1');
+
+    expect(errors).toHaveLength(1);
+    expect(errors[0]).toContain('--block-version');
+    expect(errors[0].toLowerCase()).not.toContain('unknown option');
+    expect(existsSync(path.join(projectDir, 'CLAUDE.md'))).toBe(false);
+  });
+
+  it('--block-version is rejected the same way regardless of value, --minimal, or --retro', async () => {
+    for (const args of [
+      ['--dir', projectDir, '--yes', '--block-version', 'v2'],
+      ['--dir', projectDir, '--minimal', '--block-version', 'v3'],
+      ['--dir', projectDir, '--yes', '--retro', '--cortex', 'my-repo', '--block-version', 'v3'],
+      ['--dir', projectDir, '--yes', '--block-version', 'bogus'],
+    ]) {
+      await expect(initCommand.parseAsync(args, { from: 'user' })).rejects.toThrow('process.exit:1');
+      expect(existsSync(path.join(projectDir, 'CLAUDE.md'))).toBe(false);
+    }
+  });
+});
+
+// AGT-1300 (think-3): vocabulary retired with the engram tier / curator must
+// not resurface in any managed template or in the interactive disclosure
+// copy shown before writing the default template.
+describe('think init — forbidden vocabulary is absent everywhere (AGT-1300)', () => {
   let homeRoot: string;
   let projectDir: string;
   let prevHome: string | undefined;
 
   beforeEach(() => {
-    homeRoot = mkdtempSync(path.join(tmpdir(), 'think-init-v3-home-'));
-    projectDir = mkdtempSync(path.join(tmpdir(), 'think-init-v3-project-'));
+    homeRoot = mkdtempSync(path.join(tmpdir(), 'think-init-vocab-home-'));
+    projectDir = mkdtempSync(path.join(tmpdir(), 'think-init-vocab-project-'));
     prevHome = process.env.HOME;
     process.env.HOME = homeRoot;
     vi.spyOn(console, 'log').mockImplementation(() => {});
@@ -593,145 +712,33 @@ describe('think init — v3 block (AGT-321)', () => {
     return readFileSync(path.join(projectDir, 'CLAUDE.md'), 'utf-8');
   }
 
-  it('--block-version v3 writes v3 block even when daemon is unreachable', async () => {
-    // No daemon running in test env; --version v3 forces v3 regardless.
-    await initCommand.parseAsync(['--dir', projectDir, '--yes', '--block-version', 'v3'], { from: 'user' });
-    const content = readClaude();
-    expect(content).toContain(BEGIN_MARKER);
-    expect(content).toContain(END_MARKER);
-    expect(content).toContain('# think v3');
-    expect(content).toContain('think_recall');
-    expect(content).toContain('think sync');
-    expect(content).toContain('think retro');
-    expect(content).toContain('think event');
-    // v3 block should not contain the v2-only privacy disclosure
-    expect(content).not.toContain('# Work Logging\n');
-  });
-
-  it('--block-version v3 block is idempotent (second run does not duplicate)', async () => {
-    await initCommand.parseAsync(['--dir', projectDir, '--yes', '--block-version', 'v3'], { from: 'user' });
-    const first = readClaude();
-    await initCommand.parseAsync(['--dir', projectDir, '--yes', '--block-version', 'v3'], { from: 'user' });
-    const second = readClaude();
-    expect(second).toEqual(first);
-    expect((second.match(/# think v3/g) ?? []).length).toBe(1);
-  });
-
-  it('--block-version v2 forces v2 block regardless of daemon state', async () => {
-    await initCommand.parseAsync(['--dir', projectDir, '--yes', '--block-version', 'v2'], { from: 'user' });
-    const content = readClaude();
-    expect(content).toContain('# Work Logging');
-    expect(content).not.toContain('# think v3');
-  });
-
-  it('daemon-unreachable falls back to v2 block (no --block-version flag)', async () => {
-    // No daemon running in CI/test — expect v2 fallback.
+  it('default template contains none of the forbidden strings, and does carry the exact decision example', async () => {
     await initCommand.parseAsync(['--dir', projectDir, '--yes'], { from: 'user' });
     const content = readClaude();
-    // v2 block contains "# Work Logging"; v3 block does not.
-    expect(content).toContain('# Work Logging');
-    expect(content).not.toContain('# think v3');
+    for (const s of FORBIDDEN_STRINGS) expect(content).not.toContain(s);
+    expect(content).toContain('think event "Decided against X because Y" --silent');
   });
 
-  it('v3 block contains all three verb descriptions', async () => {
-    await initCommand.parseAsync(['--dir', projectDir, '--yes', '--block-version', 'v3'], { from: 'user' });
+  it('--minimal template contains none of the forbidden strings', async () => {
+    await initCommand.parseAsync(['--dir', projectDir, '--minimal'], { from: 'user' });
     const content = readClaude();
-    // Paragraph (a): implicit recall via hook + MCP
-    expect(content).toContain('UserPromptSubmit hook');
-    expect(content).toContain('additionalContext');
-    expect(content).toContain('think_recall\` MCP tool');
-    // Paragraph (b): three verbs
-    expect(content).toContain('kind=memory');
-    expect(content).toContain('kind=retro');
-    expect(content).toContain('kind=event');
-    // Paragraph (c): v3 context tagging
-    expect(content).toContain('repo:<basename>');
-    expect(content).toContain('--context <name>');
+    for (const s of FORBIDDEN_STRINGS) expect(content).not.toContain(s);
   });
 
-  it('v3 block uses the same BEGIN/END markers (idempotent replace with v2)', async () => {
-    // Write v2 first, then upgrade to v3 — markers must allow in-place replace.
-    await initCommand.parseAsync(['--dir', projectDir, '--yes', '--block-version', 'v2'], { from: 'user' });
-    expect(readClaude()).toContain('# Work Logging');
-
-    await initCommand.parseAsync(['--dir', projectDir, '--yes', '--block-version', 'v3'], { from: 'user' });
-    const content = readClaude();
-    expect(content).toContain('# think v3');
-    // Only one begin marker — replaced, not appended.
-    expect((content.match(/think:begin/g) ?? []).length).toBe(1);
-    expect((content.match(/think:end/g) ?? []).length).toBe(1);
-  });
-
-  it('--retro --cortex still works unchanged alongside v3 detection', async () => {
-    // retro path should be unaffected by v3 changes
+  it('--retro template contains none of the forbidden strings', async () => {
     await initCommand.parseAsync(
-      ['--dir', projectDir, '--yes', '--retro', '--cortex', 'my-repo'],
+      ['--dir', projectDir, '--yes', '--retro', '--cortex', 'fx-tracker'],
       { from: 'user' },
     );
     const content = readClaude();
-    expect(content).toContain(RETRO_BEGIN_MARKER);
-    expect(content).toContain('think brief --context my-repo');
-    expect(content).toContain('think retro "<observation>" --context my-repo');
+    for (const s of FORBIDDEN_STRINGS) expect(content).not.toContain(s);
   });
 
-  it('invalid --block-version value exits with error', async () => {
-    const prevExit = process.exit;
-    const errors: string[] = [];
-    vi.mocked(console.error).mockImplementation((...args: unknown[]) => {
-      errors.push(args.map(String).join(' '));
-    });
-    process.exit = ((code?: number) => {
-      throw new Error(`process.exit:${code ?? 0}`);
-    }) as typeof process.exit;
-
-    try {
-      await expect(
-        initCommand.parseAsync(['--dir', projectDir, '--yes', '--block-version', 'v4'], { from: 'user' }),
-      ).rejects.toThrow('process.exit:1');
-      expect(errors.join('\n')).toContain("--block-version must be 'v2' or 'v3'");
-    } finally {
-      process.exit = prevExit;
-    }
-  });
-
-  it('--minimal and --block-version are mutually exclusive', async () => {
-    const prevExit = process.exit;
-    const errors: string[] = [];
-    vi.mocked(console.error).mockImplementation((...args: unknown[]) => {
-      errors.push(args.map(String).join(' '));
-    });
-    process.exit = ((code?: number) => {
-      throw new Error(`process.exit:${code ?? 0}`);
-    }) as typeof process.exit;
-
-    try {
-      await expect(
-        initCommand.parseAsync(['--dir', projectDir, '--yes', '--minimal', '--block-version', 'v3'], { from: 'user' }),
-      ).rejects.toThrow('process.exit:1');
-      expect(errors.join('\n')).toContain('--minimal and --block-version are mutually exclusive');
-    } finally {
-      process.exit = prevExit;
-    }
-  });
-
-  it('--retro and --block-version are mutually exclusive', async () => {
-    const prevExit = process.exit;
-    const errors: string[] = [];
-    vi.mocked(console.error).mockImplementation((...args: unknown[]) => {
-      errors.push(args.map(String).join(' '));
-    });
-    process.exit = ((code?: number) => {
-      throw new Error(`process.exit:${code ?? 0}`);
-    }) as typeof process.exit;
-
-    try {
-      await expect(
-        initCommand.parseAsync(['--dir', projectDir, '--yes', '--retro', '--cortex', 'my-repo', '--block-version', 'v3'], { from: 'user' }),
-      ).rejects.toThrow('process.exit:1');
-      expect(errors.join('\n')).toContain('--block-version has no effect with --retro');
-    } finally {
-      process.exit = prevExit;
-    }
+  it('the interactive disclosure copy contains none of the forbidden strings', () => {
+    const allLines = [...DISCLOSURE_YELLOW_LINES, ...DISCLOSURE_DIM_LINES].join('\n');
+    for (const s of FORBIDDEN_STRINGS) expect(allLines).not.toContain(s);
+    // And it should still name the actual data flow.
+    expect(allLines).toContain('THINK_LLM_CONSENT');
   });
 });
 
@@ -805,13 +812,13 @@ describe('think init — managed block is byte-identical in CLAUDE.md and AGENTS
     await initCommand.parseAsync(['--dir', projectDir, ...args], { from: 'user' });
   }
 
-  it('default block (v2) is byte-identical between the two files', async () => {
+  it('default block is byte-identical between the two files', async () => {
     seedBothTargets();
     await runInit(['--yes']);
     const span = expectSpansIdentical(BEGIN_MARKER, END_MARKER);
     // Pin the variant so this case can't silently drift onto another template.
     expect(span).toContain('# Work Logging');
-    expect(span).not.toContain('# think v3');
+    expect(span).not.toContain('# Work Logging (minimal)');
   });
 
   it('--minimal block is byte-identical between the two files', async () => {
@@ -819,13 +826,6 @@ describe('think init — managed block is byte-identical in CLAUDE.md and AGENTS
     await runInit(['--minimal']);
     const span = expectSpansIdentical(BEGIN_MARKER, END_MARKER);
     expect(span).toContain('# Work Logging (minimal)');
-  });
-
-  it('--block-version v3 block is byte-identical between the two files', async () => {
-    seedBothTargets();
-    await runInit(['--yes', '--block-version', 'v3']);
-    const span = expectSpansIdentical(BEGIN_MARKER, END_MARKER);
-    expect(span).toContain('# think v3');
   });
 
   it('--retro block is byte-identical between the two files', async () => {
@@ -840,17 +840,20 @@ describe('think init — managed block is byte-identical in CLAUDE.md and AGENTS
     // Replace-in-place is the other half of the write path, and the place a
     // per-target branch would most plausibly diverge: the two files reach the
     // replacement with different `before`/`after` context around the markers.
+    // Switching --minimal <-> default is the only remaining in-place swap
+    // now that --block-version is gone.
     seedBothTargets();
-    await runInit(['--yes', '--block-version', 'v2']);
-    const v2Span = expectSpansIdentical(BEGIN_MARKER, END_MARKER);
+    await runInit(['--minimal']);
+    const minimalSpan = expectSpansIdentical(BEGIN_MARKER, END_MARKER);
 
-    await runInit(['--yes', '--block-version', 'v3']);
-    const v3Span = expectSpansIdentical(BEGIN_MARKER, END_MARKER);
+    await runInit(['--yes']);
+    const defaultSpan = expectSpansIdentical(BEGIN_MARKER, END_MARKER);
 
     // Sanity: the re-run really did swap the block, so identity above is not
-    // just the untouched v2 output being compared to itself.
-    expect(v3Span).not.toBe(v2Span);
-    expect(v3Span).toContain('# think v3');
+    // just the untouched minimal output being compared to itself.
+    expect(defaultSpan).not.toBe(minimalSpan);
+    expect(defaultSpan).toContain('# Work Logging');
+    expect(defaultSpan).not.toContain('(minimal)');
   });
 
   it('keeps both blocks identical when the work-log and retro blocks coexist', async () => {
