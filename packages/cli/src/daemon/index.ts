@@ -45,6 +45,7 @@ import { compactionQueue, scanAndEnqueueUncompacted } from './compaction/queue.j
 import { pushDebouncer } from './push-debouncer.js';
 import { indexPendingOutboxEntries } from './outbox-index.js';
 import { migrateStrandedEngrams } from '../lib/engram-migration.js';
+import { sanitizeForLog } from '../lib/sanitize.js';
 import { getCortexDb, listKnownCortexes } from '../db/engrams.js';
 import { backfillActivitySeqIfNeeded } from '../db/activity-seq.js';
 import { runEmbedModelChecks } from './embed-model-check.js';
@@ -429,17 +430,22 @@ export async function runDaemon(options: DaemonOptions): Promise<void> {
   try {
     const migration = await migrateStrandedEngrams({ cortexes: knownCortexes, log: writeLine });
     const { events, memories, skippedSubscribe, failed } = migration.totals;
-    if (events + memories > 0) {
+    const rescued = events + memories;
+    if (rescued > 0) {
       writeLine(
-        `engram-migration: rescued ${events + memories} stranded entr` +
-          `${events + memories === 1 ? 'y' : 'ies'} ` +
-          `(${events} event(s), ${memories} memory/ies)` +
-          (skippedSubscribe > 0 ? `, skipped ${skippedSubscribe} subscribe row(s)` : '') +
-          (failed > 0 ? `, ${failed} row(s) deferred to the next start` : ''),
+        `engram-migration: rescued ${rescued} stranded ${rescued === 1 ? 'entry' : 'entries'} ` +
+          `(${events} ${events === 1 ? 'event' : 'events'}, ` +
+          `${memories} ${memories === 1 ? 'memory' : 'memories'})` +
+          (skippedSubscribe > 0
+            ? `, skipped ${skippedSubscribe} subscribe ${skippedSubscribe === 1 ? 'row' : 'rows'}`
+            : '') +
+          (failed > 0
+            ? `, ${failed} ${failed === 1 ? 'row' : 'rows'} deferred to the next start`
+            : ''),
       );
     }
   } catch (migrateErr: unknown) {
-    const msg = migrateErr instanceof Error ? migrateErr.message : String(migrateErr);
+    const msg = sanitizeForLog(migrateErr instanceof Error ? migrateErr.message : String(migrateErr));
     writeLine(`engram-migration: unexpected error (continuing): ${msg}`);
   }
 

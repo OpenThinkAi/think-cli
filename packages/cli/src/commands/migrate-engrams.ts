@@ -60,6 +60,11 @@ Examples:
     closeAllCortexDbs();
   });
 
+/** `1 memory` / `2 memories` — never `1 memory/ies`. */
+function countOf(n: number, singular: string, plural: string): string {
+  return `${n} ${n === 1 ? singular : plural}`;
+}
+
 function printSummary(summary: EngramMigrationSummary, dryRun: boolean): void {
   const touched = summary.cortexes.filter(
     (c) =>
@@ -68,6 +73,12 @@ function printSummary(summary: EngramMigrationSummary, dryRun: boolean): void {
   );
 
   console.log();
+  if (summary.cortexes.length === 0) {
+    // Distinct from "all clean": no cortex DB was found at all, which usually
+    // means THINK_HOME points somewhere unexpected.
+    console.log(chalk.dim('No cortexes found under THINK_HOME — nothing to migrate.'));
+    return;
+  }
   if (touched.length === 0) {
     console.log(chalk.dim('No stranded engram rows in any cortex — nothing to migrate.'));
     return;
@@ -79,10 +90,14 @@ function printSummary(summary: EngramMigrationSummary, dryRun: boolean): void {
       console.log(`  ${chalk.yellow('⚠')} ${c.cortex}: ${c.error}`);
       continue;
     }
+    // The two skip categories mean different things — a subscribe row was
+    // meant to stay local, an unusable row wants a human — so they are never
+    // merged into one "skipped" number.
     const parts = [
-      `${c.events} event${c.events === 1 ? '' : 's'}`,
-      `${c.memories} memor${c.memories === 1 ? 'y' : 'ies'}`,
-      `${c.skippedSubscribe + c.skippedInvalid} skipped`,
+      countOf(c.events, 'event', 'events'),
+      countOf(c.memories, 'memory', 'memories'),
+      `${c.skippedSubscribe} subscribe skipped`,
+      `${c.skippedInvalid} unusable`,
     ];
     if (c.repaired > 0) parts.push(`${c.repaired} already migrated`);
     if (c.failed > 0) parts.push(chalk.yellow(`${c.failed} failed`));
@@ -99,9 +114,10 @@ function printSummary(summary: EngramMigrationSummary, dryRun: boolean): void {
   console.log();
   console.log(
     chalk.dim(
-      `${t.events} event(s), ${t.memories} memory/ies, ` +
-        `${t.skippedSubscribe} subscribe row(s) skipped, ` +
-        `${t.skippedInvalid} unusable row(s) left in place` +
+      `${countOf(t.events, 'event', 'events')}, ` +
+        `${countOf(t.memories, 'memory', 'memories')}, ` +
+        `${countOf(t.skippedSubscribe, 'subscribe row', 'subscribe rows')} skipped, ` +
+        `${countOf(t.skippedInvalid, 'unusable row', 'unusable rows')} left in place` +
         (t.failed > 0 ? `, ${t.failed} failed` : ''),
     ),
   );

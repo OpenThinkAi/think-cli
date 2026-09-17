@@ -82,7 +82,7 @@ describe('think migrate-engrams', () => {
 
     const printed = out.join('\n');
     expect(printed).toContain('Would migrate:');
-    expect(printed).toContain('work: 1 event, 1 memory, 1 skipped');
+    expect(printed).toContain('work: 1 event, 1 memory, 1 subscribe skipped, 0 unusable');
     expect(printed).toContain('nothing was written');
 
     const { getCortexDb } = await import('../../src/db/engrams.js');
@@ -109,7 +109,7 @@ describe('think migrate-engrams', () => {
     // it is still sitting there, and saying otherwise would hide it.
     out.length = 0;
     await run([]);
-    expect(out.join('\n')).toContain('work: 0 events, 0 memories, 1 skipped');
+    expect(out.join('\n')).toContain('work: 0 events, 0 memories, 1 subscribe skipped');
   });
 
   it('says so when a cortex has nothing stranded at all', async () => {
