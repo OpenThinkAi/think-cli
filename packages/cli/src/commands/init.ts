@@ -308,7 +308,7 @@ function reportResult(filePath: string, result: UpsertResult, label: string): vo
     case 'deduped':
       console.log(
         chalk.green('✓') +
-          ` Collapsed ${result.count} duplicate ${label} blocks in ${filePath} into one`,
+          ` Found ${result.count} copies of the ${label} block in ${filePath} — collapsed to one`,
       );
       break;
     case 'appended':
@@ -336,7 +336,7 @@ export const initCommand = new Command('init')
   .option('--retro', 'Upsert the iterative-learning (retro) block instead of the work-logging block. Requires --cortex. When no -d is given: writes silently to the git repo root if inside a repo; prompts with cwd as the default otherwise.')
   .option('--cortex <name>', 'Cortex name baked into the retro block commands (required with --retro).')
   .option('--block-version <ver>', 'Removed in 3.0.0. Use `think init` without this flag.')
-  .option('--list', 'List every file with a registered managed block (AGT-1305), and exit. Ignores all other flags.')
+  .option('--list', 'List every file with a registered managed block, and exit. Ignores all other flags.')
   .addHelpText('after', `
 Modes:
   Default (no --retro):
