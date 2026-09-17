@@ -67,7 +67,7 @@ That's all. Don't run \`think sync\` for exploration, debugging, decisions that 
 const LEGACY_FINGERPRINT_A = '**After every commit';
 const LEGACY_FINGERPRINT_B = 'think sync';
 
-function buildBlock(minimal = false): string {
+export function buildBlock(minimal = false): string {
   // Wrap the minimal body in the same begin/end markers as the default path
   // so `upsertBlock` can replace-in-place across re-runs and `--minimal` ↔
   // default switches. Without the markers, every re-invocation would append
@@ -114,7 +114,7 @@ async function promptLoggingConfirmation(): Promise<boolean> {
   return /^y(es)?$/i.test(answer.trim());
 }
 
-function buildRetroBlock(cortex: string): string {
+export function buildRetroBlock(cortex: string): string {
   const body = `# Iterative Learning
 
 This repo participates in agentic iterative learning via \`think retro\`. Treat retros as a peer-to-future-agents channel: read what others have left for you, and leave behind what would have helped you.
@@ -144,7 +144,7 @@ Loose guidance — you decide when to emit. Examples:
   return `${RETRO_BEGIN_MARKER}\n${body}${RETRO_END_MARKER}\n`;
 }
 
-type UpsertResult =
+export type UpsertResult =
   | { kind: 'created' }
   | { kind: 'replaced' }
   | { kind: 'deduped'; count: number }
@@ -152,7 +152,7 @@ type UpsertResult =
   | { kind: 'migrated'; backupPath: string }
   | { kind: 'unchanged' };
 
-interface UpsertOptions {
+export interface UpsertOptions {
   beginMarker: string;
   endMarker: string;
   legacyMigration?: {
@@ -198,7 +198,7 @@ function findCleanMarkerPairs(
   return pairs;
 }
 
-function upsertBlock(filePath: string, block: string, opts: UpsertOptions): UpsertResult {
+export function upsertBlock(filePath: string, block: string, opts: UpsertOptions): UpsertResult {
   const { beginMarker, endMarker, legacyMigration } = opts;
 
   if (!fs.existsSync(filePath)) {
@@ -261,7 +261,10 @@ function upsertBlock(filePath: string, block: string, opts: UpsertOptions): Upse
   return { kind: 'appended' };
 }
 
-const WORKLOG_UPSERT: UpsertOptions = {
+// Exported so lib/block-refresh.ts (AGT-1306) can rebuild a registered block
+// from the CURRENT template without duplicating the marker constants or the
+// legacy-migration rule.
+export const WORKLOG_UPSERT: UpsertOptions = {
   beginMarker: BEGIN_MARKER,
   endMarker: END_MARKER,
   legacyMigration: {
@@ -271,7 +274,7 @@ const WORKLOG_UPSERT: UpsertOptions = {
   },
 };
 
-const RETRO_UPSERT: UpsertOptions = {
+export const RETRO_UPSERT: UpsertOptions = {
   beginMarker: RETRO_BEGIN_MARKER,
   endMarker: RETRO_END_MARKER,
 };

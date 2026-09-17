@@ -64,6 +64,12 @@ export const updateCommand = new Command('update')
     // to the freshly installed entry point instead.
     const { inspectDaemon, needsDaemonRestart, restartDaemonViaBin } =
       await import('../lib/daemon-drift.js');
+    // Same hazard applies to refreshing managed blocks (AGT-1306): this
+    // process's copy of the refresh logic embeds whatever template was
+    // loaded before the install, so it must never run in-process here.
+    // `refreshBlocksViaBin` shells out to the freshly installed entry point
+    // instead, exactly like `restartDaemonViaBin` above.
+    const { refreshBlocksViaBin } = await import('../lib/block-refresh.js');
     const daemon = await inspectDaemon();
 
     // Bring the resident daemon onto `target` (the version now on disk) if it
@@ -84,12 +90,35 @@ export const updateCommand = new Command('update')
       }
     };
 
+    // Refresh every registered managed block (AGT-1305 registry) from
+    // whatever template is on disk right now. A direct `npm install -g`
+    // (bypassing `think update`) can leave the package current but every
+    // CLAUDE.md/AGENTS.md block stale — this heals that on the next
+    // `think update` call regardless of which branch below runs (AC3).
+    const refreshBlocks = (): void => {
+      const pkgRoot = getGlobalPackageRoot();
+      if (!pkgRoot) return;
+      const result = refreshBlocksViaBin(pkgRoot);
+      if (!result.ok) {
+        console.error(chalk.yellow('⚠') + ` Could not refresh managed blocks: ${result.error}`);
+        return;
+      }
+      if (result.refreshed.length > 0) {
+        const n = result.refreshed.length;
+        console.log(chalk.green('✓') + ` Refreshed ${n} managed block${n === 1 ? '' : 's'}.`);
+      }
+      for (const failure of result.failures) {
+        console.error(chalk.yellow('⚠') + ` Could not refresh the managed block in ${failure.path}: ${failure.reason}`);
+      }
+    };
+
     if (before && latest && before === latest) {
       console.log(chalk.dim(`Already up to date (@openthink/think@${before}).`));
       // A previous update (or a direct `npm install -g`) may have left the
       // daemon behind even though the package itself is current — heal that
       // drift here so re-running `think update` is always sufficient.
       syncDaemon(before);
+      refreshBlocks();
       return;
     }
 
@@ -127,6 +156,11 @@ export const updateCommand = new Command('update')
     } else {
       console.error(chalk.yellow('⚠') + ' Could not locate the installed package to verify the update.');
     }
+
+    // Something is installed on disk at this point in every branch above
+    // except the last (no package could be located at all, in which case
+    // refreshBlocks() itself no-ops since getGlobalPackageRoot() also fails).
+    if (after) refreshBlocks();
 
     if (legacyOpenThinkInstalled()) {
       console.error(
