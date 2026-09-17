@@ -3,6 +3,15 @@ import { defineConfig } from 'vitest/config';
 export default defineConfig({
   test: {
     include: ['tests/**/*.test.ts'],
+    // AGT-1322: HOME / THINK_HOME isolation. `globalSetup` runs once in the
+    // main process (creating the per-run root the forked workers inherit and
+    // the sentinel LaunchAgents directory); `setupFiles` runs inside every
+    // worker before any test module is imported and does the actual env
+    // repointing. Both are required — the workers must not depend on env
+    // inheritance alone, and the run-scoped sentinel check has nowhere else
+    // to live. See tests/setup/home-isolation.ts for the full rationale.
+    globalSetup: ['./tests/setup/global-home-isolation.ts'],
+    setupFiles: ['./tests/setup/home-isolation.ts'],
     testTimeout: 15000,
     pool: 'forks',
     // #67: the full suite is a required check on every `stamp merge`, and the
