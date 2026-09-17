@@ -7,6 +7,7 @@ import { getPendingEngrams, getPendingEpisodeEngrams, markPromoted, markPurged, 
 import { getMemories, insertMemory, getMemoryByEpisodeKey, tombstoneMemory } from '../db/memory-queries.js';
 import { insertLongTermEvent, getRecentLongTermEventsForContext } from '../db/long-term-queries.js';
 import { closeCortexDb } from '../db/engrams.js';
+import { migrateStrandedEngrams } from '../lib/engram-migration.js';
 import {
   readCuratorMd,
   assembleCurationPrompt,
@@ -458,7 +459,19 @@ export const curateCommand = new Command('curate')
       markPurged(cortex, purgedIds);
     }
 
-    // 11. Prune expired engrams
+    // 11. Prune expired engrams.
+    //
+    // AGT-1302: rescue anything still stranded in the tier BEFORE pruning.
+    // `pruneExpiredEngrams` no longer deletes unevaluated rows, so this is
+    // belt-and-braces — but it also means a `think curate` run on a machine
+    // whose daemon has not restarted since the upgrade still rescues the rows
+    // instead of leaving them for later. Best-effort: the migration reports
+    // per-cortex errors rather than throwing, and curation must not fail
+    // because a row of a tier being deleted could not be re-submitted.
+    await migrateStrandedEngrams({
+      cortexes: [cortex],
+      log: (msg) => console.log(chalk.dim(`  ${msg}`)),
+    });
     const pruned = pruneExpiredEngrams(cortex);
 
     // 12. Sync: push new memories and long-term events to remote after curation

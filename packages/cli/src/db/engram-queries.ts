@@ -130,12 +130,26 @@ function setEvaluatedStatus(cortexName: string, ids: string[], promoted: boolean
   }
 }
 
-// Purge any engram past its TTL — including pending ones. If the curator
-// hasn't found a story in them by now, they're not going to.
+/**
+ * Purge engrams past their TTL that have already been evaluated.
+ *
+ * AGT-1302 narrowed this from "including pending ones". It used to delete every
+ * expired row on the theory that the curator would have found a story in them
+ * by now — but the curator LaunchAgents were retired years before the tier was,
+ * so what it actually deleted was unread decision logs (think-cli#95: a single
+ * `think curate` run pruned 20 expired rows unevaluated, recovered only from an
+ * un-checkpointed WAL).
+ *
+ * The `evaluated_at IS NOT NULL` clause makes "nothing prunes an unmigrated
+ * row" a structural property of the DELETE rather than a property of the call
+ * order, so a future caller cannot reintroduce the data loss by running ahead
+ * of `migrateStrandedEngrams` (lib/engram-migration.ts) — which stamps
+ * `evaluated_at` as it rescues each row, making it prunable here.
+ */
 export function pruneExpiredEngrams(cortexName: string): number {
   const db = getCortexDb(cortexName);
   const result = db.prepare(
-    `DELETE FROM engrams WHERE expires_at < ?`
+    `DELETE FROM engrams WHERE expires_at < ? AND evaluated_at IS NOT NULL`
   ).run(new Date().toISOString());
   return Number(result.changes);
 }
