@@ -79,19 +79,45 @@ export function makeSyncCommand(): Command {
     .argument('<message>', 'The message to log')
     .option('-s, --source <source>', 'Source of the entry', 'manual')
     .option('-t, --tags <tags>', 'Comma-separated tags')
-    .option('-e, --episode <key>', 'Tag this memory with an episode identifier for narrative grouping')
-    .option('--context <json>', 'Attach structured JSON metadata to this memory')
-    .option('-d, --decision <text>', 'Record a decision (repeatable)', (val: string, prev: string[]) => [...prev, val], [] as string[])
     .option('--silent', 'Suppress output')
     .option('--no-push', 'Skip the remote git push after writing (only applies when a daemon is running)'))
     .addOption(new Option('--no-sync', 'Deprecated alias for --no-push (preserved for v2 compat)').hideHelp())
+    // think-3 (AGT-1297): -e/--episode, --context and -d/--decision are
+    // hard-removed engram-tier fields. Kept registered-but-hidden (rather than
+    // dropped outright) so passing one gets our own one-line pointer instead
+    // of commander's generic "unknown option" — see the rejection block at
+    // the top of the action below. No warn-and-accept window: this always
+    // exits non-zero, even under --silent.
+    .addOption(new Option('-e, --episode <key>', 'Removed — use `think event`').hideHelp())
+    .addOption(new Option('--context <json>', 'Removed — use `think event`').hideHelp())
+    .addOption(new Option('-d, --decision <text>', 'Removed — use `think event`').hideHelp())
     .addHelpText('after', `
 Examples:
   think sync "fixed the auth race condition"
   think sync "merged the JWT refresh PR" --topic auth --topic jwt
   think -C my-repo sync "landed the v2 migration"
 `)
-    .action(async function (this: Command, message: string, opts: { topic: string[]; cortex?: string; source: string; tags?: string; episode?: string; context?: string; decision?: string[]; silent?: boolean; push: boolean; sync: boolean }) {
+    .action(async function (this: Command, message: string, opts: { topic: string[]; cortex?: string; source: string; tags?: string; episode?: string; context?: string; decision?: string; silent?: boolean; push: boolean; sync: boolean }) {
+      // AGT-1297: hard-remove the pre-daemon engram fields. Checked first and
+      // unconditionally (before --silent is even read) so nothing downstream
+      // — including the config.paused early-return — can turn this into a
+      // silent no-op that still looks like a write happened.
+      if (opts.decision !== undefined) {
+        process.stderr.write('error: --decision has been removed; use `think event "Decided ..."` instead\n');
+        process.exitCode = 1;
+        return;
+      }
+      if (opts.context !== undefined) {
+        process.stderr.write('error: --context has been removed; use `think event` instead\n');
+        process.exitCode = 1;
+        return;
+      }
+      if (opts.episode !== undefined) {
+        process.stderr.write('error: -e/--episode has been removed; use `think event` instead\n');
+        process.exitCode = 1;
+        return;
+      }
+
       const globalOpts = this.optsWithGlobals() as { cortex?: string };
       const config = getConfig();
 
@@ -118,25 +144,10 @@ Examples:
           }
         }
 
-        // Validate --context is valid JSON if provided
-        if (opts.context) {
-          try {
-            JSON.parse(opts.context);
-          } catch {
-            console.error(chalk.red('Error: --context must be valid JSON'));
-            process.exitCode = 1;
-            return;
-          }
-        }
-
-        // Primary path: route through daemon. Falls back to v2 direct-write on
-        // DaemonUnavailableError. v2 compat fields (--episode/--context/--decision)
-        // are not yet forwarded by the daemon RPC — bypass daemon when present.
-        // See AGT-293 for the rationale and AGT-309 for skipPush handling.
-        const hasV2Fields = !!(opts.episode || opts.context || (opts.decision && opts.decision.length > 0));
-
-        // Fire on every cortex-path call including the v2-compat bypass —
-        // the message is about flag identity, not execution path.
+        // Primary path: route through daemon, falling back to the v2
+        // direct-write below on DaemonUnavailableError (AGT-1298 replaces
+        // this fallback with an L1 write; see AGT-293 for the original
+        // rationale and AGT-309 for skipPush handling).
         if (!opts.sync && !opts.silent) {
           process.stderr.write(chalk.yellow('  warning: --no-sync is deprecated; use --no-push\n'));
         }
@@ -144,64 +155,60 @@ Examples:
         let daemonSucceeded = false;
         let daemonErr: unknown;
 
-        if (!hasV2Fields) {
+        try {
+          const client = await connectDaemon();
+          const skipPush = !opts.push || !opts.sync; // either negated flag
+          // Close is best-effort: a throwing close() after a successful daemon
+          // commit would otherwise be re-raised, set daemonErr, and trigger the
+          // v2 fallback — duplicating the entry. The inner try/finally still
+          // guarantees close runs on the call-rejection path.
+          let result: DaemonSyncResult;
           try {
-            const client = await connectDaemon();
-            const skipPush = !opts.push || !opts.sync; // either negated flag
-            // Close is best-effort: a throwing close() after a successful daemon
-            // commit would otherwise be re-raised, set daemonErr, and trigger the
-            // v2 fallback — duplicating the entry. The inner try/finally still
-            // guarantees close runs on the call-rejection path.
-            let result: DaemonSyncResult;
-            try {
-              result = await client.call('sync', {
-                cortex,
-                content: message,
-                kind: 'memory',
-                ...(topics ? { topics } : {}),
-                skipPush,
-              }) as DaemonSyncResult;
-            } finally {
-              try { client.close(); } catch { /* best-effort */ }
-            }
-
-            daemonSucceeded = true;
-
-            if (!opts.silent) {
-              const badge = chalk.cyan(`[${cortex}]`);
-              // pending L2 flush uses ⏳ instead of ✓ to signal non-durable.
-              const safeEntryId = stripControls(result.entry_id);
-              if (result.status === 'queued') {
-                console.log(`${chalk.yellow('⏳')} ${badge} queued memory ${safeEntryId} (indexing in background)`);
-              } else {
-                const ts = chalk.gray(new Date().toISOString().slice(0, 16).replace('T', ' '));
-                console.log(`${chalk.green('✓')} ${badge} ${ts} stored memory ${safeEntryId}`);
-              }
-              console.log(`  ${message}`);
-              // Surface advisory warnings from the daemon (e.g. pending L2 schema).
-              // Array.isArray() guards against a non-array warnings field (the daemon
-              // wire type is checked compile-time only via `as DaemonSyncResult`).
-              if (Array.isArray(result.warnings) && result.warnings.length > 0) {
-                for (const w of result.warnings) {
-                  console.log(chalk.dim(`  note: ${stripControls(w)}`));
-                }
-              }
-            }
-            // No closeCortexDb() here: the daemon path never opens a cortex
-            // SQLite handle (the daemon owns L1/L2 writes via its RPC). The
-            // v2 fallback below opens via insertEngram and closes there.
-          } catch (err: unknown) {
-            daemonErr = err;
+            result = await client.call('sync', {
+              cortex,
+              content: message,
+              kind: 'memory',
+              ...(topics ? { topics } : {}),
+              skipPush,
+            }) as DaemonSyncResult;
+          } finally {
+            try { client.close(); } catch { /* best-effort */ }
           }
+
+          daemonSucceeded = true;
+
+          if (!opts.silent) {
+            const badge = chalk.cyan(`[${cortex}]`);
+            // pending L2 flush uses ⏳ instead of ✓ to signal non-durable.
+            const safeEntryId = stripControls(result.entry_id);
+            if (result.status === 'queued') {
+              console.log(`${chalk.yellow('⏳')} ${badge} queued memory ${safeEntryId} (indexing in background)`);
+            } else {
+              const ts = chalk.gray(new Date().toISOString().slice(0, 16).replace('T', ' '));
+              console.log(`${chalk.green('✓')} ${badge} ${ts} stored memory ${safeEntryId}`);
+            }
+            console.log(`  ${message}`);
+            // Surface advisory warnings from the daemon (e.g. pending L2 schema).
+            // Array.isArray() guards against a non-array warnings field (the daemon
+            // wire type is checked compile-time only via `as DaemonSyncResult`).
+            if (Array.isArray(result.warnings) && result.warnings.length > 0) {
+              for (const w of result.warnings) {
+                console.log(chalk.dim(`  note: ${stripControls(w)}`));
+              }
+            }
+          }
+          // No closeCortexDb() here: the daemon path never opens a cortex
+          // SQLite handle (the daemon owns L1/L2 writes via its RPC). The
+          // v2 fallback below opens via insertEngram and closes there.
+        } catch (err: unknown) {
+          daemonErr = err;
         }
 
         if (!daemonSucceeded) {
           // --- v2 direct-write path (insertEngram) ---
           // Entered when:
-          //  (a) v2 compat fields are present (hasV2Fields) — intentional bypass to
-          //      ensure those fields are always stored, or
-          //  (b) daemon is unavailable (DaemonUnavailableError) — silent degrade, or
-          //  (c) unexpected daemon fault — surface on stderr before degrading.
+          //  (a) daemon is unavailable (DaemonUnavailableError) — silent degrade, or
+          //  (b) unexpected daemon fault — surface on stderr before degrading.
           if (daemonErr && !(daemonErr instanceof DaemonUnavailableError) && !opts.silent) {
             const msg = daemonErr instanceof Error ? daemonErr.message : String(daemonErr);
             // Strip controls on the daemon-sourced error message — Error.message
@@ -219,19 +226,15 @@ Examples:
           // SQLite write only; the daemon's git push-debounce loop (AGT-309)
           // owns remote pushes and is bypassed entirely here. The --no-push
           // help text documents this caveat.
-          const decisions = opts.decision?.length ? opts.decision : undefined;
-          const { engram } = insertEngram(cortex, { content: message, episodeKey: opts.episode, context: opts.context, decisions });
+          const { engram } = insertEngram(cortex, { content: message });
 
           if (!opts.silent) {
             const badge = chalk.cyan(`[${cortex}]`);
             const ts = chalk.gray(engram.created_at.slice(0, 16).replace('T', ' '));
-            const episodeLabel = opts.episode ? chalk.dim(` (episode: ${opts.episode})`) : '';
-            console.log(`${chalk.green('✓')} ${badge} ${ts} stored memory ${engram.id}${episodeLabel}`);
+            console.log(`${chalk.green('✓')} ${badge} ${ts} stored memory ${engram.id}`);
             console.log(`  ${engram.content}`);
             // Diagnostic — goes to stderr so callers capturing stdout (e.g.
             // `OUTPUT=$(think sync …)`) don't embed it in their parsed value.
-            // Daemon-unavailable path only; the v2-compat bypass is a normal
-            // write and doesn't surface a note.
             if (daemonErr instanceof DaemonUnavailableError) {
               process.stderr.write(chalk.dim('  note: daemon unavailable — wrote via local path\n'));
             }

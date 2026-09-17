@@ -12,8 +12,10 @@
  *  4. --no-sync flag forwarded to daemon as skipPush:true
  *  5. When daemon unavailable (DaemonUnavailableError), falls back to v2 direct-write
  *     with "note: daemon unavailable — wrote via local path" after the ✓ line
- *  6. v2 compat flags (--episode, --context, --decision) bypass daemon entirely so
- *     those fields are always stored — no data loss, even under --silent
+ *  6. AGT-1297: -e/--episode, --context and -d/--decision are hard-removed —
+ *     each exits non-zero with a one-line stderr pointer to `think event`,
+ *     even under --silent, and writes nothing (daemon never contacted, no
+ *     engram row inserted)
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
@@ -200,42 +202,95 @@ describe('think sync — daemon-routed path (AGT-293)', () => {
     expect(process.exitCode).toBeFalsy();
   });
 
-  it('v2 compat flags (--decision) bypass daemon entirely — stored via local write (AC #6)', async () => {
+  it('rejects --decision: non-zero exit, stderr pointer, nothing written (AGT-1297 AC #1/#2/#4)', async () => {
     const connectSpy = vi.spyOn(daemonClientModule, 'connectDaemon');
+    const stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
 
-    const cortex = 'v2-bypass-test';
+    const cortex = 'decision-removed-test';
     const prog = makeProgram();
     await prog.parseAsync([
       'node', 'think', '-C', cortex, 'sync', 'content with decision',
       '--decision', 'chose option A',
     ]);
 
-    // Daemon should NOT be called when v2 compat fields are present
+    expect(process.exitCode).toBe(1);
+    const stderr = stderrSpy.mock.calls.flat().join('');
+    expect(stderr).toContain('--decision');
+    expect(stderr).toContain('think event');
+    // Nothing was written and the daemon was never contacted.
     expect(connectSpy).not.toHaveBeenCalled();
-    // Entry stored via v2 path with the decision content actually persisted
     const db = getCortexDb(cortex);
-    const row = db.prepare('SELECT decisions FROM engrams LIMIT 1').get() as { decisions: string | null };
-    expect(row?.decisions).toContain('chose option A');
+    const row = db.prepare('SELECT COUNT(*) as count FROM engrams').get() as { count: number };
+    expect(row.count).toBe(0);
   });
 
-  it('v2 compat flags bypass daemon under --silent too (no silent data loss)', async () => {
-    const connectSpy = vi.spyOn(daemonClientModule, 'connectDaemon');
+  it('rejects --decision under --silent too (the pointer is not output, not diagnostics)', async () => {
+    const stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
 
-    const cortex = 'v2-bypass-silent-test';
+    const cortex = 'decision-removed-silent-test';
     const prog = makeProgram();
     await prog.parseAsync([
       'node', 'think', '-C', cortex, 'sync', 'silent decision',
       '--decision', 'critical decision text', '--silent',
     ]);
 
-    // Daemon bypassed even with --silent
-    expect(connectSpy).not.toHaveBeenCalled();
-    // No output emitted
+    expect(process.exitCode).toBe(1);
+    expect(stderrSpy.mock.calls.flat().join('')).toContain('--decision');
     expect((console.log as ReturnType<typeof vi.fn>).mock.calls.length).toBe(0);
-    // Entry still written
     const db = getCortexDb(cortex);
     const row = db.prepare('SELECT COUNT(*) as count FROM engrams').get() as { count: number };
-    expect(row.count).toBe(1);
+    expect(row.count).toBe(0);
+  });
+
+  it('rejects --context: non-zero exit, stderr pointer, nothing written (AGT-1297 AC #1/#2/#4)', async () => {
+    const connectSpy = vi.spyOn(daemonClientModule, 'connectDaemon');
+    const stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+
+    const cortex = 'context-removed-test';
+    const prog = makeProgram();
+    await prog.parseAsync([
+      'node', 'think', '-C', cortex, 'sync', 'content with context',
+      '--context', '{"foo":"bar"}',
+    ]);
+
+    expect(process.exitCode).toBe(1);
+    const stderr = stderrSpy.mock.calls.flat().join('');
+    expect(stderr).toContain('--context');
+    expect(stderr).toContain('think event');
+    expect(connectSpy).not.toHaveBeenCalled();
+    const db = getCortexDb(cortex);
+    const row = db.prepare('SELECT COUNT(*) as count FROM engrams').get() as { count: number };
+    expect(row.count).toBe(0);
+  });
+
+  it('rejects -e/--episode: non-zero exit, stderr pointer, nothing written (AGT-1297 AC #1/#2/#4)', async () => {
+    const connectSpy = vi.spyOn(daemonClientModule, 'connectDaemon');
+    const stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+
+    const cortex = 'episode-removed-test';
+    const prog = makeProgram();
+    await prog.parseAsync([
+      'node', 'think', '-C', cortex, 'sync', 'content with episode',
+      '-e', 'some-episode-key',
+    ]);
+
+    expect(process.exitCode).toBe(1);
+    const stderr = stderrSpy.mock.calls.flat().join('');
+    expect(stderr).toContain('episode');
+    expect(stderr).toContain('think event');
+    expect(connectSpy).not.toHaveBeenCalled();
+    const db = getCortexDb(cortex);
+    const row = db.prepare('SELECT COUNT(*) as count FROM engrams').get() as { count: number };
+    expect(row.count).toBe(0);
+  });
+
+  it('think sync --help no longer lists the removed flags (AGT-1297 AC #3)', () => {
+    const prog = makeProgram();
+    const helpText = prog.commands.find(c => c.name() === 'sync')!.helpInformation();
+
+    expect(helpText).not.toContain('--decision');
+    expect(helpText).not.toContain('--context');
+    expect(helpText).not.toContain('--episode');
   });
 
   it('echoes content in success output', async () => {
