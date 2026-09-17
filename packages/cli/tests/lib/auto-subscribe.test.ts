@@ -5,21 +5,14 @@ import {
   getPlistPath as getSubscribePlistPath,
   getLogPath as getSubscribeLogPath,
 } from '../../src/lib/auto-subscribe.js';
-import {
-  getAgentLabel as getSyncLabel,
-  getPlistPath as getSyncPlistPath,
-  getLogPath as getSyncLogPath,
-} from '../../src/lib/auto-sync.js';
-import {
-  getAgentLabel as getCurateLabel,
-  getPlistPath as getCuratePlistPath,
-  getLogPath as getCurateLogPath,
-} from '../../src/lib/auto-curate.js';
 
-// AC #4 (extended): auto-subscribe joins auto-sync and auto-curate as a third
-// independently-togglable LaunchAgent. The high-value invariant: for the same
-// THINK_HOME, all three agents must produce DIFFERENT labels and paths so
-// `launchctl unload` for one cannot tear down the others.
+// AC #4: auto-subscribe is a per-THINK_HOME, independently-togglable
+// LaunchAgent. The label, plist and log path are all derived from the home's
+// hash so two homes on one machine cannot tear down each other's agent.
+//
+// AGT-1303 removed auto-sync and auto-curate, so auto-subscribe is now the
+// only LaunchAgent think installs; the cross-agent distinctness assertions
+// went with them.
 
 describe('auto-subscribe label derivation', () => {
   const originalThinkHome = process.env.THINK_HOME;
@@ -44,19 +37,12 @@ describe('auto-subscribe label derivation', () => {
     expect(getSubscribeLabel()).toBe('ai.openthink.subscribe.default');
   });
 
-  it('produces a different label than auto-sync and auto-curate for the same THINK_HOME', () => {
-    expect(getSubscribeLabel()).not.toBe(getSyncLabel());
-    expect(getSubscribeLabel()).not.toBe(getCurateLabel());
-  });
-
-  it('produces a different plist path than auto-sync and auto-curate for the same THINK_HOME', () => {
-    expect(getSubscribePlistPath()).not.toBe(getSyncPlistPath());
-    expect(getSubscribePlistPath()).not.toBe(getCuratePlistPath());
-  });
-
-  it('produces a different log path than auto-sync and auto-curate for the same THINK_HOME', () => {
-    expect(getSubscribeLogPath()).not.toBe(getSyncLogPath());
-    expect(getSubscribeLogPath()).not.toBe(getCurateLogPath());
+  it('derives a different label and plist path per THINK_HOME', () => {
+    const label = getSubscribeLabel();
+    const plist = getSubscribePlistPath();
+    process.env.THINK_HOME = '/tmp/auto-subscribe-test-other';
+    expect(getSubscribeLabel()).not.toBe(label);
+    expect(getSubscribePlistPath()).not.toBe(plist);
   });
 
   it('uses auto-subscribe.log under THINK_HOME', () => {

@@ -11,13 +11,6 @@ import { getRetroCount } from '../db/retro-queries.js';
 import { getIndexDbPath } from '../lib/paths.js';
 import { getSyncAdapter } from '../sync/registry.js';
 import { LocalFsSyncAdapter } from '../sync/local-fs-adapter.js';
-import { installAgent, uninstallAgent, getAgentStatus } from '../lib/auto-curate.js';
-import {
-  installAgent as installSyncAgent,
-  uninstallAgent as uninstallSyncAgent,
-  getAgentStatus as getSyncAgentStatus,
-  getLogPath as getSyncLogPath,
-} from '../lib/auto-sync.js';
 import { validateRepoUrl } from '../lib/repo-url.js';
 import { cortexMigrateLayoutCommand } from './cortex-migrate-layout.js';
 
@@ -438,7 +431,7 @@ cortexCommand.addCommand(new Command('pull')
 cortexCommand.addCommand(new Command('sync')
   .description('Sync memories with remote (pull + push)')
   .option('--cortex <name>', 'Sync a specific cortex instead of the active one')
-  .option('--if-online', 'Skip silently if remote is unreachable (used by the auto-sync LaunchAgent).')
+  .option('--if-online', 'Skip silently if remote is unreachable (for unattended/scheduled runs).')
   .action(async function (this: Command, opts: { cortex?: string; ifOnline?: boolean }) {
     // See `cortex push` for why this fallback exists: program-level
     // `-C/--cortex` would otherwise shadow the subcommand flag and leave
@@ -467,8 +460,8 @@ cortexCommand.addCommand(new Command('sync')
       const reachable = await adapter.isReachable();
       if (!reachable) {
         // Single dim line so the log shows liveness but doesn't grow on every
-        // tick when offline. Mirrors `curate --if-idle`'s skip posture.
-        console.log(chalk.dim('[auto-sync] skipped: remote unreachable'));
+        // tick when offline.
+        console.log(chalk.dim('[cortex sync] skipped: remote unreachable'));
         closeCortexDb(cortex);
         return;
       }
@@ -486,11 +479,11 @@ cortexCommand.addCommand(new Command('sync')
     }
 
     // In --if-online mode, swallow the success line entirely on no-op runs so
-    // a 60s LaunchAgent doesn't grow `auto-sync.log` to MB-scale. Only print
+    // an unattended scheduler doesn't grow its log to MB-scale. Only print
     // when there's something to report.
     if (opts.ifOnline) {
       if (result.pulled > 0 || result.pushed > 0) {
-        console.log(chalk.green('✓') + ` [auto-sync] Pulled ${result.pulled}, pushed ${result.pushed}`);
+        console.log(chalk.green('✓') + ` [cortex sync] Pulled ${result.pulled}, pushed ${result.pushed}`);
       }
     } else {
       console.log(chalk.green('✓') + ` Pulled ${result.pulled}, pushed ${result.pushed}`);
@@ -690,122 +683,3 @@ cortexCommand.addCommand(new Command('migrate')
 
 cortexCommand.addCommand(cortexMigrateLayoutCommand);
 
-// think cortex auto-curate — scheduled background curation
-const autoCurateCommand = new Command('auto-curate')
-  .description('Manage scheduled background curation (macOS LaunchAgent)');
-
-autoCurateCommand.addCommand(new Command('enable')
-  .description('Install a LaunchAgent that runs `think curate --if-idle` every 5 minutes')
-  .option('--interval <seconds>', 'Scheduler cadence in seconds (default 300)', (v) => parseInt(v, 10))
-  .action((opts: { interval?: number }) => {
-    try {
-      const { label, plistPath } = installAgent({ intervalSeconds: opts.interval });
-      console.log(chalk.green('✓') + ` Auto-curation enabled`);
-      console.log(chalk.dim(`  Label: ${label}`));
-      console.log(chalk.dim(`  Plist: ${plistPath}`));
-      if (process.env.THINK_HOME) {
-        console.log(chalk.dim(`  THINK_HOME: ${process.env.THINK_HOME}`));
-      }
-    } catch (err) {
-      console.error(chalk.red(err instanceof Error ? err.message : String(err)));
-      process.exit(1);
-    }
-  }));
-
-autoCurateCommand.addCommand(new Command('disable')
-  .description('Remove the auto-curation LaunchAgent for this workspace')
-  .action(() => {
-    const { removed, plistPath } = uninstallAgent();
-    if (removed) {
-      console.log(chalk.green('✓') + ` Auto-curation disabled (${plistPath})`);
-    } else {
-      console.log(chalk.dim(`No auto-curation agent installed (${plistPath})`));
-    }
-  }));
-
-autoCurateCommand.addCommand(new Command('status')
-  .description('Show auto-curation scheduler status')
-  .action(() => {
-    const s = getAgentStatus();
-    console.log(`Label:     ${chalk.cyan(s.label)}`);
-    console.log(`Installed: ${s.installed ? chalk.green('yes') : chalk.dim('no')}`);
-    console.log(`Loaded:    ${s.loaded ? chalk.green('yes') : chalk.dim('no')}`);
-    if (s.intervalSeconds) {
-      console.log(`Interval:  ${s.intervalSeconds}s`);
-    }
-    console.log(`Plist:     ${s.plistPath}`);
-    if (s.lastRunAt) {
-      console.log(`Last log:  ${s.lastRunAt.toISOString()}`);
-    } else {
-      console.log(`Last log:  ${chalk.dim('(no log file yet)')}`);
-    }
-  }));
-
-cortexCommand.addCommand(autoCurateCommand);
-
-// think cortex auto-sync — scheduled background sync (pull + push)
-const autoSyncCommand = new Command('auto-sync')
-  .description('Manage scheduled background sync (macOS LaunchAgent)');
-
-autoSyncCommand.addCommand(new Command('enable')
-  .description('Install a LaunchAgent that runs `think cortex sync --if-online` on session load and every 60 seconds')
-  .option('--interval <seconds>', 'Scheduler cadence in seconds (default 60)', (v) => {
-    const n = parseInt(v, 10);
-    // commander's parser ignores throws here in some configs and we'd write
-    // <integer>NaN</integer> into the plist with stdio:'ignore' on launchctl,
-    // so the user would walk away with a broken agent. Reject loudly.
-    if (!Number.isInteger(n) || n <= 0 || String(n) !== v.trim()) {
-      console.error(chalk.red(`--interval must be a positive integer (got: '${v}')`));
-      process.exit(1);
-    }
-    return n;
-  })
-  .action((opts: { interval?: number }) => {
-    try {
-      const { label, plistPath } = installSyncAgent({ intervalSeconds: opts.interval });
-      console.log(chalk.green('✓') + ` Auto-sync enabled`);
-      console.log(chalk.dim(`  Label: ${label}`));
-      console.log(chalk.dim(`  Plist: ${plistPath}`));
-      if (process.env.THINK_HOME) {
-        console.log(chalk.dim(`  THINK_HOME: ${process.env.THINK_HOME}`));
-      }
-      // RunAtLoad: true → first sync fires immediately on `launchctl load`.
-      // Tell the user where to watch so "did it work?" is answerable.
-      console.log(chalk.dim(`  First run fires immediately; tail the log to watch:`));
-      console.log(chalk.dim(`    tail -f ${getSyncLogPath()}`));
-    } catch (err) {
-      console.error(chalk.red(err instanceof Error ? err.message : String(err)));
-      process.exit(1);
-    }
-  }));
-
-autoSyncCommand.addCommand(new Command('disable')
-  .description('Remove the auto-sync LaunchAgent for this workspace')
-  .action(() => {
-    const { removed, plistPath } = uninstallSyncAgent();
-    if (removed) {
-      console.log(chalk.green('✓') + ` Auto-sync disabled (${plistPath})`);
-    } else {
-      console.log(chalk.dim(`No auto-sync agent installed (${plistPath})`));
-    }
-  }));
-
-autoSyncCommand.addCommand(new Command('status')
-  .description('Show auto-sync scheduler status')
-  .action(() => {
-    const s = getSyncAgentStatus();
-    console.log(`Label:     ${chalk.cyan(s.label)}`);
-    console.log(`Installed: ${s.installed ? chalk.green('yes') : chalk.dim('no')}`);
-    console.log(`Loaded:    ${s.loaded ? chalk.green('yes') : chalk.dim('no')}`);
-    if (s.intervalSeconds) {
-      console.log(`Interval:  ${s.intervalSeconds}s`);
-    }
-    console.log(`Plist:     ${s.plistPath}`);
-    if (s.lastRunAt) {
-      console.log(`Last log entry:  ${s.lastRunAt.toISOString()}`);
-    } else {
-      console.log(`Last log entry:  ${chalk.dim('(no log file yet)')}`);
-    }
-  }));
-
-cortexCommand.addCommand(autoSyncCommand);
