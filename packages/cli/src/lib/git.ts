@@ -461,10 +461,15 @@ function isPrefixOf(a: Buffer, b: Buffer): boolean {
  * Note: `git checkout -- .` does NOT clear this state (it copies the stale
  * index back onto the worktree); resetting to HEAD is what clears it.
  *
+ * Exported (AGT-1308) because it is the read-only half: `think doctor` reports
+ * the "`~/.think/repo` index stale vs HEAD" check purely from this verdict and
+ * never mutates, while `think doctor --fix` runs `reconcilePlumbingStaleIndex`
+ * below. Report and repair therefore share one definition of "stale".
+ *
  * @returns the worktree files to rewrite after the reset (empty for the pure
  *          stale state), or `null` when the state is not provably stale.
  */
-function planStaleIndexReconcile(): Array<{ absPath: string; content: Buffer }> | null {
+export function planStaleIndexReconcile(): Array<{ absPath: string; content: Buffer }> | null {
   // Unborn HEAD: there is no tree to be behind.
   let head: string;
   try {
@@ -540,10 +545,15 @@ function planStaleIndexReconcile(): Array<{ absPath: string; content: Buffer }> 
  * reconcile has to surface, not fall through into a commit of whatever state
  * it left behind.
  *
+ * Exported (AGT-1308) as the repair `think doctor --fix` applies for the stale
+ * index check. Its AGT-1299 rule is unchanged and non-negotiable: it mutates
+ * only after proving nothing in the index or worktree would be lost, and
+ * otherwise returns false having touched nothing.
+ *
  * @returns true when the reconciliation ran, false when the state was not
  *          provably stale.
  */
-function reconcilePlumbingStaleIndex(): boolean {
+export function reconcilePlumbingStaleIndex(): boolean {
   let restores: Array<{ absPath: string; content: Buffer }> | null;
   try {
     restores = planStaleIndexReconcile();

@@ -40,6 +40,7 @@ import { hookCommand } from './commands/hook.js';
 import { mcpCommand } from './commands/mcp.js';
 import { usageCommand } from './commands/usage.js';
 import { dashboardCommand } from './commands/dashboard.js';
+import { doctorCommand } from './commands/doctor.js';
 import { refreshBlocksInternalCommand } from './commands/refresh-blocks-internal.js';
 
 const program = new Command();
@@ -87,6 +88,7 @@ program.addCommand(hookCommand);
 program.addCommand(mcpCommand);
 program.addCommand(usageCommand);
 program.addCommand(dashboardCommand);
+program.addCommand(doctorCommand);
 // Plumbing for `think update` (AGT-1306) — never user-facing, so hidden from
 // --help. See commands/refresh-blocks-internal.ts.
 program.addCommand(refreshBlocksInternalCommand, { hidden: true });

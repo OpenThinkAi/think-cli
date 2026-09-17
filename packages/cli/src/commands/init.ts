@@ -160,6 +160,17 @@ export interface UpsertOptions {
     fingerprintB: string;
     heading: string;
   };
+  /**
+   * Decide what the write WOULD be and return the same `UpsertResult`, without
+   * touching the filesystem (AGT-1308). `think doctor` reports "managed blocks
+   * out of date" by running the real upsert logic in this mode, so the report
+   * and `--fix` can never disagree about whether a file needs rewriting.
+   *
+   * Every `UpsertResult` variant is still reachable — including
+   * `{ kind: 'migrated', backupPath }`, whose `backupPath` names the file a
+   * real run would have created rather than one that now exists.
+   */
+  dryRun?: boolean;
 }
 
 /**
@@ -199,10 +210,10 @@ function findCleanMarkerPairs(
 }
 
 export function upsertBlock(filePath: string, block: string, opts: UpsertOptions): UpsertResult {
-  const { beginMarker, endMarker, legacyMigration } = opts;
+  const { beginMarker, endMarker, legacyMigration, dryRun } = opts;
 
   if (!fs.existsSync(filePath)) {
-    fs.writeFileSync(filePath, block, 'utf-8');
+    if (!dryRun) fs.writeFileSync(filePath, block, 'utf-8');
     return { kind: 'created' };
   }
 
@@ -223,7 +234,7 @@ export function upsertBlock(filePath: string, block: string, opts: UpsertOptions
     const after = existing.slice(existing[afterStart] === '\n' ? afterStart + 1 : afterStart);
     const next = before + block + after;
     if (next === existing) return { kind: 'unchanged' };
-    fs.writeFileSync(filePath, next, 'utf-8');
+    if (!dryRun) fs.writeFileSync(filePath, next, 'utf-8');
     return pairs.length > 1 ? { kind: 'deduped', count: pairs.length } : { kind: 'replaced' };
   }
 
@@ -249,15 +260,17 @@ export function upsertBlock(filePath: string, block: string, opts: UpsertOptions
       // hand-edits that get caught by the fingerprint heuristic are
       // recoverable without leaning on git.
       const backupPath = filePath + '.think-backup';
-      fs.writeFileSync(backupPath, existing, 'utf-8');
-      fs.writeFileSync(filePath, next, 'utf-8');
+      if (!dryRun) {
+        fs.writeFileSync(backupPath, existing, 'utf-8');
+        fs.writeFileSync(filePath, next, 'utf-8');
+      }
       return { kind: 'migrated', backupPath };
     }
   }
 
   // Plain append (no markers, no legacy block).
   const separator = existing.endsWith('\n\n') ? '' : existing.endsWith('\n') ? '\n' : '\n\n';
-  fs.writeFileSync(filePath, existing + separator + block, 'utf-8');
+  if (!dryRun) fs.writeFileSync(filePath, existing + separator + block, 'utf-8');
   return { kind: 'appended' };
 }
 
