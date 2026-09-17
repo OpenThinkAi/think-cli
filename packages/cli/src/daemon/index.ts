@@ -44,6 +44,7 @@ import { handleStatus } from './status.js';
 import { compactionQueue, scanAndEnqueueUncompacted } from './compaction/queue.js';
 import { pushDebouncer } from './push-debouncer.js';
 import { indexPendingOutboxEntries } from './outbox-index.js';
+import { migrateStrandedEngrams } from '../lib/engram-migration.js';
 import { getCortexDb, listKnownCortexes } from '../db/engrams.js';
 import { backfillActivitySeqIfNeeded } from '../db/activity-seq.js';
 import { runEmbedModelChecks } from './embed-model-check.js';
@@ -393,6 +394,55 @@ export async function runDaemon(options: DaemonOptions): Promise<void> {
     writeLine(`embed-model: WARN warmup failed — starting in FTS-only mode: ${msg}`);
   }
 
+  const knownCortexes = listKnownCortexes();
+
+  // ---------------------------------------------------------------------------
+  // Rescue stranded engram rows — AGT-1302, self-heal, unconditional
+  //
+  // The v2 `engrams` table still holds every write made by `think sync
+  // -d/--context/-e` and by every daemon-unreachable write before AGT-1298.
+  // Nothing drains it and `think curate` deleted the expired ones unevaluated,
+  // so this re-submits them through the v3 write path — see
+  // lib/engram-migration.ts for the entry model, idempotency and crash safety.
+  //
+  // Ordering is load-bearing:
+  //   * AFTER the embed warmup — every rescued entry needs an embedding, and
+  //     the model is resident by here.
+  //   * BEFORE indexPendingOutboxEntries, so a rescued entry that somehow
+  //     lacks its L2 row is picked up in the same boot rather than a later one.
+  //   * BEFORE the socket is bound, so the first recall after the upgrade
+  //     already sees the rescued entries — and before the drain scheduled
+  //     below, which deletes outbox rows once pushed.
+  //   * BEFORE anything that prunes engrams. Nothing in the daemon prunes;
+  //     `think curate` does, and it runs this first (and pruneExpiredEngrams
+  //     now refuses to delete unevaluated rows outright).
+  //
+  // Deliberately NOT gated on `config.paused`: pause suppresses new event
+  // creation by the CLI, it does not mean "leave a year of decisions
+  // stranded in a table that is about to be deleted".
+  //
+  // Idempotent and cheap once done — the scan is driven by rows that have not
+  // been stamped, so a normal start is one empty SELECT per cortex. Never
+  // fatal: migrateStrandedEngrams reports per-cortex errors rather than
+  // throwing, and the try/catch is defense-in-depth.
+  // ---------------------------------------------------------------------------
+  try {
+    const migration = await migrateStrandedEngrams({ cortexes: knownCortexes, log: writeLine });
+    const { events, memories, skippedSubscribe, failed } = migration.totals;
+    if (events + memories > 0) {
+      writeLine(
+        `engram-migration: rescued ${events + memories} stranded entr` +
+          `${events + memories === 1 ? 'y' : 'ies'} ` +
+          `(${events} event(s), ${memories} memory/ies)` +
+          (skippedSubscribe > 0 ? `, skipped ${skippedSubscribe} subscribe row(s)` : '') +
+          (failed > 0 ? `, ${failed} row(s) deferred to the next start` : ''),
+      );
+    }
+  } catch (migrateErr: unknown) {
+    const msg = migrateErr instanceof Error ? migrateErr.message : String(migrateErr);
+    writeLine(`engram-migration: unexpected error (continuing): ${msg}`);
+  }
+
   // ---------------------------------------------------------------------------
   // Index entries written while the daemon was down — AGT-1298
   //
@@ -412,7 +462,6 @@ export async function runDaemon(options: DaemonOptions): Promise<void> {
   // outbox rows once it has pushed them.
   // ---------------------------------------------------------------------------
 
-  const knownCortexes = listKnownCortexes();
   try {
     await indexPendingOutboxEntries(knownCortexes, writeLine);
   } catch (err: unknown) {
