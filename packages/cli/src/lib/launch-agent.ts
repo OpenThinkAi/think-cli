@@ -64,7 +64,7 @@ function getHome(): string {
   return home;
 }
 
-function getLaunchAgentsDir(): string {
+export function getLaunchAgentsDir(): string {
   return path.join(getHome(), 'Library', 'LaunchAgents');
 }
 
@@ -229,4 +229,186 @@ export function createLaunchAgent(config: LaunchAgentConfig): LaunchAgentApi {
   }
 
   return { getAgentLabel, getPlistPath, getLogPath, installAgent, uninstallAgent, getAgentStatus };
+}
+
+// ---------------------------------------------------------------------------
+// Stale-agent reaper (AGT-1301)
+//
+// `getAgentLabel()` above suffixes the label with sha1(THINK_HOME), so every
+// THINK_HOME a machine has ever pointed at gets its own curate/sync agent —
+// and nothing ever removed one. Once `think curate` and the daemon-down sync
+// bypass are deleted (think-3), a stranded agent invokes a nonexistent
+// command forever. This reaps them unconditionally on daemon start,
+// regardless of which THINK_HOME the daemon itself is running under: it
+// matches on label PREFIX (`ai.openthink.curate.` / `ai.openthink.sync.`),
+// not on the current home's hash.
+//
+// Deliberately exported as a plain function with every input injected
+// (directory, platform, unload) rather than a method bound to one
+// LaunchAgentApi instance: AGT-1307 (heal summary) and AGT-1308 (doctor)
+// both need to run the same matcher and report on it, and tests must never
+// touch the real ~/Library/LaunchAgents (see packages/cli/tests for the
+// fixture-directory suite).
+// ---------------------------------------------------------------------------
+
+/** Label prefixes this reaper removes. Order doesn't matter; kept as a tuple
+ *  so a filename/Label match can report *which* prefix it matched under. */
+const REAPED_LABEL_PREFIXES = ['ai.openthink.curate.', 'ai.openthink.sync.'] as const;
+
+export interface ReapedLaunchAgent {
+  /** The plist's Label key (not just the filename-derived guess). */
+  label: string;
+  plistPath: string;
+  /** Which of REAPED_LABEL_PREFIXES matched. */
+  prefix: string;
+  /** False if `launchctl unload` failed (e.g. agent wasn't loaded) — the
+   *  plist is still deleted either way. */
+  unloaded: boolean;
+}
+
+export interface ReapLaunchAgentsOptions {
+  /** Directory to scan for stale agents. Defaults to ~/Library/LaunchAgents.
+   *  Tests MUST inject a temp directory here — never the real one. */
+  launchAgentsDir?: string;
+  /** Defaults to process.platform. Inject e.g. 'linux' to exercise the
+   *  no-op path without needing to run this suite on Linux. */
+  platform?: NodeJS.Platform;
+  /** Called once per plist about to be deleted, so it can be unloaded first.
+   *  Defaults to a real `launchctl unload`. Tests MUST inject a fake here —
+   *  never let this hit the real launchctl / real loaded agents. Throwing
+   *  (e.g. "not loaded") is expected and non-fatal: the plist is still
+   *  deleted, just reported with unloaded: false. */
+  unload?: (plistPath: string) => void;
+  /** Optional one-line-per-action sink, wired to daemon.log by the caller. */
+  log?: (message: string) => void;
+}
+
+function defaultUnload(plistPath: string): void {
+  execFileSync('launchctl', ['unload', plistPath], { stdio: 'ignore' });
+}
+
+function unescapeXml(s: string): string {
+  return s
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&amp;/g, '&');
+}
+
+/** Pulls the <key>Label</key><string>…</string> value out of plist XML, or
+ *  null if the file doesn't parse as a plist with a Label key at all. Mirrors
+ *  the StartInterval regex-scrape in getAgentStatus() above rather than
+ *  pulling in a full plist parser for one field. */
+function extractPlistLabel(xml: string): string | null {
+  const match = xml.match(/<key>\s*Label\s*<\/key>\s*<string>([^<]*)<\/string>/);
+  if (!match) return null;
+  return unescapeXml(match[1]);
+}
+
+/**
+ * Removes every `ai.openthink.curate.*` / `ai.openthink.sync.*` LaunchAgent
+ * plist directly inside `launchAgentsDir`, across all THINK_HOMEs, unloading
+ * each first. Everything else — `ai.openthink.subscribe.*`,
+ * `ai.openthink.pablo.*`, any `com.openthink.*`, unrelated third-party
+ * agents — is left untouched.
+ *
+ * No-op, never throws: wrong platform, missing directory, empty directory,
+ * or an unload that fails all resolve to a (possibly shorter) result array,
+ * never an exception. Callers (daemon start) can therefore call this
+ * unconditionally without a surrounding try/catch, though daemon start
+ * wraps it anyway as defense-in-depth for a future edit here.
+ *
+ * Matching is deliberately conservative. A plist's filename mirrors its
+ * Label at install time (`getPlistPath` names the file `${label}.plist`),
+ * but a file on disk could have been edited or replaced since. This checks
+ * BOTH signals and requires them to agree on the same prefix before
+ * deleting anything:
+ *   - filename doesn't match either prefix              → not ours, skip
+ *   - filename matches but Label key is missing/unparsable → skip + log
+ *     (can't rule out a plist that isn't ours after all)
+ *   - filename matches one prefix, Label matches a different one (or none)
+ *     → skip + log (ambiguous — a human should look at this, not the reaper)
+ *   - filename and Label agree on the same prefix         → delete
+ *
+ * Only regular files directly inside the directory are considered:
+ * `fs.readdirSync(..., { withFileTypes: true })` + `Dirent.isFile()` is
+ * false for symlinks and subdirectories, so this never follows a symlink
+ * out of LaunchAgents or descends into one.
+ */
+export function reapStaleLaunchAgents(options: ReapLaunchAgentsOptions = {}): ReapedLaunchAgent[] {
+  const platform = options.platform ?? process.platform;
+  const removed: ReapedLaunchAgent[] = [];
+
+  // AC4: no-op (no error) on Linux — LaunchAgents don't exist there.
+  if (platform !== 'darwin') return removed;
+
+  let launchAgentsDir: string;
+  try {
+    launchAgentsDir = options.launchAgentsDir ?? getLaunchAgentsDir();
+  } catch {
+    // HOME unset, or similar — nothing to reap, never fatal.
+    return removed;
+  }
+
+  const unload = options.unload ?? defaultUnload;
+  const log = options.log ?? ((): void => {});
+
+  let entries: fs.Dirent[];
+  try {
+    entries = fs.readdirSync(launchAgentsDir, { withFileTypes: true });
+  } catch {
+    // AC4: directory doesn't exist (fresh machine, never installed an agent).
+    return removed;
+  }
+
+  for (const entry of entries) {
+    if (!entry.isFile() || !entry.name.endsWith('.plist')) continue;
+
+    const filenameLabel = entry.name.slice(0, -'.plist'.length);
+    const filenamePrefix = REAPED_LABEL_PREFIXES.find((p) => filenameLabel.startsWith(p));
+    if (!filenamePrefix) continue;
+
+    const plistPath = path.join(launchAgentsDir, entry.name);
+
+    let contents: string;
+    try {
+      contents = fs.readFileSync(plistPath, 'utf-8');
+    } catch (err: unknown) {
+      log(`launch-agent reap: skipping ${entry.name} — could not read plist: ${String(err)}`);
+      continue;
+    }
+
+    const label = extractPlistLabel(contents);
+    if (label === null) {
+      log(`launch-agent reap: skipping ${entry.name} — filename matches "${filenamePrefix}" but no Label key found; leaving for manual review`);
+      continue;
+    }
+
+    const labelPrefix = REAPED_LABEL_PREFIXES.find((p) => label.startsWith(p));
+    if (labelPrefix !== filenamePrefix) {
+      log(`launch-agent reap: skipping ${entry.name} — filename implies "${filenamePrefix}" but plist Label is "${label}"; leaving for manual review`);
+      continue;
+    }
+
+    let unloaded = true;
+    try {
+      unload(plistPath);
+    } catch {
+      // Not loaded (already unloaded, or install never `load`ed it) —
+      // expected and non-fatal. Still remove the stale file below.
+      unloaded = false;
+    }
+
+    try {
+      fs.unlinkSync(plistPath);
+    } catch (err: unknown) {
+      log(`launch-agent reap: failed to delete ${plistPath}: ${String(err)}`);
+      continue;
+    }
+
+    log(`launch-agent reap: removed ${label} (${plistPath})`);
+    removed.push({ label, plistPath, prefix: labelPrefix, unloaded });
+  }
+
+  return removed;
 }

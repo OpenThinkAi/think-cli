@@ -34,6 +34,7 @@ import { readPackageVersion } from '../lib/version.js';
 import { getConfig } from '../lib/config.js';
 import { getThinkDir, getDaemonSocketPath } from '../lib/paths.js';
 import { getDaemonPidPath, isDaemonRunning, removePidFile } from '../lib/daemon-status.js';
+import { reapStaleLaunchAgents } from '../lib/launch-agent.js';
 import { DEFAULT_DAEMON_TCP_PORT } from '../lib/daemon-constants.js';
 import { parseLineFraming, dispatchRequest } from './protocol.js';
 import { handleSync } from './sync-handler.js';
@@ -357,6 +358,29 @@ export async function runDaemon(options: DaemonOptions): Promise<void> {
     process.stderr.write(`error: could not write PID file at ${pidPath}: ${String(pidErr)}\n`);
     closeLog();
     process.exit(1);
+  }
+
+  // ---------------------------------------------------------------------------
+  // LaunchAgent reaper (AGT-1301) — self-heal, unconditional
+  //
+  // Pre-daemon curator/sync LaunchAgents are labelled by a hash of THINK_HOME
+  // (lib/launch-agent.ts) and nothing ever removed one. Once `think curate`
+  // and the daemon-down sync bypass are deleted (think-3), a stranded agent
+  // invokes a nonexistent command forever. Reap by label PREFIX so agents
+  // installed under *other* THINK_HOMEs on this machine are cleaned up too,
+  // not just the one this daemon process happens to be running under.
+  // Never fatal: reapStaleLaunchAgents() already no-ops on non-macOS and on a
+  // missing/empty directory; the try/catch is defense-in-depth so a future
+  // edit there can't take startup down with it.
+  // ---------------------------------------------------------------------------
+  try {
+    const reaped = reapStaleLaunchAgents({ log: writeLine });
+    if (reaped.length > 0) {
+      writeLine(`launch-agent reap: removed ${reaped.length} stale curate/sync agent(s)`);
+    }
+  } catch (reapErr: unknown) {
+    const msg = reapErr instanceof Error ? reapErr.message : String(reapErr);
+    writeLine(`launch-agent reap: unexpected error (continuing): ${msg}`);
   }
 
   writeLine(`embed-model: loading ${EMBEDDING_MODEL_NAME}…`);
