@@ -27,7 +27,9 @@
 
   **What stayed.** `think curate-retros` and the daemon's retro curation loop never touched engrams and are untouched. `think migrate-engrams --dry-run` stays — it is the rescue, and it has to outlive the tier it drains. The `engrams` table and its schema migrations stay in place, read-only, for one major; dropping them is a later change and **no schema migration is added here**.
 
-  **`think list`, `think summary` and `think dashboard`** read the cortex entry store instead of the engrams table. On a cortex whose entries were written through the daemon these were previously showing an empty or stale table; they now show what `think recall` shows.
+  **`think list`, `think summary` and `think dashboard`** read the cortex entry store instead of the engrams table. On a cortex whose entries were written through the daemon these were previously showing an empty or stale table; they now show what `think recall` shows. Two output shapes change with the source: `think list` and `think summary --raw` label each row with its actual kind (`[memory]`, `[event]`, `[retro]`) where every row used to be labelled `[event]`, and the trailing count says "entries" rather than "events". A script grepping `think list` output for `[event]` will now match only genuine events.
+
+  **`think cortex sync --if-online` logs under `[cortex sync]`**, not `[auto-sync]` — the LaunchAgent that prefix named is gone. The flag itself stays; it is still what you want from any external scheduler.
 
 - **Nine `cortex.*` config keys are no longer read.** `curateEveryN`, `engramTTLDays`, `curatorPromptCharCap`, `selectivity`, `granularity`, `maxMemoriesPerRun`, `confirmBeforeCommit`, `idleWindowMinutes` and `staleWindowMinutes` were all read only by `think curate` or its prompt assembler. Setting one is not an error and nothing is rewritten in your config file: think prints one line on stderr naming the dead keys, once per invocation, and carries on.
 
