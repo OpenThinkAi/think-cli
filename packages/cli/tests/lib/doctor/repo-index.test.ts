@@ -78,12 +78,12 @@ describe('checkRepoIndex (AGT-1308)', () => {
 
     expect(result.status).toBe('warn');
     expect(result.fixable).toBe(true);
-    expect(result.detail).toContain('2 in-flight worktree appends sit on a stale index');
+    expect(result.detail).toContain('Found 2 in-flight worktree appends on a stale index');
     expect(result.detail).toContain('think doctor --fix');
     expect(result.detail).toContain('preserves every append');
   });
 
-  it('AGT-1326 state 2: pluralizes the append count for a single restore', () => {
+  it('AGT-1326 state 2: singular append count reads grammatically', () => {
     const result = checkRepoIndex({
       repoPath,
       plan: () => [{ absPath: join(repoPath, 'personal', 'l1-0001.jsonl'), content: Buffer.from('x') }],
@@ -91,7 +91,7 @@ describe('checkRepoIndex (AGT-1308)', () => {
 
     expect(result.status).toBe('warn');
     expect(result.fixable).toBe(true);
-    expect(result.detail).toContain('1 in-flight worktree append sit on a stale index');
+    expect(result.detail).toContain('Found 1 in-flight worktree append on a stale index');
   });
 
   it('warns without offering a repair when git could not be questioned', () => {

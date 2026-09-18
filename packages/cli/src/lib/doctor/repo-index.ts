@@ -119,7 +119,10 @@ export function checkRepoIndex(options: RepoIndexOptions = {}): CheckResult {
   return result(
     REPO_INDEX_CHECK_ID,
     'warn',
-    `${plural(restores.length, 'in-flight worktree append')} sit on a stale ` +
+    // "Found N appends" rather than "N appends sit" — plural() only inflects
+    // the noun, so making the count the subject of a verb breaks agreement at
+    // N=1 ("1 append sit").
+    `Found ${plural(restores.length, 'in-flight worktree append')} on a stale ` +
       `index — \`think doctor --fix\` reconciles them and preserves every append.`,
     true,
   );
