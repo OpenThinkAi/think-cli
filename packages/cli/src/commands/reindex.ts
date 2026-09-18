@@ -208,7 +208,7 @@ export async function reindexOneCortex(
 // ─── command ──────────────────────────────────────────────────────────────────
 
 export const reindexCommand = new Command('reindex')
-  .description('Rebuild the search index (L2) for one or all cortexes from the raw log (L1 JSONL)')
+  .description('Rebuild the search index for one or all cortexes from the raw log')
   .argument('[cortex]', 'Cortex name to reindex (omit for all configured cortexes)')
   .option('--force', 'Drop all L2 rows first and rebuild from scratch (non-atomic; L1 is the source of truth)', false)
   .action(async (cortexArg: string | undefined, opts: { force: boolean }) => {

@@ -177,7 +177,7 @@ export const longTermCommand = new Command('long-term')
   .description('Manage long-term memory events (durable decisions, transitions, milestones)');
 
 longTermCommand.addCommand(new Command('backfill')
-  .description('One-time pass that extracts long-term events from historical memories. Without flags, ships memory content to Anthropic for curation. See --dry-run for a fully-local preview.')
+  .description('One-time extraction of long-term events from historical memories')
   .option('--force', 'Run even if long-term events already exist')
   .option('--dry-run', 'Local-only preview: counts + monthly breakdown + prompt envelope description. Does NOT contact Anthropic and does NOT ship any memory content. Use --preview-prompt to run the LLM-driven preview.')
   .option('--preview-prompt', 'Run the curator prompts against Anthropic for each month and print proposed events without persisting them. ⚠️ Ships the same memory data envelope as a real run (one Claude SDK call per month). Use --dry-run if you want a preview without contacting Anthropic.')

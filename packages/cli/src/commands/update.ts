@@ -49,7 +49,7 @@ function getLatestPublishedVersion(): string | null {
 }
 
 export const updateCommand = new Command('update')
-  .description('Update think to the latest version (restarts the resident daemon if it is serving older code)')
+  .description('Update think to the latest version (restarts the daemon if needed)')
   .action(async () => {
     console.log(chalk.cyan('Checking for updates...'));
 

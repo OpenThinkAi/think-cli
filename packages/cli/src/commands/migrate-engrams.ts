@@ -18,7 +18,7 @@ import { migrateStrandedEngrams, type EngramMigrationSummary } from '../lib/engr
 import { closeAllCortexDbs } from '../db/engrams.js';
 
 export const migrateEngramsCommand = new Command('migrate-engrams')
-  .description('Re-submit entries stranded in the legacy engrams table as events and memories')
+  .description('Re-submit entries stranded in the legacy pre-daemon table')
   .option('--dry-run', 'Report what would be migrated, per cortex, and write nothing')
   .addHelpText('after', `
 What it does:

@@ -21,7 +21,7 @@ import { listLocalBranches } from '../lib/git.js';
 import type { RetroMigrateResult } from '../daemon/retro-migrate-handler.js';
 
 export const retroMigrateCommand = new Command('retro-migrate')
-  .description('Fold legacy per-repo cortices into your home cortex, tagged by repo context (dry-run by default)')
+  .description('Fold legacy per-repo cortices into your home cortex (dry-run by default)')
   .option('--to <name>', 'Target home cortex to migrate retros INTO (default: -C or active cortex)')
   .option('--from <list>', 'Comma-separated source cortices (default: all other local cortices with retros)')
   .option('--apply', 'Actually perform the migration (default is a dry-run preview)')

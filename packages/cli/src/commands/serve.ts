@@ -60,10 +60,7 @@ function resolveDbPath(): string {
 
 serveCommand
   .command('status')
-  .description(
-    'Print the persisted proxy state (peer-id, db path, active subscriptions) without starting the ' +
-      'server. Reads the same sqlite DB `think serve` writes to.',
-  )
+  .description('Print the persisted proxy state without starting the server')
   .action(async () => {
     // Lazy-import to keep the hot CLI path free of the `node:sqlite` cost
     // for users who never run the proxy.
@@ -106,7 +103,7 @@ serveCommand
 
 serveCommand
   .command('subscribe')
-  .description('Add a connector subscription to the running proxy. The scheduler picks it up on its next tick.')
+  .description('Add a connector subscription to the running proxy')
   .argument('<kind>', 'Connector kind, e.g. `github`')
   .argument('<pattern>', 'Source pattern; for github this is `<owner>/<repo>`')
   .action(async (kind: string, pattern: string) => {
@@ -172,7 +169,7 @@ serveCommand
 
 serveCommand
   .command('unsubscribe')
-  .description('Remove a subscription from the running proxy. The next scheduler tick stops polling it.')
+  .description('Remove a subscription from the running proxy')
   .argument('<kind>', 'Connector kind, e.g. `github`')
   .argument('<pattern>', 'Source pattern, e.g. `<owner>/<repo>` for github')
   .action(async (kind: string, pattern: string) => {
@@ -205,13 +202,13 @@ const credsCommand = serveCommand
 
 credsCommand
   .command('add')
-  .description(
-    'Store (or replace) a credential for the subscription matching <kind>/<pattern>. ' +
-      'Reads from the kind-specific env var (e.g. $THINK_GITHUB_PAT for github), ' +
-      'then $THINK_CRED_PLAINTEXT, or stdin.',
-  )
+  .description('Store or replace a credential for a proxy subscription')
   .argument('<kind>', 'Connector kind')
   .argument('<pattern>', 'Subscription pattern, e.g. `<owner>/<repo>` for github')
+  .addHelpText('after', `
+Reads the credential from the kind-specific env var (e.g. $THINK_GITHUB_PAT
+for github), then $THINK_CRED_PLAINTEXT, or stdin.
+`)
   .action(async (kind: string, pattern: string) => {
     const { openDb } = await import('../serve/db.js');
     const { createVault } = await import('../serve/vault/index.js');

@@ -343,9 +343,7 @@ function reportResult(filePath: string, result: UpsertResult, label: string): vo
 }
 
 export const initCommand = new Command('init')
-  .description(
-    'Set up Claude Code integration: upserts a marker-bracketed block in CLAUDE.md (and AGENTS.md if present) with work-logging guidance and generic iterative-learning instructions (read via `think brief`, write via `think retro`, cortex inferred from the repo basename). Pass --retro --cortex <name> to upsert a *separate* repo-scoped block that bakes the cortex name into the read/write commands literally — both blocks can coexist in the same file.',
-  )
+  .description('Set up CLAUDE.md (and AGENTS.md) for auto-logging and retros')
   .option('-d, --dir <path>', 'Target directory for CLAUDE.md')
   .option('-y, --yes', 'Skip confirmation, use defaults')
   .option('--minimal', 'Write a conservative work-log template that logs only explicit shipped outcomes — no decision narration, no retro pattern. Skips the disclosure prompt. Mutually exclusive with --retro.')
