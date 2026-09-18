@@ -115,7 +115,7 @@ function promptHidden(prompt: string): Promise<string> {
 // Token defaults to stdin (or the THINK_TOKEN env var) so the secret stays
 // out of shell history.
 subscribeCommand.addCommand(new Command('configure')
-  .description('Set the proxy URL + bearer token used by `subscribe add/list/poll/...` (token from stdin or THINK_TOKEN by default)')
+  .description('Set the proxy URL and bearer token used by other subscribe commands')
   .requiredOption('--proxy <url>', 'Base URL of the open-think proxy (http or https; no trailing slash needed)')
   .option('--token <token>', 'Bearer token (NOT recommended — leaks to shell history; prefer stdin or THINK_TOKEN env)')
   .action(async (opts: { proxy: string; token?: string }) => {
@@ -242,7 +242,7 @@ subscribeCommand.addCommand(new Command('list')
 
 // `think subscribe remove <id>`
 subscribeCommand.addCommand(new Command('remove')
-  .description('Delete a subscription on the proxy (cascades to its events and stored credential)')
+  .description('Delete a subscription on the proxy (cascades to events/credential)')
   .argument('<id>', 'Subscription id from `subscribe list`')
   .action(async (id: string) => {
     const proxy = getProxyConfig();
@@ -269,7 +269,7 @@ subscribeCommand.addCommand(new Command('remove')
 
 // `think subscribe set-credential <id>` — read from stdin or hidden TTY prompt
 subscribeCommand.addCommand(new Command('set-credential')
-  .description('Store an encrypted credential for a subscription. Prefer stdin: `pbpaste | think subscribe set-credential <id>`. TTY interactive uses raw-mode (no echo).')
+  .description('Store an encrypted credential for a subscription (stdin preferred)')
   .argument('<id>', 'Subscription id from `subscribe list`')
   .action(async (id: string) => {
     const proxy = getProxyConfig();
@@ -318,7 +318,7 @@ subscribeCommand.addCommand(new Command('set-credential')
 
 // `think subscribe poll [--quiet]`
 subscribeCommand.addCommand(new Command('poll')
-  .description('[DEPRECATED] No-op — pull the proxy-curated team cortex with `think pull <team-cortex>` instead')
+  .description('[DEPRECATED] No-op — use `think pull <team-cortex>` instead')
   .option('--quiet', 'Suppress the deprecation notice. Used by the LaunchAgent so a backgrounded poll stays silent.')
   // think-3 (AGT-1303): --legacy-engrams drove the pre-think-proxy-events
   // local engram-write path. The engram tier is gone, so the flag is kept
@@ -346,7 +346,7 @@ subscribeCommand.addCommand(new Command('poll')
 
 // `think subscribe install-agent`
 subscribeCommand.addCommand(new Command('install-agent')
-  .description('Install a LaunchAgent that runs `think subscribe poll --quiet` on session load and at the configured cadence (default 600s)')
+  .description('Install a LaunchAgent that polls in the background (default 600s)')
   .option('--interval <seconds>', 'Scheduler cadence in seconds (default 600)', (v) => {
     const n = parseInt(v, 10);
     if (!Number.isInteger(n) || n <= 0 || String(n) !== v.trim()) {

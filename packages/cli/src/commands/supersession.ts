@@ -197,7 +197,7 @@ const revertSubcommand = new Command('revert')
   });
 
 export const supersessionCommand = new Command('supersession')
-  .description('Inspect and revert supersession links (superseded entries are hidden from active recall)')
+  .description('Inspect and revert supersession links (hidden entries can be restored)')
   .addCommand(listSubcommand)
   .addCommand(showSubcommand)
   .addCommand(revertSubcommand);

@@ -9,10 +9,10 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import path from 'node:path';
 import { tmpdir } from 'node:os';
-import { fileURLToPath } from 'node:url';
-import { mkdtempSync, rmSync, readFileSync } from 'node:fs';
+import { mkdtempSync, rmSync } from 'node:fs';
 import { refreshBlocksInternalCommand } from '../../src/commands/refresh-blocks-internal.js';
 import { initCommand } from '../../src/commands/init.js';
+import { buildProgram } from '../../src/program.js';
 
 describe('refresh-blocks-internal', () => {
   let homeRoot: string;
@@ -45,17 +45,20 @@ describe('refresh-blocks-internal', () => {
     expect(refreshBlocksInternalCommand.name()).toBe('refresh-blocks-internal');
   });
 
-  it('is registered with { hidden: true } in index.ts, so it never surfaces in --help', () => {
-    // index.ts unconditionally calls `program.parse()` at module scope, so it
-    // can't be imported directly in tests — assert the registration in its
-    // source instead. `program.addCommand(cmd, { hidden: true })` is the only
-    // supported way (this commander version) to hide a prepared Command; see
-    // node_modules/commander/lib/command.js's addCommand.
-    const indexPath = fileURLToPath(new URL('../../src/index.ts', import.meta.url));
-    const source = readFileSync(indexPath, 'utf-8');
-    expect(source).toMatch(
-      /addCommand\(refreshBlocksInternalCommand,\s*\{\s*hidden:\s*true\s*\}\)/,
-    );
+  it('is registered with { hidden: true } in the program, so it never surfaces in --help', () => {
+    // AGT-1311 factored program assembly out of src/index.ts (which
+    // unconditionally calls `.parse()` at module scope, so it can't be
+    // imported directly in tests) into src/program.ts's buildProgram(),
+    // which both index.ts and the generated-command-table script call. That
+    // makes the real registered Command inspectable here directly, instead
+    // of regex-matching index.ts's source text for the addCommand call.
+    const program = buildProgram();
+    const cmd = program.commands.find((c) => c.name() === 'refresh-blocks-internal');
+    expect(cmd).toBeDefined();
+    // `_hidden` is commander's own (unprefixed-by-`#`, so accessible, but not
+    // part of the public typings) flag set by `addCommand(cmd, { hidden: true })`
+    // — see node_modules/commander/lib/command.js's addCommand.
+    expect((cmd as unknown as { _hidden?: boolean })._hidden).toBe(true);
   });
 
   it('prints exactly one JSON line describing the refresh result', async () => {

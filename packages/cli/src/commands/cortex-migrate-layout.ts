@@ -398,7 +398,7 @@ async function migrateOneBranch(
 }
 
 export const cortexMigrateLayoutCommand = new Command('migrate-layout')
-  .description('One-time: nest cortex files under the <branch>/ subdir for every branch (or one named branch)')
+  .description('One-time: nest cortex files under <branch>/ for every branch')
   .argument('[cortex]', 'Specific branch/cortex to migrate (defaults to every local branch)')
   .option('--dry-run', 'Print the plan without committing or pushing', false)
   .option('--no-push', 'Commit locally but skip git push')

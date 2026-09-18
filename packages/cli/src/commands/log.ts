@@ -15,7 +15,7 @@ import { writeDaemonDownEntry } from '../lib/l1-fallback.js';
 // startup via the syncCommand singleton below.
 export function makeSyncCommand(): Command {
   return addWriteOptions(new Command('sync')
-    .description('Record a memory entry to the active cortex (or local think.db if no cortex is configured)')
+    .description('Record a memory entry to the active cortex (or local think.db)')
     .argument('<message>', 'The message to log')
     .option('-s, --source <source>', 'Source of the entry', 'manual')
     .option('-t, --tags <tags>', 'Comma-separated tags')

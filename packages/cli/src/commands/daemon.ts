@@ -35,15 +35,16 @@ function defaultLogPath(): string {
 // ---------------------------------------------------------------------------
 
 const startSubcommand = new Command('start')
-  .description(
-    'Start the think daemon in the background; no-op if already running. ' +
-    'Pass --foreground to run in the current shell (required for process supervisors). ' +
-    'BEHAVIORAL NOTE: prior versions ran in the foreground by default; v3 defaults to ' +
-    'background. Scripts that relied on `think daemon start` blocking must pass --foreground.',
-  )
+  // AGT-1311: kept to one line for the generated command table. The
+  // foreground-by-default → background-by-default behavior change and its
+  // --foreground migration path live in the --foreground option's own help
+  // text below, which isn't subject to the same length limit.
+  .description('Start the think daemon in the background (no-op if already running)')
   .option(
     '--foreground',
-    'Run the daemon in the current shell instead of spawning in the background.',
+    'Run the daemon in the current shell instead of spawning in the background ' +
+    '(required for process supervisors; scripts that relied on the old ' +
+    'foreground-by-default behavior must pass this explicitly).',
   )
   // --socket-path is deferred: stop/status gate on isDaemonRunning() which reads
   // the default PID file; until that accepts a custom path, a custom-socket daemon
@@ -211,15 +212,19 @@ const stopSubcommand = new Command('stop')
 // ---------------------------------------------------------------------------
 
 const statusSubcommand = new Command('status')
-  .description(
-    'Print the current running state, pid, socket path, and (when available) uptime and version. ' +
-    'Output is key=value lines (a `--json` flag is planned in AGT-287+ as an additional format). ' +
-    'When the daemon is serving a different version than this CLI (e.g. after an update without ' +
-    'a restart), a `cli_version=` line is emitted — its presence is the drift signal — along with ' +
-    'a stderr warning. ' +
-    'FORMAT NOTE: prior versions printed prose (`daemon running (pid N)`). v3 emits ' +
-    'key=value lines (`pid=N`, `socket=…`, `status=running`); existing parsers must update.',
-  )
+  // AGT-1311: kept to one line for the generated command table; the output
+  // format and its migration note (below, via addHelpText) carry the detail.
+  .description('Print the daemon\'s running state, pid, socket path, and version')
+  .addHelpText('after', `
+Output is key=value lines (\`pid=N\`, \`socket=…\`, \`status=running\`; a
+\`--json\` flag is planned in AGT-287+ as an additional format). This replaced
+an earlier prose format (\`daemon running (pid N)\`) — existing parsers built
+against that prose must update.
+
+When the daemon is serving a different version than this CLI (e.g. after an
+update without a restart), a \`cli_version=\` line is emitted — its presence
+is the drift signal — along with a stderr warning.
+`)
   .action(async () => {
     const { isDaemonRunning } = await import('../lib/daemon-status.js');
     const { connectDaemon, probeDaemon } = await import('../lib/daemon-client.js');

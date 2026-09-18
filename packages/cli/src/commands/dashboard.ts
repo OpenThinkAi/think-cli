@@ -165,7 +165,7 @@ function buildTodayItems(cortex: string | null, panels: DashboardPanel[]): Recor
 }
 
 export const dashboardCommand = new Command('dashboard')
-  .description('Open a status dashboard (working on / shipped today / unfinished) with an AI prompt box')
+  .description("Open a status dashboard (today's work) with an AI prompt box")
   .option('--json', 'Print the data as JSON instead of opening the view')
   .option('--view <path>', 'Use a custom view .tsx (overrides config.dashboard.view)')
   .addHelpText(

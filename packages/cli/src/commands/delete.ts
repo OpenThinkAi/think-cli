@@ -31,7 +31,7 @@ function snippet(content: string): string {
 }
 
 export const deleteCommand = new Command('delete')
-  .description('Soft-delete entries from the active cortex (tombstoned locally and propagated to peers)')
+  .description('Soft-delete entries from the active cortex (tombstoned, propagated to peers)')
   .option('--id <id>', 'Delete a specific entry by ID')
   .option('--match <pattern>', 'Delete entries whose content contains the pattern')
   .option('--last', 'Delete the most recent entry')
