@@ -274,7 +274,12 @@ function writeCortexLlmValue(key: string, parsed: CortexLlmKey, value: unknown, 
   setNestedValue(config as unknown as Record<string, unknown>, key, value);
   saveConfig(config);
 
-  console.log(chalk.green('✓') + ` ${key} = ${JSON.stringify(value)}`);
+  // A bearer token belongs on disk, not in terminal scrollback or a CI log —
+  // redact it in the confirmation line the same way redactProviderBlock does
+  // for the printed block below (stamp review r2, security).
+  const displayValue =
+    parsed.kind === 'provider' && parsed.leaf === 'apiKey' ? JSON.stringify(REDACTED) : JSON.stringify(value);
+  console.log(chalk.green('✓') + ` ${key} = ${displayValue}`);
   const cortex = (config as unknown as Record<string, unknown>).cortex as Record<string, unknown> | undefined ?? {};
   const llm = (cortex.llm as Record<string, unknown> | undefined) ?? {};
   if (parsed.kind === 'fallback') {

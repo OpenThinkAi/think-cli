@@ -373,10 +373,13 @@ describe('think config set/get — cortex.llm.* (AGT-1327)', () => {
     expect(out).toContain('"apiKey": "<redacted>"');
   });
 
-  it('still shows the confirmation line in full when apiKey itself is the leaf being set', async () => {
+  it('redacts the confirmation line too when apiKey itself is the leaf being set', async () => {
     await set('cortex.llm.providers.localqwen.apiKey', 'sk-first-set');
-    // The top confirmation ("✓ key = value") echoes the value just set —
-    // that's the leaf the user is actively changing, not incidental spill.
-    expect(logs.join('\n')).toContain('sk-first-set');
+    // The top confirmation ("✓ key = value") must not put the bearer token in
+    // terminal scrollback or a CI log either — only the on-disk value is real.
+    const out = logs.join('\n');
+    expect(out).not.toContain('sk-first-set');
+    expect(out).toContain('cortex.llm.providers.localqwen.apiKey = "<redacted>"');
+    expect(readPersistedConfig().cortex?.llm?.providers?.localqwen?.apiKey).toBe('sk-first-set');
   });
 });
