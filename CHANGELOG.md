@@ -2,6 +2,76 @@
 
 ## [Unreleased]
 
+## [3.0.0-rc.1] — 2026-09-17
+
+Published under the `rc` npm dist-tag — `latest` stays on `2.6.1` until this
+release is promoted (a separate, manual step). Install it explicitly:
+
+```bash
+npm install -g @openthink/think@rc
+```
+
+`think update` (which always installs `@latest`) will not touch a machine
+running this release, and will not put it on a machine running 2.6.1 either —
+that is the point of shipping a release candidate first. See
+[Upgrading to 3.0](README.md#upgrading-to-30) for the full walkthrough.
+
+### Breaking
+
+Every command and flag the v2 engram tier depended on is gone. Each removed
+flag exits non-zero with a one-line pointer rather than being quietly
+ignored; a removed command reports "unknown command".
+
+| Removed | Use instead |
+| --- | --- |
+| `think sync -d` / `--decision` | `think event "Decided …"` |
+| `think sync --context` | `think event` |
+| `think sync -e` / `--episode` | `think event` |
+| `think log` | `think sync` |
+| `think curate` (incl. `--episode`, `--consolidate`) | nothing — the tier it curated is gone. `think curate-retros` is a different command and stays. |
+| `think monitor` | `think recall` / `think memory` |
+| `think curator edit` / `show` | nothing — there is no curator prompt to guide. |
+| `think migrate-data` | `think doctor` reports anything still to migrate; `--fix` migrates it. |
+| `think cortex auto-curate` / `auto-sync` | nothing — the daemon syncs on its own. |
+| `think recall --engrams` | `think recall` (it searches everything) |
+| `think subscribe poll --legacy-engrams` | `think pull <team-cortex>` |
+| `think init --block-version` | `think init` — there is one template now. |
+
+Nine `cortex.*` config keys that only the removed write tier read
+(`curateEveryN`, `engramTTLDays`, `curatorPromptCharCap`, `selectivity`,
+`granularity`, `maxMemoriesPerRun`, `confirmBeforeCommit`, `idleWindowMinutes`,
+`staleWindowMinutes`) are now inert — setting one is not an error, and think
+prints one advisory line naming the ones it finds rather than rewriting your
+config file.
+
+Full detail on every removal, and what each command's replacement looks like
+day to day, is in the [Removed](#removed) section below and in the README's
+[Upgrading to 3.0](README.md#upgrading-to-30) table — the two agree.
+
+### Self-heal and `think doctor`
+
+No prompt, no flag. On the first `3.0.0` daemon start (and via
+`think doctor --fix`), think:
+
+- **Reaps the retired LaunchAgents** — unloads and deletes every
+  `ai.openthink.curate.*` and `ai.openthink.sync.*` job, matched by label
+  across every `THINK_HOME` on the machine, not just the current one.
+- **Migrates stranded rows** — see "Entries already stranded…" under Fixed
+  below.
+- **Refreshes managed blocks** — `think update` rewrites every `CLAUDE.md` /
+  `AGENTS.md` block think has a record of, so agents stop being taught
+  commands that no longer exist.
+
+The next interactive `think` command prints a one-time summary of what was
+healed. `think doctor` reports (and `--fix` repairs) anything self-heal could
+not do unattended — stale LaunchAgents, out-of-date managed blocks, rows still
+waiting to be migrated, a stale `~/.think/repo` index, a daemon running a
+different build than the one installed, unreachable LLM providers, a missing
+Claude Code hook/MCP registration, more than one `THINK_HOME` present, a
+cortex branch carrying a bad salvage commit, and retired vocabulary in
+instruction files think does not manage. `think doctor --json` exists so setup
+scripts can gate on it.
+
 ### Fixed
 
 - **`think update` no longer downgrades a machine that is ahead of `latest`.** It compared the installed version against the `latest` dist-tag by string equality and installed `@latest` on any difference, so a machine running a prerelease (`3.0.0-rc.1` while `latest` is still `2.6.1`) was downgraded — once per agent session, given the managed block runs `think update` at session start. The comparison is now real SemVer precedence: an install that is genuinely newer is kept with a one-line note naming both versions and the tag it tracks (`npm install -g @openthink/think@rc` to refresh), a prerelease behind its own release still upgrades (`3.0.0-rc.1` → `3.0.0`), and the daemon-drift sync plus managed-block refresh run on every one of those paths exactly as before. A registry answer that is not a version, and an unreachable registry on a prerelease machine, now install nothing and say why rather than resolving `@latest` from npm's cache.
