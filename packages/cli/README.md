@@ -6,6 +6,10 @@
   which runs automatically in `prepack`. Relative links are rewritten to
   absolute GitHub URLs, because npm's package page has no repo tree to
   resolve them against. Edit the root README instead, then regenerate.
+
+  This content tracks whatever version packages/cli/package.json names at
+  publish time (see that script file for why a version bump is out of
+  scope here) — it is not a claim that THIS package.json's version matches.
 -->
 
 # think

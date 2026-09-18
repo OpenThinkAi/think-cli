@@ -19,6 +19,31 @@
  * Usage (from packages/cli):
  *   npm run gen:npm-readme             # regenerate packages/cli/README.md in place
  *   npm run gen:npm-readme -- --check  # exit 1 if the committed copy would change; write nothing
+ *
+ * Two things this script deliberately does NOT do, both raised in AGT-1313
+ * review and out of scope by design:
+ *
+ * 1. It does not touch `packages/cli/package.json`'s `version`. The copy it
+ *    produces describes whatever version that file names AT PUBLISH TIME —
+ *    it has no version opinion of its own. Bumping to 3.0.0 is owned by the
+ *    think-3 release-wave tickets (AGT-1317 rc, AGT-1319 GA), not this one.
+ *    Nothing ships this content under the wrong version in the meantime:
+ *    `.github/workflows/publish.yml`'s "check npm registry" step runs
+ *    `npm view "$NAME@$VERSION" version`, and its "publish" step is gated
+ *    `if: steps.check.outputs.published == 'false'` — i.e. publish only
+ *    fires for a version not already on the registry. `@openthink/think@2.6.1`
+ *    (today's package.json version) is already published (verified via
+ *    `npm view @openthink/think@2.6.1 version` -> `2.6.1`), so a plain merge
+ *    of this change at 2.6.1 publishes nothing; the 3.0.0 content only ever
+ *    reaches npm once a release-wave ticket bumps the version, at which
+ *    point it is correct by construction.
+ * 2. It does not change `think subscribe poll` / `think subscribe
+ *    install-agent` behavior (both silently no-op instead of exiting
+ *    non-zero, unlike every other removed command) — the README documents
+ *    that trap rather than closing it, per the think-3 design doc's
+ *    "Deferred: `think serve` / proxy changes beyond deleting
+ *    `--legacy-engrams` and fixing its docs" (Matt, 2026-09-17,
+ *    ~/saltline-digital-vault/projects/think-3/README.md).
  */
 import { readFileSync, writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
@@ -42,6 +67,10 @@ export const HEADER_COMMENT = [
   '  which runs automatically in `prepack`. Relative links are rewritten to',
   `  absolute GitHub URLs, because npm's package page has no repo tree to`,
   '  resolve them against. Edit the root README instead, then regenerate.',
+  '',
+  '  This content tracks whatever version packages/cli/package.json names at',
+  '  publish time (see that script file for why a version bump is out of',
+  "  scope here) — it is not a claim that THIS package.json's version matches.",
   '-->',
 ].join('\n');
 
