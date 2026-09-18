@@ -4,6 +4,7 @@ import { Command } from 'commander';
 import { execFileSync } from 'node:child_process';
 import chalk from 'chalk';
 import { recordHealAction } from '../lib/heal-summary.js';
+import { parseVersion, comparePrecedence, prereleaseTag } from '../lib/semver-compare.js';
 
 /** Directory of the globally installed `@openthink/think` package, or null. */
 function getGlobalPackageRoot(): string | null {
@@ -121,6 +122,75 @@ export const updateCommand = new Command('update')
       // drift here so re-running `think update` is always sufficient.
       syncDaemon(before);
       refreshBlocks();
+      return;
+    }
+
+    // `latest` above is the `latest` DIST-TAG, not the highest published
+    // version: publish.yml routes a prerelease to its own tag (`rc` for
+    // `3.0.0-rc.1`), so on a canary machine the installed version is ahead
+    // of `latest` and installing `@latest` would be a downgrade. hivedb's
+    // managed block runs `think update` once per agent session, so that
+    // downgrade would undo the canary within minutes (AGT-1324).
+    const beforeParsed = parseVersion(before);
+    const latestParsed = parseVersion(latest);
+
+    // Unparsable registry answer: `npm view` succeeded but returned
+    // something that is not a version, so there is no version to compare
+    // against and no target worth installing. Say so and heal what we can,
+    // rather than installing a tag we cannot reason about. (A registry
+    // lookup that *failed* leaves `latest` null and falls through to the
+    // install below — that is the offline/unknown case, unchanged.) Echoed
+    // through JSON.stringify: this is the one version string that reached
+    // us without passing the parser, so quote-and-escape it rather than let
+    // registry bytes emit raw control/ANSI sequences into the warning.
+    if (latest !== null && latestParsed === null) {
+      console.error(
+        chalk.yellow('⚠') +
+          ` The registry reported an unrecognizable latest version (${JSON.stringify(latest)}) — not installing anything.`,
+      );
+      syncDaemon(before);
+      refreshBlocks();
+      return;
+    }
+
+    // Shared tail of the two "install nothing, keep what is here" branches
+    // below: point at the dist-tag the install appears to track (`rc` for
+    // `3.0.0-rc.1`, derived the way publish.yml derives it) so a deliberate
+    // refresh is one copy-paste away, then run the same heal wiring as the
+    // already-up-to-date path — nothing was installed, but the daemon or a
+    // managed block can still be stale.
+    const keepInstalled = (): void => {
+      const tag = beforeParsed ? prereleaseTag(beforeParsed) : null;
+      console.log(chalk.dim(`  Reinstall with \`npm install -g @openthink/think@${tag ?? before}\` to refresh.`));
+      syncDaemon(before);
+      refreshBlocks();
+    };
+
+    // Installed version is genuinely newer than `latest` (a prerelease
+    // canary, or a local build) — keep it. An unparsable INSTALLED version
+    // deliberately does not land here: an unknown install is the one case
+    // where `@latest` is the best answer available, which is also today's
+    // behaviour.
+    if (beforeParsed && latestParsed && comparePrecedence(beforeParsed, latestParsed) > 0) {
+      console.log(chalk.dim(`Installed @openthink/think@${before} is ahead of latest (${latest}) — keeping it.`));
+      keepInstalled();
+      return;
+    }
+
+    // Registry lookup failed outright (offline, or npm erroring) *and* the
+    // install is a prerelease. `npm install -g @openthink/think@latest`
+    // would then resolve `latest` from npm's local cache, which on a canary
+    // machine is exactly the downgrade this command must never perform — and
+    // unlike the branches above there is no version to compare against, so
+    // the only safe answer is to leave the prerelease alone. A release
+    // install with an unknown `latest` still falls through to the install
+    // below: that is the unchanged offline behaviour.
+    if (latest === null && beforeParsed && beforeParsed.prerelease.length > 0) {
+      console.error(
+        chalk.yellow('⚠') +
+          ` Could not check the registry, so keeping the prerelease install @openthink/think@${before} rather than risk a downgrade.`,
+      );
+      keepInstalled();
       return;
     }
 
