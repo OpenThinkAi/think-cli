@@ -327,4 +327,56 @@ describe('think config set/get — cortex.llm.* (AGT-1327)', () => {
     await get('cortex.author');
     expect(logs.join('\n')).toContain('matt');
   });
+
+  // -------------------------------------------------------------------------
+  // Security (stamp review r1)
+  // -------------------------------------------------------------------------
+
+  it('rejects a __proto__ provider name as an unknown key rather than polluting Object.prototype', async () => {
+    await expect(set('cortex.llm.providers.__proto__.kind', 'openai'))
+      .rejects.toThrow(/process\.exit\(1\)/);
+    expect(logs.join('\n')).toMatch(/Unknown config key/);
+    // eslint-disable-next-line no-prototype-builtins
+    expect(({} as Record<string, unknown>).kind).toBeUndefined();
+    expect(Object.prototype.hasOwnProperty.call(Object.prototype, 'kind')).toBe(false);
+  });
+
+  it('rejects constructor/prototype provider names the same way', async () => {
+    await expect(set('cortex.llm.providers.constructor.kind', 'openai'))
+      .rejects.toThrow(/process\.exit\(1\)/);
+    await expect(set('cortex.llm.providers.prototype.kind', 'openai'))
+      .rejects.toThrow(/process\.exit\(1\)/);
+  });
+
+  it('redacts a previously-set apiKey in the printed block when a different leaf is updated', async () => {
+    await set('cortex.llm.providers.localqwen.apiKey', 'sk-super-secret');
+    logs = [];
+
+    await set('cortex.llm.providers.localqwen.model', 'qwen-model');
+
+    const out = logs.join('\n');
+    expect(out).not.toContain('sk-super-secret');
+    expect(out).toContain('"apiKey": "<redacted>"');
+    // The value really is preserved on disk — only the echo is masked.
+    expect(readPersistedConfig().cortex?.llm?.providers?.localqwen?.apiKey).toBe('sk-super-secret');
+  });
+
+  it('redacts apiKey inside every provider when printing the top-level llm block for fallback', async () => {
+    await set('cortex.llm.providers.claude.kind', 'anthropic');
+    await set('cortex.llm.providers.claude.apiKey', 'sk-another-secret');
+    logs = [];
+
+    await set('cortex.llm.fallback', 'claude');
+
+    const out = logs.join('\n');
+    expect(out).not.toContain('sk-another-secret');
+    expect(out).toContain('"apiKey": "<redacted>"');
+  });
+
+  it('still shows the confirmation line in full when apiKey itself is the leaf being set', async () => {
+    await set('cortex.llm.providers.localqwen.apiKey', 'sk-first-set');
+    // The top confirmation ("✓ key = value") echoes the value just set —
+    // that's the leaf the user is actively changing, not incidental spill.
+    expect(logs.join('\n')).toContain('sk-first-set');
+  });
 });

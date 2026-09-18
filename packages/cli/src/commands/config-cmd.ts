@@ -113,6 +113,27 @@ const LLM_KIND_VALUES = ['openai', 'anthropic'] as const;
 
 const LLM_PROVIDER_KEY_RE = /^cortex\.llm\.providers\.([^.]+)\.([^.]+)$/;
 
+/**
+ * Segments that would alias `Object.prototype` (or its constructor) if used
+ * as a bracket-access key on a plain object — `__proto__`, `constructor`,
+ * `prototype` (stamp review r1, security). The provider name in
+ * `cortex.llm.providers.<name>.<leaf>` is user-controlled and otherwise
+ * unconstrained (`[^.]+`), so `cortex.llm.providers.__proto__.kind` would
+ * reach `setNestedValue`'s `target[parts[i]] = {}` and pollute the
+ * prototype for the lifetime of the process. Rejected up front in
+ * `parseCortexLlmKey` (as an ordinary "Unknown config key", same UX as any
+ * other malformed key) and guarded again inside `setNestedValue`/
+ * `getNestedValue` themselves, since those are generic helpers a future
+ * caller could reach with unvalidated segments.
+ */
+const DANGEROUS_KEY_SEGMENTS = new Set(['__proto__', 'constructor', 'prototype']);
+
+function assertSafeKeySegment(segment: string): void {
+  if (DANGEROUS_KEY_SEGMENTS.has(segment)) {
+    throw new Error(`Refusing to read/write dangerous key segment: ${segment}`);
+  }
+}
+
 type CortexLlmKey =
   | { kind: 'fallback' }
   | { kind: 'provider'; name: string; leaf: LlmProviderLeaf };
@@ -120,13 +141,15 @@ type CortexLlmKey =
 /**
  * Recognise a `cortex.llm.*` key this command supports, or return `null` for
  * anything else under that prefix (unknown leaf, missing leaf, `default`,
- * `operations.<op>`, etc.) — callers turn `null` into "Unknown config key".
+ * `operations.<op>`, a `__proto__`-style provider name, etc.) — callers turn
+ * `null` into "Unknown config key".
  */
 function parseCortexLlmKey(key: string): CortexLlmKey | null {
   if (key === 'cortex.llm.fallback') return { kind: 'fallback' };
   const match = key.match(LLM_PROVIDER_KEY_RE);
   if (!match) return null;
   const [, name, leaf] = match;
+  if (DANGEROUS_KEY_SEGMENTS.has(name)) return null;
   if (!(LLM_PROVIDER_LEAVES as readonly string[]).includes(leaf)) return null;
   return { kind: 'provider', name, leaf: leaf as LlmProviderLeaf };
 }
@@ -138,6 +161,7 @@ function describeLlmAcceptedLeaves(): string {
 /** Generic nested-set: creates intermediate objects, same as the flat path below. */
 function setNestedValue(root: Record<string, unknown>, key: string, value: unknown): void {
   const parts = key.split('.');
+  for (const part of parts) assertSafeKeySegment(part);
   let target: Record<string, unknown> = root;
   for (let i = 0; i < parts.length - 1; i++) {
     if (!target[parts[i]] || typeof target[parts[i]] !== 'object') {
@@ -152,6 +176,7 @@ function setNestedValue(root: Record<string, unknown>, key: string, value: unkno
 function getNestedValue(root: Record<string, unknown>, key: string): unknown {
   let target: unknown = root;
   for (const part of key.split('.')) {
+    assertSafeKeySegment(part);
     if (target === null || typeof target !== 'object') return undefined;
     target = (target as Record<string, unknown>)[part];
   }
@@ -225,6 +250,21 @@ function validateLlmFallback(raw: string, config: Config): LeafValidation {
   return { value: raw };
 }
 
+const REDACTED = '<redacted>';
+
+/**
+ * Shallow-copy a provider block with `apiKey` masked. `set` prints this block
+ * on every write to *any* leaf of the provider (not just when `apiKey` itself
+ * is the leaf being changed), so a plain `.model` update would otherwise echo
+ * a previously-set literal bearer token to stdout — terminal scrollback, CI
+ * logs, recordings (stamp review r1, security). `apiKeyEnv` (an env var
+ * *name*, not a secret) is left as-is.
+ */
+function redactProviderBlock(block: Record<string, unknown>): Record<string, unknown> {
+  if (!('apiKey' in block)) return block;
+  return { ...block, apiKey: REDACTED };
+}
+
 /**
  * Write a validated `cortex.llm.*` value, save it, and print the confirmation
  * (AC1: the resulting provider block, or the top-level `cortex.llm` block for
@@ -238,10 +278,16 @@ function writeCortexLlmValue(key: string, parsed: CortexLlmKey, value: unknown, 
   const cortex = (config as unknown as Record<string, unknown>).cortex as Record<string, unknown> | undefined ?? {};
   const llm = (cortex.llm as Record<string, unknown> | undefined) ?? {};
   if (parsed.kind === 'fallback') {
-    console.log(JSON.stringify(llm, null, 2));
+    const providers = (llm.providers as Record<string, unknown> | undefined) ?? {};
+    const redactedProviders: Record<string, unknown> = {};
+    for (const [name, block] of Object.entries(providers)) {
+      redactedProviders[name] = redactProviderBlock(block as Record<string, unknown>);
+    }
+    console.log(JSON.stringify({ ...llm, providers: redactedProviders }, null, 2));
   } else {
     const providers = (llm.providers as Record<string, unknown> | undefined) ?? {};
-    console.log(JSON.stringify(providers[parsed.name] ?? {}, null, 2));
+    const block = (providers[parsed.name] as Record<string, unknown> | undefined) ?? {};
+    console.log(JSON.stringify(redactProviderBlock(block), null, 2));
   }
   console.log(chalk.dim(
     '  The daemon reads config at start — restart with `think daemon stop && think daemon start`.',
