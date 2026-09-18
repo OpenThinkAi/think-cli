@@ -81,7 +81,7 @@ export const RETIRED_VOCABULARY_TERMS: RetiredVocabularyTerm[] = [
   {
     term: 'think monitor',
     pattern: /think monitor\b/g,
-    replacement: 'removed — there is no engram tier left to monitor',
+    replacement: 'removed — use `think memory` or `think event` to review recent writes',
   },
   {
     term: '--engrams',

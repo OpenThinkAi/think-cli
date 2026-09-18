@@ -197,9 +197,15 @@ describe('checkRetiredVocabulary (AGT-1309)', () => {
 
     expect(result.status).toBe('warn');
     expect(result.detail).not.toContain('');
-    // 160-char display cap plus the ellipsis marker, well short of the
-    // original ~320-char line.
-    expect(result.detail.split('\n').some((l) => l.length < 250)).toBe(true);
+
+    const hitLine = result.detail.split('\n').find((l) => l.includes(`${claudeMd}:1:`));
+    expect(hitLine).toBeDefined();
+    // The 300-`x` run must be cut down well below its original length —
+    // checked on the hit line itself (via the surviving 'x' count) so the
+    // assertion can't pass trivially off the (always-short) summary line.
+    const xCount = (hitLine!.match(/x/g) ?? []).length;
+    expect(xCount).toBeGreaterThan(0);
+    expect(xCount).toBeLessThan(200);
   });
 
   it('AC4: exports a single term list covering every term the ticket names', () => {
