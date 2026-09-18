@@ -622,11 +622,474 @@ function salvageDirtyWorktree(): void {
     /* tracked changes staged — salvage them below */
   }
   const current = getCurrentBranch();
-  runGit([
-    'commit',
-    '-m',
-    `chore(cortex): salvage uncommitted worktree changes${current ? ` on ${current}` : ''} (self-heal #69)`,
-  ]);
+  runGit(['commit', '-m', salvageCommitSubject(current)]);
+}
+
+// ---------------------------------------------------------------------------
+// AGT-1310 — finding and undoing a bad salvage commit that never pushed
+//
+// Before AGT-1299 landed the guard above, `salvageDirtyWorktree` on a
+// plumbing-stale index committed the daemon's own appends INVERTED: whole L1
+// pages recorded as deletions (think-cli#95: ~6,000 deleted lines). That commit
+// cannot fast-forward onto origin, so the branch wedges — every later push is
+// rejected non-fast-forward and the machine silently stops propagating.
+//
+// The guard stops NEW ones. The commits already sitting on a machine's local
+// branch are what `think doctor` reports and `think doctor --fix` undoes, by
+// resetting the branch to `origin/<branch>` — but only after proving that
+// every entry the local-only commits carry survives the reset. The proof and
+// the re-queue live in `lib/salvage-repair.ts`; everything here is git-only,
+// read-only unless its name says otherwise, and never checks the branch out.
+// ---------------------------------------------------------------------------
+
+/**
+ * The subject line `salvageDirtyWorktree` writes, and the pattern
+ * `planSalvageCommitRepair` matches commits against. One definition, so a
+ * future reword cannot leave the detector hunting for text nothing writes.
+ */
+const SALVAGE_SUBJECT_HEAD = 'chore(cortex): salvage uncommitted worktree changes';
+const SALVAGE_SUBJECT_TAIL = '(self-heal #69)';
+
+export function salvageCommitSubject(branchName: string | null): string {
+  return `${SALVAGE_SUBJECT_HEAD}${branchName ? ` on ${branchName}` : ''} ${SALVAGE_SUBJECT_TAIL}`;
+}
+
+/**
+ * Is `subject` a `salvageCommitSubject(...)` line? Matched by its fixed head
+ * and tail rather than by equality, because the middle carries whatever branch
+ * name was checked out when the commit was made — which on a machine that has
+ * since switched branches is not the branch we are inspecting.
+ */
+export function isSalvageCommitSubject(subject: string): boolean {
+  return subject.startsWith(SALVAGE_SUBJECT_HEAD) && subject.endsWith(SALVAGE_SUBJECT_TAIL);
+}
+
+/** L1 page basenames, as `lib/l1-page.ts` numbers them. */
+const L1_PAGE_BASENAME = /^\d{6}\.jsonl$/;
+
+/**
+ * Is `filePath` an L1 page of `branchName`? Accepts both the canonical
+ * `<branch>/NNNNNN.jsonl` layout and the pre-`migrate-layout` flat one at the
+ * branch root, for the same reason `listBranchFiles` reads both: an unmigrated
+ * cortex still holds real data there.
+ */
+function isL1PagePath(branchName: string, filePath: string): boolean {
+  const prefix = `${branchName}/`;
+  if (filePath.startsWith(prefix)) return L1_PAGE_BASENAME.test(filePath.slice(prefix.length));
+  return L1_PAGE_BASENAME.test(filePath);
+}
+
+/** Resolve a ref to its object name, or null when it does not exist. */
+function resolveRef(ref: string): string | null {
+  let out: string;
+  try {
+    out = runGit(['rev-parse', '--verify', '--quiet', ref]);
+  } catch {
+    return null; // `--quiet` exits 1 on a missing ref
+  }
+  return GIT_OID.test(out) ? out : null;
+}
+
+/** One commit's parents and subject, read from the raw object. */
+interface CommitMeta {
+  sha: string;
+  subject: string;
+}
+
+/**
+ * Parse `git rev-list --format=%x01%H%x00%s` output.
+ *
+ * rev-list prefixes every record with its own `commit <sha>` header line and
+ * there is no portable way to suppress it (`--no-commit-header` is git 2.33+),
+ * so the format opens each record with a `\x01` sentinel: splitting on it
+ * discards the headers, and the first chunk (everything before the first
+ * sentinel) with them. Within a record, `\x00` separates the object name from
+ * the subject, and the subject — `%s`, always a single line — ends at the
+ * newline rev-list appends.
+ *
+ * Returns null on anything that does not match that shape, which callers treat
+ * as "cannot reason about this branch" rather than as "no salvage commit".
+ */
+function parseRevListSubjects(out: Buffer): CommitMeta[] | null {
+  const commits: CommitMeta[] = [];
+  const records = out.toString('utf-8').split('\x01');
+  for (const record of records.slice(1)) {
+    const line = record.split('\n', 1)[0] ?? '';
+    const sep = line.indexOf('\x00');
+    if (sep === -1) return null;
+    const sha = line.slice(0, sep);
+    if (!GIT_OID.test(sha)) return null;
+    commits.push({ sha, subject: line.slice(sep + 1) });
+  }
+  return commits;
+}
+
+/** Parse `--name-status -z` diff output: repeated `<status>\0<path>\0`. */
+function parseNameStatusZ(out: Buffer): Array<{ status: string; path: string }> | null {
+  const fields = out.toString('utf-8').split('\0');
+  const entries: Array<{ status: string; path: string }> = [];
+  let i = 0;
+  while (i < fields.length) {
+    const status = fields[i];
+    if (status === undefined || status === '') break; // trailing separator
+    const filePath = fields[i + 1];
+    // `--no-renames` at every call site keeps statuses to a single letter, so a
+    // multi-character status (`R100`) or a missing path means the output is not
+    // the shape we are parsing and nothing here may be acted on.
+    if (!filePath || status.length !== 1) return null;
+    entries.push({ status, path: filePath });
+    i += 2;
+  }
+  return entries;
+}
+
+/** Parse `git ls-tree -r -z`: repeated `<mode> <type> <sha>\t<path>\0`. */
+function parseLsTreeZ(out: Buffer): Array<{ sha: string; path: string }> | null {
+  const entries: Array<{ sha: string; path: string }> = [];
+  for (const record of out.toString('utf-8').split('\0')) {
+    if (record === '') continue;
+    const tab = record.indexOf('\t');
+    if (tab === -1) return null;
+    const meta = record.slice(0, tab).split(' ');
+    if (meta.length !== 3) return null;
+    const [, type, sha] = meta;
+    if (type !== 'blob') continue; // `-r` already flattens trees; submodules are not pages
+    if (!GIT_OID.test(sha)) return null;
+    entries.push({ sha, path: record.slice(tab + 1) });
+  }
+  return entries;
+}
+
+/** One local-only salvage commit and the L1 pages its diff deletes. */
+export interface SalvageCommitFinding {
+  sha: string;
+  subject: string;
+  /** Whole pages the commit deletes — `D` entries, not deleted lines. */
+  deletedPages: string[];
+}
+
+/** What `planSalvageCommitRepair` knows about one local cortex branch. */
+export interface CortexSalvagePlan {
+  branch: string;
+  /** Tip of `refs/heads/<branch>`. */
+  localTip: string;
+  /**
+   * Tip of `refs/remotes/origin/<branch>`, or null when this clone has no such
+   * ref. Null is the "no upstream" case: nothing on the branch is provably
+   * pushed, and there is nothing to reset to — so the branch is reported but
+   * never repaired.
+   */
+  originTip: string | null;
+  /** `origin/<branch>..<branch>`, newest first — or the whole branch when
+   *  `originTip` is null, since then nothing on it is known to be on origin. */
+  localOnlyCommits: string[];
+  /** The subset of `localOnlyCommits` that is a page-deleting salvage commit. */
+  salvageCommits: SalvageCommitFinding[];
+}
+
+/**
+ * Read-only: does `branchName` carry an unpushed, page-deleting salvage commit?
+ *
+ * Purely local — it reads `refs/remotes/origin/<branch>` as last fetched and
+ * makes no network call, so `think doctor` stays offline-safe and cheap. The
+ * repair fetches before it resets; a stale remote-tracking ref can therefore
+ * only make this under-report, never over-report.
+ *
+ * Returns null when there is no local ref for the branch (nothing to inspect).
+ * Throws only when git itself could not be questioned — callers report that as
+ * a warning rather than converting it into a clean bill of health.
+ */
+export function planSalvageCommitRepair(branchName: string): CortexSalvagePlan | null {
+  assertSafePositional(branchName, 'branch name');
+  const localTip = resolveRef(`refs/heads/${branchName}`);
+  if (localTip === null) return null;
+  const originTip = resolveRef(`refs/remotes/origin/${branchName}`);
+
+  // With an upstream, "unpushed" is the range. Without one, every commit on the
+  // branch is unpushed by definition — the clone has never seen this branch on
+  // origin, so nothing on it is known to be anywhere else.
+  const range = originTip === null ? branchName : `${originTip}..${localTip}`;
+  const commits = parseRevListSubjects(
+    runGitBuffer(['rev-list', '--format=%x01%H%x00%s', range, '--']),
+  );
+  if (commits === null) {
+    throw new Error(`Could not read the commit list for ${branchName}.`);
+  }
+
+  const salvageCommits: SalvageCommitFinding[] = [];
+  for (const commit of commits) {
+    if (!isSalvageCommitSubject(commit.subject)) continue;
+    const deletedPages = deletedPagesInCommit(branchName, commit.sha);
+    // The subject alone is not the bug: a salvage commit that carries a genuine
+    // in-flight append (AGT-1299's AC3 outcome) is a legitimate commit and must
+    // not be reported. Only one that DELETES whole pages is the inversion.
+    if (deletedPages.length > 0) {
+      salvageCommits.push({ sha: commit.sha, subject: commit.subject, deletedPages });
+    }
+  }
+
+  return {
+    branch: branchName,
+    localTip,
+    originTip,
+    localOnlyCommits: commits.map((commit) => commit.sha),
+    salvageCommits,
+  };
+}
+
+/**
+ * The whole L1 pages `sha` deletes relative to its parent. Empty for a merge
+ * or a root commit: neither has a single parent to diff against, so we decline
+ * to guess rather than reading a two-parent diff as evidence of deletion.
+ */
+function deletedPagesInCommit(branchName: string, sha: string): string[] {
+  const parents = runGit(['rev-list', '--parents', '-n', '1', sha, '--'])
+    .split(' ')
+    .slice(1)
+    .filter((parent) => GIT_OID.test(parent));
+  if (parents.length !== 1) return [];
+  const entries = parseNameStatusZ(
+    runGitBuffer(['diff-tree', '-r', '-z', '--no-renames', '--name-status', parents[0], sha, '--']),
+  );
+  if (entries === null) return [];
+  return entries
+    .filter((entry) => entry.status === 'D' && isL1PagePath(branchName, entry.path))
+    .map((entry) => entry.path);
+}
+
+/** One L1 entry recovered from a page blob, with the bytes it was stored as. */
+export interface RecoveredEntry {
+  id: string;
+  /** The JSONL line verbatim, WITHOUT its trailing newline — the exact shape
+   *  `l1_outbox.line` holds and `appendRawLineToL1Page` writes back. */
+  line: string;
+  /** The entry's own `ts`, so a re-queued row keeps its original timestamp. */
+  ts: string;
+}
+
+/**
+ * What only local history holds, and what the reset would therefore discard —
+ * or the reason no such proof could be built, which is always a refusal to
+ * reset rather than a reason to proceed.
+ */
+export type LocalOnlyEntryPlan =
+  | {
+      ok: true;
+      /** Entries reachable from the local-only commits (and, when the branch is
+       *  checked out, the worktree) that are NOT in the pages at
+       *  `origin/<branch>`. */
+      entries: RecoveredEntry[];
+      /** How many distinct local entry ids origin already holds. */
+      presentOnOrigin: number;
+      /** Whether `branchName` is the branch the shared worktree is parked on. */
+      checkedOut: boolean;
+    }
+  | { ok: false; reason: string };
+
+/**
+ * Read-only: everything the reset would drop, so the caller can make sure it
+ * is not dropped. THE LOSSLESSNESS PROOF FOR AGT-1310 AC2 LIVES HERE.
+ *
+ * The set is deliberately a superset of "added by the local-only commits":
+ * every entry in every L1 page of every local-only commit's tree, minus every
+ * entry id present at `origin/<branch>`. Computing it from trees rather than
+ * from diffs means it needs no parent arithmetic, is unaffected by merges, and
+ * cannot miss an entry that a later local commit deleted again — which matters
+ * precisely here, because the commit we are undoing deletes pages.
+ *
+ * When the branch is the checked-out one the worktree is included too: any
+ * tracked path that differs from HEAD is read and its entries counted, so an
+ * in-flight append that no commit holds yet is covered by the same proof.
+ *
+ * Refuses — `{ ok: false }`, never "nothing to lose" — when:
+ *  - there is no local ref, or no `origin/<branch>` to reset to;
+ *  - a page blob holds a line that is not JSON with a string `id` (we cannot
+ *    say whether origin has it, so we must not discard it);
+ *  - the checked-out worktree differs from HEAD at a path that is not an L1
+ *    page, since `git reset --hard` would discard that edit and this function
+ *    can say nothing about it.
+ */
+export function planLocalOnlyEntries(branchName: string): LocalOnlyEntryPlan {
+  const plan = planSalvageCommitRepair(branchName);
+  if (plan === null) {
+    return { ok: false, reason: `no local ref refs/heads/${branchName}` };
+  }
+  if (plan.originTip === null) {
+    return { ok: false, reason: `no upstream origin/${branchName} to reset to` };
+  }
+
+  const originEntries = readEntriesAtRev(branchName, plan.originTip);
+  if (originEntries === null) {
+    return { ok: false, reason: `could not read the L1 pages at origin/${branchName}` };
+  }
+  const originIds = new Set(originEntries.keys());
+
+  const entries = new Map<string, RecoveredEntry>();
+  // Distinct ids, not sightings: the same entry appears in every commit's tree
+  // that still holds its page, and counting those again per commit would make
+  // the repair's report read as many times the data there is.
+  const alreadyOnOrigin = new Set<string>();
+  const collect = (recovered: Map<string, RecoveredEntry>): void => {
+    for (const [id, entry] of recovered) {
+      if (originIds.has(id)) {
+        alreadyOnOrigin.add(id);
+        continue;
+      }
+      // First sighting wins: identical ids across commits are the same entry,
+      // and the oldest blob holding it is the one closest to how it was written.
+      if (!entries.has(id)) entries.set(id, entry);
+    }
+  };
+
+  // Oldest commit first, so `entries` reads in the order the entries were made.
+  for (const sha of [...plan.localOnlyCommits].reverse()) {
+    const recovered = readEntriesAtRev(branchName, sha);
+    if (recovered === null) {
+      return { ok: false, reason: `could not read the L1 pages at ${sha.slice(0, 8)}` };
+    }
+    collect(recovered);
+  }
+
+  const checkedOut = getCurrentBranch() === branchName;
+  if (checkedOut) {
+    const fromWorktree = readDirtyWorktreeEntries(branchName);
+    if (fromWorktree === null) {
+      return {
+        ok: false,
+        reason:
+          `the worktree is on ${branchName} and differs from HEAD outside its L1 pages — ` +
+          `a reset would discard an edit this check cannot account for`,
+      };
+    }
+    collect(fromWorktree);
+  }
+
+  return {
+    ok: true,
+    entries: [...entries.values()],
+    presentOnOrigin: alreadyOnOrigin.size,
+    checkedOut,
+  };
+}
+
+/**
+ * Every L1 entry in every page of `rev`'s tree, keyed by id. Blobs are read
+ * once per object name, so pages a run of commits left untouched (the common
+ * case) cost one `cat-file` between them all.
+ *
+ * Returns null if any line is not a JSON object carrying a string `id`.
+ */
+function readEntriesAtRev(branchName: string, rev: string): Map<string, RecoveredEntry> | null {
+  if (!GIT_OID.test(rev)) return null;
+  const tree = parseLsTreeZ(runGitBuffer(['ls-tree', '-r', '-z', rev, '--']));
+  if (tree === null) return null;
+
+  const entries = new Map<string, RecoveredEntry>();
+  const seenBlobs = new Set<string>();
+  for (const entry of tree) {
+    if (!isL1PagePath(branchName, entry.path)) continue;
+    if (seenBlobs.has(entry.sha)) continue;
+    seenBlobs.add(entry.sha);
+    const recovered = parseJsonlPage(catBlob(entry.sha).toString('utf-8'));
+    if (recovered === null) return null;
+    for (const [id, value] of recovered) if (!entries.has(id)) entries.set(id, value);
+  }
+  return entries;
+}
+
+/**
+ * Every L1 entry in the checked-out worktree's pages that differ from HEAD.
+ * Paths that match HEAD are skipped: their entries are already in the tip
+ * tree, which `planLocalOnlyEntries` has read.
+ *
+ * Returns null when a differing path is not an L1 page — see that function's
+ * contract. A differing path that no longer exists on disk contributes nothing.
+ */
+function readDirtyWorktreeEntries(branchName: string): Map<string, RecoveredEntry> | null {
+  const changed = runGitBuffer(['diff-index', '-z', '--name-only', 'HEAD', '--'])
+    .toString('utf-8')
+    .split('\0')
+    .filter((filePath) => filePath !== '');
+
+  const entries = new Map<string, RecoveredEntry>();
+  for (const filePath of changed) {
+    if (!isL1PagePath(branchName, filePath)) return null;
+    const absPath = resolveInsideRepo(filePath);
+    if (absPath === null) return null;
+    let raw: string;
+    try {
+      raw = fs.readFileSync(absPath, 'utf-8');
+    } catch {
+      continue; // deleted in the worktree — it holds nothing to lose
+    }
+    const recovered = parseJsonlPage(raw);
+    if (recovered === null) return null;
+    for (const [id, value] of recovered) if (!entries.has(id)) entries.set(id, value);
+  }
+  return entries;
+}
+
+/**
+ * Split one L1 page into entries keyed by id, keeping each line's exact bytes.
+ * Returns null on a line that is not a JSON object with a string `id` — an
+ * entry we cannot name is an entry we cannot prove is safe to discard.
+ */
+function parseJsonlPage(raw: string): Map<string, RecoveredEntry> | null {
+  const entries = new Map<string, RecoveredEntry>();
+  for (const line of raw.split('\n')) {
+    if (line === '') continue;
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(line);
+    } catch {
+      return null;
+    }
+    if (typeof parsed !== 'object' || parsed === null) return null;
+    const { id, ts } = parsed as { id?: unknown; ts?: unknown };
+    if (typeof id !== 'string' || id === '') return null;
+    entries.set(id, { id, line, ts: typeof ts === 'string' ? ts : new Date().toISOString() });
+  }
+  return entries;
+}
+
+/**
+ * Move `refs/heads/<branch>` back to `refs/remotes/origin/<branch>`.
+ *
+ * MUTATING, and the caller owns the proof: this discards every local-only
+ * commit on the branch. `lib/salvage-repair.ts` is the only caller and it runs
+ * `planLocalOnlyEntries` first, re-queueing anything origin does not already
+ * hold. Nothing else should call it.
+ *
+ * `update-ref` with an old-value argument is the plumbing writer's
+ * compare-and-swap convention (`lib/git-plumbing.ts`): if the daemon advanced
+ * the branch between the plan and here, the ref move fails loudly instead of
+ * clobbering the newer tip.
+ *
+ * When the branch is the checked-out one, HEAD has just moved BACKWARDS, so
+ * the index is now ahead of it rather than behind — the direction AGT-1299's
+ * `reconcilePlumbingStaleIndex` is built to prove and therefore cannot help
+ * with here (its prefix proof would fail and leave the stale index in place,
+ * the one outcome this repair must not produce). `reset --hard HEAD` — the
+ * same mutation that function performs once its own proof holds — brings the
+ * index and worktree to the new HEAD, licensed by the entry-level proof
+ * `planLocalOnlyEntries` has already established over both.
+ *
+ * @returns false when the branch was already at the origin tip.
+ */
+export function resetCortexBranchToOrigin(branchName: string): boolean {
+  assertSafePositional(branchName, 'branch name');
+  const localTip = resolveRef(`refs/heads/${branchName}`);
+  const originTip = resolveRef(`refs/remotes/origin/${branchName}`);
+  if (localTip === null || originTip === null) {
+    throw new Error(`Cannot reset ${branchName}: no local ref, or no origin/${branchName}.`);
+  }
+  if (localTip === originTip) return false;
+
+  runGit(['update-ref', `refs/heads/${branchName}`, originTip, localTip]);
+  if (getCurrentBranch() === branchName) {
+    runGit(['reset', '--hard', 'HEAD']);
+  }
+  return true;
 }
 
 /**

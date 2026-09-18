@@ -20,6 +20,12 @@
  * with AGT-1299's reconcile, and restarts the daemon through #91's
  * `restartDaemonViaBin`. None of them is reimplemented here, and none of them
  * writes outside a managed marker pair (AC5).
+ *
+ * The one repair self-heal does NOT also run is AGT-1310's salvage-commit
+ * reset: discarding local commits is not something to do unprompted on daemon
+ * start, so it stays behind `--fix`. It still follows the rule the others do —
+ * the check reports from the read-only half of `lib/salvage-repair.ts` and the
+ * fix applies the mutating half, so both agree on what is broken.
  */
 
 import path from 'node:path';
@@ -29,6 +35,7 @@ import { refreshRegisteredBlocks } from '../block-refresh.js';
 import { migrateStrandedEngrams } from '../engram-migration.js';
 import { reconcilePlumbingStaleIndex } from '../git.js';
 import { restartDaemonViaBin } from '../daemon-drift.js';
+import { repairSalvagedCortexBranches } from '../salvage-repair.js';
 import { resolvePackageEntry } from '../pkg-paths.js';
 import { plural, type CheckResult } from './types.js';
 import { checkStaleLaunchAgents, STALE_LAUNCH_AGENTS_CHECK_ID } from './launch-agents.js';
@@ -39,6 +46,7 @@ import { checkDaemonVersion, DAEMON_CHECK_ID } from './daemon.js';
 import { checkLlmProviders, LLM_PROVIDERS_CHECK_ID } from './llm-providers.js';
 import { checkClaudeIntegration, CLAUDE_INTEGRATION_CHECK_ID } from './claude-integration.js';
 import { checkThinkHomes, THINK_HOMES_CHECK_ID } from './think-homes.js';
+import { checkSalvageCommits, SALVAGE_COMMIT_CHECK_ID } from './salvage-commit.js';
 
 /** What a repair did, for the line `--fix` prints before re-running. */
 export interface FixOutcome {
@@ -153,6 +161,25 @@ export function doctorChecks(): DoctorCheckDefinition[] {
     {
       id: THINK_HOMES_CHECK_ID,
       run: async () => checkThinkHomes(),
+    },
+    {
+      id: SALVAGE_COMMIT_CHECK_ID,
+      run: async () => checkSalvageCommits(),
+      fix: async () => {
+        const repairs = repairSalvagedCortexBranches();
+        if (repairs.length === 0) {
+          return { ok: true, detail: 'No cortex branch needed resetting.' };
+        }
+        const parts = repairs.map((repair) =>
+          repair.ok
+            ? `Reset ${repair.branch} to origin/${repair.branch}` +
+              (repair.requeued.length > 0
+                ? `, re-queueing ${plural(repair.requeued.length, 'entry', 'entries')} to its outbox first.`
+                : ' (every local entry was already on origin or queued).')
+            : `Left ${repair.branch} untouched: ${repair.reason}`,
+        );
+        return { ok: repairs.every((repair) => repair.ok), detail: parts.join(' ') };
+      },
     },
   ];
 }
