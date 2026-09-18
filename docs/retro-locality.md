@@ -1,9 +1,11 @@
-# Iterative Learning v3 — Retro Locality (reverses v2 §6)
+# Retro locality (reverses the historical `docs/history/iterative-learning-v2.md` §6 decision)
+
+> Historical file name: `docs/iterative-learning-v3-locality.md`.
 
 Status: **implemented** (2026-06-02, branch `feat/retro-locality-v3`).
-Supersedes `iterative-learning-v2.md` §6. Scope: where retros live and how they
-are scoped at recall. The v2 quality mechanisms (M1–M5) are unaffected — they
-are orthogonal to locality.
+Supersedes `docs/history/iterative-learning-v2.md` §6. Scope: where retros live
+and how they are scoped at recall. The quality mechanisms (M1–M5) from that
+earlier design doc are unaffected — they are orthogonal to locality.
 
 ## 0. Implementation status (what shipped)
 
@@ -185,7 +187,7 @@ personal cortices.
 - **Per-context `cortex/<name>` branches** that existed *only* as retro buckets
   can be retired after migration. Team / dataset cortices stay untouched.
 - **Templates & guidance:** `think init` retro/brief blocks and the CLAUDE.md
-  examples drop `--cortex <repo>` (auto-detected now). `iterative-learning-v2.md`
+  examples drop `--cortex <repo>` (auto-detected now). `docs/history/iterative-learning-v2.md`
   §6 gets a pointer to this doc.
 
 ## 5. Open questions
@@ -230,4 +232,4 @@ Dependency-ordered. T1 is foundational.
    AGT-458 path; document retiring retro-only `cortex/<name>` branches
    post-migration. Depends on T5. Tests: curation grouping.
 7. **T7 — Templates & docs.** Update `think init` retro/brief blocks, CLAUDE.md
-   examples, and `iterative-learning-v2.md` §6 pointer. Depends on T2/T3.
+   examples, and `docs/history/iterative-learning-v2.md` §6 pointer. Depends on T2/T3.

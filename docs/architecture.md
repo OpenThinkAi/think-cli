@@ -1,14 +1,12 @@
-> This is the design doc that drove the v3 implementation. Engineering details may have shifted slightly during build — the canonical surface is the CLI itself; this captures intent and architecture.
+> This is the design doc that drove the current architecture (originally built as a major redesign shipped in `@openthink/think@1.0.0-alpha.1`, then simplified further in `3.0.0` when the pre-daemon engram tier was removed). Engineering details may have shifted slightly during and after the build — the canonical surface is the CLI itself; this captures intent and architecture. Historical file name: `docs/think-v3.md`.
 
 ---
 
-# think-v3 — resident daemon, vector recall, write-time compaction
-
-Major redesign of the think CLI, shipped as `@openthink/think@1.0.0-alpha.1` in the same repo. v0.6.x stays on the `main` branch for bug fixes only; v3 work happens on `release/v1.0.0-alpha` and merges to main once feature-complete. v2 commands are not removed in this scope — cleanup is a follow-up project.
+# Architecture — resident daemon, vector recall, write-time compaction
 
 ## The reframe
 
-v2 was "local-first memory, sync via folder." v3 is **"agent memory anchored in current intent, retrieved by topic in <100ms."** Three properties earn the version bump:
+think's design used to be "local-first memory, sync via folder." It is now **"agent memory anchored in current intent, retrieved by topic in <100ms."** Three properties, all still true today, drove that redesign:
 
 1. **Vector recall** — `recall` becomes a semantic similarity search, not FTS. The agent gets the right entries even when the query and the stored text don't share vocabulary.
 2. **Write-time compaction** — when a memory lands, the daemon folds its trajectory into a single self-contained line (an LLM call). Read time stays sub-100ms; the trajectory is already baked in.
@@ -54,7 +52,7 @@ The point is not "search is faster." The point is that recall becomes **cheap en
 - **L1 is the only source of truth.** L2 is purely derived; deleting it rebuilds.
 - **L1 is the only thing that syncs.** Vectors are recomputed locally per peer.
 - **Per-cortex isolation** at both L1 (git branches) and L2 (separate SQLite files). Cross-cortex queries federate.
-- **v2 JSONL stays readable.** v3 only adds optional fields to L1; v2 peers ignore them.
+- **Older JSONL stays readable.** The current schema only adds optional fields to L1; a peer running older code ignores fields it doesn't recognize.
 
 ## The entry model
 
@@ -75,7 +73,7 @@ Single unified L1 entry shape across all kinds:
 }
 ```
 
-L1 entries migrated from v2 may carry `decisions` and `source_ids` fields; v3 never writes them and treats them as opaque. See [v2 -> v3 compatibility](#v2---v3-compatibility).
+L1 entries migrated from the pre-daemon tool may carry `decisions` and `source_ids` fields; the current write path never writes them and treats them as opaque. See [Legacy compatibility](#legacy-compatibility).
 
 ### Kinds
 
@@ -102,10 +100,10 @@ entries (
 )
 
 compaction_links (raw_id, compacted_id)   -- reverse index for `think expand`
-sync_cursors (...)                         -- v2 carry-over
+sync_cursors (...)                         -- carried over from the pre-daemon tool
 ```
 
-## CLI surface (v3)
+## CLI surface
 
 ```
 # Writes
@@ -237,26 +235,26 @@ Two surfaces, both talk to the same daemon:
 
 2. **MCP server** — exposes `think_recall`, `think_sync`, `think_expand` as tools. Agent calls reflexively mid-turn because tool latency is <100ms. Best for topic shifts within a session.
 
-Both ship with v3. The hook handles guaranteed orientation; the MCP server handles agent-initiated continuous recall.
+Both surfaces talk to the same daemon. The hook handles guaranteed orientation; the MCP server handles agent-initiated continuous recall.
 
-## Storage paths (renamed in v3)
+## Storage paths
 
-- `~/.think/index/<cortex>.db` (was `~/.think/engrams/`)
-- `~/.think/repo/` (unchanged — L1)
-- `~/.think/daemon.sock` (new)
-- `~/.think/daemon.pid` (new)
-- `~/.think/config/config.json` (unchanged)
+- `~/.think/index/<cortex>.db` — L2, the per-cortex vector index (was `~/.think/engrams/` under the pre-daemon tool; a one-time migration on first launch renames the directory if the new one doesn't already exist, leaving a timestamped backup of the old copy when both exist).
+- `~/.think/repo/` — L1, the git-backed canonical store.
+- `~/.think/daemon.sock` / `~/.think/daemon.pid` — daemon lifecycle files.
+- `~/.config/think/config.json` (or `$XDG_CONFIG_HOME/think/config.json`) — user config. Under a custom `THINK_HOME`, config instead lives at `<THINK_HOME>/config/config.json`.
 
-v3 on first launch reads `~/.think/engrams/` if present, migrates to `~/.think/index/`, leaves the old dir as backup until next major version.
+## Legacy compatibility
 
-## v2 -> v3 compatibility
+think's current write path is additive, not a hard break from what the pre-daemon tool wrote:
 
-- L1 JSONL format additive: new optional fields (`kind`, `compacted_from`, `topics`); v2 parsers ignore unknown fields
-- v3 first launch reads existing L1 entries, treats them as `kind: "memory", compacted_from: null`, builds L2 index
-- Existing entries are NOT retroactively compacted — they remain as raw entries, surface in recall via vector + FTS
-- New v3 writes go through the compaction pipeline; coexist with legacy raw entries in the same cortex
-- **Recall behavior change:** v2 `recall` used full-text search (exact keyword match). v3 `recall` is semantic vector search. Queries that relied on exact keyword matches (error codes, flag names, exact phrases) may return different result sets. FTS is not removed as a secondary fallback for migrated entries, but the primary ranking is now vector similarity.
-- L1 entries migrated from v2 may carry `decisions` and `source_ids` fields; v3 never writes them and treats them as opaque.
+- L1 JSONL format is additive: new optional fields (`kind`, `compacted_from`, `topics`); older parsers ignore fields they don't recognize.
+- On first launch against an existing L1 repo, entries with no `kind` field are treated as `kind: "memory", compacted_from: null` and indexed into L2.
+- Those entries are NOT retroactively compacted — they remain as raw entries and surface in recall via vector search (FTS remains a secondary fallback).
+- New writes go through the compaction pipeline and coexist with un-compacted legacy entries in the same cortex.
+- **Recall behavior change (historical).** The pre-daemon tool's `recall` used full-text search (exact keyword match); the current `recall` is semantic vector search. Queries that relied on exact keyword matches (error codes, flag names, exact phrases) may return different result sets than they used to.
+- L1 entries migrated from the pre-daemon tool may carry `decisions` and `source_ids` fields; the current write path never writes them and treats them as opaque.
+- **The engram write tier itself was removed in `3.0.0`.** Every write command now produces a `memory`, an `event`, or a `retro`, through the daemon — there is no other write tier, and `insertEngram` and its callers are deleted from the codebase. The `engrams` table is left in place, read-only, for exactly one major version, so the one-shot migration (`think migrate-engrams`, and automatically on first daemon start) can rescue any row a pre-3.0.0 install left stranded there; dropping the table itself is deferred to the major after `3.0.0`.
 
 ## Failure modes
 
@@ -289,7 +287,7 @@ Phases below correspond to ticket groups. Tickets within a phase are mostly para
 
 ## Out of scope (deferred)
 
-- Removing v2 commands (curate, migrate-data, engram concepts, long-term backfill)
+- **Dropping the `engrams` table / schema migration.** The write tier itself (`insertEngram`, `think curate`, `think monitor`, `think curator edit|show`, `think cortex auto-curate|auto-sync`, `think migrate-data`, `recall --engrams`, `subscribe poll --legacy-engrams`, the Episodes feature) was removed in `3.0.0` — see [Legacy compatibility](#legacy-compatibility). The table itself stays, read-only, for one major so the one-shot rescue migration has somewhere to read stranded rows from; actually dropping it is a later change.
 - Windows support hardening beyond basic compatibility
 - Rust sidecar for embedding/vector ops (revisit if Node perf becomes a wall)
 - Federated search across remote peers in real-time (current design retrieves from local L2s only)

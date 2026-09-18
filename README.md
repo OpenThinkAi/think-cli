@@ -2,7 +2,7 @@
 
 Local-first CLI that gives AI agents persistent, curated memory.
 
-`@openthink/think` — **vector recall**, **write-time compaction**, **resident daemon**. The core reframe: recall is cheap enough to call implicitly on every agent turn. Vectors come from a resident `bge-small-en-v1.5` embedding model (right entries even when vocabulary doesn't overlap). Compaction folds each new memory into a single self-contained line via an LLM call so read time stays sub-100ms. The daemon holds the model in memory and serves CLI calls over a Unix socket — no cold-start per recall. A `UserPromptSubmit` hook and MCP server both talk to the same daemon, providing automatic per-prompt orientation and agent-initiated mid-turn recall. Full design: [docs/think-v3.md](https://github.com/OpenThinkAi/think-cli/blob/main/docs/think-v3.md).
+`@openthink/think` — **vector recall**, **write-time compaction**, **resident daemon**. The core reframe: recall is cheap enough to call implicitly on every agent turn. Vectors come from a resident `bge-small-en-v1.5` embedding model (right entries even when vocabulary doesn't overlap). Compaction folds each new memory into a single self-contained line via an LLM call so read time stays sub-100ms. The daemon holds the model in memory and serves CLI calls over a Unix socket — no cold-start per recall. A `UserPromptSubmit` hook and MCP server both talk to the same daemon, providing automatic per-prompt orientation and agent-initiated mid-turn recall. Full design: [docs/architecture.md](https://github.com/OpenThinkAi/think-cli/blob/main/docs/architecture.md).
 
 ## Install
 

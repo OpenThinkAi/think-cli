@@ -12,7 +12,7 @@
  * without a schema change, and never collides with user-supplied free topics
  * (`--topic ux`). brief/recall pick it out by the `repo:` prefix.
  *
- * Two independent axes (see docs/iterative-learning-v3-locality.md §2):
+ * Two independent axes (see docs/retro-locality.md §2):
  *   - storage cortex = where the row lives (active/home cortex)
  *   - context tag    = what the row is about (this module)
  */
