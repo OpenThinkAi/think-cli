@@ -34,7 +34,11 @@ are not removed the same way:
   `think curate` is removed, but `think curate-retros` is a *different*
   command that stays (retro curation never touched engrams). Typing
   `think curate` post-upgrade will not mention `curate-retros` — the table
-  below is the pointer.
+  below is the pointer. This is the accepted behaviour for the release
+  candidate (AGT-1303 specified "unknown command" for deleted commands); a
+  one-line removal pointer for each deleted command name is tracked as
+  AGT-1325 and lands before `3.0.0` is promoted to `latest`, so the rc is
+  the only build where the asymmetry is visible.
 
 | Removed | Use instead |
 | --- | --- |
