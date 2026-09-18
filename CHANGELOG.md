@@ -2,6 +2,17 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- `think doctor`'s repo-index check no longer fails on routine plumbing lag.
+  The daemon's L1 writer advances HEAD every few seconds and by design never
+  touches the index, so on a busy machine the check used to fail permanently
+  and `--fix` "didn't stick" — the very next append re-staled it. The check
+  now only warns (fixable) when a genuine in-flight worktree append is
+  actually at risk on top of the stale index; a bare lag with nothing to
+  restore is a pass, since nothing commits it and it self-heals on the next
+  checkout (AGT-1299). (AGT-1326)
+
 ## [3.0.0] — 2026-09-18
 
 Promoted to the `latest` npm dist-tag: `npm install -g @openthink/think` and

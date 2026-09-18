@@ -20,6 +20,7 @@ import {
   applyDoctorFixes,
 } from '../../src/lib/doctor/registry.js';
 import type { CheckResult } from '../../src/lib/doctor/types.js';
+import { REPO_INDEX_CHECK_ID } from '../../src/lib/doctor/repo-index.js';
 
 const mockedRun = vi.mocked(runDoctorChecks);
 const mockedFix = vi.mocked(applyDoctorFixes);
@@ -148,6 +149,19 @@ describe('think doctor', () => {
     expect(logs).toHaveLength(1);
     expect(() => JSON.parse(logs[0])).not.toThrow();
     expect(errors.join('\n')).toContain('repaired');
+  });
+
+  it('AGT-1326: exits 0 when repo-index is pure plumbing lag (state 1, no edit at risk)', async () => {
+    mockedRun.mockResolvedValue([
+      res(REPO_INDEX_CHECK_ID, {
+        detail: "Index in /tmp/repo lags the daemon's appends (expected on 3.0).",
+      }),
+    ]);
+
+    await run();
+
+    expect(process.exitCode).toBeUndefined();
+    expect(logs.join('\n')).toContain("lags the daemon's appends");
   });
 
   it('reports a failed repair without claiming success', async () => {
