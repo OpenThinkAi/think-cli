@@ -41,6 +41,7 @@ import { mcpCommand } from './commands/mcp.js';
 import { usageCommand } from './commands/usage.js';
 import { dashboardCommand } from './commands/dashboard.js';
 import { refreshBlocksInternalCommand } from './commands/refresh-blocks-internal.js';
+import { reportPendingHeal } from './lib/heal-summary.js';
 
 const program = new Command();
 
@@ -90,5 +91,13 @@ program.addCommand(dashboardCommand);
 // Plumbing for `think update` (AGT-1306) — never user-facing, so hidden from
 // --help. See commands/refresh-blocks-internal.ts.
 program.addCommand(refreshBlocksInternalCommand, { hidden: true });
+
+// AGT-1307 — the first interactive command after a self-heal prints its
+// one-time summary. Runs before every command's own action; see
+// lib/heal-summary.ts for what gets skipped (daemon subcommands, --json,
+// refresh-blocks-internal) and why.
+program.hook('preAction', (_thisCommand, actionCommand) => {
+  reportPendingHeal(actionCommand);
+});
 
 program.parse();

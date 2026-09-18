@@ -3,6 +3,7 @@ import path from 'node:path';
 import { Command } from 'commander';
 import { execFileSync } from 'node:child_process';
 import chalk from 'chalk';
+import { recordHealAction } from '../lib/heal-summary.js';
 
 /** Directory of the globally installed `@openthink/think` package, or null. */
 function getGlobalPackageRoot(): string | null {
@@ -106,6 +107,7 @@ export const updateCommand = new Command('update')
       if (result.refreshed.length > 0) {
         const n = result.refreshed.length;
         console.log(chalk.green('✓') + ` Refreshed ${n} managed block${n === 1 ? '' : 's'}.`);
+        recordHealAction('refreshedBlocks', n); // AGT-1307
       }
       for (const failure of result.failures) {
         console.error(chalk.yellow('⚠') + ` Could not refresh the managed block in ${failure.path}: ${failure.reason}`);
