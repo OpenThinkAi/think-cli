@@ -1,7 +1,7 @@
 import { Command } from 'commander';
 import chalk from 'chalk';
 import { getEntries, getEntriesByWeek, type Entry } from '../db/queries.js';
-import { getEngrams, type Engram } from '../db/engram-queries.js';
+import { getMemories, type MemoryRow } from '../db/memory-queries.js';
 import { generateSummary } from '../lib/claude.js';
 import { LlmConsentError } from '../lib/llm-consent.js';
 import { closeDb } from '../db/client.js';
@@ -19,22 +19,22 @@ function formatRaw(entries: Entry[]): string {
     .join('\n');
 }
 
-function formatRawEngrams(engrams: Engram[]): string {
-  return engrams
-    .map((e) => {
-      const ts = e.created_at.slice(0, 16).replace('T', ' ');
-      return `${ts}  [event]  ${e.content}`;
+function formatRawRows(rows: MemoryRow[]): string {
+  return rows
+    .map((r) => {
+      const ts = r.ts.slice(0, 16).replace('T', ' ');
+      return `${ts}  [${r.kind ?? 'memory'}]  ${r.content}`;
     })
     .join('\n');
 }
 
-function engramsToEntries(engrams: Engram[]): Entry[] {
-  return engrams.map((e) => ({
-    id: e.id,
-    timestamp: e.created_at,
+function rowsToEntries(rows: MemoryRow[]): Entry[] {
+  return rows.map((r) => ({
+    id: r.id,
+    timestamp: r.ts,
     source: 'manual',
     category: 'note',
-    content: e.content,
+    content: r.content,
     tags: '[]',
   }));
 }
@@ -62,7 +62,8 @@ export const summaryCommand = new Command('summary')
     const cortex = globalOpts.cortex ?? config.cortex?.active;
 
     if (cortex) {
-      // Read from cortex event store
+      // Read from the cortex entry store (memories/events/retros). AGT-1303
+      // repointed this off the retired engrams table.
       let since: Date | undefined;
       if (opts.lastWeek) {
         since = startOfWeek(subWeeks(new Date(), 1), { weekStartsOn: 1 });
@@ -72,21 +73,21 @@ export const summaryCommand = new Command('summary')
         since = startOfWeek(new Date(), { weekStartsOn: 1 });
       }
 
-      const engrams = getEngrams(cortex, { since });
+      const rows = getMemories(cortex, { since: since?.toISOString() });
 
       try {
-        if (engrams.length === 0) {
-          console.log(chalk.dim('No events found for the specified period.'));
+        if (rows.length === 0) {
+          console.log(chalk.dim('No entries found for the specified period.'));
           return;
         }
 
         if (opts.raw) {
-          console.log(formatRawEngrams(engrams));
-          console.log(chalk.dim(`\n${engrams.length} events`));
+          console.log(formatRawRows(rows));
+          console.log(chalk.dim(`\n${rows.length} entries`));
         } else {
           try {
             console.log(chalk.dim('Generating summary...'));
-            const summary = await generateSummary(engramsToEntries(engrams));
+            const summary = await generateSummary(rowsToEntries(rows));
             console.log(summary);
           } catch (err) {
             // AGT-065: render the consent message verbatim (multi-line
@@ -99,7 +100,7 @@ export const summaryCommand = new Command('summary')
               console.error(chalk.red(`Error generating summary: ${msg}`));
             }
             console.log(chalk.dim('\nFalling back to raw output:\n'));
-            console.log(formatRawEngrams(engrams));
+            console.log(formatRawRows(rows));
           }
         }
       } finally {

@@ -84,7 +84,7 @@ describe('think subscribe surface', () => {
 
   beforeEach(async () => {
     cortex = createTestCortex();
-    // Set a real cortex active so `subscribe poll` has somewhere to write.
+    // Set a real cortex active so the subscribe commands resolve one.
     saveConfig({
       ...getConfig(),
       cortex: { author: 'test', active: cortex.name },
@@ -157,49 +157,7 @@ describe('think subscribe surface', () => {
     expect(logs.some((l) => l.toLowerCase().includes('no subscriptions'))).toBe(true);
   });
 
-  it('poll --legacy-engrams inserts events as engrams and persists the cursor', async () => {
-    if (!cortex) throw new Error('cortex fixture missing');
-    const logs: string[] = [];
-    vi.spyOn(console, 'log').mockImplementation((line: unknown) => {
-      logs.push(String(line));
-    });
-
-    await run(['add', 'mock', '2', '--accept-data-flow']);
-    const idLine = logs.find((l) => l.includes('id:'))!;
-    const subId = idLine.split('id:')[1]!.trim().replace(/\x1b\[\d+m/g, '');
-
-    // Drive one scheduler tick so the proxy has events to serve. The
-    // scheduler is intentionally not auto-started — its timer would race
-    // with the test, and tickOnce() gives deterministic ordering.
-    await proxy.scheduler.tickOnce();
-
-    logs.length = 0;
-    await run(['poll', '--legacy-engrams']);
-
-    // `subscribe poll` closes the cached DB handle on completion; re-open
-    // a fresh handle for the assertions.
-    const db = getCortexDb(cortex.name);
-    // Two engrams were inserted (mock with pattern "2" emits 2 events per poll).
-    const row = db.prepare(`SELECT count(*) AS c FROM engrams WHERE episode_key = ?`).get('subscribe:mock') as { c: number };
-    expect(row.c).toBe(2);
-
-    // Cursor advanced past 0.
-    const cursor = getConfig().subscriptions?.cursors?.[subId];
-    expect(cursor).toBeDefined();
-    expect(cursor!).toBeGreaterThan(0);
-
-    // Engram payload+context preserve metadata for future per-kind formatters.
-    const sample = db
-      .prepare(`SELECT context FROM engrams WHERE episode_key = ? LIMIT 1`)
-      .get('subscribe:mock') as { context: string } | undefined;
-    expect(sample).toBeDefined();
-    const ctx = JSON.parse(sample!.context);
-    expect(ctx.source).toBe('subscribe');
-    expect(ctx.kind).toBe('mock');
-    expect(ctx.subscription_id).toBe(subId);
-  });
-
-  it('poll (default) prints a deprecation warning and does NOT write engrams', async () => {
+  it('poll (default) prints the deprecation pointer and writes nothing', async () => {
     if (!cortex) throw new Error('cortex fixture missing');
     const logs: string[] = [];
     vi.spyOn(console, 'log').mockImplementation((line: unknown) => {
@@ -217,9 +175,9 @@ describe('think subscribe surface', () => {
     // Deprecation warning + suggest `think pull <team-cortex>` as the replacement.
     expect(logs.some((l) => /deprecated/i.test(l))).toBe(true);
     expect(logs.some((l) => /think pull/.test(l))).toBe(true);
-    expect(logs.some((l) => /--legacy-engrams/.test(l))).toBe(true);
 
-    // No engrams were written despite events being available.
+    // AGT-1303: the local write path is gone, so nothing lands anywhere
+    // despite events being available on the proxy.
     const db = getCortexDb(cortex.name);
     const row = db.prepare(`SELECT count(*) AS c FROM engrams WHERE episode_key = ?`).get('subscribe:mock') as { c: number };
     expect(row.c).toBe(0);
@@ -240,24 +198,45 @@ describe('think subscribe surface', () => {
     expect(logs).toEqual([]);
   });
 
-  it('poll --legacy-engrams --quiet stays silent when no events arrive', async () => {
-    const logs: string[] = [];
-    vi.spyOn(console, 'log').mockImplementation((line: unknown) => {
-      logs.push(String(line));
-    });
-    // No subscriptions set up — poll has nothing to do.
-    await run(['poll', '--legacy-engrams', '--quiet']);
-    expect(logs).toEqual([]);
+  it('poll --legacy-engrams is rejected with a removal note and a non-zero exit', async () => {
+    // AGT-1303: the flag stays registered-but-hidden purely so it gets OUR
+    // one-line note rather than commander's generic "unknown option".
+    const errs: string[] = [];
+    const stderrSpy = vi
+      .spyOn(process.stderr, 'write')
+      .mockImplementation(((chunk: unknown) => {
+        errs.push(String(chunk));
+        return true;
+      }) as never);
+    const prevExitCode = process.exitCode;
+
+    await run(['poll', '--legacy-engrams']);
+
+    expect(process.exitCode).toBe(1);
+    expect(errs.join('')).toMatch(/--legacy-engrams has been removed/);
+    expect(errs.join('')).toMatch(/think pull/);
+
+    process.exitCode = prevExitCode;
+    stderrSpy.mockRestore();
   });
 
-  it('poll --legacy-engrams without --quiet prints a soft notice + "no new events" on a clean run', async () => {
-    const logs: string[] = [];
-    vi.spyOn(console, 'log').mockImplementation((line: unknown) => {
-      logs.push(String(line));
-    });
-    await run(['poll', '--legacy-engrams']);
-    expect(logs.some((l) => /--legacy-engrams/.test(l))).toBe(true);
-    expect(logs.some((l) => /no new events/.test(l))).toBe(true);
+  it('poll --legacy-engrams still fails under --quiet', async () => {
+    const errs: string[] = [];
+    const stderrSpy = vi
+      .spyOn(process.stderr, 'write')
+      .mockImplementation(((chunk: unknown) => {
+        errs.push(String(chunk));
+        return true;
+      }) as never);
+    const prevExitCode = process.exitCode;
+
+    await run(['poll', '--legacy-engrams', '--quiet']);
+
+    expect(process.exitCode).toBe(1);
+    expect(errs.join('')).toMatch(/--legacy-engrams has been removed/);
+
+    process.exitCode = prevExitCode;
+    stderrSpy.mockRestore();
   });
 
   it('show prints proxy URL with token redacted', async () => {

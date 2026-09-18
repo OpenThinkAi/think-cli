@@ -4,8 +4,10 @@ import crypto from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { getThinkDir } from './paths.js';
 
-// Shared launchd-agent installer used by both `cortex auto-curate` and
-// `cortex auto-sync`. Each caller binds a config (label prefix, command
+// Shared launchd-agent installer. `cortex auto-curate` and `cortex auto-sync`
+// were its original callers and were deleted in AGT-1303; `think subscribe
+// install-agent` still uses it, and the reaper below still cleans up the
+// agents those two left behind. Each caller binds a config (label prefix, command
 // args, RunAtLoad flag, default interval, log filename) and gets back a
 // suite of install/uninstall/status helpers with stable behavior across
 // agents — a bug fixed here is fixed for both.
@@ -32,7 +34,7 @@ export interface LaunchAgentConfig {
   runAtLoad: boolean;
   /** Default cadence in seconds when the user doesn't pass `--interval`. */
   defaultIntervalSeconds: number;
-  /** Filename under getThinkDir(), e.g. `auto-curate.log`. */
+  /** Filename under getThinkDir(), e.g. `auto-subscribe.log`. */
   logFileName: string;
 }
 
@@ -236,8 +238,8 @@ export function createLaunchAgent(config: LaunchAgentConfig): LaunchAgentApi {
 //
 // `getAgentLabel()` above suffixes the label with sha1(THINK_HOME), so every
 // THINK_HOME a machine has ever pointed at gets its own curate/sync agent —
-// and nothing ever removed one. Once `think curate` and the daemon-down sync
-// bypass are deleted (think-3), a stranded agent invokes a nonexistent
+// and nothing ever removed one. With `think curate` and the daemon-down sync
+// bypass now deleted (AGT-1303), a stranded agent invokes a nonexistent
 // command forever. This reaps them unconditionally on daemon start,
 // regardless of which THINK_HOME the daemon itself is running under: it
 // matches on label PREFIX (`ai.openthink.curate.` / `ai.openthink.sync.`),

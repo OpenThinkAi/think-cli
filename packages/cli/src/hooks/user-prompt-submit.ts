@@ -22,7 +22,7 @@
  *
  * Security note: `additionalContext` is injected into the agent's context
  * window. This hook surfaces only content the user themselves stored in think
- * (their own memories, engrams, and long-term entries) — the `scope: "accessible"`
+ * (their own memories, events, retros and long-term entries) — the `scope: "accessible"`
  * recall scope is defined in `packages/cli/src/daemon/recall.ts` to enumerate only
  * locally-cloned cortexes belonging to the authenticated user, never remote peers
  * or shared stores. Each entry's content is truncated to MAX_ENTRY_CHARS to bound

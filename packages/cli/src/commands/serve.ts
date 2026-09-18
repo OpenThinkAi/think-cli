@@ -2,11 +2,11 @@ import path from 'node:path';
 import { Command } from 'commander';
 
 /**
- * `think serve` boots the proxy that fans external events into engrams.
+ * `think serve` boots the proxy that curates external events into memories.
  *
  * The serve module (hono / @hono/node-server / zod / scheduler / vault)
  * is **lazy-imported** from inside the action handler so users who never
- * run `serve` don't pay the cold-start cost on hot paths like `think log`
+ * run `serve` don't pay the cold-start cost on hot paths like `think sync`
  * and `think recall`. Bundle size still grows by the proxy's deps; only
  * startup latency for non-serve commands is protected.
  *

@@ -10,7 +10,7 @@
  * The proxy is its own actor in the cortex: every memory it writes is
  * stamped with `author = "proxy"` and the persisted proxy peer-id (see
  * `getProxyPeerId` in `serve/peer-id.ts`). This is intentionally distinct
- * from per-machine memories written via `think log` / `think sync` —
+ * from per-machine memories written via `think sync` —
  * those carry the user's per-machine peer-id and a human author name.
  *
  * Episode-grouping invariant: all memories produced from a single

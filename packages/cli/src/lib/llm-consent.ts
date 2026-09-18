@@ -28,9 +28,9 @@ function isTruthy(value: string | undefined): boolean {
  * AGT-065: every Claude Agent SDK call site in this codebase routes
  * through this gate (via `lib/claude-sdk.ts`'s wrapped `query` export).
  * Default-deny is the deliberate posture: shipping memory content to
- * Anthropic is not free privacy-wise (curator + backfill + episode
- * curation + retro dedupe each ship distinct envelopes), and a fresh
- * install previously began doing so silently on first `think curate`.
+ * Anthropic is not free privacy-wise (backfill + terminal-event curation +
+ * retro dedupe each ship distinct envelopes), and a fresh install once began
+ * doing so silently on the first run of the since-removed `think curate`.
  */
 export function requireLlmConsent(): void {
   if (hasLlmConsent()) return;
@@ -62,7 +62,7 @@ export function formatConsentFailure(): string {
   return [
     'LLM consent not granted — refusing to ship cortex content to Anthropic.',
     '',
-    'think curate / long-term backfill / episode curation / retro dedupe each',
+    'long-term backfill / terminal-event curation / retro dedupe each',
     'send memory content to Claude (one envelope per call). To opt in, set EITHER:',
     '',
     '  • Environment variable (one-shot or shell profile):',
