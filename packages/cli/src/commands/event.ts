@@ -26,7 +26,7 @@ import { writeDaemonDownEntry } from '../lib/l1-fallback.js';
 // startup via the eventCommand singleton below.
 export function makeEventCommand(): Command {
   return addWriteOptions(new Command('event')
-    .description('Record a notable event to the active cortex (milestone, deploy, incident)')
+    .description('Record a notable event (milestone, deploy, decision, incident)')
     .argument('<message>', 'The event to record'))
     .option('--silent', 'Suppress output (the daemon-unreachable note still goes to stderr)')
     .option('--no-push', 'Skip the remote git push after writing (only applies when a daemon is running)')

@@ -320,14 +320,14 @@ Override the data directory with `$THINK_HOME`.
 | `think subscribe remove` | `<id>` | Delete a subscription on the proxy (cascades to events/credential) |
 | `think subscribe set-credential` | `<id>` | Store an encrypted credential for a subscription (stdin preferred) |
 | `think subscribe poll` |  | [DEPRECATED] No-op — use `think pull <team-cortex>` instead |
-| `think subscribe install-agent` |  | Install a LaunchAgent that polls in the background (default 600s) |
+| `think subscribe install-agent` |  | Install a LaunchAgent that polls on session load + on a timer |
 | `think subscribe disable` |  | Remove the auto-subscribe LaunchAgent for this workspace |
 | `think subscribe status` |  | Show auto-subscribe scheduler status |
 | `think subscribe show` |  | Show the configured proxy URL (token is redacted) |
 | `think subscribe redact-set` | `<id> [paths...]` | Set per-subscription JSONPath-subset redact selectors (e.g. `$.user.email`) |
 | `think retro` | `<content>` | Record a durable lesson onto your home cortex, tagged by repo context |
 | `think retro-migrate` |  | Fold legacy per-repo cortices into your home cortex (dry-run by default) |
-| `think event` | `<message>` | Record a notable event to the active cortex (milestone, deploy, incident) |
+| `think event` | `<message>` | Record a notable event (milestone, deploy, decision, incident) |
 | `think curate-retros` |  | Run retro curator: dedupe, promote, and relegate retros (no deletion) |
 | `think brief` | `[query]` | Task-start brief: home-cortex context + retros scoped to this repo |
 | `think daemon` |  | Manage the think resident daemon process |

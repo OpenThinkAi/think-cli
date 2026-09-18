@@ -346,7 +346,7 @@ subscribeCommand.addCommand(new Command('poll')
 
 // `think subscribe install-agent`
 subscribeCommand.addCommand(new Command('install-agent')
-  .description('Install a LaunchAgent that polls in the background (default 600s)')
+  .description('Install a LaunchAgent that polls on session load + on a timer')
   .option('--interval <seconds>', 'Scheduler cadence in seconds (default 600)', (v) => {
     const n = parseInt(v, 10);
     if (!Number.isInteger(n) || n <= 0 || String(n) !== v.trim()) {
