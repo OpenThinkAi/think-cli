@@ -281,6 +281,16 @@ export interface ReapLaunchAgentsOptions {
   unload?: (plistPath: string) => void;
   /** Optional one-line-per-action sink, wired to daemon.log by the caller. */
   log?: (message: string) => void;
+  /**
+   * Report what WOULD be reaped without unloading or deleting anything
+   * (AGT-1308). Added so `think doctor` can report stale agents through the
+   * exact matcher `--fix` and daemon start then use, rather than growing a
+   * second, drifting copy of the filename/Label agreement rule above.
+   *
+   * `ReapedLaunchAgent.unloaded` is always false under a dry run — nothing was
+   * unloaded, so there is no outcome to report.
+   */
+  dryRun?: boolean;
 }
 
 function defaultUnload(plistPath: string): void {
@@ -330,6 +340,10 @@ function extractPlistLabel(xml: string): string | null {
  *     → skip + log (ambiguous — a human should look at this, not the reaper)
  *   - filename and Label agree on the same prefix         → delete
  *
+ * With `dryRun: true` the same proof runs and the same array comes back, but
+ * nothing is unloaded or deleted — that is how `think doctor` reports this
+ * check (AGT-1308).
+ *
  * Only regular files directly inside the directory are considered:
  * `fs.readdirSync(..., { withFileTypes: true })` + `Dirent.isFile()` is
  * false for symlinks and subdirectories, so this never follows a symlink
@@ -352,6 +366,7 @@ export function reapStaleLaunchAgents(options: ReapLaunchAgentsOptions = {}): Re
 
   const unload = options.unload ?? defaultUnload;
   const log = options.log ?? ((): void => {});
+  const dryRun = options.dryRun === true;
 
   let entries: fs.Dirent[];
   try {
@@ -387,6 +402,14 @@ export function reapStaleLaunchAgents(options: ReapLaunchAgentsOptions = {}): Re
     const labelPrefix = REAPED_LABEL_PREFIXES.find((p) => label.startsWith(p));
     if (labelPrefix !== filenamePrefix) {
       log(`launch-agent reap: skipping ${entry.name} — filename implies "${filenamePrefix}" but plist Label is "${label}"; leaving for manual review`);
+      continue;
+    }
+
+    // Dry run stops here, after the same two-signal agreement proof and
+    // before the first side effect: the caller learns exactly which plists a
+    // real run would remove.
+    if (dryRun) {
+      removed.push({ label, plistPath, prefix: labelPrefix, unloaded: false });
       continue;
     }
 

@@ -52,9 +52,22 @@ export interface BlockRefreshResult {
    * current template is NOT included here — `upsertBlock` returns
    * `{ kind: 'unchanged' }` for it and never calls `writeFileSync`, so its
    * mtime is untouched (AC1).
+   *
+   * Under `dryRun` this is the same list, one step earlier: the paths a real
+   * refresh WOULD rewrite.
    */
   refreshed: string[];
   failures: BlockRefreshFailure[];
+}
+
+export interface RefreshBlocksOptions {
+  /**
+   * Compute the outcome without writing anything (AGT-1308). `think doctor`
+   * reports "managed blocks out of date" this way, so its report is produced
+   * by the very code `--fix` then runs for real — the two cannot drift apart
+   * the way a separate staleness heuristic would.
+   */
+  dryRun?: boolean;
 }
 
 /**
@@ -106,7 +119,8 @@ function buildCurrentBlockFor(kind: BlockKind, entryPath: string, beginMarker: s
  * file, a marker pair that no longer matches the current template) is
  * collected into `failures` and every other entry is still attempted (AC5).
  */
-export function refreshRegisteredBlocks(): BlockRefreshResult {
+export function refreshRegisteredBlocks(options: RefreshBlocksOptions = {}): BlockRefreshResult {
+  const dryRun = options.dryRun === true;
   const entries = listRegisteredBlocks();
   const refreshed: string[] = [];
   const failures: BlockRefreshFailure[] = [];
@@ -125,8 +139,10 @@ export function refreshRegisteredBlocks(): BlockRefreshResult {
       }
 
       const block = buildCurrentBlockFor(entry.kind, entry.path, opts.beginMarker, opts.endMarker);
-      const result = upsertBlock(entry.path, block, opts);
-      recordBlockWrite(entry.path, entry.kind, opts.beginMarker, opts.endMarker);
+      const result = upsertBlock(entry.path, block, { ...opts, dryRun });
+      // Re-registering is itself a write to the registry file, so it is
+      // skipped under a dry run along with the block write it records.
+      if (!dryRun) recordBlockWrite(entry.path, entry.kind, opts.beginMarker, opts.endMarker);
       if (result.kind !== 'unchanged') {
         refreshed.push(entry.path);
       }
