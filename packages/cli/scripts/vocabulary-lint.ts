@@ -13,6 +13,23 @@
  * `description`, and the rendered `think init` templates
  * (`buildBlock(false)`, `buildBlock(true)`, `buildRetroBlock(...)`).
  *
+ * "Shipped" means git-TRACKED (r2 fix). The markdown candidates under
+ * `docs/**`/`packages/cli/docs/**` are enumerated via `git ls-files`
+ * (the repo INDEX — `git add` is enough, a commit is not required), never a
+ * raw filesystem walk: a developer's untracked scratch file under `docs/`
+ * (e.g. a private draft never meant to ship) must never trip this lint, and
+ * a gitignored one certainly must not. The very first real-repo run of this
+ * lint (AGT-1315 r1 -> r2) tripped on exactly that — an untracked
+ * `docs/remote-mcp-exploration.md` in the primary checkout, invisible to the
+ * branch's own worktree, failed `npm test` there even though the branch
+ * itself was clean. A plain filesystem walk is used ONLY as a fallback when
+ * `git` itself is unavailable (git binary missing, or `root` isn't a git
+ * working tree at all) — see `listCandidateMarkdownFiles()`. `README.md`,
+ * `packages/cli/README.md` and `SECURITY.md` go through the same
+ * tracked-only enumeration. Package.json `description`s and the rendered
+ * init templates are NOT git-tracking-gated — they're read straight off
+ * disk / rendered in-memory, same as before.
+ *
  * NOT in scope, deliberately: `CHANGELOG.md` and `docs/history/` (AC2 — the
  * ONLY two exclusions, see `VOCABULARY_LINT_EXCLUSIONS` below);
  * `packages/cli/SECURITY-serve.md` (lives at `packages/cli/`, not under
@@ -65,6 +82,7 @@
  * local to shipped docs, as a second term applied only by this lint
  * (`VERSION_LABEL_TERM`, appended by `defaultTerms()`).
  */
+import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -79,8 +97,13 @@ import {
 } from './gen-command-table.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-// packages/cli/scripts -> repo root
-export const REPO_ROOT = path.resolve(__dirname, '..', '..', '..');
+// packages/cli/scripts -> repo root. `VOCAB_LINT_ROOT` is a test-only seam
+// (AGT-1315 r2) so the orchestrator can point a normal `vitest run` of this
+// suite at a DIFFERENT checkout (e.g. the primary one, to prove it now
+// passes) without editing source. Production `npm test` never sets it.
+export const REPO_ROOT = process.env.VOCAB_LINT_ROOT
+  ? path.resolve(process.env.VOCAB_LINT_ROOT)
+  : path.resolve(__dirname, '..', '..', '..');
 
 /**
  * AC2: the ONLY two exclusions. A trailing `/` marks a directory prefix
@@ -220,7 +243,7 @@ function isExcludedRelPath(relPath: string): boolean {
   return VOCABULARY_LINT_EXCLUSIONS.some((ex) => norm === ex || norm.startsWith(ex));
 }
 
-/** Recursively collects `.md` files under `dir`, skipping AC2's exclusions. */
+/** Recursively collects `.md` files under `dir`, skipping AC2's exclusions. Fallback-path only (see `listCandidateMarkdownFiles`). */
 export function walkMarkdownFiles(dir: string, root: string): string[] {
   const out: string[] = [];
   if (!fs.existsSync(dir)) return out;
@@ -237,6 +260,53 @@ export function walkMarkdownFiles(dir: string, root: string): string[] {
     }
   }
   return out.sort();
+}
+
+/** The exact AC1 pathspecs passed to `git ls-files` — restricts the index listing to what this lint is allowed to scan. */
+const DOC_PATHSPECS = ['README.md', path.join('packages', 'cli', 'README.md'), 'SECURITY.md', 'docs', path.join('packages', 'cli', 'docs')];
+
+/**
+ * Enumerates AC1's markdown candidates as git-root-relative, forward-slash
+ * paths — TRACKED ONLY (in the index; `git add` suffices, no commit
+ * required). Falls back to a plain filesystem walk, scanning untracked
+ * files too, ONLY when `git` itself can't answer (missing binary, or `root`
+ * isn't a git working tree) — see the file header for why tracked-only is
+ * the rule, not the exception.
+ */
+function listCandidateMarkdownFiles(root: string): string[] {
+  try {
+    const out = execFileSync('git', ['ls-files', '-z', '--', ...DOC_PATHSPECS], {
+      cwd: root,
+      encoding: 'utf-8',
+      // Suppress git's own "not a git repository" noise on stderr — the
+      // catch block below prints exactly one clear line instead.
+      stdio: ['ignore', 'pipe', 'ignore'],
+    });
+    return out
+      .split('\0')
+      .filter((f) => f.length > 0 && f.endsWith('.md'))
+      .map((f) => f.split(path.sep).join('/'))
+      .sort();
+  } catch {
+    // Fallback: git unavailable at this root. Untracked/gitignored markdown
+    // WILL be scanned here — there is no tracked/untracked distinction to
+    // make without git — hence the explicit note.
+    console.error(
+      'vocabulary-lint: `git ls-files` unavailable at this root (not a git working tree, or git is not installed) — ' +
+        'falling back to a filesystem walk. Untracked or gitignored markdown under docs/ will also be scanned.',
+    );
+    const relPaths: string[] = [];
+    for (const rel of ['README.md', path.join('packages', 'cli', 'README.md'), 'SECURITY.md']) {
+      if (fs.existsSync(path.join(root, rel))) relPaths.push(rel.split(path.sep).join('/'));
+    }
+    for (const full of walkMarkdownFiles(path.join(root, 'docs'), root)) {
+      relPaths.push(path.relative(root, full).split(path.sep).join('/'));
+    }
+    for (const full of walkMarkdownFiles(path.join(root, 'packages', 'cli', 'docs'), root)) {
+      relPaths.push(path.relative(root, full).split(path.sep).join('/'));
+    }
+    return relPaths.sort();
+  }
 }
 
 export interface ScanTarget {
@@ -273,22 +343,10 @@ export interface GatherOptions {
 export function gatherTargets(root: string = REPO_ROOT, options: GatherOptions = {}): ScanTarget[] {
   const targets: ScanTarget[] = [];
 
-  const staticFiles = [
-    path.join(root, 'README.md'),
-    path.join(root, 'packages', 'cli', 'README.md'),
-    path.join(root, 'SECURITY.md'),
-  ];
-  for (const f of staticFiles) {
-    const relPath = path.relative(root, f);
+  for (const relPath of listCandidateMarkdownFiles(root)) {
     if (isExcludedRelPath(relPath)) continue;
-    if (fs.existsSync(f)) targets.push({ file: relPath, content: fs.readFileSync(f, 'utf-8') });
-  }
-
-  for (const f of walkMarkdownFiles(path.join(root, 'docs'), root)) {
-    targets.push({ file: path.relative(root, f), content: fs.readFileSync(f, 'utf-8') });
-  }
-  for (const f of walkMarkdownFiles(path.join(root, 'packages', 'cli', 'docs'), root)) {
-    targets.push({ file: path.relative(root, f), content: fs.readFileSync(f, 'utf-8') });
+    const full = path.join(root, relPath);
+    if (fs.existsSync(full)) targets.push({ file: relPath, content: fs.readFileSync(full, 'utf-8') });
   }
 
   for (const pkg of [path.join(root, 'package.json'), path.join(root, 'packages', 'cli', 'package.json')]) {

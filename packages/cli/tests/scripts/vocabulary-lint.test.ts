@@ -12,7 +12,10 @@
  * calls out: a plain hit, a hit inside a code identifier (no hit),
  * `curate-retros` (no hit), a `v2` label (hit) vs `v20` (no hit), an exempt
  * "Removed" table span (no hit), the generated command-table span (no hit),
- * and that the exclusion list is exactly the two AC2 entries.
+ * that the exclusion list is exactly the two AC2 entries, and (r2) that
+ * scanning is git-TRACKED-only — an untracked docs/*.md is never scanned,
+ * `git add` (no commit needed) is what makes it count, and a non-git root
+ * falls back to scanning everything on disk.
  *
  * No THINK_HOME / real-home interaction: every fixture lives under
  * `os.tmpdir()` (AGT-1322), and `gatherTargets`/`scanForRetiredVocabulary`
@@ -20,6 +23,7 @@
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -256,5 +260,88 @@ describe('vocabulary-lint — term list is imported, not copied (AGT-1315 shares
     expect(terms[terms.length - 1]).toBe(VERSION_LABEL_TERM);
     expect(terms.some((t) => t.term === 'engram')).toBe(true);
     expect(terms.some((t) => t.term === '--decision')).toBe(true);
+  });
+});
+
+/**
+ * AGT-1315 r2 — "shipped" means git-TRACKED. The r1 lint walked docs/** on
+ * disk, so an untracked scratch file (a developer's private draft, never
+ * meant to ship — the real-world case was `docs/remote-mcp-exploration.md`
+ * in the primary checkout) tripped `npm test` there even though the branch
+ * itself was clean, and the branch's own worktree never had the file so
+ * couldn't see the failure coming. These tests drive a REAL temp git repo
+ * (never the actual project repo) to prove: untracked docs markdown is
+ * never scanned, `git add` (no commit needed) is what makes it count as
+ * tracked, and a root that isn't a git working tree at all still falls back
+ * to scanning everything (documented, not silent).
+ */
+describe('vocabulary-lint — tracked-only scanning (AGT-1315 r2)', () => {
+  let root: string;
+
+  beforeEach(() => {
+    root = mkdtempSync(join(tmpdir(), 'think-vocab-lint-git-'));
+    execFileSync('git', ['init', '-q'], { cwd: root });
+    mkdirSync(join(root, 'docs'), { recursive: true });
+    writeFileSync(join(root, 'docs', 'a.md'), 'nothing retired here.\n', 'utf-8');
+    execFileSync('git', ['add', 'docs/a.md'], { cwd: root });
+    execFileSync(
+      'git',
+      ['-c', 'user.name=think-cli-tests', '-c', 'user.email=tests@think-cli.invalid', '-c', 'commit.gpgsign=false', 'commit', '-q', '-m', 'init'],
+      { cwd: root },
+    );
+  });
+
+  afterEach(() => {
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it('an untracked docs/draft.md is NOT scanned, even with retired vocabulary in it', () => {
+    writeFileSync(join(root, 'docs', 'draft.md'), 'an engram is stranded here.\n', 'utf-8');
+
+    const hits = scanForRetiredVocabulary(root, { includeInitTemplates: false });
+    expect(hits).toEqual([]);
+  });
+
+  it('the same file IS scanned once `git add`ed — tracked means "in the index", no commit required', () => {
+    writeFileSync(join(root, 'docs', 'draft.md'), 'an engram is stranded here.\n', 'utf-8');
+    execFileSync('git', ['add', 'docs/draft.md'], { cwd: root });
+
+    const hits = scanForRetiredVocabulary(root, { includeInitTemplates: false });
+    expect(hits).toHaveLength(1);
+    expect(hits[0].file).toBe('docs/draft.md');
+  });
+
+  it('an untracked README.md at the repo root is also NOT scanned', () => {
+    writeFileSync(join(root, 'README.md'), 'Use --decision to log a decision.\n', 'utf-8');
+
+    const hits = scanForRetiredVocabulary(root, { includeInitTemplates: false });
+    expect(hits).toEqual([]);
+  });
+
+  it('a committed docs/history/old.md stays excluded even though it is tracked', () => {
+    mkdirSync(join(root, 'docs', 'history'), { recursive: true });
+    writeFileSync(join(root, 'docs', 'history', 'old.md'), 'think monitor was here.\n', 'utf-8');
+    execFileSync('git', ['add', 'docs/history/old.md'], { cwd: root });
+
+    const hits = scanForRetiredVocabulary(root, { includeInitTemplates: false });
+    expect(hits).toEqual([]);
+  });
+});
+
+describe('vocabulary-lint — fallback when `root` is not a git working tree at all (AGT-1315 r2)', () => {
+  it('falls back to scanning everything on disk, tracked or not, when git is unavailable', () => {
+    const root = mkdtempSync(join(tmpdir(), 'think-vocab-lint-nogit-'));
+    try {
+      mkdirSync(join(root, 'docs'), { recursive: true });
+      writeFileSync(join(root, 'docs', 'x.md'), 'think monitor daily.\n', 'utf-8');
+
+      // No `git init` at all — listCandidateMarkdownFiles() must still find
+      // the file via its filesystem-walk fallback, not silently return [].
+      const hits = scanForRetiredVocabulary(root, { includeInitTemplates: false });
+      expect(hits).toHaveLength(1);
+      expect(hits[0].file).toBe('docs/x.md');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });
