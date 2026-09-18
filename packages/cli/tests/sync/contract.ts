@@ -185,12 +185,17 @@ export function runSyncAdapterContractTests<TRemote>(
         });
       });
 
+      // AGT-1323: assert on `errors` at every hop. This test used to fail as
+      // a bare `expected 1 to be 2` while the real cause — a push that failed
+      // and reported itself in `SyncResult.errors` — sat unread two syncs
+      // upstream. Checking here attributes any future swallowed adapter
+      // failure to the hop that produced it.
       p.peerA.activate();
-      await adapter.sync(p.cortexName);
+      expect((await adapter.sync(p.cortexName)).errors).toEqual([]);
       p.peerB.activate();
-      await adapter.sync(p.cortexName);
+      expect((await adapter.sync(p.cortexName)).errors).toEqual([]);
       p.peerA.activate();
-      await adapter.sync(p.cortexName);
+      expect((await adapter.sync(p.cortexName)).errors).toEqual([]);
 
       const aCount = asPeer(p.peerA, () => getMemoryCount(p.cortexName));
       const bCount = asPeer(p.peerB, () => getMemoryCount(p.cortexName));
