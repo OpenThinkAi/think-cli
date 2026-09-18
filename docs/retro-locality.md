@@ -34,7 +34,7 @@ tests). Notable deltas from the original plan, each detailed in-line below:
 
 ## 1. The reversal
 
-v2 §6 chose **Option B** (keep retros on per-context `cortex/<name>` branches;
+The prior design (`docs/history/iterative-learning-v2.md` §6) chose **Option B** (keep retros on per-context `cortex/<name>` branches;
 make cross-cortex writes cheap via git plumbing — shipped as AGT-458) and
 explicitly **deferred Option A** (move retros into the active cortex, tagged by
 repo). This doc adopts **Option A** and retires the per-context branch model for
@@ -45,9 +45,9 @@ Why the reversal:
   identity, not a routing key. Retros abused it as a per-repo bucket, which
   forced the daemon to switch branches to land a write. That switching is the
   root of a recurring bug class (#65, #69, the shared-worktree races).
-- Retros are **team-specific knowledge**, not universal truth. v2 tried to avoid
-  two teams holding different lessons for the same repo; that was the wrong
-  goal. Different home cortices *should* hold different retros for the same
+- Retros are **team-specific knowledge**, not universal truth. The prior design
+  tried to avoid two teams holding different lessons for the same repo; that
+  was the wrong goal. Different home cortices *should* hold different retros for the same
   context. This is now a feature, not a conflict to suppress.
 
 ## 2. The two-axis model
@@ -180,8 +180,8 @@ personal cortices.
   local repo-cortex branch via `listLocalBranches()`. Retarget it to curate the
   home cortex's retros **grouped by `repo:` context tag**, so curation stays
   context-scoped without per-context branches.
-- **AGT-458 cross-cortex plumbing-writes:** keep them — v2 notes they also serve
-  sync + compaction — but stop routing *retro writes* through them (retro writes
+- **AGT-458 cross-cortex plumbing-writes:** keep them — the prior design notes
+  they also serve sync + compaction — but stop routing *retro writes* through them (retro writes
   are now same-cortex). The migration is the one remaining cross-cortex retro
   writer, and only runs once.
 - **Per-context `cortex/<name>` branches** that existed *only* as retro buckets

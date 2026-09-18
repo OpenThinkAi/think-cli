@@ -18,9 +18,9 @@ git adapter (`git-adapter.ts`) and the local-fs adapter (`local-fs-adapter.ts`),
 and it respects the same data-model invariants documented in
 `packages/cli/src/sync/types.ts`.
 
-**v1 carries memory lines only.** There is no engram kind to carry — the engram
-write tier was removed in `3.0.0`, and even before that, engrams never synced
-(enforced contract). Long-term events and retros ride their own push/pull paths
+**v1 carries memory lines only.** There is no separate write-tier kind to carry —
+that write tier was removed in `3.0.0`, and even before that, its entries never
+synced (enforced contract). Long-term events and retros ride their own push/pull paths
 in the git/fs adapters and are explicitly out of scope here; they can be added
 as parallel line-kinds in a later revision without changing the cursor
 mechanics below.
