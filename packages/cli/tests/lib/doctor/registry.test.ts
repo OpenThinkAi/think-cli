@@ -25,6 +25,7 @@ import { LLM_PROVIDERS_CHECK_ID } from '../../../src/lib/doctor/llm-providers.js
 import { CLAUDE_INTEGRATION_CHECK_ID } from '../../../src/lib/doctor/claude-integration.js';
 import { THINK_HOMES_CHECK_ID } from '../../../src/lib/doctor/think-homes.js';
 import { SALVAGE_COMMIT_CHECK_ID } from '../../../src/lib/doctor/salvage-commit.js';
+import { RETIRED_VOCABULARY_CHECK_ID } from '../../../src/lib/doctor/retired-vocabulary.js';
 
 function fakeCheck(
   id: string,
@@ -50,6 +51,7 @@ describe('doctorChecks (AGT-1308 AC1)', () => {
       CLAUDE_INTEGRATION_CHECK_ID,
       THINK_HOMES_CHECK_ID,
       SALVAGE_COMMIT_CHECK_ID,
+      RETIRED_VOCABULARY_CHECK_ID,
     ]);
   });
 
