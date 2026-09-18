@@ -14,13 +14,27 @@ npm install -g @openthink/think@rc
 `think update` (which always installs `@latest`) will not touch a machine
 running this release, and will not put it on a machine running 2.6.1 either —
 that is the point of shipping a release candidate first. See
-[Upgrading to 3.0](README.md#upgrading-to-30) for the full walkthrough.
+[Upgrading to 3.0](README.md#upgrading-to-30) for the full walkthrough. Once
+`3.0.0` is promoted to `latest` (a separate, later step), a machine already
+on the rc picks up the promotion on its next `think update` exactly like any
+other release — no manual reinstall needed.
 
 ### Breaking
 
-Every command and flag the v2 engram tier depended on is gone. Each removed
-flag exits non-zero with a one-line pointer rather than being quietly
-ignored; a removed command reports "unknown command".
+Every command and flag the v2 engram tier depended on is gone, but the two
+are not removed the same way:
+
+- **Removed flags**, on commands that still exist, exit non-zero with a
+  one-line pointer to the replacement — `think sync -d`, `--context` and
+  `-e` are the ones you're likeliest to have muscle memory for.
+- **Removed commands** are gone outright: think's command parser reports
+  them exactly as it would a typo — "unknown command" — with no pointer to
+  a replacement, because there is no code path left to run once the
+  registration is deleted. The one place this is worth calling out by name:
+  `think curate` is removed, but `think curate-retros` is a *different*
+  command that stays (retro curation never touched engrams). Typing
+  `think curate` post-upgrade will not mention `curate-retros` — the table
+  below is the pointer.
 
 | Removed | Use instead |
 | --- | --- |
@@ -35,7 +49,7 @@ ignored; a removed command reports "unknown command".
 | `think cortex auto-curate` / `auto-sync` | nothing — the daemon syncs on its own. |
 | `think recall --engrams` | `think recall` (it searches everything) |
 | `think subscribe poll --legacy-engrams` | `think pull <team-cortex>` |
-| `think init --block-version` | `think init` — there is one template now. |
+| `think init --block-version` | `think init` — there is one template now. Whatever version an existing `CLAUDE.md`/`AGENTS.md` block was written with, self-heal rewrites it to the single template on the next `think update` (see below) — no manual migration. |
 
 Nine `cortex.*` config keys that only the removed write tier read
 (`curateEveryN`, `engramTTLDays`, `curatorPromptCharCap`, `selectivity`,
