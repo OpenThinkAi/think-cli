@@ -2,6 +2,18 @@
 
 ## [Unreleased]
 
+### Added
+
+- `think config set`/`get` now accept `cortex.llm.providers.<name>.<leaf>`
+  (`kind`, `endpoint`, `model`, `apiKey`, `apiKeyEnv`, `offMachine`,
+  `ctxBudget`, `timeoutMs`, `disableThinking`), `cortex.llm.fallback`, and
+  `cortex.llmConsent`, creating intermediate objects and validating each leaf
+  (e.g. `kind` must be `openai`/`anthropic`, `endpoint` must be an
+  `http(s)://` URL, `fallback` must name a registered provider or `"skip"`).
+  Previously any `cortex.llm.*` key was rejected with "Unknown config key",
+  forcing a hand-edit of `config.json` to point at a different model
+  (AGT-1327).
+
 ### Fixed
 
 - `think doctor`'s repo-index check no longer fails on routine plumbing lag.

@@ -351,6 +351,7 @@ Every repair `--fix` applies is a function self-heal already calls, and none of 
 | `think resume` |  | Resume event creation after a pause |
 | `think config` |  | View or update think configuration |
 | `think config show` |  | Print current configuration |
+| `think config get` | `<key>` | Read a configuration value |
 | `think config set` | `<key> <value>` | Set a configuration value |
 | `think update` |  | Update think to the latest version (restarts the daemon if needed) |
 | `think migrate-engrams` |  | Re-submit entries stranded in the legacy pre-daemon table |
