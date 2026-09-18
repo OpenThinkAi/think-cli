@@ -2,9 +2,151 @@
 
 ## [Unreleased]
 
+## [3.0.0] — 2026-09-18
+
+Promoted to the `latest` npm dist-tag: `npm install -g @openthink/think` and
+`think update` now install `3.0.0` by default (`latest` had stayed on `2.6.1`
+since `3.0.0-rc.1` shipped under the `rc` dist-tag). This entry folds in
+everything from `3.0.0-rc.1` below plus the one fix that landed on top of it
+(AGT-1325 — see Breaking), since this is the entry most people will read
+first and it shouldn't send them to the rc entry to get the whole picture.
+Closes [#95](https://github.com/OpenThinkAi/think-cli/issues/95).
+
+### Breaking
+
+Every command and flag the v2 engram tier depended on is gone, and — as of
+this release — removed the same way: think's command parser prints a
+one-line pointer to the replacement and exits non-zero, whether what you
+typed was a removed flag on a command that still exists or a removed command
+outright. (During the `3.0.0-rc.1` release candidate a removed *command*
+instead fell through to commander's generic "unknown command", with no
+pointer to a replacement — `think curate` mentioned nowhere that
+`think curate-retros` was the surviving, different command. AGT-1325 closed
+that gap before this promotion, so `3.0.0` has no asymmetry left between the
+two removal kinds.)
+
+The one place still worth calling out by name: `think curate` is removed,
+but `think curate-retros` is a *different* command that stays (retro
+curation never touched engrams) — the `curate` pointer names it explicitly.
+
+| Removed | Use instead |
+| --- | --- |
+| `think sync -d` / `--decision` | `think event "Decided …"` |
+| `think sync --context` | `think event` |
+| `think sync -e` / `--episode` | `think event` |
+| `think log` | `think sync` |
+| `think curate` (incl. `--episode`, `--consolidate`) | nothing — the tier it curated is gone. `think curate-retros` is a different command and stays. |
+| `think monitor` | `think recall` / `think memory` |
+| `think curator edit` / `show` | nothing — there is no curator prompt to guide. |
+| `think migrate-data` | `think doctor` reports anything still to migrate; `--fix` migrates it. |
+| `think cortex auto-curate` / `auto-sync` | nothing — the daemon syncs on its own. |
+| `think recall --engrams` | `think recall` (it searches everything) |
+| `think subscribe poll --legacy-engrams` | `think pull <team-cortex>` |
+| `think init --block-version` | `think init` — there is one template now. Whatever version an existing `CLAUDE.md`/`AGENTS.md` block was written with, self-heal rewrites it to the single template on the next `think update` (see Upgrading below) — no manual migration. |
+
+Nine `cortex.*` config keys that only the removed write tier read
+(`curateEveryN`, `engramTTLDays`, `curatorPromptCharCap`, `selectivity`,
+`granularity`, `maxMemoriesPerRun`, `confirmBeforeCommit`, `idleWindowMinutes`,
+`staleWindowMinutes`) are now inert — setting one is not an error, and think
+prints one advisory line naming the ones it finds rather than rewriting your
+config file.
+
+Full detail on every removal, and what each command's replacement looks like
+day to day, is in the [Removed](#removed) section below and in the README's
+[Upgrading to 3.0](README.md#upgrading-to-30) table — the two agree.
+
+### Upgrading
+
+`think update` always installs `@openthink/think@latest` and crosses majors,
+so this release reaches every teammate at their next session with no extra
+step — whether their machine is on `2.x` or already on `3.0.0-rc.1`. A
+machine already running the rc upgrades exactly like any other release (the
+version-comparison fix in AGT-1324 treats a prerelease-to-release step the
+same as any other forward move; it does not need a manual reinstall or a
+different flow).
+
+No prompt, no flag. On the first `3.0.0` daemon start (and via
+`think doctor --fix`), think:
+
+- **Reaps the retired LaunchAgents** — unloads and deletes every
+  `ai.openthink.curate.*` and `ai.openthink.sync.*` job, matched by label
+  across every `THINK_HOME` on the machine, not just the current one.
+- **Migrates stranded rows** — every engram row the pre-daemon write path
+  left in a table nothing reads is re-submitted through the normal write
+  path: rows carrying decision text become events, the rest become
+  memories, each keeping its **original timestamp** so recall ranks it where
+  it belongs rather than as today's news. See the migration note below for
+  what this looks like on a shared cortex.
+- **Refreshes managed blocks** — every `CLAUDE.md` / `AGENTS.md` block think
+  has a record of is rewritten to the current template, so agents stop being
+  taught commands and flags that no longer exist.
+
+The next interactive `think` command prints a one-time summary of what was
+healed.
+
+For anything self-heal cannot do unattended:
+
+```bash
+think doctor           # report
+think doctor --fix     # apply the safe repairs, then re-run the checks
+think doctor --json    # one JSON document on stdout, each check with a stable id
+```
+
+Checks: stale LaunchAgents · managed blocks out of date · retired vocabulary
+in unmanaged instruction files · unmigrated engram rows · `~/.think/repo`
+index stale vs HEAD · daemon running the installed version · configured LLM
+provider reachable · hook + MCP registered and pointing at the installed
+build · multiple `THINK_HOME`s present. Every repair `--fix` applies is a
+function self-heal already calls; `think doctor --json` exists so setup
+scripts can gate on it.
+
+### Migration note
+
+The rescue described above (under Upgrading) runs on **every** machine's
+first `3.0.0` daemon start, including one that already pulled a shared
+cortex branch from a teammate who upgraded earlier. If you share a cortex
+with a team, expect a **one-time burst of backdated entries** to land on
+that branch as each teammate's machine upgrades and runs its own migration —
+this is expected, not corruption, and it is why every original timestamp is
+preserved rather than stamped "now". Each migrated entry is tagged with the
+`migrated-engram` topic, so `think recall --topic migrated-engram` lists
+exactly what arrived (locally or from a peer) at a glance, and — since each
+one is now an ordinary event or memory — it is reversible with `think
+delete` like anything else.
+
+### Fixed
+
+- **`think update` no longer downgrades a machine that is ahead of `latest`.** It compared the installed version against the `latest` dist-tag by string equality and installed `@latest` on any difference, so a machine running a prerelease (`3.0.0-rc.1` while `latest` is still `2.6.1`) was downgraded — once per agent session, given the managed block runs `think update` at session start. The comparison is now real SemVer precedence: an install that is genuinely newer is kept with a one-line note naming both versions and the tag it tracks (`npm install -g @openthink/think@rc` to refresh), a prerelease behind its own release still upgrades (`3.0.0-rc.1` → `3.0.0`), and the daemon-drift sync plus managed-block refresh run on every one of those paths exactly as before. A registry answer that is not a version, and an unreachable registry on a prerelease machine, now install nothing and say why rather than resolving `@latest` from npm's cache.
+
+- **A write made while the daemon is down now lands somewhere the daemon reads.** `think sync` and `think event` used to fall back to the v2 `engrams` table when the daemon was unreachable. Nothing drains that table and `think recall` does not read it, so those entries were stranded — silently, with the same `✓ … stored memory <id>` line a real write prints. They now go to the active cortex's `l1_outbox`, the durable hand-off every other L1 writer already uses, with `kind` preserved (the `engrams` table has no `kind` column, so an offline `think event` was also being demoted to a plain engram). The daemon indexes pending rows into L2 at startup, before it binds its socket, so the first `think recall` after `think daemon start` already sees them — no `think reindex` needed.
+
+- **Entries already stranded in the `engrams` table are rescued, not abandoned.** The first daemon start after upgrading re-submits every unevaluated row — *including rows past their expiry* — through the normal write path: rows carrying decision text become events (content and decision on one line), the rest become memories, each keeping its **original timestamp** so recall ranks it where it belongs rather than as today's news. Rows written by `think subscribe poll` (`subscribe:*`) were local-only by design and are skipped. Each rescued entry is tagged with the `migrated-engram` topic, so if this lands as a burst on a shared cortex branch, `think recall --topic migrated-engram` identifies exactly what arrived and makes it reversible. Idempotent: each source row is stamped as it is migrated, so this happens once. A legacy row that cannot be made into a valid entry is reported and left in place — never dropped. Preview it with `think migrate-engrams --dry-run`, which prints per-cortex counts and writes nothing.
+
 ### Changed
 
-- **Deleted commands now print a one-line removal pointer instead of commander's generic "unknown command" error.** `think curate` (incl. `--episode`, `--consolidate`), `think monitor`, `think curator` (`edit`/`show`), `think migrate-data`, `think log`, and `think cortex auto-curate`/`auto-sync` each exit non-zero with the same one-line-pointer treatment the removed *flags* already got (AGT-1297/1303) — registered hidden, so none show up in `--help` or the generated command table. `think curate`'s pointer explicitly names `think curate-retros` as a different, surviving command, since it's the confusable case. Closes the asymmetry the product reviewer flagged on the `3.0.0-rc.1` review before `3.0.0` is promoted to `latest` (AGT-1325).
+- **Nothing prunes the legacy `engrams` table any more.** Pruning used to remove every expired row regardless of whether anything had evaluated it — and since the curator was retired years before the tier was, what it removed was unread decision logs (one reported run deleted 20). Its only caller, `think curate`, is now gone (see Removed) and the prune went with it, so an expired row simply waits for the rescue above.
+- **New: `think migrate-engrams`.** Runs the rescue above on demand, for machines whose daemon has not restarted since the upgrade, or with `--dry-run` to see what it would move first. You normally never need it — daemon start does this by itself.
+- **`think retro` no longer exits non-zero just because the daemon is down.** It writes the retro to L1 like `sync` and `event`, prints its normal `✓ … stored retro <id>` line, and exits 0. A shell caller doing `think retro … || handle_daemon_down` will stop seeing a failure there; a non-zero exit from `think retro` now means the write itself failed — an unwritable cortex, or content the quality gate rejects. That gate still runs on this path, and a daemon that *answers* and refuses is still fatal: only a daemon we cannot reach degrades.
+- **`--silent` no longer suppresses one line.** On the daemon-unreachable path `think sync` and `think event` write a single note to stderr even under `--silent`, because a `--silent` auto-logging hook would otherwise have no trace that the daemon was down. stdout is byte-for-byte unchanged, so `OUT=$(think sync …)` callers are unaffected; a wrapper that treats any stderr output as a failure is the case to check.
+- **Deleted commands now print a one-line removal pointer instead of commander's generic "unknown command" error.** `think curate` (incl. `--episode`, `--consolidate`), `think monitor`, `think curator` (`edit`/`show`), `think migrate-data`, `think log`, and `think cortex auto-curate`/`auto-sync` each exit non-zero with the same one-line-pointer treatment the removed *flags* already got (AGT-1297/1303) — registered hidden, so none show up in `--help` or the generated command table. `think curate`'s pointer explicitly names `think curate-retros` as a different, surviving command, since it's the confusable case. This closed the asymmetry the product reviewer flagged on the `3.0.0-rc.1` review, before `3.0.0` was promoted to `latest` (AGT-1325).
+
+### Removed
+
+- **The engram write tier is gone.** Every write command now produces a memory, an event or a retro, through the daemon — there is no other write tier. `insertEngram` and every call site are deleted, and nothing reads the `engrams` table except the one-shot rescue described above. Together with the `think sync` flag removals, this closes [#95](https://github.com/OpenThinkAi/think-cli/issues/95).
+
+  **Commands removed** — `think <cmd>` now prints a one-line removal pointer and exits non-zero: `curate` (including `--episode` and the local two-pass split), `monitor`, `curator edit|show`, `migrate-data`, and `log`. `think log` wrote local entries rather than engrams, but it is the retired pre-cortex write command and `think sync` has been its replacement since v3. `think cortex auto-curate` and `think cortex auto-sync` are removed with their LaunchAgent installers; if you have either agent loaded, the daemon unloads and deletes it on its next start.
+
+  **Flags removed** — `think recall --engrams` and `think subscribe poll --legacy-engrams` each exit non-zero with a one-line pointer rather than a generic "unknown option". Bare `think subscribe poll` is unchanged: it still prints its `think pull <team-cortex>` pointer.
+
+  **Episodes are removed.** The episode curation flow had no path to a memory that did not go through an engram. `episode_key` remains on entries — `think subscribe` still stamps it, and recall still reads it for proxy provenance.
+
+  **What stayed.** `think curate-retros` and the daemon's retro curation loop never touched engrams and are untouched. `think migrate-engrams --dry-run` stays — it is the rescue, and it has to outlive the tier it drains. The `engrams` table and its schema migrations stay in place, read-only, for one major; dropping them is a later change and **no schema migration is added here**.
+
+  **`think list`, `think summary` and `think dashboard`** read the cortex entry store instead of the engrams table. On a cortex whose entries were written through the daemon these were previously showing an empty or stale table; they now show what `think recall` shows. Two output shapes change with the source: `think list` and `think summary --raw` label each row with its actual kind (`[memory]`, `[event]`, `[retro]`) where every row used to be labelled `[event]`, and the trailing count says "entries" rather than "events". A script grepping `think list` output for `[event]` will now match only genuine events.
+
+  **`think cortex sync --if-online` logs under `[cortex sync]`**, not `[auto-sync]` — the LaunchAgent that prefix named is gone. The flag itself stays; it is still what you want from any external scheduler.
+
+- **Nine `cortex.*` config keys are no longer read.** `curateEveryN`, `engramTTLDays`, `curatorPromptCharCap`, `selectivity`, `granularity`, `maxMemoriesPerRun`, `confirmBeforeCommit`, `idleWindowMinutes` and `staleWindowMinutes` were all read only by `think curate` or its prompt assembler. Setting one is not an error and nothing is rewritten in your config file: think prints one line on stderr naming the dead keys, once per invocation, and carries on.
 
 ## [3.0.0-rc.1] — 2026-09-17
 

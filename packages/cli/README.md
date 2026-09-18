@@ -270,7 +270,7 @@ Override the data directory with `$THINK_HOME`.
 
 ### Removed, and what to use instead
 
-Each removed flag or command exits non-zero with a one-line pointer rather than being quietly ignored, or (for a removed command) reported as a generic unknown command.
+Each removed flag or command exits non-zero with a one-line pointer to its replacement rather than being quietly ignored or reported as a generic unknown command.
 
 | Removed | Use instead |
 | --- | --- |
