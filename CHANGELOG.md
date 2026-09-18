@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+## [3.0.1] — 2026-09-18
+
+Patch release for two follow-ups from the 3.0.0 rollout, both below: `think config
+set`/`get` gain the `cortex.llm.*` provider keys (Added), and `think doctor`'s
+repo-index check stops failing on routine plumbing lag (Fixed). Nothing else
+changed. Installs itself at each machine's next session via `think update`.
+
 ### Added
 
 - `think config set`/`get` now accept `cortex.llm.providers.<name>.<leaf>`
