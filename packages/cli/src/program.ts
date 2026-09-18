@@ -33,6 +33,7 @@ import { usageCommand } from './commands/usage.js';
 import { dashboardCommand } from './commands/dashboard.js';
 import { doctorCommand } from './commands/doctor.js';
 import { refreshBlocksInternalCommand } from './commands/refresh-blocks-internal.js';
+import { curateCommand, monitorCommand, curatorCommand, migrateDataCommand, logCommand } from './commands/removed-commands.js';
 import { reportPendingHeal } from './lib/heal-summary.js';
 
 /**
@@ -88,6 +89,17 @@ export function buildProgram(): Command {
   // Plumbing for `think update` (AGT-1306) — never user-facing, so hidden from
   // --help. See commands/refresh-blocks-internal.ts.
   program.addCommand(refreshBlocksInternalCommand, { hidden: true });
+
+  // think-3 (AGT-1325): commands AGT-1303 deleted outright. Re-registered
+  // hidden (excluded from --help, the generated command table, and the
+  // vocabulary lint's scanned surfaces) so typing one gets our own one-line
+  // removal pointer instead of commander's generic "unknown command". See
+  // commands/removed-commands.ts.
+  program.addCommand(curateCommand, { hidden: true });
+  program.addCommand(monitorCommand, { hidden: true });
+  program.addCommand(curatorCommand, { hidden: true });
+  program.addCommand(migrateDataCommand, { hidden: true });
+  program.addCommand(logCommand, { hidden: true });
 
   // AGT-1307 — the first interactive command after a self-heal prints its
   // one-time summary. Runs before every command's own action; see

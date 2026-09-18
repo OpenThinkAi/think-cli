@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Changed
+
+- **Deleted commands now print a one-line removal pointer instead of commander's generic "unknown command" error.** `think curate` (incl. `--episode`, `--consolidate`), `think monitor`, `think curator` (`edit`/`show`), `think migrate-data`, `think log`, and `think cortex auto-curate`/`auto-sync` each exit non-zero with the same one-line-pointer treatment the removed *flags* already got (AGT-1297/1303) — registered hidden, so none show up in `--help` or the generated command table. `think curate`'s pointer explicitly names `think curate-retros` as a different, surviving command, since it's the confusable case. Closes the asymmetry the product reviewer flagged on the `3.0.0-rc.1` review before `3.0.0` is promoted to `latest` (AGT-1325).
+
 ## [3.0.0-rc.1] — 2026-09-17
 
 Published under the `rc` npm dist-tag — `latest` stays on `2.6.1` until this
