@@ -43,6 +43,8 @@ think doctor                                          # what's broken on this ma
 
 The daemon starts itself on the first CLI call and stays resident. `think daemon start|stop|status` is there when you want to drive it by hand.
 
+Retros get one maintenance pass the others don't need: `think curate-retros` dedupes, promotes and relegates them, and never deletes. The daemon runs it on a schedule — run it yourself (`--dry-run` to preview) when you want the pass now.
+
 ### When the daemon is down
 
 `think sync`, `think event` and `think retro` never fail silently and never write somewhere nothing reads. The entry goes to the cortex's L1 outbox; the daemon drains and indexes it on its next start. You get one line on stderr, even under `--silent`:
@@ -272,6 +274,8 @@ Each removed flag exits non-zero with a one-line pointer rather than being quiet
 | `think init --block-version` | `think init` — there is one template now. |
 
 Nine `cortex.*` config keys that only the removed write tier read are now inert. think prints one advisory line naming the ones it finds and leaves your config file alone.
+
+**Still registered, but no longer ingesting anything:** `think subscribe poll` is a no-op, and `think subscribe install-agent` schedules it. Neither errors, so a cron job or agent hook calling them will look healthy while doing nothing — drop them. Team memory arrives over a shared cortex now; see [Sharing a cortex with a team](#sharing-a-cortex-with-a-team).
 
 ### What self-heal does on first start
 
