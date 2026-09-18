@@ -1,6 +1,6 @@
 # `think serve` — proxy for external event sources
 
-HTTP backend for the open-think CLI, booted with `think serve` (or `npx @openthink/think serve`). Stores **events** fanned out from external sources (GitHub, Linear, Slack, ...) plus the **subscriptions** that describe what each local think install is watching. The CLI polls `/v1/events` via `think subscribe poll` to feed those events into its local engram pipeline; in-process connectors (driven by a per-subscription scheduler) populate the `events` table.
+HTTP backend for the open-think CLI, booted with `think serve` (or `npx @openthink/think serve`). Stores **events** fanned out from external sources (GitHub, Linear, Slack, ...) plus the **subscriptions** that describe what each local think install is watching. In-process connectors (driven by a per-subscription scheduler) populate the `events` table; the proxy's own terminal-event curator turns settled events into curated memories and publishes them straight into the team-shared cortex (see [Team-shared cortex](#team-shared-cortex-where-proxy-curated-memories-land)). `think subscribe poll` — the CLI-side command that used to fetch `/v1/events` and feed them into a local engram pipeline — is now a deprecated no-op; see [Untrusted payloads](#untrusted-payloads--opportunistic-validation).
 
 > Pre-v0.5.0 this code shipped as a separate `open-think-server` npm package. It folded into the CLI in AGT-030; the package is deprecated. `npx open-think-server` now prints a migration message and exits non-zero.
 
@@ -170,26 +170,28 @@ Read endpoints (`GET /v1/events`, `GET /v1/subscriptions/...`) are unchanged and
 
 ## Untrusted payloads — opportunistic validation
 
-External proxy events are connector-defined and not schema-validated server-side (see [Storage](#storage)). On the CLI consumer side (`think subscribe poll`), payloads land in the local engram DB via `insertEngram`. As of AGT-059, that function runs `validateEngramContent` internally so every event payload — including ones crafted by an upstream that the consumer can't fully trust — gets the same length-cap + prompt-injection-pattern scan that peer-pulled cortex memories already received. Warnings surface to stderr in the poll loop (one yellow line per flagged payload, prefixed with `[subscribe poll] <subscription_id>:`).
+External proxy events are connector-defined and not schema-validated server-side (see [Storage](#storage)). Events are stored opaquely as `payload_json`; nothing scans them until the terminal-event curator picks one up.
 
-This is **opportunistic warning, not a security boundary** — see [`SECURITY.md`](../../SECURITY.md#untrusted-content--pulled-engrams-proxy-events-file-imports). The regex list is bypassable by paraphrase. The actual line of defense is the system prompt in any downstream Claude Agent SDK call, which instructs the model to treat `<data>` content as inert data.
+**`think subscribe poll`'s old local ingestion path is gone.** It used to fetch `/v1/events`, run the baseline PII strip + per-subscription redact selectors, then `validateEngramContent`'s length-cap + prompt-injection-pattern scan, before writing the result to a local engram DB. That whole path — including the scan — was removed with the engram tier in `3.0.0`. `think subscribe poll` is now a deprecated no-op: it prints a pointer to `think pull <team-cortex>` and exits 0; `--legacy-engrams` exits non-zero with a removal note instead of doing anything.
 
-The server itself (this `think serve` process) does **not** run the same scan against incoming connector payloads — events are stored opaquely as `payload_json` and the validation runs on the CLI side as content flows into the local engram pipeline. If you operate a multi-tenant proxy, you should consider connector-side egress filtering separately.
+**What actually happens today:** the proxy's own terminal-event curator (`lib/curator.ts`, invoked from `serve/event-curator.ts` — see [Team-shared cortex](#team-shared-cortex-where-proxy-curated-memories-land)) reads a settled event straight from the `events` table, wraps its payload in `<data>` tags, and sends it to the LLM to produce a curated memory it appends directly to the team cortex's JSONL. This path does **not** run `validateEngramContent`'s length-cap/regex scan, and does **not** run the baseline PII strip or per-subscription redact selectors described below — those became dead code the moment local polling stopped being the ingestion path (AGT-389), and `3.0.0` only formalized that by removing the flag (`--legacy-engrams`) that used to drive the old path. The `<data>` wrap is real defense-in-depth against prompt injection reaching the model; it is not a length cap or a PII filter.
+
+This is **opportunistic warning, not a security boundary** even where it does apply — see [`SECURITY.md`](../../SECURITY.md#untrusted-content--pulled-memories-proxy-events-file-imports). The regex list is bypassable by paraphrase. The actual line of defense is the system prompt on any downstream LLM call, which instructs the model to treat `<data>` content as inert data. If you operate a multi-tenant proxy, or subscribe to a connector source you don't fully trust, treat every row that lands on the team cortex as unfiltered third-party content — there is no length cap or redaction between the connector and the curated memory today.
 
 ## Third-party content data flow + redact (AGT-066)
 
-`think subscribe` connectors pull events authored by **other people** — commenters on a GitHub issue, reporters of a Linear ticket, senders of a webhook — and persist the full payload as engram content. Once that engram lands, it flows through the same curator path as your own first-party content and (with `THINK_LLM_CONSENT` granted) reaches Anthropic.
+`think subscribe` connectors pull events authored by **other people** — commenters on a GitHub issue, reporters of a Linear ticket, senders of a webhook — and the full payload is what the proxy's terminal-event curator sends to an LLM to produce a memory. With `THINK_LLM_CONSENT` (or `cortex.llmConsent`) granted for the configured provider, that content reaches it.
 
 `think subscribe add` requires explicit acknowledgment of this data flow:
 
-- **Interactive sessions** show a y/N prompt naming the kind/pattern + reminding that the curator route to Anthropic is gated by separate consent.
+- **Interactive sessions** show a y/N prompt naming the kind/pattern + reminding that the curator route to the configured LLM provider is gated by separate consent.
 - **Non-interactive sessions** (CI, scripts) must pass `--accept-data-flow` or the command refuses with a pointer to that flag.
 
 > **Breaking change as of AGT-066.** Pre-AGT-066 `think subscribe add <kind> <pattern>` succeeded silently. Existing CI/script callers that don't pass `--accept-data-flow` now exit 1 with an actionable error naming the flag. This is intentional — the friction is the point.
 
-Two redaction layers run on the CLI side during `think subscribe poll`, in order, before the payload lands as engram content:
+**The two redaction layers below are configurable but not currently applied to anything.** They were designed to run on the CLI side during `think subscribe poll`, before a payload landed as local engram content — that ingestion path is what got removed in `3.0.0` (see [Untrusted payloads](#untrusted-payloads--opportunistic-validation)), and neither `stripBaselinePii` nor `applyRedactSelectors` has another caller today. `think subscribe redact-set` still writes selectors to config and `think subscribe show` still lists them, so the surface isn't broken — it just doesn't do anything yet. If you need payload redaction on the current proxy-curated path, it would have to run server-side, inside `think serve`'s terminal-event curator, which is not where this code lives. Treat this as a known gap, not a working control, until a future ticket wires redaction into that path (or removes the now-dead command surface).
 
-### 1. Baseline PII strip (always on)
+### 1. Baseline PII strip
 
 Recursive walk over the payload's keys, removing any field whose name matches the baseline list (case-insensitive on the standard hyphenated form for headers):
 
@@ -202,7 +204,7 @@ Recursive walk over the payload's keys, removing any field whose name matches th
 
 Implementation in `packages/cli/src/lib/subscribe-redact.ts` (`stripBaselinePii`). Strings, numbers, and other primitives pass through unchanged. The function deep-copies — it never mutates the input.
 
-### 2. Per-subscription redact selectors (opt-in)
+### 2. Per-subscription redact selectors
 
 Configured per subscription via `subscriptions.redact[<id>]` in `~/.config/think/config.json`. Set with:
 
@@ -220,9 +222,7 @@ Selector format is a strict JSONPath subset:
 - ✗ Filters: `$.users[?(@.id==1)].email`
 - ✗ Recursive descent: `$..email`
 
-Selectors that don't parse fail at config-write time (`redact-set` validates) so a typo doesn't silently no-op at poll time. Selectors that parse but reference paths not present on a given payload silently no-op (the payload shape varies per event).
-
-`think subscribe show` lists configured selectors alongside cursors and the proxy URL — both surfaces print `(none)` when empty so the redact configuration is discoverable from `show` even before any selectors are set.
+Selectors that don't parse fail at config-write time (`redact-set` validates) so a typo doesn't silently no-op. `think subscribe show` lists configured selectors alongside cursors and the proxy URL — both surfaces print `(none)` when empty so the redact configuration is discoverable from `show` even before any selectors are set.
 
 ## Credentials
 

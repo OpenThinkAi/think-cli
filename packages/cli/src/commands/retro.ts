@@ -73,7 +73,7 @@ Requirements:
   daemon down the retro is still written — to L1, and indexed into recall when
   the daemon next starts.
 
-Storage model (iterative-learning v3 — see docs/iterative-learning-v3-locality.md):
+Storage model (see docs/retro-locality.md):
   A retro is stored on your HOME cortex (the active cortex, or -C <name>) and
   TAGGED with the context it is about — it is no longer routed to a separate
   per-context branch. The context is auto-detected from the git repo you run the

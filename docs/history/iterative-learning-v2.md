@@ -1,3 +1,9 @@
+> **Historical.** This design doc's locality decision (§6) was reversed on
+> 2026-06-02 by what's now [`docs/retro-locality.md`](../retro-locality.md),
+> which is the current design; the quality mechanisms below (M1–M5) are
+> unaffected and mostly shipped, but this file itself is kept for context, not
+> as a live spec.
+
 # Iterative Learning v2 — design
 
 Status: **proposal / parked-rethink resolution.** Supersedes the open question
@@ -120,7 +126,7 @@ manual entry point.
 
 ## 6. Issue #70 — locality decision
 
-> **Reversed 2026-06-02 by `iterative-learning-v3-locality.md`.** This section
+> **Reversed 2026-06-02 by `docs/retro-locality.md`.** This section
 > chose Option B and deferred Option A; v3 adopts Option A (retros move into the
 > active cortex, tagged `repo:<context>`; per-context branches retired for
 > retros). The Option B plumbing-writes (AGT-458) stay for sync/compaction but no
