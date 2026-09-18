@@ -1,6 +1,18 @@
+<!--
+  GENERATED FILE — do not hand-edit.
+
+  This is the repo root README (../../README.md), regenerated for npm's
+  package page by `npm run gen:npm-readme` (packages/cli/scripts/gen-npm-readme.ts),
+  which runs automatically in `prepack`. Relative links are rewritten to
+  absolute GitHub URLs, because npm's package page has no repo tree to
+  resolve them against. Edit the root README instead, then regenerate.
+-->
+
 # think
 
-Local-first CLI that gives AI agents persistent, curated memory.
+Local-first CLI that gives AI agents persistent, searchable memory.
+
+`@openthink/think` — **vector recall**, **write-time compaction**, **resident daemon**. The core reframe: recall is cheap enough to call implicitly on every agent turn. Vectors come from a resident `bge-small-en-v1.5` embedding model, so the right entry comes back even when the vocabulary doesn't overlap. Compaction folds each new memory into a single self-contained line via an LLM call, so read time stays sub-100ms. The daemon holds the model in memory and serves CLI calls over a Unix socket — no cold start per recall. A Claude Code `UserPromptSubmit` hook and an MCP server both talk to that same daemon, giving you automatic per-prompt orientation and agent-initiated mid-turn recall. Full design: [docs/architecture.md](https://github.com/OpenThinkAi/think-cli/blob/main/docs/architecture.md).
 
 ## Install
 
@@ -10,160 +22,292 @@ Requires **Node 22.5+** (uses `node:sqlite`).
 npm install -g @openthink/think
 ```
 
-> **Note:** The curator and summary features use the [Claude Agent SDK](https://www.npmjs.com/package/@anthropic-ai/claude-agent-sdk), which is distributed under Anthropic's commercial terms. You'll need a Claude subscription for these features to work. All other functionality (logging, recall, sync, export) works without it.
+**Coming from 0.6.x?** Your existing store is read as-is — the first daemon launch reindexes it into the vector index (one-time, typically under a minute on a real-size corpus). See [Upgrading to 3.0](#upgrading-to-30) for what this release removed and what it repairs for you.
 
-> **Note (semantic features — opt-in):** Semantic recall (downstream in v3) uses `Xenova/bge-small-en-v1.5` via `@huggingface/transformers` (~150 MB model + a large transitive native-binary tree). The dep is **optional** — default `npm install` does not pull it. Install explicitly to enable: `npm install @huggingface/transformers@4.2.0`. When activated by downstream tickets, the model auto-downloads from HuggingFace on first use, cached in `~/.cache/huggingface/` (override with `$HF_HOME`), with a 300-second timeout. Without the dep installed, `think recall` continues to use keyword (FTS) ranking unchanged.
+> **Claude subscription.** think's LLM work — compaction, summaries, the dashboard, retro curation — defaults to Anthropic through the [Claude Agent SDK](https://www.npmjs.com/package/@anthropic-ai/claude-agent-sdk), distributed under Anthropic's commercial terms, so a subscription is needed out of the box. Point those operations at your own model instead and nothing calls Anthropic — see [Choosing which model runs what](#choosing-which-model-runs-what). Recording and recall never call an LLM at all.
 
-## Quick start
+## The contract
 
-```bash
-# Log work events
-think sync "shipped the auth fix"
-think sync "EEP prototype demoed to product team"
+> **Every write is a memory, an event, or a retro, and every one of them goes through the resident daemon.** There is no other write tier.
 
-# List recent entries
-think list --week
-
-# AI-powered summary
-think summary
-think summary --last-week --raw   # raw entries, no AI
-```
-
-## A nervous system for your AI brain
-
-think turns your work into sensory input for your AI brain. Engrams are the raw signals — every `think sync` is a sensory trace. The curator is consolidation: it weighs engrams, promotes what matters into memories, and drops the rest. Memories live in a folder you control.
-
-```
-  one machine                                  another machine you own
-  ───────────                                  ───────────────────────
-  engrams → curator → memories ⇢ ~/your/folder ⇠ memories ← curator ← engrams
-            (local AI)            (synced via                          (local AI)
-                                   iCloud / Dropbox /
-                                   Syncthing / …)
-```
-
-All reads and writes go to local SQLite. Engrams never leave the machine — only curated memories land in the folder. Point that folder at a sync tool you already use, and your AI's memory follows you across machines. No server. No relay. The folder is the propagation layer.
-
-## Cortex — your AI's memory folder
-
-A cortex is the workspace where your AI's memories live: a local SQLite database for engrams, plus a folder of JSONL files for the consolidated memories that persist.
+Three kinds, three write commands. Reads go through the same daemon, so a write is recallable as soon as it is indexed.
 
 ```bash
-# Set up (once) — point cortex at any folder; created if it doesn't exist
+# Writes
+think sync "shipped the auth fix"                     # memory — something you did
+think event "Decided to drop the Redis cache"         # event — a decision, deploy, incident, milestone
+think retro "hub tests need TEST_DATABASE_URL set"    # retro — a durable lesson, tagged with this repo
+
+# Reads
+think recall "auth token rotation"                    # semantic search across memories, events and retros
+think brief --context think-cli                       # task-start brief: your context + retros for this repo
+
+# The daemon, and the two surfaces that talk to it
+think daemon status                                   # running state, pid, socket path, version
+think hook install                                    # Claude Code UserPromptSubmit hook → recall on every prompt
+think mcp install                                     # MCP server → agent-initiated recall mid-turn
+
+# Health
+think doctor                                          # what's broken on this machine, and what --fix can repair
+```
+
+The daemon starts itself on the first CLI call and stays resident. `think daemon start|stop|status` is there when you want to drive it by hand.
+
+Retros get one maintenance pass the others don't need: `think curate-retros` dedupes, promotes and relegates them, and never deletes. The daemon runs it on a schedule — run it yourself (`--dry-run` to preview) when you want the pass now.
+
+### When the daemon is down
+
+`think sync`, `think event` and `think retro` never fail silently and never write somewhere nothing reads. The entry goes to the cortex's L1 outbox; the daemon drains and indexes it on its next start. You get one line on stderr, even under `--silent`:
+
+```
+  note: daemon unavailable — wrote to L1; it will be indexed on next daemon start
+```
+
+If even that write is impossible, the command exits non-zero rather than reporting a write that didn't happen.
+
+## Cortex — where your AI's memory lives
+
+A cortex is one memory workspace: a local SQLite index holding memories, events, retros and sync state, plus a backend that propagates entries to the other machines reading the same cortex.
+
+```bash
+# A synced folder
 think cortex setup --fs ~/Dropbox/think-cortex
+
+# A git remote
+think cortex setup git@github.com:you/cortex.git
+
+# Neither — offline only, nothing ever leaves the machine
+think cortex setup
+
 think cortex create personal
-
-# Work normally — every sync writes a sensory trace
-think sync "deployed auth service to staging"
-
-# Curate — evaluate engrams, promote memories
-think curate              # full run
-think curate --dry-run    # preview without saving
-
-# Recall what you (or another machine of yours) have stored
-think recall "auth"       # search memories + local events
-think memory              # show all memories
-
-# Sync with the cortex folder
-think cortex push         # write local memories out to the folder
-think cortex pull         # ingest memories from the folder
-think cortex sync         # push + pull
-think cortex status       # show sync state
-
-# Monitor curation quality
-think monitor             # what got promoted vs dropped
+think cortex switch personal
 ```
 
-The folder works with anything that syncs files: iCloud Drive, Dropbox, Google Drive, Syncthing, a network share. Point two machines at the same folder and the same memories show up on both.
+The two backends are peers. Pick on how you want entries to travel, not on which is newer:
 
-> **One brain only.** think serves a single brain. Coordinating memory across many brains (a team, a swarm of agents) is out of scope — that belongs to HiveDB, a separate project.
+|  | `--fs <path>` | `<git-remote>` |
+| --- | --- | --- |
+| Entries travel via | whatever already syncs the folder — iCloud Drive, Dropbox, Google Drive, Syncthing, a network share | the daemon's push-debounce and pull loops (`git push` / `git fetch`) |
+| You need | a folder that syncs | a git remote you can push to |
+| Suits | machines you own, no account, no server | machines you own **and** a cortex shared with other people |
+| Setup | `think cortex setup --fs ~/Dropbox/think-cortex` | `think cortex setup git@github.com:you/cortex.git` |
 
-### Offline-only and legacy backends
+Either way, all reads and writes hit local SQLite first; the backend is the propagation layer, never a lookup path. No server, no relay.
 
 ```bash
-think cortex setup                              # offline-only — no folder, no remote
-think cortex setup git@github.com:you/cortex.git   # git-remote backend (existing setups; --fs preferred for new ones)
+think cortex push      # write local entries out to the backend
+think cortex pull      # ingest entries from the backend
+think cortex sync      # pull + push
+think cortex status    # show sync state
 ```
 
-The synced-folder model (`--fs`) is the recommended way for any new setup. The git-remote backend predates v2 and is preserved for users who already have one wired up — existing `think cortex setup <git-remote>` configurations continue to work unchanged.
+Day to day you don't run these — the daemon pushes on a 500ms debounce after each write and pulls on its own poll loop.
 
-> **A note on terminology.** Some CLI output (e.g. `Created cortex: foo (local + remote)`, `think cortex list`) still uses "remote" as a generic label for whichever backend you've configured. With `--fs`, the "remote" is your cortex folder; with a git URL, it's the git remote. The user-facing framing in this README treats the folder as a propagation layer rather than a remote — the CLI's umbrella term is an implementation detail.
+### Sharing a cortex with a team
 
-## Episodes — narrative memory for task agents
+Supported, over the git backend — it's what the daemon's push-debouncer, pull loop and plumbing writer were built for, and what think's own maintainers run on every machine. Everyone points `think cortex setup <the same git remote>` at one repo and switches to the same cortex name. Each cortex is one orphan branch in that repo; every machine's daemon pushes its own entries onto the branch and pulls everyone else's. Entry ids are content-derived and the branch carries a union-merge attribute, so two people writing at the same moment converge with nothing to resolve by hand.
 
-Episodes let task-oriented agents (review bots, bug fixers, deploy agents) accumulate work across multiple rounds and synthesize it into a single narrative memory.
+`think pull <cortex>` prints what another cortex has already synced into your local store, without switching to it.
 
-```bash
-# Tag engrams with an episode key
-think sync -e "org/repo#42" "found SQL injection in auth middleware"
-think sync -e "org/repo#42" "author fixed queries but missed token rotation"
-think sync -e "org/repo#42" "all paths encrypted, approved"
-
-# Synthesize into a narrative memory
-think curate --episode "org/repo#42"
-```
-
-Episode curation produces stories, not logs:
-
-> *"A code review was opened against the auth middleware rewrite. The initial review identified plaintext session token storage — a direct violation of the encryption-at-rest requirement from the engineering standards doc. The author addressed this but missed the token rotation endpoint. After a third round, all session paths were encrypted and rotation was confirmed working."*
-
-Re-curating after new rounds updates the existing narrative rather than creating a duplicate.
+> **A note on terminology.** Some CLI output (`Created cortex: foo (local + remote)`, `think cortex list`) uses "remote" as a generic label for whichever backend you configured. With `--fs` the "remote" is your folder; with a git URL it's the git remote.
 
 ### Privacy
 
 ```bash
-think pause    # suppress engram creation (silent no-op)
-think resume   # re-enable
+think pause    # think sync and think event silently skip until resumed
+think resume
 ```
 
-## Long-term backfill — what gets sent to Anthropic
+## Instruction blocks for your agents
 
-`think long-term backfill` is a one-time pass that uses Claude to extract durable long-term events (adoptions, migrations, pivots, decisions, milestones, incidents) from your historical memories. By default, **it ships memory content to Anthropic** — one Claude SDK call per month of memories, with each call carrying that month's memories plus a summary hint and prior-batch context for supersession.
-
-Three modes:
-
-| Flag | Anthropic calls | Local writes | Use when |
-|---|---|---|---|
-| `--dry-run` | **zero** | none | You want to know how much data a real run would ship without sending anything. Prints memory count, monthly breakdown, and an envelope description. |
-| `--preview-prompt` | one per month | none | You want to see the actual LLM-generated proposals before deciding whether to apply them. Same data envelope as a real run. |
-| (no flags) | one per month | yes | Real run — proposals get inserted into the long-term events table. |
-
-Opt out by **not running the command**, or by running with `--dry-run` to see scope first. There is no "redact-and-run" mode — if you have memory content you don't want shipped, delete it locally before running backfill (`think delete <id>` for individual entries) or pause before adding it (`think pause`).
-
-The system prompt and per-batch user-message structure are in `src/commands/long-term.ts` (`BACKFILL_SYSTEM_PROMPT` and `runBackfillBatch`). `--dry-run` prints a summary of that envelope; read the source for the exact wording.
-
-### Curator guidance
-
-Each contributor can guide their curator with a personal prompt:
+`think init` writes a managed block into `CLAUDE.md` (and `AGENTS.md` if present) that teaches agents to log outcomes with `think sync` and decisions with `think event`, and to read and write retros.
 
 ```bash
-think curator edit    # opens ~/.think/curator.md in $EDITOR
-think curator show    # print current guidance
+think init                                 # work-log block in ~/CLAUDE.md
+think init --minimal                       # conservative variant: explicit shipped outcomes only
+think init --retro --cortex think-cli      # second block with the cortex baked in, at the repo root
+think init --list                          # every file that currently has a managed block
 ```
+
+There is one template. think records every file it wrote a block into, so `think update` can refresh all of them and `think doctor` can enumerate them.
+
+## Choosing which model runs what
+
+think's LLM work is provider-agnostic. Each operation can be pointed at Anthropic,
+at an on-device model, or at any API speaking the OpenAI `/chat/completions`
+shape (OpenAI, DeepSeek, OpenRouter, vLLM, LM Studio, oMLX/Qwen).
+
+With no configuration, everything runs on Anthropic.
+
+```jsonc
+// ~/.config/think/config.json  →  "cortex": { ... }
+"llm": {
+  "providers": {
+    "qwen":     { "kind": "openai", "endpoint": "http://127.0.0.1:8000/v1",
+                  "model": "Qwen3.8-27B-MLX-4bit", "disableThinking": true },
+    "deepseek": { "kind": "openai", "endpoint": "https://api.deepseek.com/v1",
+                  "model": "deepseek-chat", "apiKeyEnv": "DEEPSEEK_API_KEY" },
+    "claude":   { "kind": "anthropic", "model": "claude-sonnet-4-6" }
+  },
+  "default": "claude",
+  "operations": { "compaction": "qwen", "retro-dedupe": "qwen", "summary": "deepseek" },
+  "fallback": "claude"
+}
+```
+
+Operations you can assign: `compaction`, `supersession`, `terminal-event`,
+`retro-dedupe`, `summary`, `dashboard`, `long-term`. Anything unassigned uses
+`default`. The names `curation`, `event-detection` and `episode` are still
+accepted so an older config doesn't error, but they route nothing — the work
+behind them was removed in 3.0.
+
+**Moving everything to one model** is just `default` — you don't have to
+enumerate operations at all:
+
+```jsonc
+"llm": {
+  "providers": {
+    "qwen": { "kind": "openai", "endpoint": "http://127.0.0.1:8000/v1",
+              "model": "<the id your server was started with>",
+              "ctxBudget": 40000, "timeoutMs": 1800000,
+              "disableThinking": true }
+  },
+  "default": "qwen"
+}
+```
+
+With no `fallback` and a loopback endpoint, think stops contacting Anthropic
+entirely (bar the dashboard's `ask`) and needs no LLM consent, because nothing
+leaves the machine. Read the structured-output note below before doing this —
+two operations are pickier than the rest.
+
+The `model` must match the id your server was launched with. `mlx_lm.server`
+loads whatever id a request names, so a mismatch silently unloads the running
+model and loads another — killing any generation in flight.
+
+`dashboard` here means the **status digest** — the panel summaries `think
+dashboard` renders. The dashboard's interactive **`ask`** is a different thing
+and is *not* assignable: it is agentic, running a multi-turn loop over MCP
+tools, so it stays on the Claude Agent SDK. There is no operation name for it,
+and adding one has no effect.
+
+**A `cortex.local` block routes nothing now.** `cortex.local` and
+`cortex.llmProvider` (and `THINK_LOCAL_*`) only ever routed the operations 3.0
+removed, so an install carrying them runs everything on `default`. To put your
+own model back in the path, name the operations you want under `cortex.llm`;
+nothing is routed implicitly.
+
+**Consent follows the data, not the vendor.** A provider that sends cortex
+content off this machine requires `THINK_LLM_CONSENT=1` — Anthropic, OpenAI and
+DeepSeek alike. A provider on loopback does not, because nothing leaves. Egress
+is inferred from the endpoint (`localhost`/`127.0.0.1`/`::1` are on-machine,
+everything else is not, an unparseable endpoint fails closed); declare
+`"offMachine": false` to trust a host on your own network.
+
+**Sizing a local model.** `ctxBudget` (default 28,000 tokens) is the prompt
+ceiling — over it, think uses `fallback`, or skips if none is set. `timeoutMs`
+(default 900,000) is the request deadline: a large model doing a 30k-token
+prefill plus generation can run for minutes, and the failure is reported as a
+timeout naming the setting, not as an unreachable server.
+
+Prompt size is estimated at ~3.5 characters per token, deliberately erring high
+— this gate decides what is allowed to run, so under-counting is the dangerous
+direction. If you sized a `ctxBudget` against the older, looser 4.0 estimate
+(pre-2.6.0), the same prompt now measures larger and may start using `fallback`
+or being skipped; raise `ctxBudget` to your model's real context window. When
+the fallback cannot take the task either, the work is left pending rather than
+retried elsewhere.
+
+**Structured output — check this before routing everything.** Operations fall
+into three tiers:
+
+| Tier | Operations | Behaviour |
+| --- | --- | --- |
+| Strict | `compaction`, `supersession` | Demand server-side enforcement. Forced `tool_use` on Anthropic, `response_format: json_schema` elsewhere. |
+| Schema-assisted | `terminal-event`, `retro-dedupe` | Advisory on Anthropic (prompts are tuned to emit JSON unaided), enforced elsewhere. |
+| Prose | `summary`, `dashboard`, `long-term` | No schema; output is prose or parsed leniently. |
+
+Not every OpenAI-compatible server implements `response_format`. Notably
+`mlx_lm.server` **accepts the field and ignores it** — no error, it simply
+returns whatever the model felt like. LM Studio and vLLM do honour it.
+
+On a server that ignores it, only the prompt holds the shape. For the prose tier
+that is fine. For the strict tier it is not: `compaction` marks entries
+`compaction-skipped` and `supersession` retries once then fails. Those failures
+are loud and skip-safe — they leave work pending rather than writing corrupted
+memories — but the operations will not do useful work. Either keep those two on
+a provider that enforces schemas, or verify yours does:
+
+```bash
+curl -s $ENDPOINT/chat/completions -H 'content-type: application/json' -d '{
+  "model":"<your-model>","max_tokens":100,
+  "messages":[{"role":"user","content":"Return the topics for: fixed a bug."}],
+  "response_format":{"type":"json_schema","json_schema":{"name":"t","strict":true,
+    "schema":{"type":"object","properties":{"topics":{"type":"array",
+    "items":{"type":"string"}}},"required":["topics"],
+    "additionalProperties":false}}}}'
+```
+
+JSON back means the strict tier is safe there. Prose back means it isn't.
 
 ## Data
 
-- **Cortex DB:** `~/.think/engrams/<cortex>.db` (engrams, memories, sync state — all in one SQLite file)
-- **Config:** `~/.config/think/config.json`
-- **Curator guidance:** `~/.think/curator.md`
-- **Entries (no cortex):** `~/.local/share/think/think.db`
-- **Embedding model cache:** `~/.cache/huggingface/` — only present when `@huggingface/transformers` is installed (see semantic features note above). Stores `Xenova/bge-small-en-v1.5` (~150 MB); override location with `$HF_HOME`. Cached ONNX files are loaded directly without re-verification, so in shared environments (CI workers, multi-user machines) set `$HF_HOME` to a per-user, non-world-writable directory.
+- **Cortex index:** `~/.think/index/<cortex>.db` — memories, events, retros, long-term events and sync state, plus the vector index, in one SQLite file per cortex.
+- **Canonical store:** `~/.think/repo/` — the git-backed log the index is rebuilt from (`think reindex`).
+- **Daemon:** `~/.think/daemon.sock`, `~/.think/daemon.pid`.
+- **Config:** `~/.config/think/config.json` (under a custom `THINK_HOME`, `<THINK_HOME>/config/config.json`).
+- **Entries with no cortex configured:** `~/.local/share/think/think.db`.
 
 Override the data directory with `$THINK_HOME`.
 
-## Retros — permanent codebase observations
+## Upgrading to 3.0
 
-Retros are structured observations any agent can emit about a codebase or tool — conventions worth respecting, invariants that weren't obvious, prior decisions that should not be re-litigated. Unlike engrams, retros have **no TTL** and are **never purged by the curator**: every emission is preserved permanently. The curator may relegate a retro (mark it as low-signal for default recall) but the row stays in storage. Tombstoning is explicit user action only.
+`think update` installs `@openthink/think@latest` and crosses majors, so a machine on 2.x reaches 3.0 with no extra step.
+
+### Removed, and what to use instead
+
+Each removed flag exits non-zero with a one-line pointer rather than being quietly ignored.
+
+| Removed | Use instead |
+| --- | --- |
+| `think sync -d` / `--decision` | `think event "Decided …"` |
+| `think sync --context` | `think event` |
+| `think sync -e` / `--episode` | `think event` |
+| `think log` | `think sync` |
+| `think curate` (incl. `--episode`, `--consolidate`) | nothing — the tier it curated is gone. `think curate-retros` is a different command and stays. |
+| `think monitor` | `think recall` / `think memory` |
+| `think curator edit` / `show` | nothing — there is no curator prompt to guide. |
+| `think migrate-data` | `think doctor` reports anything still to migrate; `--fix` migrates it. |
+| `think cortex auto-curate` / `auto-sync` | nothing — the daemon syncs on its own. |
+| `think recall`'s legacy-table flag | `think recall` (it searches everything) |
+| `think subscribe poll`'s legacy-table flag | `think pull <team-cortex>` |
+| `think init --block-version` | `think init` — there is one template now. |
+
+Nine `cortex.*` config keys that only the removed write tier read are now inert. think prints one advisory line naming the ones it finds and leaves your config file alone.
+
+**Still registered, but no longer ingesting anything:** `think subscribe poll` is a no-op, and `think subscribe install-agent` schedules it. Neither errors, so a cron job or agent hook calling them will look healthy while doing nothing — drop them. Team memory arrives over a shared cortex now; see [Sharing a cortex with a team](#sharing-a-cortex-with-a-team).
+
+### What self-heal does on first start
+
+No prompt, no flag. On the first 3.0 daemon start think:
+
+- **Reaps the retired LaunchAgents** — unloads and deletes every `ai.openthink.curate.*` and `ai.openthink.sync.*` job, matched by label across every `THINK_HOME` on the machine, not just the current one.
+- **Migrates stranded rows** — entries the pre-daemon write path left in a table nothing reads are re-submitted through the normal write path, as events if they carried a decision and memories otherwise, with their original timestamps preserved. On a shared cortex, expect a one-time burst of backdated entries on the branch when each teammate upgrades.
+- **Refreshes managed blocks** — `think update` rewrites every `CLAUDE.md` / `AGENTS.md` block think has a record of, so agents stop being taught commands that no longer exist.
+
+The next interactive `think` command prints a one-time summary of what was healed.
+
+### `think doctor` for everything else
 
 ```bash
-think retro "fx-tracker strategy engine type contracts are not documented" --cortex fx-tracker
-think retro "always run migrations in a transaction" --cortex my-repo --kind convention
-think retro "AGT-169: mirrored the memories table pattern for the retros table" --cortex think-cli --kind prior_decision
+think doctor           # report
+think doctor --fix     # apply the safe repairs, then re-run the checks
+think doctor --json    # one JSON document on stdout, each check with a stable id
 ```
 
-`--cortex` is required (no fallback to active cortex — retros are always about a specific codebase or tool). The cortex is auto-created on first emission (a `✓ created cortex` line appears so you can catch typos immediately); no `think cortex create` step is needed. Optional `--kind` accepts `convention | invariant | prior_decision | gotcha`.
+Checks: stale LaunchAgents · managed blocks out of date · rows still waiting to be migrated · `~/.think/repo` index stale against HEAD · daemon running a different build than the one installed · configured LLM providers reachable · Claude Code hook and MCP server registered and pointing at the installed build · more than one `THINK_HOME` present · a cortex branch carrying a bad salvage commit · retired vocabulary in instruction files think does not manage.
 
-Read stored retros with `think retro recall --cortex <name>` (retros-only, scoped) or get a full task-start brief with `think brief --cortex <name>` (personal memories + repo retros). Retros are currently local-only — cross-machine sync is not yet wired up.
+Every repair `--fix` applies is a function self-heal already calls, and none of them edits outside a managed marker pair. The vocabulary check never edits anything — it reports file:line and leaves the wording to you. Exit code is 0 when nothing failed; a warning does not fail the exit code, so a setup script can gate on it.
 
 ## All commands
 
@@ -249,27 +393,116 @@ Read stored retros with `think retro recall --cortex <name>` (retros-only, scope
 | `think doctor` |  | Report this machine's think install health, and repair what is safe |
 <!-- commands:end -->
 
+## `think serve` — proxy for external event sources
+
+`think serve` boots an HTTP backend that connects to GitHub, Linear, etc. and
+fans their events into per-subscription queues. It is entirely optional — local
+writing and recall work without it, and team memory now flows over a shared
+cortex (see [Sharing a cortex with a team](#sharing-a-cortex-with-a-team))
+rather than through the proxy. `think subscribe poll` is a deprecated no-op;
+pull the team cortex instead.
+
+```sh
+# On the host (Railway, your homelab, wherever)
+THINK_TOKEN=$(openssl rand -hex 32) \
+THINK_VAULT_KEY=$(openssl rand -base64 32) \
+NODE_ENV=production \
+PORT=4823 \
+  npx @openthink/think serve
+
+# On your laptop — token is read from stdin, never the command line
+echo "$THINK_TOKEN" | think subscribe configure --proxy https://my-proxy.example.com
+think subscribe add mock 3        # only `mock` is registered today; github/linear land in follow-ups
+```
+
+Full endpoint reference, threat model, and operator runbook live at
+[`packages/cli/docs/serve.md`](https://github.com/OpenThinkAi/think-cli/blob/main/packages/cli/docs/serve.md) and
+[`packages/cli/SECURITY-serve.md`](https://github.com/OpenThinkAi/think-cli/blob/main/packages/cli/SECURITY-serve.md).
+
+### Operator runbook — push-debouncer recovery
+
+The proxy daemon runs a push-debouncer that periodically commits curated memory
+and pushes it to the shared cortex branch on origin. If the proxy's local cortex
+clone falls significantly behind origin (e.g. after a slow restart while another
+writer advanced origin), the daemon will automatically self-heal: it detects the
+`behind` count, fetches origin, hard-resets the local branch to the fresh remote
+tip, re-appends any pending outbox entries, and pushes. This should require no
+operator intervention for any gap size.
+
+**Observing push health.** The `/v1/health` endpoint and each tick's report include
+a `push_debouncer` block:
+
+```json
+{
+  "status": "ok",
+  "push_debouncer": {
+    "failures_nff": 0,
+    "successes": 42,
+    "last_failure_at": null
+  }
+}
+```
+
+A rising `failures_nff` counter means the proxy is curating but curated entries
+are not reaching origin. Check `daemon.log` for `[push-debouncer]` lines and
+inspect `git status -sb` in the proxy's cortex clone directory.
+
+**Last-resort escape hatch.** If the proxy cannot self-heal (e.g. due to a
+network partition or corrupted ref), you can restore propagation immediately with:
+
+```sh
+git -C <cortex-clone-path> reset --hard origin/<branch>
+```
+
+This discards any local-only commits. Curated entries that were pending in the
+outbox (not yet pushed) will be re-appended on the next write cycle — no data is
+permanently lost because the outbox rows are only deleted after a successful push.
+
+**Configuring the large-behind threshold.** The daemon short-circuits to the
+force-reset path when `behind >= cortex.largeBehindThreshold` (default 10).
+To tune this add to your config:
+
+```json
+{ "cortex": { "largeBehindThreshold": 5 } }
+```
+
+> **Migrating from `open-think-server`?** The package was deprecated in
+> v0.5.0 and the proxy now ships inside `@openthink/think`.
+> - Replace `npx open-think-server` with `npx @openthink/think serve`.
+> - All env vars carry over verbatim.
+> - Default port changed from `3000` to `4823` (set `PORT=3000` to keep the old binding).
+> - Dockerfile moved from `packages/server/Dockerfile` to the repo root.
+>   Update any `dockerfile: packages/server/Dockerfile` line in your
+>   compose file to `dockerfile: Dockerfile` (or drop it — that's the default).
+
+> **Migrating from `open-think`?** The package was renamed to `@openthink/think`
+> in v0.6.0. Same `think` binary, same data path, same flags — only the npm
+> coordinate changed.
+> - `npm uninstall -g open-think && npm install -g @openthink/think`.
+> - The `THINK_DB_PATH` default is still `./open-think.sqlite`; existing serve
+>   installs keep working without re-pointing.
+> - The legacy `open-think` package on npm will be deprecated with a redirect
+>   message in a follow-up release; until then, run the uninstall step above to
+>   avoid two `think` binaries fighting on PATH.
+
 ## Security model
 
-See [SECURITY.md](./SECURITY.md) for the full threat model and vulnerability disclosure process. A few points worth surfacing up-front:
+See [SECURITY.md](https://github.com/OpenThinkAi/think-cli/blob/main/SECURITY.md) for the full threat model and vulnerability disclosure process. A few points worth surfacing up-front:
 
-- **Pulled engrams from peers are untrusted content.** When you pull a cortex from another peer, the memories that land in your local DB were written by them. We escape `<data>` delimiters when feeding those memories to your Claude agent, and pattern-match a short list of common injection phrasings, but this is opportunistic warning, not a security boundary. A malicious peer can trivially bypass with paraphrase, translation, or novel phrasing. **Treat a cortex peer with the same trust level you'd give any other source of data your AI agent will read — do not add a cortex peer you don't trust.**
+- **Pulled entries from peers are untrusted content.** When you pull a cortex from another peer, the memories, retros and long-term events that land in your local DB were written by them. We escape `<data>` delimiters when feeding them to your Claude agent, and pattern-match a short list of common injection phrasings, but this is opportunistic warning, not a security boundary. A malicious peer can trivially bypass it with paraphrase, translation, or novel phrasing. **Treat a cortex peer with the same trust level you'd give any other source of data your AI agent will read — do not add a cortex peer you don't trust.**
 - **`cortex.repo` is security-sensitive configuration.** `think cortex setup` validates the URL shape on input, but if you edit `~/.config/think/config.json` by hand (or follow a tutorial that tells you to), a malformed URL can give an attacker code execution the next time you run a cortex-syncing command. Accepted prefixes: `https://` (preferred), `ssh://`, `git://`, `<user>@<host>:<path>` (ssh shortcut — any username and hostname, e.g. `git@github.com:org/repo.git` or `gitlab@self-hosted.example:group/repo.git`), and `http://` (permitted but not recommended — traffic is unencrypted).
 - **Upgrade compatibility note.** Prior versions did not validate `cortex.repo` on read. If you configured a `file://` URL or a bare filesystem path for local testing, you'll see a clear error on the next cortex operation after upgrading — those forms are no longer accepted. Re-run `think cortex setup` with one of the supported transports, or edit `config.json` to remove the `repo` field for offline-only mode.
 - **`THINK_NO_UPDATE_CHECK`** disables the once-per-24-hours `npm view @openthink/think` call that powers the update banner. Set to any of `1`, `true`, or `yes` (case-insensitive). Useful for air-gapped machines, privacy-sensitive environments, or CI where outbound network calls aren't desirable.
 
-## API curation backend (`think serve` / proxy)
+## Further reading
 
-`think serve` runs a proxy that ingests events from connected sources and curates them into memories. By default it uses the Claude Agent SDK — the same subscription-billed path your local `think` uses — so no API key is required. An opt-in raw Messages API backend is available for proxy deployments that have their own API billing (it is ~4–5× faster for curation because it skips the agent runtime overhead).
+- [docs/architecture.md](https://github.com/OpenThinkAi/think-cli/blob/main/docs/architecture.md) — the five layers, the entry model, write and read paths, daemon internals.
+- [docs/retro-locality.md](https://github.com/OpenThinkAi/think-cli/blob/main/docs/retro-locality.md) — where retros live and how they are scoped at recall.
+- [docs/cortex-sync-protocol.md](https://github.com/OpenThinkAi/think-cli/blob/main/docs/cortex-sync-protocol.md) — the authenticated push/pull wire format for a cortex hub.
+- [docs/byo-hub-dogfood.md](https://github.com/OpenThinkAi/think-cli/blob/main/docs/byo-hub-dogfood.md) — running two peers against one self-hosted hub.
+- [docs/history/iterative-learning-v2.md](https://github.com/OpenThinkAi/think-cli/blob/main/docs/history/iterative-learning-v2.md) — the earlier retro design, kept for context; superseded on locality.
+- [CONTRIBUTING.md](https://github.com/OpenThinkAi/think-cli/blob/main/CONTRIBUTING.md) · [SECURITY.md](https://github.com/OpenThinkAi/think-cli/blob/main/SECURITY.md) · [CHANGELOG.md](https://github.com/OpenThinkAi/think-cli/blob/main/CHANGELOG.md)
 
-### Environment variables
+---
 
-| Variable | Required | Description |
-|---|---|---|
-| `THINK_ANTHROPIC_KEY` | **Preferred** when `THINK_CURATION_BACKEND=api` is set | Anthropic API key used exclusively by think. **Recommended over `ANTHROPIC_API_KEY`** because it is scoped to think only: other Anthropic SDK tools in the same shell (e.g. Claude Code) read `ANTHROPIC_API_KEY`, and exporting that variable to satisfy think would silently re-route them from subscription billing to API billing. With `THINK_ANTHROPIC_KEY` set, `ANTHROPIC_API_KEY` is absent from the environment, so Claude Code and other tools keep their subscription path. |
-| `THINK_CURATION_BACKEND` | No | Set to `api` to enable the raw Messages API curation backend. Requires `THINK_ANTHROPIC_KEY` (or the deprecated `ANTHROPIC_API_KEY`). Default: Agent SDK. |
-| `ANTHROPIC_API_KEY` | **Deprecated fallback** | Accepted for backward compatibility when `THINK_ANTHROPIC_KEY` is absent. Emits a one-time warning to stderr and will stop being supported in a future release. Set `THINK_ANTHROPIC_KEY` instead. |
-
-> **Daemon restart required.** The daemon inherits env at spawn time. If you add or change `THINK_ANTHROPIC_KEY` in your shell rc, restart the daemon for it to take effect.
-
-> **Billing isolation.** A machine with only `THINK_ANTHROPIC_KEY` set and no `ANTHROPIC_API_KEY` can run Claude Code in the same shell session: Claude Code reads `ANTHROPIC_API_KEY` (not `THINK_ANTHROPIC_KEY`) and continues to use its subscription billing path. The two tools do not share a key.
+Built by [Saltline Digital](https://saltline.digital) — custom software and AI automation for small businesses.

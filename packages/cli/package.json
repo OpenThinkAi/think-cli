@@ -2,7 +2,7 @@
   "name": "@openthink/think",
   "version": "2.6.1",
   "type": "module",
-  "description": "Local-first memory for your AI brain — a nervous system that turns engrams into curated, persistent memories in a folder you control. Bundles `think serve` for piping external events (GitHub, Linear, …) into memory.",
+  "description": "Local-first memory for AI agents — resident daemon, vector recall, an L1 outbox, git-shareable cortex. Bundles `think serve`.",
   "bin": {
     "think": "dist/index.js"
   },
@@ -13,11 +13,13 @@
   "scripts": {
     "build": "tsup && find dist -name '*.js' -exec perl -i -pe 's/from \"sqlite\"/from \"node:sqlite\"/g' {} +",
     "prepublishOnly": "npm run build",
+    "prepack": "npm run gen:npm-readme",
     "dev": "tsx src/index.ts",
     "test": "vitest run",
     "test:watch": "vitest",
     "e2e:hub": "tsx scripts/e2e-byo-hub.ts",
     "gen:commands": "tsx scripts/gen-command-table.ts",
+    "gen:npm-readme": "tsx scripts/gen-npm-readme.ts",
     "typecheck": "tsc --noEmit -p tsconfig.json"
   },
   "homepage": "https://openthink.dev",
@@ -33,7 +35,9 @@
     "agents",
     "work-log",
     "local-first",
-    "curation"
+    "daemon",
+    "vector",
+    "recall"
   ],
   "license": "MIT",
   "engines": {

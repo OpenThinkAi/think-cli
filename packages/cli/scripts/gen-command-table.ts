@@ -42,10 +42,17 @@ export const END_MARKER = '<!-- commands:end -->';
 // Every file that carries the generated block. The AGT-1311 drift test
 // covers exactly this list — add a new surface here (not only in the test)
 // so the two can never drift from each other.
-export const TABLE_TARGETS: readonly string[] = [
-  path.join(REPO_ROOT, 'README.md'),
-  path.join(REPO_ROOT, 'packages', 'cli', 'README.md'),
-];
+//
+// AGT-1313: packages/cli/README.md used to be listed here as a second
+// independent target, but it is now a wholesale-generated COPY of the root
+// README (gen-npm-readme.ts, run in `prepack`), rewritten link-by-link for
+// npm's package page. Regenerating it here directly, in addition to the
+// copy step, would make it a second source of truth for the exact same
+// bytes and risk the two generators disagreeing on ordering. The root
+// README is regenerated first (`npm run gen:commands`), then copied
+// (`npm run gen:npm-readme`) — see the `gen:readme` script — so the npm
+// README always inherits an up-to-date table without being listed here.
+export const TABLE_TARGETS: readonly string[] = [path.join(REPO_ROOT, 'README.md')];
 
 export interface CommandRow {
   path: string;
