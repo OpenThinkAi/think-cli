@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+## [3.0.1] — 2026-09-18
+
+Patch release for two follow-ups from the 3.0.0 rollout. Installs itself at each
+machine's next session via `think update`.
+
 ### Added
 
 - `think config set`/`get` now accept `cortex.llm.providers.<name>.<leaf>`

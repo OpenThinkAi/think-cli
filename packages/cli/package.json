@@ -1,6 +1,6 @@
 {
   "name": "@openthink/think",
-  "version": "3.0.0",
+  "version": "3.0.1",
   "type": "module",
   "description": "Local-first memory for AI agents — resident daemon, vector recall, an L1 outbox, git-shareable cortex. Bundles `think serve`.",
   "bin": {
