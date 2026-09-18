@@ -24,6 +24,7 @@ import { DAEMON_CHECK_ID } from '../../../src/lib/doctor/daemon.js';
 import { LLM_PROVIDERS_CHECK_ID } from '../../../src/lib/doctor/llm-providers.js';
 import { CLAUDE_INTEGRATION_CHECK_ID } from '../../../src/lib/doctor/claude-integration.js';
 import { THINK_HOMES_CHECK_ID } from '../../../src/lib/doctor/think-homes.js';
+import { SALVAGE_COMMIT_CHECK_ID } from '../../../src/lib/doctor/salvage-commit.js';
 
 function fakeCheck(
   id: string,
@@ -48,6 +49,7 @@ describe('doctorChecks (AGT-1308 AC1)', () => {
       LLM_PROVIDERS_CHECK_ID,
       CLAUDE_INTEGRATION_CHECK_ID,
       THINK_HOMES_CHECK_ID,
+      SALVAGE_COMMIT_CHECK_ID,
     ]);
   });
 
@@ -60,6 +62,9 @@ describe('doctorChecks (AGT-1308 AC1)', () => {
       ENGRAM_ROWS_CHECK_ID,
       REPO_INDEX_CHECK_ID,
       DAEMON_CHECK_ID,
+      // AGT-1310. The only repair self-heal does not also run — resetting a
+      // branch to origin is not something to do unprompted on daemon start.
+      SALVAGE_COMMIT_CHECK_ID,
     ]);
   });
 });
