@@ -7,7 +7,7 @@
     },
     "packages/cli": {
       "name": "@openthink/think",
-      "version": "2.6.1",
+      "version": "3.0.0-rc.1",
       "bin": {
         "think": "dist/index.js",
       },
