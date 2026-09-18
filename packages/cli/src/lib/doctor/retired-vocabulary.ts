@@ -210,10 +210,8 @@ function scanFile(file: string, content: string, terms: RetiredVocabularyTerm[])
       while ((match = term.pattern.exec(line)) !== null) {
         const start = match.index;
         const end = start + match[0].length;
-        if (claimed.some(([s, e]) => start < e && end > s)) {
-          if (match[0].length === 0) term.pattern.lastIndex++; // guard against zero-width loops
-          continue;
-        }
+        if (match[0].length === 0) term.pattern.lastIndex++; // always guard zero-width matches
+        if (claimed.some(([s, e]) => start < e && end > s)) continue;
         claimed.push([start, end]);
         hits.push({ file, line: i + 1, text: line, replacement: term.replacement });
       }
