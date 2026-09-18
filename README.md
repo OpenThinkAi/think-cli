@@ -130,7 +130,7 @@ shape (OpenAI, DeepSeek, OpenRouter, vLLM, LM Studio, oMLX/Qwen).
 With no configuration, everything runs on Anthropic.
 
 ```jsonc
-// ~/.config/think/config.json  →  "cortex": { ... }
+// ~/.config/think/config.json — nested under "cortex": { "llm": { ... } }
 "llm": {
   "providers": {
     "qwen":     { "kind": "openai", "endpoint": "http://127.0.0.1:8000/v1",
