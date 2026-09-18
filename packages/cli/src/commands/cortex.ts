@@ -13,6 +13,7 @@ import { getSyncAdapter } from '../sync/registry.js';
 import { LocalFsSyncAdapter } from '../sync/local-fs-adapter.js';
 import { validateRepoUrl } from '../lib/repo-url.js';
 import { cortexMigrateLayoutCommand } from './cortex-migrate-layout.js';
+import { cortexAutoCurateCommand, cortexAutoSyncCommand } from './removed-commands.js';
 
 function prompt(question: string, defaultValue?: string): Promise<string> {
   const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
@@ -682,4 +683,13 @@ cortexCommand.addCommand(new Command('migrate')
   }));
 
 cortexCommand.addCommand(cortexMigrateLayoutCommand);
+
+// think-3 (AGT-1325): `auto-curate` / `auto-sync` were deleted outright by
+// AGT-1303. Re-registered hidden on this group (same effect as `{ hidden:
+// true }` on a top-level command in program.ts — gen-command-table.ts's
+// isHidden() check runs per-node while walking the tree) so typing either
+// gets our own one-line removal pointer instead of commander's generic
+// "unknown command". See commands/removed-commands.ts.
+cortexCommand.addCommand(cortexAutoCurateCommand, { hidden: true });
+cortexCommand.addCommand(cortexAutoSyncCommand, { hidden: true });
 
