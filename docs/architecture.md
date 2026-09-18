@@ -1,4 +1,4 @@
-> This is the design doc that drove the current architecture (originally built as a major redesign shipped in `@openthink/think@1.0.0-alpha.1`, then simplified further in `3.0.0` when the pre-daemon engram tier was removed). Engineering details may have shifted slightly during and after the build — the canonical surface is the CLI itself; this captures intent and architecture. Historical file name: `docs/think-v3.md`.
+> This is the design doc that drove the current architecture (originally built as a major redesign shipped in `@openthink/think@1.0.0-alpha.1`, then simplified further in `3.0.0` when the pre-daemon write tier was removed). Engineering details may have shifted slightly during and after the build — the canonical surface is the CLI itself; this captures intent and architecture. Historical file name: `docs/think-v3.md`.
 
 ---
 
@@ -239,7 +239,7 @@ Both surfaces talk to the same daemon. The hook handles guaranteed orientation; 
 
 ## Storage paths
 
-- `~/.think/index/<cortex>.db` — L2, the per-cortex vector index (was `~/.think/engrams/` under the pre-daemon tool; a one-time migration on first launch renames the directory if the new one doesn't already exist, leaving a timestamped backup of the old copy when both exist).
+- `~/.think/index/<cortex>.db` — L2, the per-cortex vector index (previously the pre-daemon tool's vector-index directory under a different name; a one-time migration on first launch renames the directory if the new one doesn't already exist, leaving a timestamped backup of the old copy when both exist).
 - `~/.think/repo/` — L1, the git-backed canonical store.
 - `~/.think/daemon.sock` / `~/.think/daemon.pid` — daemon lifecycle files.
 - `~/.config/think/config.json` (or `$XDG_CONFIG_HOME/think/config.json`) — user config. Under a custom `THINK_HOME`, config instead lives at `<THINK_HOME>/config/config.json`.
@@ -254,7 +254,7 @@ think's current write path is additive, not a hard break from what the pre-daemo
 - New writes go through the compaction pipeline and coexist with un-compacted legacy entries in the same cortex.
 - **Recall behavior change (historical).** The pre-daemon tool's `recall` used full-text search (exact keyword match); the current `recall` is semantic vector search. Queries that relied on exact keyword matches (error codes, flag names, exact phrases) may return different result sets than they used to.
 - L1 entries migrated from the pre-daemon tool may carry `decisions` and `source_ids` fields; the current write path never writes them and treats them as opaque.
-- **The engram write tier itself was removed in `3.0.0`.** Every write command now produces a `memory`, an `event`, or a `retro`, through the daemon — there is no other write tier, and `insertEngram` and its callers are deleted from the codebase. The `engrams` table is left in place, read-only, for exactly one major version, so the one-shot migration (`think migrate-engrams`, and automatically on first daemon start) can rescue any row a pre-3.0.0 install left stranded there; dropping the table itself is deferred to the major after `3.0.0`.
+- **The pre-daemon write tier itself was removed in `3.0.0`.** Every write command now produces a `memory`, an `event`, or a `retro`, through the daemon — there is no other write tier, and `insertEngram` and its callers are deleted from the codebase. Its underlying table is left in place, read-only, for exactly one major version, so the one-shot migration (`think migrate-engrams`, and automatically on first daemon start) can rescue any row a pre-3.0.0 install left stranded there; dropping the table itself is deferred to the major after `3.0.0`.
 
 ## Failure modes
 
@@ -287,7 +287,7 @@ Phases below correspond to ticket groups. Tickets within a phase are mostly para
 
 ## Out of scope (deferred)
 
-- **Dropping the `engrams` table / schema migration.** The write tier itself (`insertEngram`, `think curate`, `think monitor`, `think curator edit|show`, `think cortex auto-curate|auto-sync`, `think migrate-data`, `recall --engrams`, `subscribe poll --legacy-engrams`, the Episodes feature) was removed in `3.0.0` — see [Legacy compatibility](#legacy-compatibility). The table itself stays, read-only, for one major so the one-shot rescue migration has somewhere to read stranded rows from; actually dropping it is a later change.
+- **Dropping the legacy write-tier table / schema migration.** The write tier itself was removed in `3.0.0` — see [Legacy compatibility](#legacy-compatibility) above and the README's "Upgrading to 3.0" table for exactly what that included. That table stays, read-only, for one major so the one-shot rescue migration has somewhere to read stranded rows from; actually dropping it is a later change.
 - Windows support hardening beyond basic compatibility
 - Rust sidecar for embedding/vector ops (revisit if Node perf becomes a wall)
 - Federated search across remote peers in real-time (current design retrieves from local L2s only)
