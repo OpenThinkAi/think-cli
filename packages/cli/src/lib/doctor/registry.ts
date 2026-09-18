@@ -47,6 +47,7 @@ import { checkLlmProviders, LLM_PROVIDERS_CHECK_ID } from './llm-providers.js';
 import { checkClaudeIntegration, CLAUDE_INTEGRATION_CHECK_ID } from './claude-integration.js';
 import { checkThinkHomes, THINK_HOMES_CHECK_ID } from './think-homes.js';
 import { checkSalvageCommits, SALVAGE_COMMIT_CHECK_ID } from './salvage-commit.js';
+import { checkRetiredVocabulary, RETIRED_VOCABULARY_CHECK_ID } from './retired-vocabulary.js';
 
 /** What a repair did, for the line `--fix` prints before re-running. */
 export interface FixOutcome {
@@ -180,6 +181,10 @@ export function doctorChecks(): DoctorCheckDefinition[] {
         );
         return { ok: repairs.every((repair) => repair.ok), detail: parts.join(' ') };
       },
+    },
+    {
+      id: RETIRED_VOCABULARY_CHECK_ID,
+      run: async () => checkRetiredVocabulary(),
     },
   ];
 }
