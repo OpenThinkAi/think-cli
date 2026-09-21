@@ -143,6 +143,19 @@ interface SlackFile {
   /** Authenticated download URLs on `files.slack.com`. */
   url_private?: string;
   url_private_download?: string;
+  /**
+   * Set on an AI huddle-notes canvas: the id of the huddle's native
+   * `huddle_transcript` file. See `fetchNativeTranscript`.
+   */
+  huddle_transcript_file_id?: string;
+}
+
+/** One utterance in `files.info?include_transcription=true` → `huddle_transcription.lines`. */
+interface HuddleTranscriptLine {
+  contents?: string;
+  start_time_ms?: number;
+  /** Absent when Slack couldn't attribute the utterance to a speaker. */
+  user_id?: string;
 }
 
 interface SlackMessage {
@@ -178,19 +191,22 @@ const MAX_TRANSCRIPT_CHARS = 500_000;
 /**
  * Transcript-bearing files that appear in a channel after a meeting/huddle:
  *
- *   - `verbatim`: a Slack-auto-posted `.vtt`/`.srt` transcript (speaker-labeled,
- *     timestamped). This is the high-fidelity artifact — present only when the
- *     workspace had *transcription* (not just AI notes) enabled for the call.
+ *   - `verbatim`: speaker-labeled dialogue. Either a `.vtt` someone attached to
+ *     the thread (format `vtt`), or Slack's native huddle transcript reached
+ *     through the AI-notes canvas (format `huddle_transcript`).
  *   - `summary`: the AI huddle-notes `quip` canvas (topics/decisions/action
  *     items). Always produced for an AI-notes huddle, but lossy — a fallback
  *     when no verbatim transcript exists.
  *
- * NOTE: Slack's native `huddle_transcript` file object is deliberately NOT
- * matched here. It is shared only into the canvas's internal channel, so a bot
- * token 302s on its download. The in-channel `.vtt` is the reachable artifact.
+ * NOTE: Slack does NOT post a `.vtt` into the channel for a huddle, and the
+ * native `huddle_transcript` file is shared only into the canvas's internal
+ * channel, so a bot token 302s on its *download*. Its text is still reachable:
+ * the canvas names it in `huddle_transcript_file_id`, and `files.info` on that
+ * id with `include_transcription=true` returns the utterances inline. See
+ * `fetchNativeTranscript`.
  */
 type TranscriptFidelity = 'verbatim' | 'summary';
-type TranscriptFormat = 'vtt' | 'canvas';
+type TranscriptFormat = 'vtt' | 'canvas' | 'huddle_transcript';
 
 interface ClassifiedTranscript {
   file: SlackFile;
@@ -248,6 +264,37 @@ export function vttToTranscript(vtt: string): string {
       if (!t || t === 'WEBVTT' || t.includes('-->')) continue;
       if (/^[0-9a-f-]+(\/\d+-?\d*)?$/i.test(t)) continue; // cue identifier
       out.push(t);
+    }
+  }
+  return out.join('\n');
+}
+
+const UNKNOWN_SPEAKER = 'Unknown';
+
+/**
+ * Normalize a native huddle transcript's utterances to the same `Speaker: text`
+ * turns `vttToTranscript` produces. `nameOf` maps a Slack user id to a display
+ * name; an utterance Slack couldn't attribute has no `user_id` and reads as
+ * `Unknown`. Consecutive same-speaker utterances merge into one turn.
+ */
+export function huddleLinesToTranscript(
+  lines: HuddleTranscriptLine[],
+  nameOf: (userId: string) => string,
+): string {
+  // Slack returns utterances in order; sort anyway so a reordered response
+  // can't scramble the dialogue. `sort` is stable, so ties keep Slack's order.
+  const ordered = [...lines].sort((a, b) => (a.start_time_ms ?? 0) - (b.start_time_ms ?? 0));
+  const out: string[] = [];
+  let lastSpeaker: string | null = null;
+  for (const line of ordered) {
+    const text = (line.contents ?? '').trim();
+    if (!text) continue;
+    const speaker = line.user_id ? nameOf(line.user_id) : UNKNOWN_SPEAKER;
+    if (speaker === lastSpeaker && out.length > 0) {
+      out[out.length - 1] += ' ' + text;
+    } else {
+      out.push(`${speaker}: ${text}`);
+      lastSpeaker = speaker;
     }
   }
   return out.join('\n');
@@ -520,12 +567,74 @@ export function createSlackConnector(
   }
 
   /**
+   * Resolve a Slack user id to a display name for a transcript turn. Needs
+   * `users:read`; on any failure other than a rate limit (missing scope,
+   * deactivated user) the raw id stands in, so attribution degrades rather
+   * than the transcript being dropped.
+   */
+  async function resolveUserName(token: string, userId: string): Promise<string> {
+    try {
+      const json = await slackFetch(token, 'users.info', { user: userId });
+      const user = json.user as
+        | { name?: string; real_name?: string; profile?: { display_name?: string } }
+        | undefined;
+      return user?.real_name || user?.profile?.display_name || user?.name || userId;
+    } catch (err) {
+      if (err instanceof SlackRateLimitError) throw err;
+      return userId;
+    }
+  }
+
+  /**
+   * Read a huddle's native verbatim transcript. The `huddle_transcript` file's
+   * download 302s for a bot token, but `files.info` with
+   * `include_transcription=true` returns the utterances inline as
+   * `file.huddle_transcription.lines` — without the flag that object is `{}`.
+   * Needs only `files:read`.
+   *
+   * The flag is undocumented (it is what Slack's own client sends), so every
+   * failure other than a rate limit returns `null` and the caller falls back to
+   * the AI-notes canvas: if Slack withdraws it, ingestion reverts to summaries
+   * rather than breaking the poll.
+   */
+  async function fetchNativeTranscript(
+    token: string,
+    fileId: string,
+  ): Promise<{ transcript: string; speakers: string[] } | null> {
+    let lines: HuddleTranscriptLine[];
+    try {
+      const json = await slackFetch(token, 'files.info', {
+        file: fileId,
+        include_transcription: 'true',
+      });
+      const file = json.file as { huddle_transcription?: { lines?: unknown } } | undefined;
+      const raw = file?.huddle_transcription?.lines;
+      if (!Array.isArray(raw) || raw.length === 0) return null;
+      lines = raw as HuddleTranscriptLine[];
+    } catch (err) {
+      if (err instanceof SlackRateLimitError) throw err;
+      return null;
+    }
+
+    const names = new Map<string, string>();
+    for (const line of lines) {
+      if (line.user_id && !names.has(line.user_id)) {
+        names.set(line.user_id, await resolveUserName(token, line.user_id));
+      }
+    }
+    const transcript = huddleLinesToTranscript(lines, (id) => names.get(id) ?? id);
+    if (!transcript.trim()) return null;
+    return { transcript, speakers: [...names.values()] };
+  }
+
+  /**
    * Emit one terminal `huddle.transcript` event per transcript file attached to
    * a settled thread (root + replies). When a thread carries both a verbatim
-   * `.vtt` and the AI-notes summary canvas, the verbatim wins and the canvas is
-   * dropped — we'd rather the curator segment the real dialogue than Slack's
-   * lossy recap. Files the bot can't download (`fetchFileContent` → null) are
-   * skipped silently, so a walled native transcript never blocks the others.
+   * transcript and the AI-notes summary canvas, the verbatim wins and the canvas
+   * is dropped — we'd rather the curator segment the real dialogue than Slack's
+   * lossy recap. A huddle canvas is itself upgraded to verbatim when its native
+   * transcript is readable (`fetchNativeTranscript`). Files the bot can't
+   * download (`fetchFileContent` → null) are skipped silently.
    */
   async function emitTranscriptsForThread(
     token: string,
@@ -551,9 +660,20 @@ export function createSlackConnector(
 
     const events: EventInput[] = [];
     for (const pick of picks) {
-      const raw = await fetchFileContent(token, pick.file);
-      if (raw === null) continue; // walled / inaccessible → skip cleanly
-      let transcript = pick.format === 'vtt' ? vttToTranscript(raw) : canvasHtmlToText(raw);
+      let { fidelity, format } = pick;
+      let transcript: string;
+      let speakers: string[] | undefined;
+      const nativeId = format === 'canvas' ? pick.file.huddle_transcript_file_id : undefined;
+      const native = nativeId ? await fetchNativeTranscript(token, nativeId) : null;
+      if (native) {
+        fidelity = 'verbatim';
+        format = 'huddle_transcript';
+        ({ transcript, speakers } = native);
+      } else {
+        const raw = await fetchFileContent(token, pick.file);
+        if (raw === null) continue; // walled / inaccessible → skip cleanly
+        transcript = format === 'vtt' ? vttToTranscript(raw) : canvasHtmlToText(raw);
+      }
       const truncated = transcript.length > MAX_TRANSCRIPT_CHARS;
       if (truncated) transcript = transcript.slice(0, MAX_TRANSCRIPT_CHARS);
       if (!transcript.trim()) continue; // nothing usable extracted
@@ -569,9 +689,10 @@ export function createSlackConnector(
         occurredAt: tsToIso(root.ts) ?? undefined,
         payload: JSON.stringify({
           kind: 'huddle.transcript',
-          // 'verbatim' (real `.vtt`) vs 'summary' (AI-notes canvas).
-          fidelity: pick.fidelity,
-          format: pick.format,
+          // 'verbatim' (`.vtt` or native huddle transcript) vs 'summary'
+          // (AI-notes canvas).
+          fidelity,
+          format,
           workspace,
           channel_id: channel.id,
           channel_name: channel.name ?? null,
@@ -581,6 +702,9 @@ export function createSlackConnector(
           // huddle speakers — the latter appear inline in `transcript` as
           // `Speaker: …` turns. Kept as weak provenance signal for the curator.
           participants: collectParticipants(messages),
+          // Who actually spoke, by display name — only known for a native
+          // huddle transcript, where Slack attributes each utterance.
+          ...(speakers ? { speakers } : {}),
           // The curator's primary source text — segmented into per-topic
           // memories exactly like a meeting transcript.
           transcript,
