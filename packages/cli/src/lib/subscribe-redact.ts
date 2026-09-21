@@ -1,7 +1,8 @@
 /**
  * Connector-boundary PII strip + per-subscription redact selectors
- * (AGT-066). Two layers, applied in order to the raw payload before it
- * lands as engram content via `insertEngram`:
+ * (AGT-066). Two layers, designed to apply in order to the raw payload.
+ * Neither has a caller since 3.0.0 removed the local ingestion path they
+ * ran on (`insertEngram`); see docs/serve.md → "Third-party content data flow":
  *
  *   1. `stripBaselinePii` removes a hard-coded baseline of fields known
  *      to carry PII (commenter email addresses, GPG metadata, IP from

@@ -22,8 +22,9 @@ import type { SourceConnector } from './types.js';
  * `notion` (AGT-395) emits a terminal event per observation of a page
  * with the team's canonical property asserted (default: a checkbox
  * named `canonical` set to `true`).
- * `slack` (AGT-394) emits one terminal event per thread the team marks
- * settled via a designated closing reaction on the thread root; the
+ * `slack` (AGT-394) emits one `thread.closed` event per thread the team
+ * marks settled via a designated closing reaction on the thread root, plus
+ * one `huddle.transcript` event per huddle or transcript file in it; the
  * subscription pattern is a workspace label.
  */
 export type ConnectorRegistry = Map<string, SourceConnector>;

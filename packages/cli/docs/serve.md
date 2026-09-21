@@ -57,7 +57,7 @@ Event `payload` is **connector-defined** — the server stores `payload_json` op
 Connectors emit **only terminal events** — events that represent a settled state on the source side (PR merged, ticket closed, transcript finalized, release published). Closure logic lives inside each connector; the connector decides when its source-side artifact is "done" and only then calls back into the framework with an `EventInput`. Each `EventInput` carries:
 
 - `id` — stable per-source event id (dedup key with `subscription_id`).
-- `episodeKey` — stable identifier for the source event (`github:owner/repo#123`, `linear:TEAM-123`, `meeting:<uuid>`, …). Curated memories produced from the event group by this key.
+- `episodeKey` — stable identifier for the source event (`github:owner/repo#123`, `linear:TEAM-123`, `meeting:<uuid>`, `slack:<workspace>:<channel>:<ts>`, `slack:huddle:<workspace>:<channel>:<file-id>`, …). Curated memories produced from the event group by this key.
 - `terminal: true` — literal marker. Phase 1 of the terminal-event pivot accepts only `true`; the proxy ingest path logs and drops anything else (`events_rejected_non_terminal` in the tick outcome). The literal-type shape leaves room for a future opt-in "preview" mode without disturbing existing callers.
 - `payload` — connector-defined JSON.
 
@@ -106,8 +106,10 @@ Registered connector kinds:
 
 - **`mock`** — synthetic event generator used by the e2e test. Pattern `"N"` where N is an integer ≥ 1 emits N events per poll with monotonic ids; anything else (non-integer, `"0"`, negatives, empty string) emits 1. Cursor is `{ count: number }`. Implements `verifyCredential` as a non-empty-string check so the credential-test endpoint has a kind to exercise without needing a live source.
 - **`github`** (AGT-387) — emits a terminal event for each PR merged, PR closed-unmerged, issue closed, and release published in a subscribed `<owner>/<repo>`. Cursor tracks `updated_at`-since plus a FIFO set of emitted release ids. Credential is a GitHub PAT; `verifyCredential` probes `/user`.
+- **`linear`** (AGT-392) — emits a terminal event when an issue moves into a `completed`- or `canceled`-type workflow state. Pattern is a Linear team key (e.g. `ENG`). Credential is a personal API key (`lin_api_…`).
+- **`meeting`** (AGT-393) — emits one terminal event per finalized meeting transcript. Pattern is the provider; v1 ships Granola, authenticated with a workspace-scoped API key.
 - **`notion`** (AGT-395) — emits a terminal event each time a Notion page is observed with the team's "canonical" property asserted. See dedicated section below.
-- **`slack`** (AGT-394) — emits one terminal event per thread the team marks settled via a designated closing reaction on the thread root. See dedicated section below.
+- **`slack`** (AGT-394) — emits one `thread.closed` event per thread the team marks settled via a designated closing reaction on the thread root, plus one `huddle.transcript` event per huddle or transcript file in that thread. See the two dedicated sections below.
 
 The GitHub connector — first real-world target after `mock` — has a forward-looking design sketch at [`serve-design/connectors-github.md`](./serve-design/connectors-github.md), covering per-endpoint cursors, conditional-GET headers, rate-limit handling, and multi-endpoint fan-out.
 
@@ -158,13 +160,37 @@ THINK_NOTION_PAT='secret_xxx' think serve creds add notion 'db:abc123def456'
 
 ### Adopting the Slack closing-emoji convention (AGT-394)
 
-The `slack` connector emits one terminal event per thread the team marks settled via a designated closing reaction on the thread root. Subscription `pattern` is a workspace label (free-form, used only in `episodeKey`). The closing reaction is configured via the `THINK_SLACK_CLOSING_REACTION` env var (default `lock`; bare name, no colons — `:lock:` is accepted and normalized). Per poll: `users.conversations` (channels the bot is in) → `conversations.history` (most recent page per channel) → for any thread root carrying the closing reaction, `conversations.replies` to fetch the thread (first 100 messages; `has_more` is surfaced in the payload when truncated) → emit `slack:<workspace>:<channel>:<thread-ts>`. Cursor is a FIFO `emittedThreadKeys` set; below the cap, dedup falls through to `events_sub_id_unique`. Implements `verifyCredential` via `auth.test`.
+The `slack` connector emits one `thread.closed` event per thread the team marks settled via a designated closing reaction on the thread root (and, for a huddle thread, a `huddle.transcript` event — see the next section). Subscription `pattern` is a workspace label (free-form, used only in `episodeKey`). The closing reaction is configured via the `THINK_SLACK_CLOSING_REACTION` env var (default `lock`; bare name, no colons — `:lock:` is accepted and normalized). Per poll: `users.conversations` (channels the bot is in) → `conversations.history` (most recent page per channel) → for any thread root carrying the closing reaction, `conversations.replies` to fetch the thread (first 100 messages; `has_more` is surfaced in the payload when truncated) → emit `slack:<workspace>:<channel>:<thread-ts>`. Cursor is a FIFO `emittedThreadKeys` set; below the cap, dedup falls through to `events_sub_id_unique`. Implements `verifyCredential` via `auth.test`.
 
 Slack threads have no native "closed" state — the team opts in by declaring a convention. After `think serve subscribe slack <workspace-label>` and `think serve creds add slack <workspace-label>` (which reads the bot token from `$THINK_SLACK_PAT` or stdin), tell the team:
 
 > When a thread is settled and you want it curated, add the **:lock:** reaction to the **root message** of the thread. The bot will fetch the thread on the next poll tick and curate it. (To use a different emoji, set `THINK_SLACK_CLOSING_REACTION=<bare-name>` on the proxy and restart.)
 
-The bot must be **invited to each channel** you want to capture from — Slack's permission model means `users.conversations` returns only channels the bot is a member of. Required scopes on the bot token: `channels:history`, `groups:history`, `channels:read`, `groups:read`, `reactions:read`, and `users:read` if you later enable name resolution. Teams that don't adopt the convention get nothing — no central infrastructure burden, no spurious events.
+The bot must be **invited to each channel** you want to capture from — Slack's permission model means `users.conversations` returns only channels the bot is a member of. Required scopes on the bot token: `channels:history`, `groups:history`, `channels:read`, `groups:read`, `reactions:read`, plus — for huddles and attached transcripts — `files:read`, `canvases:read`, and `users:read` (speaker names; without it transcript turns are attributed by raw user id). Teams that don't adopt the convention get nothing — no central infrastructure burden, no spurious events.
+
+### Slack huddles and meeting transcripts
+
+A settled thread that belongs to a huddle — or has a transcript attached — also produces a `huddle.transcript` event, which the curator segments into per-topic memories. The thread root still needs the closing reaction; nothing is captured from a huddle nobody marked.
+
+After a huddle Slack posts one artifact into the channel: the AI **"Huddle notes" canvas**. It does **not** post a `.vtt`, whether or not transcription is on. The verbatim transcript exists as a separate `huddle_transcript` file, shared only into the canvas's internal channel, so its download URL answers a bot token with a `302` to the login page. The text is reachable without the download:
+
+1. The canvas file object carries `huddle_transcript_file_id`.
+2. `files.info` on that id with `include_transcription=true` returns every utterance inline as `file.huddle_transcription.lines` — each with `contents`, `start_time_ms`, and a `user_id` (absent when Slack couldn't attribute it). Without the flag the object comes back empty.
+3. Speakers are resolved to display names through `users.info`, and the utterances are collapsed into `Speaker: text` turns, consecutive same-speaker lines merged.
+
+`include_transcription` is not in Slack's API reference — it is the parameter Slack's own client sends. The connector therefore treats it as best-effort: if the call errors or returns no lines, the huddle is ingested from the canvas summary instead, and the poll is unaffected. A rate limit is the one failure that propagates, so a throttled poll retries rather than permanently recording the summary for that huddle.
+
+The payload says which source was used:
+
+| `fidelity` | `format` | Source |
+| --- | --- | --- |
+| `verbatim` | `huddle_transcript` | Slack's native transcript, via the canvas (adds a `speakers` array of display names) |
+| `verbatim` | `vtt` | A `.vtt` file someone attached to the thread (e.g. a recording exported from another meeting tool). `.srt` is not parsed. |
+| `summary` | `canvas` | The AI huddle-notes canvas, stripped to text — the fallback |
+
+When a thread has a `.vtt` it wins and the canvas is ignored. A file the bot can't download is skipped silently. Transcript text is capped at 500,000 characters; past that it is sliced and the payload carries `truncated: true`. The event id is `slack:huddle:<workspace>:<channel>:<canvas-or-file-id>:transcript`, so a huddle is one episode however it was read, and one already ingested is never re-ingested.
+
+Verbatim capture means the spoken conversation — not a recap of it — is sent to the configured LLM provider for curation. It is gated by the same `THINK_LLM_CONSENT` as every other third-party payload, and like them it is sent **unredacted**: the redaction layers described under [Third-party content data flow](#third-party-content-data-flow--redact-agt-066) are not currently applied. Tell the team that the closing reaction on a huddle captures what was said.
 
 Read endpoints (`GET /v1/events`, `GET /v1/subscriptions/...`) are unchanged and unaware of the scheduler — connectors and consumers stay decoupled through the events table.
 
