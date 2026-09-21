@@ -7,9 +7,10 @@ import type {
 } from './types.js';
 
 /**
- * Slack source connector (AGT-394). Emits one terminal event per thread
- * that the team has marked "settled" via a designated closing reaction
- * on the thread root.
+ * Slack source connector (AGT-394). Emits one `thread.closed` terminal
+ * event per thread that the team has marked "settled" via a designated
+ * closing reaction on the thread root — plus one `huddle.transcript` event
+ * per huddle or transcript file found in that thread.
  *
  * Why reaction-driven, not state-transition driven
  * -------------------------------------------------
@@ -74,10 +75,10 @@ import type {
  *
  * User resolution
  * ---------------
- * Participants are emitted as user IDs in v1. A future enrichment pass
- * can call `users.info` (or batch via `users.list`) to resolve display
- * names — out of scope for AGT-394 to keep the per-poll API budget
- * predictable.
+ * Thread participants are emitted as user IDs, to keep the per-poll API
+ * budget predictable. Huddle transcript speakers are the exception: they
+ * are resolved to display names via `users.info` (needs `users:read`;
+ * degrades to the raw id), one call per distinct speaker per huddle.
  *
  * Tests pass `fetchImpl`, `now`, and `closingReaction` to make HTTP,
  * time, and the convention injectable without spinning up a real Slack.
@@ -129,7 +130,8 @@ interface SlackReaction {
 /**
  * Subset of a Slack file object as it rides inline on `conversations.history`
  * / `conversations.replies` messages. Slack includes `url_private*` on the
- * inline object, so reading a file's content needs no extra `files.info` hop.
+ * inline object, so downloading a `.vtt` or canvas needs no extra `files.info`
+ * hop. (The native huddle transcript does — see `fetchNativeTranscript`.)
  */
 interface SlackFile {
   id: string;
@@ -218,11 +220,12 @@ interface ClassifiedTranscript {
 function classifyTranscriptFile(f: SlackFile): ClassifiedTranscript | null {
   const name = (f.name ?? '').toLowerCase();
   if (name.endsWith('.vtt')) return { file: f, fidelity: 'verbatim', format: 'vtt' };
-  // NOTE: `.srt` is intentionally NOT matched. Slack auto-posts huddle
-  // transcripts as `.vtt` (with `<v Speaker>` voice spans) — `.srt` has not
-  // been observed. Rather than ship raw SRT (sequence numbers + timing lines)
-  // as if it were normalized `verbatim` text, we skip it until Slack is seen
-  // to emit it, at which point an `srtToTranscript` normalizer should be added.
+  // NOTE: `.srt` is intentionally NOT matched. A `.vtt` here is one someone
+  // attached by hand (Slack itself posts neither format); the ones seen use
+  // `<v Speaker>` voice spans, and `.srt` has not been observed. Rather than
+  // ship raw SRT (sequence numbers + timing lines) as if it were normalized
+  // `verbatim` text, we skip it until one turns up, at which point an
+  // `srtToTranscript` normalizer should be added.
   // AI huddle-notes canvas. Match on the title marker rather than bare
   // `filetype === 'quip'` so we don't sweep in unrelated canvases someone
   // happened to attach to a settled thread.
@@ -503,7 +506,7 @@ export function createSlackConnector(
       // The thread root's creation time — the chronological anchor for
       // "when this conversation happened" (matches root.ts in episodeKey).
       // Slack exposes no per-reaction timestamp, so the settle moment
-      // (:hive: added) isn't available; the root time is the stable,
+      // (closing reaction added) isn't available; the root time is the stable,
       // deterministic choice. `?? undefined` keeps a malformed ts from
       // stamping the memory — the writer falls back to insertion time.
       // This is what makes future old-Slack backfill land threads at their

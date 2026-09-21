@@ -1,7 +1,14 @@
 /**
  * Connector-boundary PII strip + per-subscription redact selectors
- * (AGT-066). Two layers, applied in order to the raw payload before it
- * lands as engram content via `insertEngram`:
+ * (AGT-066). Two layers, designed to apply in order to the raw payload.
+ *
+ * TODO: retained on purpose, not yet wired. 3.0.0 removed the CLI-side
+ * ingestion path these ran on, and proxy-curated payloads are now sent to
+ * the LLM unredacted. `think subscribe redact-set`/`show` still read and
+ * write the selectors, so this module stays until the open decision in
+ * docs/serve.md → "Third-party content data flow" is made: run these inside
+ * `think serve`'s terminal-event curator, or remove the module and the
+ * `redact-set` surface together.
  *
  *   1. `stripBaselinePii` removes a hard-coded baseline of fields known
  *      to carry PII (commenter email addresses, GPG metadata, IP from

@@ -2,12 +2,25 @@
 
 ## [Unreleased]
 
+## [3.1.0] — 2026-09-21
+
+One feature for anyone running `think serve` with the `slack` connector: huddles
+are ingested as the real conversation rather than Slack's summary of it. CLI-only
+installs are unaffected. A proxy picks it up when its pinned version is bumped —
+`think update` does not move a deployment's pin.
+
 ### Added
 
-- **Slack huddles are now ingested verbatim, with speakers, instead of as Slack's AI summary.** 2.1.0 assumed Slack auto-posts a `.vtt` into the channel when transcription is on. It doesn't: a huddle leaves only the AI "Huddle notes" canvas, so every real huddle was ingested at `fidelity: summary` — a few thousand characters of Slack's recap, with @mentions stripped, standing in for the conversation. The native `huddle_transcript` file was written off as unreachable because its download 302s for a bot token. Its text is reachable another way: the canvas carries `huddle_transcript_file_id`, and `files.info` on that id with `include_transcription=true` returns every utterance inline (`huddle_transcription.lines`, each with a `user_id`). The `slack` connector now follows that path on a `:hive:`-reacted huddle, resolves speakers through `users.info`, and emits the same `Speaker: text` turns a `.vtt` produces, as `fidelity: verbatim`, `format: huddle_transcript`, plus a `speakers` list. On a 31-minute huddle that is ~52k characters of attributed dialogue against a 4.3k-character summary.
+- **Slack huddles are now ingested verbatim, with speakers, instead of as Slack's AI summary.** 2.1.0 assumed Slack auto-posts a `.vtt` into the channel when transcription is on. It doesn't: a huddle leaves only the AI "Huddle notes" canvas, so every real huddle was ingested at `fidelity: summary` — a few thousand characters of Slack's recap, with @mentions stripped, standing in for the conversation. The native `huddle_transcript` file was written off as unreachable because its download 302s for a bot token. Its text is reachable another way: the canvas carries `huddle_transcript_file_id`, and `files.info` on that id with `include_transcription=true` returns every utterance inline (`huddle_transcription.lines`, each with a `user_id`). The `slack` connector now follows that path on a huddle thread carrying the closing reaction, resolves speakers through `users.info`, and emits the same `Speaker: text` turns a `.vtt` produces, as `fidelity: verbatim`, `format: huddle_transcript`, plus a `speakers` list. On a 31-minute huddle that is ~52k characters of attributed dialogue against a 4.3k-character summary.
   - **No new scopes.** `files:read` covers the transcript and `users:read` the names; without `users:read` turns are attributed by raw user id rather than dropped.
   - **Degrades to the old behaviour.** `include_transcription` is undocumented (it is what Slack's own client sends). If it returns nothing or errors, the connector falls back to the canvas summary exactly as before. A rate limit is the one failure that propagates, so a throttled poll retries instead of permanently recording the summary for that huddle.
   - **Not retroactive.** The event id is still keyed on the canvas file, so a huddle already ingested as a summary is the same episode and is not re-ingested.
+
+### Documentation
+
+- **`docs/serve.md` gains a "Slack huddles and meeting transcripts" section** and its Slack scope list is corrected: huddle capture needs `files:read`, `canvases:read` and `users:read`, none of which were listed (`users:read` was described as a future option). `think serve subscribe slack` prints the same corrected list.
+- The registered-connector list now includes `linear` and `meeting`, which were shipped but undocumented there; `SECURITY.md`'s connector lists gain meeting transcripts and say plainly that huddle and meeting payloads are verbatim speech.
+- Comments in the `slack` connector that still described the 2.1.0 assumptions (Slack auto-posting a `.vtt`, user resolution being out of scope, one event per thread) now describe what the code does.
 
 ## [3.0.1] — 2026-09-18
 
