@@ -3,6 +3,7 @@ import {
   createSlackConnector,
   SlackRateLimitError,
   vttToTranscript,
+  huddleLinesToTranscript,
   canvasHtmlToText,
   type FetchFn,
   type SlackCursor,
@@ -1026,6 +1027,113 @@ describe('createSlackConnector — huddle transcript ingestion', () => {
     );
   });
 
+  describe('native huddle transcript (files.info include_transcription)', () => {
+    // A huddle-notes canvas as Slack really posts it: it names the native
+    // transcript file, whose download is walled but whose text is not.
+    const HUDDLE_CANVAS = {
+      id: 'F_CANVAS',
+      title: ':headphones: Huddle notes: 9/21/26',
+      filetype: 'quip',
+      url_private_download: `${FILE_BASE}/T-F_CANVAS/download/canvas`,
+      huddle_transcript_file_id: 'F_NATIVE',
+    };
+    const LINES = [
+      { contents: 'Or', start_time_ms: 23000, line_id: 'l0' },
+      { contents: 'Should we sequence ECP first?', start_time_ms: 28000, line_id: 'l1', user_id: 'U_MATT' },
+      { contents: 'It blocks the other two.', start_time_ms: 31000, line_id: 'l2', user_id: 'U_MATT' },
+      { contents: 'Agreed.', start_time_ms: 34000, line_id: 'l3', user_id: 'U_MILES' },
+    ];
+    // Matches only when the flag is sent: without it Slack returns `{}`, so a
+    // connector that forgot it must not find a route.
+    const matchTranscriptInfo = (u: string) =>
+      matchMethod('files.info')(u) && u.includes('file=F_NATIVE') && u.includes('include_transcription=true');
+    const transcriptInfo = (huddle_transcription: unknown) => ({
+      match: matchTranscriptInfo,
+      response: { body: { ok: true, file: { id: 'F_NATIVE', filetype: 'huddle_transcript', huddle_transcription } } },
+    });
+    const userInfo = (id: string, real_name: string) => ({
+      match: (u: string) => matchMethod('users.info')(u) && u.includes(`user=${id}`),
+      response: { body: { ok: true, user: { id, real_name } } },
+    });
+    const canvasDownload = { match: (u: string) => u.includes('T-F_CANVAS'), response: { text: CANVAS_HTML } };
+
+    async function pollTranscript(fileRoutes: MockFetchOptions['routes']) {
+      const fetchImpl = buildFetch([HUDDLE_CANVAS], fileRoutes);
+      const connector = createSlackConnector({ fetchImpl, closingReaction: 'lock' });
+      const result = await connector.poll({ subscription: SUB, credential: TOKEN, cursor: null });
+      const transcripts = transcriptsOf(result.events);
+      expect(transcripts).toHaveLength(1);
+      return {
+        evt: transcripts[0],
+        p: JSON.parse(transcripts[0].payload as string) as {
+          fidelity: string;
+          format: string;
+          transcript: string;
+          speakers?: string[];
+        },
+      };
+    }
+
+    it('upgrades the canvas to a verbatim, speaker-attributed transcript', async () => {
+      // The canvas download route is NOT registered: a verbatim hit must not
+      // also fetch the summary.
+      const { evt, p } = await pollTranscript([
+        transcriptInfo({ lines: LINES }),
+        userInfo('U_MATT', 'Matt Pardini'),
+        userInfo('U_MILES', 'Miles Christensen'),
+      ]);
+      expect(p.fidelity).toBe('verbatim');
+      expect(p.format).toBe('huddle_transcript');
+      expect(p.transcript).toBe(
+        'Unknown: Or\nMatt Pardini: Should we sequence ECP first? It blocks the other two.\nMiles Christensen: Agreed.',
+      );
+      expect(p.speakers).toEqual(['Matt Pardini', 'Miles Christensen']);
+      // Still keyed on the canvas, so a huddle already ingested as a summary
+      // is the same episode and a re-poll stays idempotent.
+      expect(evt.id).toBe('slack:huddle:acme:C01:F_CANVAS:transcript');
+    });
+
+    it('falls back to the canvas summary when Slack returns no utterances', async () => {
+      const { p } = await pollTranscript([transcriptInfo({}), canvasDownload]);
+      expect(p.fidelity).toBe('summary');
+      expect(p.format).toBe('canvas');
+      expect(p.transcript).toContain('Decided cache TTL is 60s.');
+      expect(p.speakers).toBeUndefined();
+    });
+
+    it('falls back to the canvas summary when files.info errors', async () => {
+      const { p } = await pollTranscript([
+        { match: matchTranscriptInfo, response: { body: { ok: false, error: 'file_not_found' } } },
+        canvasDownload,
+      ]);
+      expect(p.fidelity).toBe('summary');
+    });
+
+    it('keeps the raw user id when a name cannot be resolved', async () => {
+      const { p } = await pollTranscript([
+        transcriptInfo({ lines: LINES }),
+        userInfo('U_MATT', 'Matt Pardini'),
+        {
+          match: (u) => matchMethod('users.info')(u) && u.includes('user=U_MILES'),
+          response: { body: { ok: false, error: 'missing_scope' } },
+        },
+      ]);
+      expect(p.fidelity).toBe('verbatim');
+      expect(p.transcript).toContain('U_MILES: Agreed.');
+    });
+
+    it('propagates a rate limit instead of settling for the summary', async () => {
+      const fetchImpl = buildFetch(
+        [HUDDLE_CANVAS],
+        [{ match: matchTranscriptInfo, response: { body: { ok: false, error: 'ratelimited' } } }, canvasDownload],
+      );
+      const connector = createSlackConnector({ fetchImpl, closingReaction: 'lock' });
+      await expect(
+        connector.poll({ subscription: SUB, credential: TOKEN, cursor: null }),
+      ).rejects.toBeInstanceOf(SlackRateLimitError);
+    });
+  });
+
   it('emits no transcript event for a settled thread with no transcript files', async () => {
     const fetchImpl = buildFetch([], []);
     const connector = createSlackConnector({ fetchImpl, closingReaction: 'lock' });
@@ -1058,6 +1166,18 @@ describe('vttToTranscript / canvasHtmlToText', () => {
       '\n',
     );
     expect(vttToTranscript(vtt)).toBe('plain caption line');
+  });
+
+  it('orders huddle utterances by time and merges same-speaker turns', () => {
+    const lines = [
+      { contents: 'second', start_time_ms: 2000, user_id: 'U1' },
+      { contents: 'first', start_time_ms: 1000, user_id: 'U1' },
+      { contents: '   ', start_time_ms: 2500, user_id: 'U2' },
+      { contents: 'unattributed', start_time_ms: 3000 },
+    ];
+    expect(huddleLinesToTranscript(lines, (id) => `name-${id}`)).toBe(
+      'name-U1: first second\nUnknown: unattributed',
+    );
   });
 
   it('strips canvas HTML to readable text', () => {
