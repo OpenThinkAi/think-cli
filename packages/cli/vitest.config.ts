@@ -11,7 +11,9 @@ export default defineConfig({
     // inheritance alone, and the run-scoped sentinel check has nowhere else
     // to live. See tests/setup/home-isolation.ts for the full rationale.
     globalSetup: ['./tests/setup/global-home-isolation.ts'],
-    setupFiles: ['./tests/setup/home-isolation.ts'],
+    // #96: color-env.ts pins FORCE_COLOR=0 before chalk loads so exact-string
+    // output assertions hold whatever colour env the caller's shell exports.
+    setupFiles: ['./tests/setup/color-env.ts', './tests/setup/home-isolation.ts'],
     testTimeout: 15000,
     pool: 'forks',
     // #67: the full suite is a required check on every `stamp merge`, and the
