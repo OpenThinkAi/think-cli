@@ -6,9 +6,11 @@ import {
   getPendingRetros,
   getPromotedRetrosForRelegation,
   mergeRetro,
+  recordDedupeJudgments,
   setRetroPromoted,
   recordCuratorRun,
   runsSince,
+  type RetroDedupeJudgmentRecord,
 } from '../db/retro-queries.js';
 import {
   getCandidatePairs,
@@ -79,6 +81,8 @@ Storage contract:
   merge  — semantically equivalent pairs are deduplicated: the older entry
            becomes canonical (occurrences++), the newer is tombstoned with
            tombstone_reason="merged_into:<id>". Both rows remain in storage.
+           Each pair's verdict is remembered, so a pair is only sent to the
+           model again once either retro changes.
 
   promote — a retro whose composite value signal clears the promote
            threshold is marked promoted=1, making it eligible for surfacing
@@ -217,6 +221,33 @@ export async function runCurationPasses(
     const prompt = assembleRetroDedupePrompt(candidatePairs);
     const judgments = await runRetroDedupe(prompt);
 
+    const findPair = (judgment: { a: string; b: string }) =>
+      candidatePairs.find(
+        p =>
+          (p.a.id === judgment.a && p.b.id === judgment.b) ||
+          (p.a.id === judgment.b && p.b.id === judgment.a),
+      );
+
+    // #97: persist every verdict (equivalent or not) against the content that
+    // was judged, so the next run's candidate builder skips these pairs until
+    // either side changes. Only verdicts for pairs we actually sent are kept;
+    // a pair the model left out stays unjudged and is retried next run.
+    if (!dryRun) {
+      const toRecord: RetroDedupeJudgmentRecord[] = [];
+      for (const judgment of judgments) {
+        const pair = findPair(judgment);
+        if (!pair) continue;
+        toRecord.push({
+          aId: pair.a.id,
+          aContent: pair.a.content,
+          bId: pair.b.id,
+          bContent: pair.b.content,
+          equivalent: judgment.equivalent,
+        });
+      }
+      recordDedupeJudgments(cortex, toRecord);
+    }
+
     // Track in-memory occurrence deltas so a canonical absorbing multiple duplicates
     // in one pass logs the correct count even before the DB is re-read.
     const occurrenceDelta = new Map<string, number>();
@@ -224,11 +255,7 @@ export async function runCurationPasses(
     for (const judgment of judgments) {
       if (!judgment.equivalent) continue;
 
-      const pair = candidatePairs.find(
-        p =>
-          (p.a.id === judgment.a && p.b.id === judgment.b) ||
-          (p.a.id === judgment.b && p.b.id === judgment.a),
-      );
+      const pair = findPair(judgment);
       if (!pair) continue;
 
       // Older-by-created_at is canonical
@@ -252,6 +279,8 @@ export async function runCurationPasses(
       }
       mergeCount++;
     }
+  } else {
+    logger.detail('  (no dedupe candidates: no new or changed retro pairs since they were last judged)');
   }
 
   // 2. Promotion pass: re-fetch after dedupe (occurrences may have changed), then promote

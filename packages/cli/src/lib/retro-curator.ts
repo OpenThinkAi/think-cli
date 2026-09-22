@@ -1,7 +1,12 @@
 import type { LlmClient, LlmJsonSchema } from './llm/client.js';
 import { getDefaultLlmClient, OP_RETRO_DEDUPE } from './llm/router.js';
 import { getCortexDb } from '../db/engrams.js';
-import { getPendingRetros } from '../db/retro-queries.js';
+import {
+  getDedupeJudgmentHashes,
+  getPendingRetros,
+  retroContentHash,
+  retroPairKey,
+} from '../db/retro-queries.js';
 import { wrapData } from './sanitize.js';
 import type { RetroRow } from '../db/retro-queries.js';
 
@@ -42,9 +47,33 @@ function extractFtsQuery(content: string): string {
   return tokens.length > 0 ? tokens.join(' OR ') : '';
 }
 
+/**
+ * Builds this run's dedupe candidates: FTS top-K neighbours of every live
+ * retro, one entry per unordered pair, capped at MAX_PAIRS_PER_RUN.
+ *
+ * #97: a pair already judged (either verdict) is skipped while both retros
+ * still hash to the content that was judged, so a cortex with no new or
+ * edited retros yields no candidates and makes no LLM call. A new retro forms
+ * new pairs, and an edit to either side invalidates the stored verdict, so
+ * both re-enter the set. Skipped pairs do not count toward the per-run cap.
+ */
 export function getCandidatePairs(cortexName: string): DedupeCandidate[] {
   const db = getCortexDb(cortexName);
   const pending = getPendingRetros(cortexName);
+  const judged = getDedupeJudgmentHashes(cortexName);
+  const hashById = new Map<string, string>();
+  const hashOf = (r: RetroRow): string => {
+    let h = hashById.get(r.id);
+    if (h === undefined) {
+      h = retroContentHash(r.content);
+      hashById.set(r.id, h);
+    }
+    return h;
+  };
+  const alreadyJudged = (key: string, a: RetroRow, b: RetroRow): boolean => {
+    const hashes = judged.get(key);
+    return hashes !== undefined && hashes.get(a.id) === hashOf(a) && hashes.get(b.id) === hashOf(b);
+  };
   const seen = new Set<string>();
   const pairs: DedupeCandidate[] = [];
 
@@ -70,9 +99,10 @@ export function getCandidatePairs(cortexName: string): DedupeCandidate[] {
     }
 
     for (const match of matches) {
-      const key = [retro.id, match.id].sort().join('|');
+      const key = retroPairKey(retro.id, match.id);
       if (seen.has(key)) continue;
       seen.add(key);
+      if (alreadyJudged(key, retro, match)) continue;
       pairs.push({ a: retro, b: match });
       if (pairs.length >= MAX_PAIRS_PER_RUN) break;
     }

@@ -1,3 +1,4 @@
+import crypto from 'node:crypto';
 import { v7 as uuidv7 } from 'uuid';
 import { getCortexDb } from './engrams.js';
 import { getPeerId } from '../lib/config.js';
@@ -203,6 +204,82 @@ export function runsSince(cortexName: string, since: string): number {
     'SELECT COUNT(*) as count FROM retro_curator_runs WHERE run_at > ?'
   ).get(since) as { count: number };
   return result.count;
+}
+
+/**
+ * Content identity of a retro for dedupe-judgment bookkeeping (#97): the
+ * sha256 of its content. A stored judgment only stands while both sides still
+ * hash to what was judged.
+ */
+export function retroContentHash(content: string): string {
+  return crypto.createHash('sha256').update(content).digest('hex');
+}
+
+/** A persisted dedupe verdict for one retro pair (migration v20, #97). */
+export interface RetroDedupeJudgmentRecord {
+  aId: string;
+  aContent: string;
+  bId: string;
+  bContent: string;
+  equivalent: boolean;
+}
+
+/** Canonical key for an unordered retro pair: the two ids, sorted, joined by '|'. */
+export function retroPairKey(idA: string, idB: string): string {
+  return idA < idB ? `${idA}|${idB}` : `${idB}|${idA}`;
+}
+
+/**
+ * Returns the stored dedupe judgments as pairKey → the content hash each
+ * retro id carried when the pair was judged. Callers compare against current
+ * content to decide whether the verdict still stands.
+ */
+export function getDedupeJudgmentHashes(cortexName: string): Map<string, Map<string, string>> {
+  const db = getCortexDb(cortexName);
+  const rows = db.prepare(
+    'SELECT retro_a, retro_b, hash_a, hash_b FROM retro_dedupe_judgments'
+  ).all() as { retro_a: string; retro_b: string; hash_a: string; hash_b: string }[];
+  const out = new Map<string, Map<string, string>>();
+  for (const r of rows) {
+    out.set(retroPairKey(r.retro_a, r.retro_b), new Map([[r.retro_a, r.hash_a], [r.retro_b, r.hash_b]]));
+  }
+  return out;
+}
+
+/**
+ * Persists dedupe verdicts (equivalent and not-equivalent) with the content
+ * hash of each side, replacing any earlier verdict for the same pair. Written
+ * in one transaction so a run's judgments land together or not at all.
+ */
+export function recordDedupeJudgments(cortexName: string, judgments: RetroDedupeJudgmentRecord[]): void {
+  if (judgments.length === 0) return;
+  const db = getCortexDb(cortexName);
+  const now = new Date().toISOString();
+
+  db.exec('BEGIN');
+  try {
+    const stmt = db.prepare(
+      `INSERT OR REPLACE INTO retro_dedupe_judgments (retro_a, retro_b, hash_a, hash_b, equivalent, judged_at)
+       VALUES (?, ?, ?, ?, ?, ?)`
+    );
+    for (const j of judgments) {
+      const [first, second] = j.aId < j.bId
+        ? [{ id: j.aId, content: j.aContent }, { id: j.bId, content: j.bContent }]
+        : [{ id: j.bId, content: j.bContent }, { id: j.aId, content: j.aContent }];
+      stmt.run(
+        first.id,
+        second.id,
+        retroContentHash(first.content),
+        retroContentHash(second.content),
+        j.equivalent ? 1 : 0,
+        now,
+      );
+    }
+    db.exec('COMMIT');
+  } catch (err) {
+    db.exec('ROLLBACK');
+    throw err;
+  }
 }
 
 export interface SearchRetrosParams {
