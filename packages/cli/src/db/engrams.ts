@@ -465,6 +465,37 @@ export const migrations: Migration[] = [
       db.exec('DROP TABLE IF EXISTS longterm_summary;');
     },
   },
+  {
+    version: 20,
+    up: (db) => {
+      // #97: persisted retro dedupe judgments. The curator rebuilds its FTS
+      // candidate pairs from every live retro on each run, so without a record
+      // of past verdicts a quiescent cortex paid an LLM dedupe call every
+      // curation interval, re-judging the same pairs forever.
+      //
+      // One row per unordered retro pair: retro_a < retro_b (ids sorted), so a
+      // pair has exactly one key whichever side the FTS walk found first.
+      // hash_a / hash_b are the sha256 of each retro's content at judging
+      // time; a pair whose current hashes differ from the stored ones is
+      // treated as unjudged and re-enters the candidate set. `equivalent`
+      // records the verdict (1/0) for both outcomes — a not-equivalent pair
+      // is the one that used to be re-sent every run.
+      //
+      // Local-only curator state: never synced, safe to drop and rebuild (the
+      // worst case is one re-judgment of each live pair).
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS retro_dedupe_judgments (
+          retro_a TEXT NOT NULL,
+          retro_b TEXT NOT NULL,
+          hash_a TEXT NOT NULL,
+          hash_b TEXT NOT NULL,
+          equivalent INTEGER NOT NULL,
+          judged_at TEXT NOT NULL,
+          PRIMARY KEY (retro_a, retro_b)
+        ) STRICT;
+      `);
+    },
+  },
 ];
 
 /** Returns the per-cortex SQLite connection (holds engrams, memories, and sync_cursors tables) */
