@@ -22,7 +22,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Command } from 'commander';
-import { retroCommand } from '../../src/commands/retro.js';
+import { makeRetroCommand } from '../../src/commands/retro.js';
 import { getCortexDb, closeAllCortexDbs } from '../../src/db/engrams.js';
 import * as daemonClientModule from '../../src/lib/daemon-client.js';
 import { DaemonUnavailableError } from '../../src/lib/daemon-client.js';
@@ -32,7 +32,7 @@ import * as workingContext from '../../src/lib/working-context.js';
 function makeProgram(): Command {
   const prog = new Command();
   prog.option('-C, --cortex <name>', 'Use a specific cortex for this command');
-  prog.addCommand(retroCommand);
+  prog.addCommand(makeRetroCommand());
   return prog;
 }
 
@@ -379,5 +379,65 @@ describe('think retro — v3 locality', () => {
 
     const output = (console.log as ReturnType<typeof vi.fn>).mock.calls.flat().join('\n');
     expect(output).toContain('queued retro queue-id');
+  });
+
+  // think-cli#98 / AGT-1331: retro accepts --silent like sync and event.
+  it('--silent stores the retro with no stdout output and exits 0', async () => {
+    const mockClient = makeMockClient({ warnings: ['near-duplicate check running'] });
+    vi.spyOn(daemonClientModule, 'connectDaemon').mockResolvedValue(mockClient);
+
+    const prog = makeProgram();
+    await prog.parseAsync([
+      'node', 'think', '-C', 'silent-retro', 'retro',
+      'silent retros still land on the home cortex', '--silent',
+    ]);
+
+    expect(mockClient.call).toHaveBeenCalledOnce();
+    expect((mockClient.call.mock.calls[0][1] as Record<string, unknown>).kind).toBe('retro');
+    expect((console.log as ReturnType<typeof vi.fn>).mock.calls.length).toBe(0);
+    expect(process.exitCode).toBeFalsy();
+  });
+
+  it('--silent on the daemon-down path writes to L1 and still emits the stderr note (#95)', async () => {
+    vi.spyOn(daemonClientModule, 'connectDaemon').mockRejectedValue(
+      new DaemonUnavailableError('daemon failed to start', '/tmp/think/daemon.log'),
+    );
+    const stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+
+    const cortex = 'silent-retro-down';
+    const prog = makeProgram();
+    await prog.parseAsync([
+      'node', 'think', '-C', cortex, 'retro',
+      'a silent retro written while the daemon is down still reaches L1', '--silent',
+    ]);
+
+    expect(process.exitCode).toBeFalsy();
+    const db = getCortexDb(cortex);
+    const row = db.prepare('SELECT line FROM l1_outbox LIMIT 1').get() as { line: string } | undefined;
+    expect(row).toBeDefined();
+    expect((JSON.parse(row!.line) as Record<string, unknown>).kind).toBe('retro');
+    expect((console.log as ReturnType<typeof vi.fn>).mock.calls.length).toBe(0);
+    const stderr = stderrSpy.mock.calls.flat().join('');
+    expect(stderr).toContain('daemon unavailable');
+    expect(stderr).toContain('indexed on next daemon start');
+  });
+
+  it('--silent does not hide a daemon refusal', async () => {
+    const client = {
+      call: vi.fn().mockRejectedValue(new Error('retro rejected: content is too short')),
+      close: vi.fn(),
+    };
+    vi.spyOn(daemonClientModule, 'connectDaemon').mockResolvedValue(client);
+
+    const prog = makeProgram();
+    await prog.parseAsync(['node', 'think', '-C', 'silent-refusal', 'retro', 'too short', '--silent']);
+
+    expect(process.exitCode).toBe(1);
+    const errOutput = (console.error as ReturnType<typeof vi.fn>).mock.calls.flat().join('\n');
+    expect(errOutput).toContain('retro rejected');
+  });
+
+  it('--help lists --silent', () => {
+    expect(makeRetroCommand().helpInformation()).toContain('--silent');
   });
 });
