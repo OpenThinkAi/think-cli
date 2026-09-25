@@ -10,6 +10,8 @@
  * Flags:
  *   --cortex <name>     Override active cortex (retros may target any cortex)
  *   --topic <topic>     Attach a topic tag (repeatable); passed through to daemon
+ *   --silent            Suppress stdout output, like `think sync` / `think event`
+ *                       (the daemon-unreachable note still goes to stderr)
  *
  * v2 `think retro add` and `think retro recall` subcommands are removed
  * per AGT-294 AC #5 (clean break). The v2 retro-curator (`think curate-retros`)
@@ -62,12 +64,18 @@ function stripControls(s: unknown): string {
 // Command
 // ---------------------------------------------------------------------------
 
-export const retroCommand = addWriteOptions(new Command('retro')
-  .description('Record a durable lesson onto your home cortex, tagged by repo context')
-  .argument('<content>', 'The observation to record'))
-  .option('--force', 'Bypass the write-time quality gate (length floor + junk-shape check)')
-  .option('--context <name>', 'Context this lesson is about (default: the git repo you are in)')
-  .addHelpText('after', `
+// Factory returns a fresh Command instance per call. Tests build a new program
+// per test and need an unparented retro command (and no option values left over
+// from a previous parse); production calls it once via the retroCommand
+// singleton below.
+export function makeRetroCommand(): Command {
+  return addWriteOptions(new Command('retro')
+    .description('Record a durable lesson onto your home cortex, tagged by repo context')
+    .argument('<content>', 'The observation to record'))
+    .option('--force', 'Bypass the write-time quality gate (length floor + junk-shape check)')
+    .option('--context <name>', 'Context this lesson is about (default: the git repo you are in)')
+    .option('--silent', 'Suppress output (the daemon-unreachable note still goes to stderr)')
+    .addHelpText('after', `
 Requirements:
   Routes through the think daemon (start it with: think daemon start). With the
   daemon down the retro is still written — to L1, and indexed into recall when
@@ -104,170 +112,177 @@ Examples:
   think retro "users hate the modal" --topic ux
   think retro "strategy engine type contracts are undocumented" --context fx-tracker
   think -C engineering retro "always run migrations in a transaction"
+  think retro "lesson logged by an agent hook" --silent
 `)
-  .action(async function (this: Command, content: string, opts: { topic: string[]; cortex?: string; context?: string; force?: boolean }) {
+    .action(async function (this: Command, content: string, opts: { topic: string[]; cortex?: string; context?: string; force?: boolean; silent?: boolean }) {
 
-    // Guard against v2 muscle memory: "think retro add <obs>" or
-    // "think retro recall" — the former would silently write "add" as the
-    // retro content; the latter would write "recall". Both are silent-corruption
-    // footguns. Print a targeted migration message instead.
-    if (content === 'add') {
-      console.error(chalk.red('think retro: "add" is no longer a subcommand.'));
-      console.error(chalk.yellow('  v3 usage: think retro "<your observation>"   (context auto-detected)'));
-      console.error(chalk.yellow('  (drop "add" — the content is now the first positional argument)'));
-      process.exitCode = 1;
-      return;
-    }
-    if (content === 'recall') {
-      console.error(chalk.red('think retro: "recall" is no longer a subcommand.'));
-      console.error(chalk.yellow('  To read retros, use: think recall --kind retro [--topic repo:<context>]'));
-      process.exitCode = 1;
-      return;
-    }
-
-    const { topics } = extractWriteOpts(opts);
-    const config = getConfig();
-
-    // ── Storage cortex (the user's home/team) ────────────────────────────────
-    // v3 reverses the old "retros require --cortex and live on a per-context
-    // branch" rule. Storage is now the home cortex: the global `-C`/`--cortex`
-    // (read from the parent program opts), else the active cortex from config.
-    //
-    // Note: `--cortex` is both a program-global (`-C`) and a command-local
-    // option (from addWriteOptions), but commander routes the long name to the
-    // program option in every position, so `this.parent.opts().cortex` is the
-    // single source of truth and the command-local copy is never populated.
-    // `--cortex`/`-C` therefore means storage only; use `--context` for the
-    // repo tag.
-    const globalCortex = (this.parent?.opts() as { cortex?: string } | undefined)?.cortex;
-    const storageCortex = globalCortex ?? config.cortex?.active;
-
-    if (!storageCortex) {
-      console.error(chalk.red('think retro: no home cortex set.'));
-      console.error(chalk.red('Set one with: think cortex switch <name>   or pass: think -C <name> retro "..."'));
-      process.exitCode = 1;
-      return;
-    }
-
-    // ── Context tag (what the lesson is about) ────────────────────────────────
-    // Precedence: explicit --context  >  the git repo we're in (auto)  >  none
-    // (untagged "global" lesson).
-    const context: string | null = opts.context
-      ? normalizeContext(opts.context)
-      : detectWorkingContext();
-
-    // Fold the context into the topics as a reserved 'repo:<context>' tag so it
-    // rides the existing topics_json column + recall topic filter (AGT-320).
-    const baseTopics = topics ?? [];
-    const finalTopics = context ? [...baseTopics, contextTopic(context)] : baseTopics;
-
-    /**
-     * Degraded write — the daemon could not be reached (AGT-1298).
-     *
-     * The retro is enqueued to the cortex's l1_outbox with kind="retro"
-     * intact; the daemon drains it into L1 and indexes it into L2 on its next
-     * start. The near-duplicate fold needs an embedding so it cannot run here
-     * — the entry is indexed as a fresh retro and `think curate-retros` merges
-     * duplicates later. Sets a non-zero exit code if the entry cannot be made
-     * durable.
-     */
-    const writeRetroToL1WhileDaemonDown = (connectErr: unknown): void => {
-      // The content-only half of the AGT-455 intake gate still runs, so a junk
-      // retro cannot walk past it just because the daemon happened to be down.
-      try {
-        validateRetroContent(content, opts.force === true);
-      } catch (gateErr: unknown) {
-        const msg = gateErr instanceof Error ? gateErr.message : String(gateErr);
-        console.error(chalk.red(`think retro: ${stripControls(msg)}`));
+      // Guard against v2 muscle memory: "think retro add <obs>" or
+      // "think retro recall" — the former would silently write "add" as the
+      // retro content; the latter would write "recall". Both are silent-corruption
+      // footguns. Print a targeted migration message instead.
+      if (content === 'add') {
+        console.error(chalk.red('think retro: "add" is no longer a subcommand.'));
+        console.error(chalk.yellow('  v3 usage: think retro "<your observation>"   (context auto-detected)'));
+        console.error(chalk.yellow('  (drop "add" — the content is now the first positional argument)'));
+        process.exitCode = 1;
+        return;
+      }
+      if (content === 'recall') {
+        console.error(chalk.red('think retro: "recall" is no longer a subcommand.'));
+        console.error(chalk.yellow('  To read retros, use: think recall --kind retro [--topic repo:<context>]'));
         process.exitCode = 1;
         return;
       }
 
-      let written: { id: string; ts: string };
-      try {
-        written = writeDaemonDownEntry({
-          cortex: storageCortex,
-          content,
-          kind: 'retro',
-          topics: finalTopics.length > 0 ? finalTopics : undefined,
-        });
-      } catch (writeErr: unknown) {
-        const msg = writeErr instanceof Error ? writeErr.message : String(writeErr);
-        console.error(chalk.red('think retro: daemon unavailable and the L1 write failed.'));
-        console.error(chalk.red(`  ${stripControls(msg)}`));
-        if (connectErr instanceof DaemonUnavailableError) {
-          console.error(chalk.dim(`  (daemon log: ${stripControls(connectErr.logPath)})`));
-        }
+      const { topics } = extractWriteOpts(opts);
+      const config = getConfig();
+
+      // ── Storage cortex (the user's home/team) ────────────────────────────────
+      // v3 reverses the old "retros require --cortex and live on a per-context
+      // branch" rule. Storage is now the home cortex: the global `-C`/`--cortex`
+      // (read from the parent program opts), else the active cortex from config.
+      //
+      // Note: `--cortex` is both a program-global (`-C`) and a command-local
+      // option (from addWriteOptions), but commander routes the long name to the
+      // program option in every position, so `this.parent.opts().cortex` is the
+      // single source of truth and the command-local copy is never populated.
+      // `--cortex`/`-C` therefore means storage only; use `--context` for the
+      // repo tag.
+      const globalCortex = (this.parent?.opts() as { cortex?: string } | undefined)?.cortex;
+      const storageCortex = globalCortex ?? config.cortex?.active;
+
+      if (!storageCortex) {
+        console.error(chalk.red('think retro: no home cortex set.'));
+        console.error(chalk.red('Set one with: think cortex switch <name>   or pass: think -C <name> retro "..."'));
         process.exitCode = 1;
         return;
       }
 
-      // Printed unconditionally, exactly as the daemon path below does:
-      // `think retro` has no --silent flag (unlike sync/event), so there is no
-      // quiet mode to respect here. Add the guard to BOTH sites if one ever
-      // lands, or the degraded path starts talking when the live one does not.
-      const ctxTag = context ? chalk.dim(` (context: ${context})`) : chalk.dim(' (untagged — not in a git repo)');
-      const badge = chalk.cyan(`[${storageCortex}]`) + ctxTag;
-      const excerpt = content.length > 60 ? content.slice(0, 60) + '…' : content;
-      console.log(`${chalk.green('✓')} ${badge} stored retro ${written.id}`);
-      console.log(`  ${excerpt}`);
-    };
+      // ── Context tag (what the lesson is about) ────────────────────────────────
+      // Precedence: explicit --context  >  the git repo we're in (auto)  >  none
+      // (untagged "global" lesson).
+      const context: string | null = opts.context
+        ? normalizeContext(opts.context)
+        : detectWorkingContext();
 
-    // Connecting and calling are caught separately on purpose: a daemon we
-    // could not REACH degrades to an L1 write (AGT-1298), while a daemon that
-    // answered and refused (e.g. the AGT-455 quality gate) is a real refusal —
-    // routing around it would defeat the gate.
-    let client: Awaited<ReturnType<typeof connectDaemon>>;
-    try {
-      client = await connectDaemon();
-    } catch (err: unknown) {
-      writeRetroToL1WhileDaemonDown(err);
-      return;
-    }
+      // Fold the context into the topics as a reserved 'repo:<context>' tag so it
+      // rides the existing topics_json column + recall topic filter (AGT-320).
+      const baseTopics = topics ?? [];
+      const finalTopics = context ? [...baseTopics, contextTopic(context)] : baseTopics;
 
-    try {
-      let result: DaemonSyncResult;
-      try {
-        result = await client.call('sync', {
-          cortex: storageCortex,
-          content,
-          kind: 'retro',
-          ...(finalTopics.length > 0 ? { topics: finalTopics } : {}),
-          ...(opts.force ? { force: true } : {}),
-        }) as DaemonSyncResult;
-      } finally {
-        try { client.close(); } catch { /* best-effort */ }
-      }
-
-      const safeEntryId = stripControls(result.entry_id);
-      const ctxTag = context ? chalk.dim(` (context: ${context})`) : chalk.dim(' (untagged — not in a git repo)');
-      const badge = chalk.cyan(`[${storageCortex}]`) + ctxTag;
-      const excerpt = content.length > 60 ? content.slice(0, 60) + '…' : content;
-      if (result.folded) {
-        // AGT-455: the write was a near-duplicate of an existing retro and was
-        // folded into it (occurrences++). entry_id is the existing canonical row.
-        console.log(`${chalk.green('✓')} ${badge} folded into existing retro ${safeEntryId} (near-duplicate)`);
-      } else if (result.status === 'queued') {
-        console.log(`${chalk.yellow('⏳')} ${badge} queued retro ${safeEntryId}`);
-      } else {
-        console.log(`${chalk.green('✓')} ${badge} stored retro ${safeEntryId}`);
-      }
-      console.log(`  ${excerpt}`);
-
-      if (Array.isArray(result.warnings) && result.warnings.length > 0) {
-        for (const w of result.warnings) {
-          console.log(chalk.dim(`  note: ${stripControls(w)}`));
+      /**
+       * Degraded write — the daemon could not be reached (AGT-1298).
+       *
+       * The retro is enqueued to the cortex's l1_outbox with kind="retro"
+       * intact; the daemon drains it into L1 and indexes it into L2 on its next
+       * start. The near-duplicate fold needs an embedding so it cannot run here
+       * — the entry is indexed as a fresh retro and `think curate-retros` merges
+       * duplicates later. Sets a non-zero exit code if the entry cannot be made
+       * durable.
+       */
+      const writeRetroToL1WhileDaemonDown = (connectErr: unknown): void => {
+        // The content-only half of the AGT-455 intake gate still runs, so a junk
+        // retro cannot walk past it just because the daemon happened to be down.
+        try {
+          validateRetroContent(content, opts.force === true);
+        } catch (gateErr: unknown) {
+          const msg = gateErr instanceof Error ? gateErr.message : String(gateErr);
+          console.error(chalk.red(`think retro: ${stripControls(msg)}`));
+          process.exitCode = 1;
+          return;
         }
+
+        let written: { id: string; ts: string };
+        try {
+          written = writeDaemonDownEntry({
+            cortex: storageCortex,
+            content,
+            kind: 'retro',
+            topics: finalTopics.length > 0 ? finalTopics : undefined,
+          });
+        } catch (writeErr: unknown) {
+          const msg = writeErr instanceof Error ? writeErr.message : String(writeErr);
+          console.error(chalk.red('think retro: daemon unavailable and the L1 write failed.'));
+          console.error(chalk.red(`  ${stripControls(msg)}`));
+          if (connectErr instanceof DaemonUnavailableError) {
+            console.error(chalk.dim(`  (daemon log: ${stripControls(connectErr.logPath)})`));
+          }
+          process.exitCode = 1;
+          return;
+        }
+
+        // --silent is honoured here exactly as on the daemon path below, so the
+        // degraded path never talks when the live one does not. The
+        // daemon-unreachable note is NOT gated: writeDaemonDownEntry already
+        // emitted it on stderr unconditionally (think-cli#95 / AGT-1298 AC3).
+        if (opts.silent) return;
+        const ctxTag = context ? chalk.dim(` (context: ${context})`) : chalk.dim(' (untagged — not in a git repo)');
+        const badge = chalk.cyan(`[${storageCortex}]`) + ctxTag;
+        const excerpt = content.length > 60 ? content.slice(0, 60) + '…' : content;
+        console.log(`${chalk.green('✓')} ${badge} stored retro ${written.id}`);
+        console.log(`  ${excerpt}`);
+      };
+
+      // Connecting and calling are caught separately on purpose: a daemon we
+      // could not REACH degrades to an L1 write (AGT-1298), while a daemon that
+      // answered and refused (e.g. the AGT-455 quality gate) is a real refusal —
+      // routing around it would defeat the gate.
+      let client: Awaited<ReturnType<typeof connectDaemon>>;
+      try {
+        client = await connectDaemon();
+      } catch (err: unknown) {
+        writeRetroToL1WhileDaemonDown(err);
+        return;
       }
-    } catch (err: unknown) {
-      // The daemon answered and refused (or the response was malformed). Not a
-      // reachability problem — surfaced, not routed around.
-      const msg = err instanceof Error ? err.message : String(err);
-      const cleaned = stripControls(msg);
-      // Generous cap so git's remediation hint (e.g. "Please commit your
-      // changes or stash them…") survives instead of being cut mid-sentence (#69).
-      const display = cleaned.length > 1000 ? cleaned.slice(0, 1000) + '…' : cleaned;
-      console.error(chalk.red(`think retro: daemon error — ${display}`));
-      process.exitCode = 1;
-    }
-  });
+
+      try {
+        let result: DaemonSyncResult;
+        try {
+          result = await client.call('sync', {
+            cortex: storageCortex,
+            content,
+            kind: 'retro',
+            ...(finalTopics.length > 0 ? { topics: finalTopics } : {}),
+            ...(opts.force ? { force: true } : {}),
+          }) as DaemonSyncResult;
+        } finally {
+          try { client.close(); } catch { /* best-effort */ }
+        }
+
+        if (opts.silent) return;
+
+        const safeEntryId = stripControls(result.entry_id);
+        const ctxTag = context ? chalk.dim(` (context: ${context})`) : chalk.dim(' (untagged — not in a git repo)');
+        const badge = chalk.cyan(`[${storageCortex}]`) + ctxTag;
+        const excerpt = content.length > 60 ? content.slice(0, 60) + '…' : content;
+        if (result.folded) {
+          // AGT-455: the write was a near-duplicate of an existing retro and was
+          // folded into it (occurrences++). entry_id is the existing canonical row.
+          console.log(`${chalk.green('✓')} ${badge} folded into existing retro ${safeEntryId} (near-duplicate)`);
+        } else if (result.status === 'queued') {
+          console.log(`${chalk.yellow('⏳')} ${badge} queued retro ${safeEntryId}`);
+        } else {
+          console.log(`${chalk.green('✓')} ${badge} stored retro ${safeEntryId}`);
+        }
+        console.log(`  ${excerpt}`);
+
+        if (Array.isArray(result.warnings) && result.warnings.length > 0) {
+          for (const w of result.warnings) {
+            console.log(chalk.dim(`  note: ${stripControls(w)}`));
+          }
+        }
+      } catch (err: unknown) {
+        // The daemon answered and refused (or the response was malformed). Not a
+        // reachability problem — surfaced, not routed around.
+        const msg = err instanceof Error ? err.message : String(err);
+        const cleaned = stripControls(msg);
+        // Generous cap so git's remediation hint (e.g. "Please commit your
+        // changes or stash them…") survives instead of being cut mid-sentence (#69).
+        const display = cleaned.length > 1000 ? cleaned.slice(0, 1000) + '…' : cleaned;
+        console.error(chalk.red(`think retro: daemon error — ${display}`));
+        process.exitCode = 1;
+      }
+    });
+}
+
+export const retroCommand = makeRetroCommand();
