@@ -58,7 +58,7 @@
     "zod": "^4.4.1"
   },
   "optionalDependencies": {
-    "@huggingface/transformers": "4.2.0"
+    "@huggingface/transformers": "4.3.0"
   },
   "devDependencies": {
     "@types/node": "^22.14.1",
