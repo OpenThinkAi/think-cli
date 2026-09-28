@@ -4,8 +4,9 @@
 
 ## [3.1.1] — 2026-09-27
 
-Two fixes. `think retro` accepts `--silent` like `think sync` and `think event`, and the
-retro curator stops paying an LLM dedupe call every interval for pairs it has already judged.
+Two fixes, both detailed under Fixed below: `think retro` accepts `--silent` like `think sync`
+and `think event` (#98), and the retro curator stops paying an LLM dedupe call every interval
+for pairs it has already judged (#97).
 The curator fix adds local schema migration v20, which runs automatically on first use.
 
 ### Fixed
