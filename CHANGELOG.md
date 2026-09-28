@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+## [3.1.1] — 2026-09-27
+
+Two fixes, both detailed under Fixed below: `think retro` accepts `--silent` like `think sync`
+and `think event` (#98), and the retro curator stops paying an LLM dedupe call every interval
+for pairs it has already judged (#97).
+The curator fix adds local schema migration v20, which runs automatically on first use.
+
 ### Fixed
 
 - **The retro curator no longer re-judges dedupe pairs it has already judged.** The candidate pairs were rebuilt from every live retro on each run and no verdict was ever kept, so any cortex holding two similar retros paid an LLM dedupe call every curation interval (6h by default) indefinitely, even when nothing had changed in months. Verdicts, equivalent or not, are now stored per retro pair with a hash of each side's content (new local table `retro_dedupe_judgments`, schema migration v20). A pair is only sent again when a new retro forms it or either side's content changes, so a quiet cortex makes no dedupe call and logs `(no dedupe candidates: ...)` instead. The table is local curator state: it is not synced, and existing cortexes judge each live pair once more after upgrading. (#97)
