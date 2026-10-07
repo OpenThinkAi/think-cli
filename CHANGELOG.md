@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [3.1.2] — 2026-10-06
+
+A security patch: the dependency pass below clears every open `npm audit` advisory
+(18 → 0, including 1 critical and 9 high). No behavior changes; embeddings are
+unchanged, so existing vector indexes stay valid.
+
 ### Security
 
 - **Dependency pass resolving every open `npm audit` advisory (18 → 0: 1 critical, 9 high, 8 moderate).** Semver-compatible fixes via `npm audit fix` for transitives under `@modelcontextprotocol/sdk`, `tsup` and `vitest` (`proxy-addr` IPv4-mapped IPv6 trust bypass, `fast-uri`, `nanoid`, `source-map-js`, `qs`, `ip-address`), plus raised floors on the direct dependencies still on advisory ranges: `undici` ^7.30.0 (ten advisories incl. the BalancedPool TLS-validation bypass and WebSocket DoS), `hono` ^4.13.13, `@modelcontextprotocol/sdk` ^1.32.1 and `vitest` ^4.1.11 (fixes `@vitest/mocker`).
