@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### Security
+
+- **Dependency pass resolving every open `npm audit` advisory (18 → 0: 1 critical, 9 high, 8 moderate).** Semver-compatible fixes via `npm audit fix` for transitives under `@modelcontextprotocol/sdk`, `tsup` and `vitest` (`proxy-addr` IPv4-mapped IPv6 trust bypass, `fast-uri`, `nanoid`, `source-map-js`, `qs`, `ip-address`), plus raised floors on the direct dependencies still on advisory ranges: `undici` ^7.30.0 (ten advisories incl. the BalancedPool TLS-validation bypass and WebSocket DoS), `hono` ^4.13.13, `@modelcontextprotocol/sdk` ^1.32.1 and `vitest` ^4.1.11 (fixes `@vitest/mocker`).
+- **`@huggingface/transformers` 4.2.0 → 4.3.1 (optional dependency, still pinned exact).** This closes the `adm-zip` (decompression-bomb bypass, SUID/SGID preservation), `sharp`/libvips/libheif/librsvg, `onnxruntime-node` and `sprintf-js`/`roarr`/`global-agent` advisories that the 2.5.1 pass left known-open, via `onnxruntime-node` 1.30.0 (`adm-zip` 0.6.1) and `sharp` 0.35.5. Embeddings for `Xenova/bge-small-en-v1.5` are unchanged (cosine 1.0 against 4.2.0 output), so existing vector indexes stay valid. The root `onnxruntime-web` 1.26.0 stable pin is kept.
+
 ## [3.1.1] — 2026-09-27
 
 Two fixes, both detailed under Fixed below: `think retro` accepts `--silent` like `think sync`
