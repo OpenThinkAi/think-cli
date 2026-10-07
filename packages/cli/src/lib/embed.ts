@@ -52,7 +52,7 @@ function onProgress(info: ProgressInfo): void {
   }
 }
 
-const NOT_INSTALLED_HINT = '@huggingface/transformers is an optional dependency. Install it to enable semantic features: `npm install @huggingface/transformers@4.2.0`';
+const NOT_INSTALLED_HINT = '@huggingface/transformers is an optional dependency. Install it to enable semantic features: `npm install @huggingface/transformers@4.3.1`';
 
 async function loadTransformersModule(): Promise<typeof import('@huggingface/transformers')> {
   try {
