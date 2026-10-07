@@ -7,6 +7,9 @@
 A security patch: the dependency pass below clears every open `npm audit` advisory
 (18 → 0, including 1 critical and 9 high). No behavior changes; embeddings are
 unchanged, so existing vector indexes stay valid.
+The dependency changes themselves landed on main before this release cut, in
+commit eb45221 (merged as 5e5ef26); this release only versions them.
+`npm audit --package-lock-only` at the release head reports 0 vulnerabilities.
 
 ### Security
 
