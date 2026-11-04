@@ -23,6 +23,7 @@ import { getCortexDb } from '../../src/db/engrams.js';
 interface ProxyFixture {
   url: string;
   token: string;
+  db: Database;
   scheduler: SchedulerHandle;
   close: () => Promise<void>;
 }
@@ -55,6 +56,7 @@ async function startProxy(): Promise<ProxyFixture> {
   return {
     url,
     token,
+    db,
     scheduler,
     close: () =>
       new Promise<void>((resolve) => {
@@ -248,5 +250,33 @@ describe('think subscribe surface', () => {
     expect(logs.some((l) => l.includes(proxy.url))).toBe(true);
     expect(logs.some((l) => l.includes('redacted'))).toBe(true);
     expect(logs.every((l) => !l.includes(proxy.token))).toBe(true);
+  });
+
+  it('redact-set stores selectors on the proxy and clears them with zero paths (AGT-2337)', async () => {
+    const logs: string[] = [];
+    vi.spyOn(console, 'log').mockImplementation((line: unknown) => {
+      logs.push(String(line));
+    });
+    await run(['add', 'mock', '1', '--accept-data-flow']);
+    const idLine = logs.find((l) => l.includes('id:'))!;
+    const subId = idLine.split('id:')[1]!.trim().replace(/\x1b\[\d+m/g, '');
+    const stored = () =>
+      (proxy.db.prepare('SELECT redact_selectors FROM subscriptions WHERE id = ?').get(subId) as {
+        redact_selectors: string | null;
+      }).redact_selectors;
+
+    await run(['redact-set', subId, '$.user.email', 'headers.x-real-ip']);
+    expect(JSON.parse(stored()!)).toEqual(['$.user.email', 'headers.x-real-ip']);
+    expect(getConfig().subscriptions?.redact?.[subId]).toEqual(['$.user.email', 'headers.x-real-ip']);
+
+    await run(['redact-set', subId]);
+    expect(stored()).toBeNull();
+    expect(getConfig().subscriptions?.redact?.[subId]).toBeUndefined();
+  });
+
+  it('redact-set fails non-zero for an unknown subscription and writes no local copy', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    await expect(run(['redact-set', 'no-such-sub', '$.user.email'])).rejects.toThrow(/process\.exit\(1\)/);
+    expect(getConfig().subscriptions?.redact?.['no-such-sub']).toBeUndefined();
   });
 });

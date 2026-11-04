@@ -20,6 +20,7 @@ All success responses wrap the resource in an envelope (`{ subscription }`, `{ s
 | `DELETE` | `/v1/subscriptions/:id` | Bearer | Remove. Cascades to events **and stored credentials** for that subscription. | `204` | `404` unknown id |
 | `PUT` | `/v1/subscriptions/:id/credential` | Bearer | Store (or rotate) the encrypted credential for a subscription. Body `{ credential: string }` (must be non-empty). Encrypted with AES-256-GCM and persisted to `source_credentials`. **Returns `204` with no body** so the response leaks nothing about whether this was a create vs update. | `204` | `400` invalid/empty body; `404` unknown subscription |
 | `POST` | `/v1/subscriptions/:id/credential/test` | Bearer | Verify the stored credential by calling the connector's `verifyCredential`. Connector throws are caught and surfaced as `{ ok: false, detail: 'verify failed: ...' }` — the credential never escapes into a response or log. | `200 { ok: boolean, detail?: string }` | `404` unknown subscription **or** no credential stored (`{ error: 'no credential stored' }`); `501` connector has no `verifyCredential` |
+| `PUT` | `/v1/subscriptions/:id/redact` | Bearer | Replace the subscription's redact selectors, applied by the terminal-event curator after the baseline PII strip (see [Third-party content data flow](#third-party-content-data-flow--redact-agt-066)). Body `{ selectors: string[] }` — at most 64, each at most 256 characters, each in the supported JSONPath subset; `[]` clears them. | `200 { id, redact_selectors }` | `400` invalid body or unsupported selector; `404` unknown subscription |
 
 Two non-route status codes are reachable:
 
@@ -36,7 +37,7 @@ Comparison is constant-time (`crypto.timingSafeEqual`) — pick a long random to
 
 Single SQLite file. Path configurable via `THINK_DB_PATH` (default: `./open-think.sqlite` relative to the working directory). The file is created on first boot. Schema:
 
-- `subscriptions(id TEXT PK, kind, pattern, created_at, last_polled_at, cursor)` — `cursor` is opaque per-connector JSON (TEXT) the framework persists verbatim; each connector picks its own shape.
+- `subscriptions(id TEXT PK, kind, pattern, created_at, last_polled_at, cursor, redact_selectors)` — `cursor` is opaque per-connector JSON (TEXT) the framework persists verbatim; each connector picks its own shape. `redact_selectors` is a JSON string array (NULL = none), set by `PUT /v1/subscriptions/:id/redact`.
 - `events(id, subscription_id, payload_json, episode_key, server_seq INTEGER PK AUTOINCREMENT, created_at)` with `FOREIGN KEY (subscription_id) → subscriptions(id) ON DELETE CASCADE` and `UNIQUE(subscription_id, id)` so `INSERT OR IGNORE` safely tolerates a connector replaying ids on transient errors. `episode_key` is the connector-stamped stable identifier for the source event (e.g. `github:org/repo#536`, `linear:TEAM-123`, `meeting:<uuid>`); downstream proxy-curated memories group sibling rows under it. Index `events_episode_key_ts` on `(episode_key, created_at)` covers per-episode lookups.
 - `source_credentials(subscription_id TEXT PK, ciphertext BLOB, nonce BLOB, created_at)` with the same FK cascade off `subscriptions(id)`. AES-256-GCM (12-byte nonce, 16-byte auth tag appended to `ciphertext`). One row per subscription; `PUT /v1/subscriptions/:id/credential` upserts.
 
@@ -190,7 +191,7 @@ The payload says which source was used:
 
 When a thread has a `.vtt` it wins and the canvas is ignored. A file the bot can't download is skipped silently. Transcript text is capped at 500,000 characters; past that it is sliced and the payload carries `truncated: true`. The event id is `slack:huddle:<workspace>:<channel>:<canvas-or-file-id>:transcript`, so a huddle is one episode however it was read, and one already ingested is never re-ingested.
 
-Verbatim capture means the spoken conversation — not a recap of it — is sent to the configured LLM provider for curation. It is gated by the same `THINK_LLM_CONSENT` as every other third-party payload, and like them it is sent **unredacted**: the redaction layers described under [Third-party content data flow](#third-party-content-data-flow--redact-agt-066) are not currently applied. Tell the team that the closing reaction on a huddle captures what was said.
+Verbatim capture means the spoken conversation — not a recap of it — is sent to the configured LLM provider for curation. It is gated by the same `THINK_LLM_CONSENT` as every other third-party payload, and the redaction layers described under [Third-party content data flow](#third-party-content-data-flow--redact-agt-066) remove fields by key name only — they do not touch the transcript text itself, so what was said reaches the provider verbatim. Tell the team that the closing reaction on a huddle captures what was said.
 
 Read endpoints (`GET /v1/events`, `GET /v1/subscriptions/...`) are unchanged and unaware of the scheduler — connectors and consumers stay decoupled through the events table.
 
@@ -200,9 +201,9 @@ External proxy events are connector-defined and not schema-validated server-side
 
 **`think subscribe poll`'s old local ingestion path is gone.** It used to fetch `/v1/events`, run the baseline PII strip + per-subscription redact selectors, then `validateEngramContent`'s length-cap + prompt-injection-pattern scan, before writing the result to a local pre-daemon DB. That whole path — including the scan — was removed with the write tier in `3.0.0`. `think subscribe poll` is now a deprecated no-op: it prints a pointer to `think pull <team-cortex>` and exits 0; `--legacy-engrams` exits non-zero with a removal note instead of doing anything.
 
-**What actually happens today:** the proxy's own terminal-event curator (`lib/curator.ts`, invoked from `serve/event-curator.ts` — see [Team-shared cortex](#team-shared-cortex-where-proxy-curated-memories-land)) reads a settled event straight from the `events` table, wraps its payload in `<data>` tags, and sends it to the LLM to produce a curated memory it appends directly to the team cortex's JSONL. This path does **not** run `validateEngramContent`'s length-cap/regex scan, and does **not** run the baseline PII strip or per-subscription redact selectors described below — those became dead code the moment local polling stopped being the ingestion path (AGT-389), and `3.0.0` only formalized that by removing the flag (`--legacy-engrams`) that used to drive the old path. The `<data>` wrap is real defense-in-depth against prompt injection reaching the model; it is not a length cap or a PII filter.
+**What actually happens today:** the proxy's own terminal-event curator (`lib/curator.ts`, invoked from `serve/event-curator.ts` — see [Team-shared cortex](#team-shared-cortex-where-proxy-curated-memories-land)) reads a settled event straight from the `events` table, runs the baseline PII strip and the subscription's redact selectors over the parsed payload (see [below](#third-party-content-data-flow--redact-agt-066)), wraps the result in `<data>` tags, and sends it to the LLM. Each curated memory the LLM returns then goes through `validateEngramContent` in the cortex-writer (`serve/cortex-writer.ts`) before it is appended to the team cortex: content over 4,000 characters is truncated, and a prompt-injection-pattern match is logged to the server's stderr with the event id (AGT-2333). The `<data>` wrap is defense-in-depth against prompt injection reaching the curator model; the scan is the same check every other cortex ingest path runs.
 
-This is **opportunistic warning, not a security boundary** even where it does apply — see [`SECURITY.md`](../../SECURITY.md#untrusted-content--pulled-memories-proxy-events-file-imports). The regex list is bypassable by paraphrase. The actual line of defense is the system prompt on any downstream LLM call, which instructs the model to treat `<data>` content as inert data. If you operate a multi-tenant proxy, or subscribe to a connector source you don't fully trust, treat every row that lands on the team cortex as unfiltered third-party content — there is no length cap or redaction between the connector and the curated memory today.
+This is **opportunistic warning, not a security boundary** — see [`SECURITY.md`](../../SECURITY.md#untrusted-content--pulled-memories-proxy-events-file-imports). The regex list is bypassable by paraphrase, and a matching memory is still written (the warning is for the operator). The actual line of defense is the system prompt on any downstream LLM call, which instructs the model to treat `<data>` / `<recall-result>` content as inert data; proxy-authored rows carry `proxy:*` provenance, which resolves to `untrusted` under the default trust rules. If you operate a multi-tenant proxy, or subscribe to a connector source you don't fully trust, treat every row that lands on the team cortex as third-party content.
 
 ## Third-party content data flow + redact (AGT-066)
 
@@ -215,7 +216,7 @@ This is **opportunistic warning, not a security boundary** even where it does ap
 
 > **Breaking change as of AGT-066.** Pre-AGT-066 `think subscribe add <kind> <pattern>` succeeded silently. Existing CI/script callers that don't pass `--accept-data-flow` now exit 1 with an actionable error naming the flag. This is intentional — the friction is the point.
 
-**The two redaction layers below are configurable but not currently applied to anything.** They were designed to run on the CLI side during `think subscribe poll`, before a payload landed as local pre-daemon content — that ingestion path is what got removed in `3.0.0` (see [Untrusted payloads](#untrusted-payloads--opportunistic-validation)), and neither `stripBaselinePii` nor `applyRedactSelectors` has another caller today. `think subscribe redact-set` still writes selectors to config and `think subscribe show` still lists them, so the surface isn't broken — it just doesn't do anything yet. If you need payload redaction on the current proxy-curated path, it would have to run server-side, inside `think serve`'s terminal-event curator, which is not where this code lives. Treat this as a known gap, not a working control, until a future ticket wires redaction into that path (or removes the now-dead command surface).
+**Two redaction layers run on the proxy, in the terminal-event curator, before the payload reaches the LLM** (AGT-2337). They apply to the parsed JSON payload; a payload that isn't JSON is passed through unchanged. Both work by key path — they remove whole fields and never rewrite free text, so a name or email typed into a comment body is not caught. The redacted payload is what the LLM sees and therefore what can reach the curated memory; the raw payload is still stored as-is in the proxy's `events` table.
 
 ### 1. Baseline PII strip
 
@@ -232,7 +233,7 @@ Implementation in `packages/cli/src/lib/subscribe-redact.ts` (`stripBaselinePii`
 
 ### 2. Per-subscription redact selectors
 
-Configured per subscription via `subscriptions.redact[<id>]` in `~/.config/think/config.json`. Set with:
+Stored per subscription on the proxy (`subscriptions.redact_selectors`, set through `PUT /v1/subscriptions/:id/redact` with `{"selectors": [...]}`; an empty list clears them). Set from the CLI with:
 
 ```sh
 think subscribe redact-set <id> '$.user.email' '$.headers.x-real-ip'
@@ -248,7 +249,9 @@ Selector format is a strict JSONPath subset:
 - ✗ Filters: `$.users[?(@.id==1)].email`
 - ✗ Recursive descent: `$..email`
 
-Selectors that don't parse fail at config-write time (`redact-set` validates) so a typo doesn't silently no-op. `think subscribe show` lists configured selectors alongside cursors and the proxy URL — both surfaces print `(none)` when empty so the redact configuration is discoverable from `show` even before any selectors are set.
+Selectors that don't parse are rejected before anything is stored — by `redact-set` locally and by the proxy route (400) — so a typo doesn't silently no-op. `redact-set` also keeps a local copy at `subscriptions.redact[<id>]` in `~/.config/think/config.json`, which `think subscribe show` lists alongside cursors and the proxy URL; that copy reflects what was last set from this machine, not necessarily what another operator set on the proxy.
+
+> **Upgrading from 3.1.x or earlier:** selectors set with `redact-set` before this change were written only to the local config and never reached the proxy. Re-run `think subscribe redact-set <id> <selectors...>` for each subscription (with a proxy on this version) to apply them.
 
 ## Credentials
 

@@ -362,7 +362,7 @@ Every repair `--fix` applies is a function self-heal already calls, and none of 
 | `think subscribe disable` |  | Remove the auto-subscribe LaunchAgent for this workspace |
 | `think subscribe status` |  | Show auto-subscribe scheduler status |
 | `think subscribe show` |  | Show the configured proxy URL (token is redacted) |
-| `think subscribe redact-set` | `<id> [paths...]` | Set per-subscription JSONPath-subset redact selectors (e.g. `$.user.email`) |
+| `think subscribe redact-set` | `<id> [paths...]` | Set per-subscription redact selectors on the proxy (e.g. `$.user.email`) |
 | `think retro` | `<content>` | Record a durable lesson onto your home cortex, tagged by repo context |
 | `think retro-migrate` |  | Fold legacy per-repo cortices into your home cortex (dry-run by default) |
 | `think event` | `<message>` | Record a notable event (milestone, deploy, decision, incident) |

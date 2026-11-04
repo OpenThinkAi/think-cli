@@ -8,6 +8,7 @@ import {
   listSubscriptions,
   deleteSubscription,
   setCredential,
+  setRedactSelectors,
   testCredential,
   type ProxyConfig,
 } from '../lib/proxy-client.js';
@@ -431,25 +432,29 @@ subscribeCommand.addCommand(new Command('show')
     const redact = subscriptions.redact ?? {};
     const redactIds = Object.keys(redact);
     if (redactIds.length > 0) {
-      console.log(`Redact selectors:`);
+      console.log(`Redact selectors (as last set from this machine):`);
       for (const id of redactIds) console.log(`  ${id}: ${(redact[id] ?? []).join(', ')}`);
     } else {
       console.log(`Redact selectors: ${chalk.dim('(none)')}`);
     }
   }));
 
-// `think subscribe redact-set <id> <path1> [path2...]` (AGT-066 AC #3)
+// `think subscribe redact-set <id> <path1> [path2...]` (AGT-066 AC #3,
+// AGT-2337)
 //
-// Per-subscription JSONPath-subset selectors applied during `poll` after
-// the baseline PII strip. Selector format: `$.a.b.c` or `a.b.c`. Pass
-// zero paths after the id to clear all selectors for that subscription.
+// Per-subscription JSONPath-subset selectors. They are stored on the proxy
+// and applied by `think serve`'s terminal-event curator, after its baseline
+// PII strip, before the event payload reaches the LLM. Selector format:
+// `$.a.b.c` or `a.b.c`. Pass zero paths after the id to clear all
+// selectors for that subscription. The local `subscriptions.redact` copy
+// only feeds `think subscribe show`.
 subscribeCommand.addCommand(new Command('redact-set')
-  .description('Set per-subscription JSONPath-subset redact selectors (e.g. `$.user.email`)')
+  .description('Set per-subscription redact selectors on the proxy (e.g. `$.user.email`)')
   .argument('<id>', 'Subscription id (from `think subscribe list`)')
   .argument('[paths...]', 'JSONPath-subset selectors. Pass zero to clear all selectors for this subscription.')
-  .action((id: string, paths: string[]) => {
-    // Validate every selector at config-write time so a typo is caught
-    // here rather than silently swallowed at poll time.
+  .action(async (id: string, paths: string[]) => {
+    // Validate every selector before sending so a typo is reported here
+    // with the supported syntax, not as a bare 400 from the proxy.
     const invalid: string[] = [];
     for (const p of paths) {
       if (parseSelector(p) === null) invalid.push(p);
@@ -462,12 +467,18 @@ subscribeCommand.addCommand(new Command('redact-set')
       return;
     }
 
+    const proxy = getProxyConfig();
+    try {
+      await setRedactSelectors(proxy, id, paths);
+    } catch (err) {
+      if (err instanceof ProxyError) fail(`subscribe redact-set: ${err.message}`);
+      throw err;
+    }
+
     rewriteSubscriptions((existing) => {
       if (!existing) {
-        // No subscriptions config at all means the user hasn't run
-        // `subscribe configure` — surface that instead of writing a
-        // half-shaped config row that would later confuse `getProxyConfig`.
-        throw new Error('No subscriptions config. Run `think subscribe configure --proxy <url>` first.');
+        // getProxyConfig() above succeeded, so the block exists.
+        throw new Error('subscriptions config vanished mid-call (unreachable)');
       }
       const redact = { ...(existing.redact ?? {}) };
       if (paths.length === 0) {

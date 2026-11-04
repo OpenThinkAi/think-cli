@@ -43,6 +43,7 @@
  */
 
 import type { Database } from './db.js';
+import { applyRedactSelectors, stripBaselinePii } from '../lib/subscribe-redact.js';
 import { runTerminalEventCuration, type TerminalEventInput } from '../lib/curator.js';
 import {
   writeMemoriesForEvent,
@@ -196,6 +197,24 @@ function lookupConnectorKind(db: Database, subscriptionId: string): string | nul
 }
 
 /**
+ * Read a subscription's stored redact selectors (AGT-2337). A missing row,
+ * NULL column, or unparseable JSON yields `[]` — the baseline PII strip
+ * still runs in every case; selectors only add to it.
+ */
+function lookupRedactSelectors(db: Database, subscriptionId: string): string[] {
+  const row = db
+    .prepare('SELECT redact_selectors FROM subscriptions WHERE id = ?')
+    .get(subscriptionId) as { redact_selectors: string | null } | undefined;
+  if (!row?.redact_selectors) return [];
+  try {
+    const parsed: unknown = JSON.parse(row.redact_selectors);
+    return Array.isArray(parsed) ? parsed.filter((v): v is string => typeof v === 'string') : [];
+  } catch {
+    return [];
+  }
+}
+
+/**
  * Mark an event as curated. Uses a guarded UPDATE so a concurrent caller
  * (e.g. two pipeline passes racing on the same row) can't both succeed —
  * the second `UPDATE ... WHERE curated_at IS NULL` matches zero rows and
@@ -242,8 +261,22 @@ export async function processTerminalEvent(
     return { status: 'already-curated', ids: [] };
   }
 
-  // Bridge: events row → TerminalEventInput.
-  const { payload, parsed } = flattenPayload(event.payload_json);
+  // Bridge: events row → TerminalEventInput. The parsed payload is
+  // redacted BEFORE anything is derived from it (AGT-2337): the baseline
+  // PII strip (email/phone/IP/GPG-shaped keys) and then the subscription's
+  // own selectors, so neither the LLM provider nor the team cortex sees
+  // those fields. A payload that isn't JSON has no keys to select on and
+  // is passed through as-is.
+  const flat = flattenPayload(event.payload_json);
+  let payload = flat.payload;
+  let parsed = flat.parsed;
+  if (parsed !== null && typeof parsed === 'object') {
+    parsed = applyRedactSelectors(
+      stripBaselinePii(parsed),
+      lookupRedactSelectors(db, event.subscription_id),
+    );
+    payload = JSON.stringify(parsed, null, 2);
+  }
   const title = extractTitle(parsed);
   const terminalInput: TerminalEventInput = {
     id: event.id,

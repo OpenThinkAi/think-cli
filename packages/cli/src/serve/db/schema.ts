@@ -70,7 +70,8 @@ export function ensureSchema(db: DatabaseSync): void {
       pattern TEXT NOT NULL,
       created_at TEXT NOT NULL,
       last_polled_at TEXT,
-      cursor TEXT
+      cursor TEXT,
+      redact_selectors TEXT
     ) STRICT;
   `);
   // Fresh DBs get `episode_key` as a NOT NULL column straight away;
@@ -107,6 +108,13 @@ export function ensureSchema(db: DatabaseSync): void {
     .all() as { name: string }[];
   if (!subCols.some((c) => c.name === 'cursor')) {
     db.exec('ALTER TABLE subscriptions ADD COLUMN cursor TEXT');
+  }
+  // Additive migration: subscriptions.redact_selectors (AGT-2337) holds the
+  // per-subscription JSONPath-subset redact selectors as a JSON string
+  // array, applied by the terminal-event curator before the LLM call.
+  // NULL means "no selectors" (the baseline PII strip still runs).
+  if (!subCols.some((c) => c.name === 'redact_selectors')) {
+    db.exec('ALTER TABLE subscriptions ADD COLUMN redact_selectors TEXT');
   }
 
   // Additive migration: events.episode_key was added with the terminal-

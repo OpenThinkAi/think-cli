@@ -2,13 +2,10 @@
  * Connector-boundary PII strip + per-subscription redact selectors
  * (AGT-066). Two layers, designed to apply in order to the raw payload.
  *
- * TODO: retained on purpose, not yet wired. 3.0.0 removed the CLI-side
- * ingestion path these ran on, and proxy-curated payloads are now sent to
- * the LLM unredacted. `think subscribe redact-set`/`show` still read and
- * write the selectors, so this module stays until the open decision in
- * docs/serve.md → "Third-party content data flow" is made: run these inside
- * `think serve`'s terminal-event curator, or remove the module and the
- * `redact-set` surface together.
+ * Applied by `think serve`'s terminal-event curator (`serve/event-curator.ts`)
+ * to each event payload before the LLM call (AGT-2337). Selectors are stored
+ * per subscription on the proxy (`subscriptions.redact_selectors`), written
+ * through `PUT /v1/subscriptions/:id/redact` by `think subscribe redact-set`.
  *
  *   1. `stripBaselinePii` removes a hard-coded baseline of fields known
  *      to carry PII (commenter email addresses, GPG metadata, IP from
@@ -20,8 +17,8 @@
  *   2. `applyRedactSelectors` accepts a list of JSONPath selectors
  *      (subset: `$.a.b.c.d` form only — no wildcards, array indices,
  *      or filters) and strips matching fields. Configured per
- *      subscription via `subscriptions.redact[<id>]` in the CLI config;
- *      `think subscribe redact-set <id> <path1> [path2...]` writes them.
+ *      subscription on the proxy; `think subscribe redact-set <id>
+ *      <path1> [path2...]` sets them.
  *
  * Both produce a *new* payload — they never mutate the input — so the
  * caller can safely retain the raw value if it has a separate use.

@@ -40,6 +40,7 @@ import { enqueueL1Outbox } from '../lib/l1-page.js';
 import { sanitizeName } from '../lib/paths.js';
 import { getCortexDb } from '../db/engrams.js';
 import { pushDebouncer } from '../daemon/push-debouncer.js';
+import { sanitizeForLog, validateEngramContent } from '../lib/sanitize.js';
 
 /**
  * Subset of `EventInput` (from `serve/connectors/types.ts`, augmented in
@@ -248,6 +249,19 @@ export function writeMemoriesForEvent(
   try {
     for (const memory of memories) {
       const id = uuidv7();
+      // Same length cap + prompt-injection scan every other cortex ingest
+      // path runs (AGT-2333). Curated memories are derived from third-party
+      // connector payloads, so they get the treatment `think sync` and
+      // peer pulls get: oversize content is truncated, and an injection-
+      // shaped match is logged with the event id so an operator can trace
+      // which source produced it. Recall still wraps proxy rows as
+      // untrusted `<data>` on the consuming side.
+      const validated = validateEngramContent(memory.content);
+      for (const w of validated.warnings) {
+        console.warn(
+          `[open-think serve] cortex-writer: ${w} (event_id=${sanitizeForLog(event.id)} memory_id=${id})`,
+        );
+      }
       const entry: CortexJsonlLine = {
         id,
         ts,
@@ -256,7 +270,7 @@ export function writeMemoriesForEvent(
         episode_key: event.episodeKey,
         source_ids: [event.id],
         topics: memory.topics,
-        content: memory.content,
+        content: validated.content,
         supersedes: [],
         compacted_from: null,
       };
