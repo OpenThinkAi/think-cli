@@ -6,8 +6,14 @@ services:
     environment:
       PORT: "4823"
       THINK_DB_PATH: "/data/open-think.sqlite"
+    # Loopback only (AGT-2340). The proxy speaks plain HTTP and authenticates
+    # with a static bearer token, and Docker-published ports bypass host
+    # firewalls such as ufw — so publishing on 0.0.0.0 would put the token
+    # on the wire to every network the host is on. To serve other machines,
+    # put a TLS-terminating reverse proxy (Caddy, nginx) on this host in
+    # front of 127.0.0.1:4823, or reach it over Tailscale/WireGuard.
     ports:
-      - "4823:4823"
+      - "127.0.0.1:4823:4823"
     volumes:
       - open-think-data:/data
     # AGT-064 AC #5: restart policy + resource caps. `unless-stopped` keeps
