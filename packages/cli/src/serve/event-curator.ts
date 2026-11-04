@@ -165,21 +165,27 @@ function extractTitle(payload: unknown): string | undefined {
 /**
  * Flatten the events row's payload_json into the string the curator will
  * segment. The shape varies per connector, so we do the safest thing: if
- * the JSON parses, JSON.stringify it back with 2-space indent for
- * readability inside the LLM prompt; if it doesn't parse (corrupted row
- * or a connector that stored a raw string), surface the raw text.
+ * the JSON parses, redact it (`redact`, AGT-2337) and JSON.stringify it
+ * back with 2-space indent for readability inside the LLM prompt; if it
+ * doesn't parse (corrupted row or a connector that stored a raw string),
+ * surface the raw text — there are no keys to redact.
  *
  * The curator wraps this in `<data>` tags in its prompt assembly, so it
  * doesn't matter whether the payload looks like JSON or prose — the
  * curator treats it as opaque source material either way.
  */
-function flattenPayload(payloadJson: string): { payload: string; parsed: unknown } {
+function flattenPayload(
+  payloadJson: string,
+  redact: (value: unknown) => unknown,
+): { payload: string; parsed: unknown } {
+  let raw: unknown;
   try {
-    const parsed = JSON.parse(payloadJson);
-    return { payload: JSON.stringify(parsed, null, 2), parsed };
+    raw = JSON.parse(payloadJson);
   } catch {
     return { payload: payloadJson, parsed: null };
   }
+  const parsed = redact(raw);
+  return { payload: JSON.stringify(parsed, null, 2), parsed };
 }
 
 /**
@@ -265,18 +271,11 @@ export async function processTerminalEvent(
   // redacted BEFORE anything is derived from it (AGT-2337): the baseline
   // PII strip (email/phone/IP/GPG-shaped keys) and then the subscription's
   // own selectors, so neither the LLM provider nor the team cortex sees
-  // those fields. A payload that isn't JSON has no keys to select on and
-  // is passed through as-is.
-  const flat = flattenPayload(event.payload_json);
-  let payload = flat.payload;
-  let parsed = flat.parsed;
-  if (parsed !== null && typeof parsed === 'object') {
-    parsed = applyRedactSelectors(
-      stripBaselinePii(parsed),
-      lookupRedactSelectors(db, event.subscription_id),
-    );
-    payload = JSON.stringify(parsed, null, 2);
-  }
+  // those fields.
+  const selectors = lookupRedactSelectors(db, event.subscription_id);
+  const { payload, parsed } = flattenPayload(event.payload_json, (value) =>
+    applyRedactSelectors(stripBaselinePii(value), selectors),
+  );
   const title = extractTitle(parsed);
   const terminalInput: TerminalEventInput = {
     id: event.id,

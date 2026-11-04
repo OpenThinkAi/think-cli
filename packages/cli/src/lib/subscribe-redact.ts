@@ -24,6 +24,11 @@
  * caller can safely retain the raw value if it has a separate use.
  */
 
+/** Limits on per-subscription selectors, enforced by the proxy route and
+ * checked up front by `think subscribe redact-set`. */
+export const MAX_REDACT_SELECTORS = 64;
+export const MAX_SELECTOR_LENGTH = 256;
+
 const BASELINE_PII_KEY_PATTERNS: RegExp[] = [
   // Email-bearing fields. Catches `email`, `commenter_email`, `from_email`,
   // `notification_email`, etc. — the rule is "any key whose name suggests

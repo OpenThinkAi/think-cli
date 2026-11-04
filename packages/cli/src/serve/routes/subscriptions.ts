@@ -2,7 +2,11 @@ import { Hono } from 'hono';
 import { z } from 'zod';
 import { randomUUID } from 'node:crypto';
 import type { Database } from '../db.js';
-import { parseSelector } from '../../lib/subscribe-redact.js';
+import {
+  MAX_REDACT_SELECTORS,
+  MAX_SELECTOR_LENGTH,
+  parseSelector,
+} from '../../lib/subscribe-redact.js';
 
 const createSchema = z.object({
   kind: z.string().trim().min(1),
@@ -14,8 +18,6 @@ const createSchema = z.object({
  * under the JSONPath subset `parseSelector` accepts; an empty array clears
  * them. Bounded so a client can't store an unbounded blob on the proxy.
  */
-const MAX_REDACT_SELECTORS = 64;
-const MAX_SELECTOR_LENGTH = 256;
 const redactSchema = z.object({
   selectors: z
     .array(

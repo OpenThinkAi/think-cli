@@ -18,7 +18,8 @@
  * location.
  */
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { MAX_ENGRAM_LENGTH } from '../../src/lib/sanitize.js';
 import { mkdtempSync, rmSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -421,9 +422,7 @@ describe('writeMemoriesForEvent — memory ts source', () => {
 // ---------------------------------------------------------------------------
 
 describe('writeMemoriesForEvent — content validation (AGT-2333)', () => {
-  it('truncates oversize content to MAX_ENGRAM_LENGTH and warns', async () => {
-    const { MAX_ENGRAM_LENGTH } = await import('../../src/lib/sanitize.js');
-    const { vi } = await import('vitest');
+  it('truncates oversize content to MAX_ENGRAM_LENGTH and warns', () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const collector = makeAppendCollector();
     writeMemoriesForEvent({
@@ -439,8 +438,7 @@ describe('writeMemoriesForEvent — content validation (AGT-2333)', () => {
     warn.mockRestore();
   });
 
-  it('logs injection-shaped content with the event id', async () => {
-    const { vi } = await import('vitest');
+  it('logs injection-shaped content with the event id', () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const collector = makeAppendCollector();
     writeMemoriesForEvent({
