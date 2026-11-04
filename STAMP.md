@@ -72,6 +72,8 @@ The dist-tag comes from the version: bare `X.Y.Z` → `latest`; `X.Y.Z-alpha.N` 
 2. **npm Trusted Publisher.** <https://www.npmjs.com/package/@openthink/think/access> → Trusted Publisher → GitHub Actions: organization `OpenThinkAi`, repository `think-cli`, workflow `publish.yml`, environment `npm-publish`. Tokens minted outside that environment are then refused.
 3. **Mirror-only `main`.** GitHub → Settings → Rules → Rulesets → New branch ruleset `stamp-mirror-only`: enforcement Active, target the default branch, rules *Restrict updates*, *Restrict deletions* and *Block force pushes*, bypass list = **Deploy keys** only (the `stamp-mirror` key the stamp server pushes with). This stops a direct push or a GitHub PR merge from landing an unstamped commit on `main`, matching stamp-cli's ruleset of the same name.
 
+Do step 2 only after this version of `publish.yml` is on `main` (a Trusted Publisher bound to an environment refuses runs that don't use it). Break-glass for an emergency push to `main`: temporarily set the `stamp-mirror-only` ruleset to Disabled, push, then re-enable it.
+
 ## Adding a new pusher (future-team case)
 
 Solo-operator setup today. To add someone else who'd push stamped merges:

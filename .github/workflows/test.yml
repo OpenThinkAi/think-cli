@@ -44,6 +44,7 @@ jobs:
       # every PR without lockfile churn. A drift in committed bun.lock vs.
       # package.json now fails the workflow rather than silently re-resolving.
       - run: bun install --frozen-lockfile
+      - run: bun run --cwd packages/cli typecheck
       - run: bun run --cwd packages/cli test
       # Tests run against the TS source via tsx, so they don't catch bundling
       # bugs in dist/. Boot the bundled artifact via `think serve` and hit
