@@ -84,6 +84,8 @@ Or via `docker-compose` at the repo root (set `THINK_TOKEN` in the environment f
 THINK_TOKEN=<...> docker compose up server
 ```
 
+The compose file publishes the port on `127.0.0.1` only: the proxy speaks plain HTTP with a static bearer token, so it should not be reachable from other machines without TLS. To serve other peers, put a TLS-terminating reverse proxy on the same host in front of `127.0.0.1:4823`, or reach the host over Tailscale/WireGuard.
+
 ## If you ran a previous version
 
 `open-think-server@0.1.x` exposed `/v1/cortexes/...` against a Postgres backing store. Those endpoints retired in 0.2.0 (AGT-026); they return 404 in 0.3.0. The migration path for any 0.1.x data is documented in the 0.2.0 README — keep 0.1.x running, run `think cortex migrate --to fs --path <folder>` on each peer, then retire the 0.1.x server. There is no first-class import from a `pg_dump` — file a `gh issue` against `OpenThinkAi/think-cli` if you need one.
