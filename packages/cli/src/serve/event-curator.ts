@@ -43,6 +43,7 @@
  */
 
 import type { Database } from './db.js';
+import { applyRedactSelectors, stripBaselinePii } from '../lib/subscribe-redact.js';
 import { runTerminalEventCuration, type TerminalEventInput } from '../lib/curator.js';
 import {
   writeMemoriesForEvent,
@@ -164,21 +165,27 @@ function extractTitle(payload: unknown): string | undefined {
 /**
  * Flatten the events row's payload_json into the string the curator will
  * segment. The shape varies per connector, so we do the safest thing: if
- * the JSON parses, JSON.stringify it back with 2-space indent for
- * readability inside the LLM prompt; if it doesn't parse (corrupted row
- * or a connector that stored a raw string), surface the raw text.
+ * the JSON parses, redact it (`redact`, AGT-2337) and JSON.stringify it
+ * back with 2-space indent for readability inside the LLM prompt; if it
+ * doesn't parse (corrupted row or a connector that stored a raw string),
+ * surface the raw text — there are no keys to redact.
  *
  * The curator wraps this in `<data>` tags in its prompt assembly, so it
  * doesn't matter whether the payload looks like JSON or prose — the
  * curator treats it as opaque source material either way.
  */
-function flattenPayload(payloadJson: string): { payload: string; parsed: unknown } {
+function flattenPayload(
+  payloadJson: string,
+  redact: (value: unknown) => unknown,
+): { payload: string; parsed: unknown } {
+  let raw: unknown;
   try {
-    const parsed = JSON.parse(payloadJson);
-    return { payload: JSON.stringify(parsed, null, 2), parsed };
+    raw = JSON.parse(payloadJson);
   } catch {
     return { payload: payloadJson, parsed: null };
   }
+  const parsed = redact(raw);
+  return { payload: JSON.stringify(parsed, null, 2), parsed };
 }
 
 /**
@@ -193,6 +200,24 @@ function lookupConnectorKind(db: Database, subscriptionId: string): string | nul
     .prepare('SELECT kind FROM subscriptions WHERE id = ?')
     .get(subscriptionId) as { kind: string } | undefined;
   return row?.kind ?? null;
+}
+
+/**
+ * Read a subscription's stored redact selectors (AGT-2337). A missing row,
+ * NULL column, or unparseable JSON yields `[]` — the baseline PII strip
+ * still runs in every case; selectors only add to it.
+ */
+function lookupRedactSelectors(db: Database, subscriptionId: string): string[] {
+  const row = db
+    .prepare('SELECT redact_selectors FROM subscriptions WHERE id = ?')
+    .get(subscriptionId) as { redact_selectors: string | null } | undefined;
+  if (!row?.redact_selectors) return [];
+  try {
+    const parsed: unknown = JSON.parse(row.redact_selectors);
+    return Array.isArray(parsed) ? parsed.filter((v): v is string => typeof v === 'string') : [];
+  } catch {
+    return [];
+  }
 }
 
 /**
@@ -242,8 +267,15 @@ export async function processTerminalEvent(
     return { status: 'already-curated', ids: [] };
   }
 
-  // Bridge: events row → TerminalEventInput.
-  const { payload, parsed } = flattenPayload(event.payload_json);
+  // Bridge: events row → TerminalEventInput. The parsed payload is
+  // redacted BEFORE anything is derived from it (AGT-2337): the baseline
+  // PII strip (email/phone/IP/GPG-shaped keys) and then the subscription's
+  // own selectors, so neither the LLM provider nor the team cortex sees
+  // those fields.
+  const selectors = lookupRedactSelectors(db, event.subscription_id);
+  const { payload, parsed } = flattenPayload(event.payload_json, (value) =>
+    applyRedactSelectors(stripBaselinePii(value), selectors),
+  );
   const title = extractTitle(parsed);
   const terminalInput: TerminalEventInput = {
     id: event.id,

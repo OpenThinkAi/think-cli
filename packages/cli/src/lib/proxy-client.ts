@@ -115,6 +115,15 @@ export async function setCredential(cfg: ProxyConfig, id: string, credential: st
   await call<null>(cfg, 'PUT', `/v1/subscriptions/${encodeURIComponent(id)}/credential`, { credential });
 }
 
+/**
+ * Replace a subscription's redact selectors on the proxy (AGT-2337). The
+ * proxy's terminal-event curator applies them, after its baseline PII
+ * strip, before the event payload reaches the LLM. `[]` clears them.
+ */
+export async function setRedactSelectors(cfg: ProxyConfig, id: string, selectors: string[]): Promise<void> {
+  await call<unknown>(cfg, 'PUT', `/v1/subscriptions/${encodeURIComponent(id)}/redact`, { selectors });
+}
+
 export async function testCredential(cfg: ProxyConfig, id: string): Promise<{ ok: boolean; detail?: string }> {
   const { data } = await call<{ ok: boolean; detail?: string }>(
     cfg,

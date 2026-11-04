@@ -465,9 +465,11 @@ export interface SubscriptionsConfig {
    */
   cursors?: Record<string, number>;
   /**
-   * Per-subscription JSONPath-subset redact selectors (AGT-066). Applied
-   * during `think subscribe poll` after the baseline PII strip and before
-   * the payload lands as engram content. Selector format is `$.a.b.c.d`
+   * Local copy of the per-subscription JSONPath-subset redact selectors
+   * (AGT-066), kept for `think subscribe show`. The selectors that take
+   * effect live on the proxy (AGT-2337), which `redact-set` writes first;
+   * the proxy's curator applies them after its baseline PII strip, before
+   * the LLM call. Selector format is `$.a.b.c.d`
    * or `a.b.c.d` (leading `$.` optional, no array indices/wildcards/
    * filters). See `src/lib/subscribe-redact.ts`.
    */

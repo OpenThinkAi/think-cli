@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### Security
+
+- **Proxy-curated memories now get the length cap and injection scan (AGT-2333).** `think serve`'s cortex-writer runs `validateEngramContent` on every memory the terminal-event curator produces before appending it to the team cortex, the same check `think sync` and peer pulls already run: content over 4,000 characters is truncated, and an injection-shaped match is logged to the server's stderr with the event id.
+- **`think subscribe redact-set` selectors and the baseline PII strip now actually run (AGT-2337).** Both had been dead code since proxy-side curation replaced local polling. The proxy's terminal-event curator now strips baseline PII keys (email, phone, IP, GPG) and the subscription's selectors from the parsed payload before the LLM call. Selectors are stored on the proxy (new `PUT /v1/subscriptions/:id/redact`, column `subscriptions.redact_selectors`, added by an automatic migration); `redact-set` writes them there and fails non-zero if the proxy rejects them. Selectors set with an earlier version only reached the local config: re-run `think subscribe redact-set` for each subscription after upgrading the proxy. Redaction is by key path only; free text is not rewritten.
+
 ## [3.1.2] — 2026-10-06
 
 A security patch: the dependency pass below clears every open `npm audit` advisory
