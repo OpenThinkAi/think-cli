@@ -7,52 +7,98 @@ name: publish
 #
 # Auth: Trusted Publishing via OIDC. No NPM_TOKEN secret; the npm
 # package must have a Trusted Publisher configured on the npm side
-# pointing at this repo + workflow filename
-# (https://www.npmjs.com/package/@openthink/think/access). --provenance
-# attaches an SLSA build attestation, verifiable via
+# pointing at this repo + workflow filename + the `npm-publish`
+# environment (https://www.npmjs.com/package/@openthink/think/access).
+# --provenance attaches an SLSA build attestation, verifiable via
 # 'npm audit signatures'.
+#
+# Release gate (AGT-2335): a push to GitHub `main` alone does not
+# publish. The publish job runs in the `npm-publish` GitHub Environment,
+# which requires a maintainer's approval and only accepts `main`; the
+# npm Trusted Publisher is bound to that environment, so an OIDC token
+# minted anywhere else cannot publish. GitHub `main` itself only accepts
+# updates from the stamp server's mirror deploy key (ruleset
+# `stamp-mirror-only`), so what reaches this workflow is what the stamp
+# server verified. Both are repository settings, not workflow content —
+# see STAMP.md "Publishing a release" for the one-time setup.
 
 on:
   push:
     branches: [main]
 
+# Job layout (least privilege per job; oaudit AGT-2325):
+#
+#   build   contents: read     — reads the version, checks the registry,
+#                                installs deps, typechecks, tests, builds
+#                                and packs the tarball, uploads it as an
+#                                artifact. This is the only job that runs
+#                                dependency code (bun install, vitest,
+#                                tsup, tsx), so it holds no OIDC and no
+#                                write token.
+#   publish id-token: write    — downloads the tarball and publishes it.
+#                                No checkout, no install, no lifecycle
+#                                scripts: nothing from the dependency tree
+#                                runs while ACTIONS_ID_TOKEN_REQUEST_* is
+#                                in the environment.
+#   tag     contents: write    — pushes the v<version> tag after a
+#                                successful publish. Runs only git.
+#
+# Workflow-level `permissions: {}` makes every job start from nothing, so
+# a job only holds what it lists below.
+permissions: {}
+
 jobs:
-  publish:
+  build:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
 
     permissions:
-      contents: write
-      id-token: write
+      contents: read
+
+    outputs:
+      name: ${{ steps.version.outputs.name }}
+      version: ${{ steps.version.outputs.version }}
+      dist_tag: ${{ steps.version.outputs.dist_tag }}
+      published: ${{ steps.check.outputs.published }}
 
     steps:
-      # Actions are pinned by full commit SHA (not mutable tag) because
-      # this workflow holds id-token: write for npm Trusted Publishing
-      # — a moved @v4 tag would let an upstream compromise ship
-      # malicious @openthink/think to every downstream installer.
-      # Dependabot's github-actions ecosystem keeps these SHAs current.
+      # Actions are pinned by full commit SHA (not mutable tag): this
+      # workflow's tarball is what the publish job signs with provenance,
+      # so a moved @v4 tag would let an upstream compromise ship malicious
+      # @openthink/think to every downstream installer. Dependabot's
+      # github-actions ecosystem keeps these SHAs current.
+      #
+      # persist-credentials: false — this job never pushes, so the
+      # GITHUB_TOKEN is not written into .git/config where dependency code
+      # running in install/test/build could read it.
       - name: checkout
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
 
       - name: setup node
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: "22"
-          registry-url: "https://registry.npmjs.org"
 
-      # The git-adapter test suite shells out to `git commit`, which
-      # aborts with "empty ident name" if user.email/user.name aren't
-      # set. The `test` workflow already configures these; mirror that
-      # here so the publish job's pre-publish test gate behaves the
-      # same way.
-      - run: git config --global user.email "ci@example.com"
-      - run: git config --global user.name "CI"
-
+      # The package.json `name` and `version` are file content, so treat
+      # them as untrusted strings: they are validated, written to
+      # GITHUB_OUTPUT via heredoc (a newline cannot inject extra output
+      # keys), and every later step reads them through `env:` rather than
+      # `${{ … }}` substituted into bash.
       - name: read target version
         id: version
         run: |
           NAME=$(node -p "require('./packages/cli/package.json').name")
           VERSION=$(node -p "require('./packages/cli/package.json').version")
+          if [ "$NAME" != "@openthink/think" ]; then
+            echo "::error::unexpected package name: $NAME" >&2
+            exit 1
+          fi
+          if ! [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+            echo "::error::package version is not semver: $VERSION" >&2
+            exit 1
+          fi
           # Derive the npm dist-tag from the version string.
           # - bare X.Y.Z → latest
           # - X.Y.Z-alpha.N → alpha (and likewise beta, rc, or any
@@ -64,75 +110,176 @@ jobs:
           else
             DIST_TAG="latest"
           fi
-          echo "name=$NAME" >> "$GITHUB_OUTPUT"
-          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-          echo "dist_tag=$DIST_TAG" >> "$GITHUB_OUTPUT"
+          {
+            echo "name<<__EOF_NAME_$$"
+            echo "$NAME"
+            echo "__EOF_NAME_$$"
+            echo "version<<__EOF_VERSION_$$"
+            echo "$VERSION"
+            echo "__EOF_VERSION_$$"
+            echo "dist_tag<<__EOF_DIST_TAG_$$"
+            echo "$DIST_TAG"
+            echo "__EOF_DIST_TAG_$$"
+          } >> "$GITHUB_OUTPUT"
           echo "target: $NAME@$VERSION (dist-tag: $DIST_TAG)"
 
       - name: check npm registry
         id: check
+        env:
+          NAME: ${{ steps.version.outputs.name }}
+          VERSION: ${{ steps.version.outputs.version }}
         run: |
-          if npm view "${{ steps.version.outputs.name }}@${{ steps.version.outputs.version }}" version >/dev/null 2>&1; then
+          if npm view "$NAME@$VERSION" version >/dev/null 2>&1; then
             echo "published=true" >> "$GITHUB_OUTPUT"
-            echo "${{ steps.version.outputs.name }}@${{ steps.version.outputs.version }} already on npm — skipping."
+            echo "$NAME@$VERSION already on npm — skipping."
           else
             echo "published=false" >> "$GITHUB_OUTPUT"
-            echo "${{ steps.version.outputs.name }}@${{ steps.version.outputs.version }} not on npm — will publish."
+            echo "$NAME@$VERSION not on npm — will publish."
           fi
 
+      # Bun is pinned to an exact version (AGT-2326), the same one
+      # test.yml uses: it resolves and installs the whole dependency tree
+      # and runs the tests, so a new Bun release must be adopted by a
+      # deliberate bump, not picked up automatically. Pinning setup-bun by
+      # SHA does not pin the Bun binary it downloads.
       - name: setup bun
         if: steps.check.outputs.published == 'false'
         uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
         with:
-          bun-version: latest
+          bun-version: "1.3.13"
 
-      # Frozen-lockfile install via bun (AGT-060). Switching off `npm ci`
-      # closes the supply-chain drift gap that npm's cross-platform
-      # optional-natives bug (npm/cli#4828) forced open in test.yml; bun
-      # handles those natives correctly so the committed bun.lock is
-      # actually exercised here. The publish step itself stays on the
-      # npm CLI for OIDC trusted publishing — bun's publish path doesn't
-      # support npm Trusted Publisher OIDC yet.
+      # The git-adapter test suite shells out to `git commit`, which
+      # aborts with "empty ident name" if user.email/user.name aren't
+      # set. test.yml configures these the same way.
+      - name: git identity for tests
+        if: steps.check.outputs.published == 'false'
+        run: |
+          git config --global user.email "ci@example.com"
+          git config --global user.name "CI"
+
+      # Frozen-lockfile install via bun (AGT-060): a drifted bun.lock
+      # fails the install rather than silently re-resolving.
       - name: install
         if: steps.check.outputs.published == 'false'
         run: bun install --frozen-lockfile
 
-      # The CLI workspace's `test` script runs vitest, which uses the
-      # tsx loader against TypeScript sources — surfacing compilation
-      # errors alongside test failures. No separate typecheck step
-      # because the workspace doesn't define one (and tsup, run via
-      # prepublishOnly, would catch type errors at build time anyway).
+      - name: typecheck
+        if: steps.check.outputs.published == 'false'
+        run: bun run --cwd packages/cli typecheck
+
+      # A red test blocks the publish.
       - name: test
         if: steps.check.outputs.published == 'false'
         run: bun run --cwd packages/cli test
 
-      # Build is invoked automatically via packages/cli/package.json's
-      # prepublishOnly script before the tarball is assembled, so no
-      # explicit build step. --provenance requires id-token: write and
-      # a Trusted Publisher on the npm side; attaches an SLSA build
-      # attestation to the tarball.
-      #
-      # npx npm@<pinned> (not bare 'npm publish'): Node 22 bundles npm
-      # 10.x, which supports OIDC only for provenance signing but NOT
-      # for authenticating the registry PUT — that requires npm
-      # 11.5.1+. Self-upgrading via 'npm install -g npm@latest' breaks
-      # on hosted runners (MODULE_NOT_FOUND on promise-retry as the
-      # running npm replaces its own modules mid-flight). npx fetches
-      # a clean npm per-run without touching the globally-installed
-      # npm.
-      #
-      # Pinned to a specific version (not @latest) because this step
-      # holds id-token: write — npm@latest would auto-adopt any new
-      # npm release the moment it ships, including a compromised one.
-      # Bump explicitly when a newer npm is needed; lower bound is
-      # 11.5.1 for OIDC publish.
-      - name: publish
-        if: steps.check.outputs.published == 'false'
-        run: npx -y npm@11.13.0 publish -w @openthink/think --access public --provenance --tag "${{ steps.version.outputs.dist_tag }}"
-
-      - name: tag release
+      # Build and generate the npm README explicitly, then pack with
+      # --ignore-scripts: the publish job publishes this prebuilt tarball,
+      # so prepublishOnly/prepack never run there.
+      - name: build
         if: steps.check.outputs.published == 'false'
         run: |
-          TAG="v${{ steps.version.outputs.version }}"
+          bun run --cwd packages/cli build
+          bun run --cwd packages/cli gen:npm-readme
+
+      - name: pack
+        if: steps.check.outputs.published == 'false'
+        run: |
+          mkdir -p "$RUNNER_TEMP/package"
+          cd packages/cli
+          npm pack --ignore-scripts --pack-destination "$RUNNER_TEMP/package"
+          ls -l "$RUNNER_TEMP/package"
+
+      - name: upload tarball
+        if: steps.check.outputs.published == 'false'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: npm-package
+          path: ${{ runner.temp }}/package/*.tgz
+          if-no-files-found: error
+          retention-days: 1
+
+  publish:
+    needs: build
+    if: needs.build.outputs.published == 'false'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    # Deployment environment (AGT-2335). The OIDC token carries an
+    # `environment: npm-publish` claim, so the npm Trusted Publisher can be
+    # bound to this environment, and the environment's required reviewers
+    # and deployment-branch rule (main only) gate every release
+    # independently of who can push to GitHub. One-time setup is in
+    # STAMP.md "Publishing a release".
+    environment: npm-publish
+
+    # id-token: write is the only grant: OIDC for npm Trusted Publishing
+    # (the registry PUT) and for --provenance (the SLSA attestation). No
+    # contents permission — this job does not check out the repo.
+    permissions:
+      id-token: write
+
+    steps:
+      - name: setup node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "22"
+          registry-url: "https://registry.npmjs.org"
+
+      - name: download tarball
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: npm-package
+          path: ${{ runner.temp }}/package
+
+      # Publishes the prebuilt tarball from the build job. Publishing a
+      # tarball runs no package lifecycle scripts; --ignore-scripts makes
+      # that explicit. --provenance requires id-token: write and a Trusted
+      # Publisher on the npm side.
+      #
+      # npx npm@<pinned> (not bare 'npm publish'): Node 22 bundles npm
+      # 10.x, which supports OIDC only for provenance signing but NOT for
+      # authenticating the registry PUT — that requires npm 11.5.1+.
+      # Self-upgrading via 'npm install -g npm@latest' breaks on hosted
+      # runners (MODULE_NOT_FOUND on promise-retry as the running npm
+      # replaces its own modules mid-flight). npx fetches a clean npm
+      # per-run without touching the globally-installed npm.
+      #
+      # Pinned to a specific version (not @latest) because this step
+      # holds id-token: write — npm@latest would auto-adopt any new npm
+      # release the moment it ships, including a compromised one. Bump
+      # explicitly when a newer npm is needed; lower bound is 11.5.1 for
+      # OIDC publish.
+      - name: publish
+        env:
+          DIST_TAG: ${{ needs.build.outputs.dist_tag }}
+        run: |
+          shopt -s nullglob
+          TARBALLS=("$RUNNER_TEMP"/package/*.tgz)
+          if [ "${#TARBALLS[@]}" -ne 1 ]; then
+            echo "::error::expected exactly one tarball, found ${#TARBALLS[@]}" >&2
+            exit 1
+          fi
+          npx -y npm@11.13.0 publish "${TARBALLS[0]}" --ignore-scripts --access public --provenance --tag "$DIST_TAG"
+
+  tag:
+    needs: [build, publish]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    # contents: write to push the release tag. This job runs only git —
+    # no npm, no dependency code — so the persisted checkout token is
+    # never exposed to third-party scripts.
+    permissions:
+      contents: write
+
+    steps:
+      - name: checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      - name: tag release
+        env:
+          VERSION: ${{ needs.build.outputs.version }}
+        run: |
+          TAG="v$VERSION"
           git tag "$TAG"
           git push origin "$TAG"

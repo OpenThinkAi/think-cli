@@ -38,7 +38,7 @@ Prompt-tuning without polluting verdict history: `stamp reviewers test <name> --
 
 ## Publishing a release
 
-`@openthink/think` is published to npm by `.github/workflows/publish.yml`, which fires on every push to `main` (including the post-receive mirror push from the stamp server) and publishes only when `packages/cli/package.json` declares a version that isn't already on the registry. Every non-bump merge no-ops safely.
+`@openthink/think` is published to npm by `.github/workflows/publish.yml`, which runs on every push to `main` (including the post-receive mirror push from the stamp server) and publishes only when `packages/cli/package.json` declares a version that isn't already on the registry. Every non-bump merge no-ops safely. A version bump does not publish by itself either: the publish job waits in the `npm-publish` GitHub Environment until a maintainer approves the deployment.
 
 Cutting a release:
 
@@ -55,16 +55,22 @@ stamp review --diff main..HEAD
 git checkout main
 stamp merge release/vX.Y.Z --into main
 stamp push main                         # server mirrors to GitHub; workflow fires
+# Then approve the waiting `npm-publish` deployment in the run's page on GitHub Actions.
 ```
 
-The workflow:
+The workflow has three jobs, each holding only the permission it needs (AGT-2325):
 
-- Reads version from `packages/cli/package.json` and skips silently if `npm view @openthink/think@<version>` already returns it.
-- Runs `bun install --frozen-lockfile` + `bun run --cwd packages/cli test` before publishing (a red test blocks the publish, and a drifted `bun.lock` fails the install — AGT-060).
-- Publishes with `npm publish --provenance` from `packages/cli/`, attaching an SLSA build attestation. Auth is OIDC trusted-publishing — no `NPM_TOKEN` secret in repo settings. The publish step itself stays on the npm CLI because `bun publish` doesn't yet support npm Trusted Publisher OIDC.
-- Derives the npm dist-tag from the version: bare `X.Y.Z` → `latest`; `X.Y.Z-alpha.N` → `alpha` (likewise `beta`, `rc`, etc.) so prereleases never clobber `latest`.
+- **build** (`contents: read`, no OIDC): reads and validates the version, skips everything if `npm view @openthink/think@<version>` already returns it, then runs `bun install --frozen-lockfile`, typecheck, the test suite, the build and `npm pack`, and uploads the tarball as an artifact. This is the only job that runs dependency code. A red test or a drifted `bun.lock` blocks the publish (AGT-060).
+- **publish** (`id-token: write` only, `npm-publish` environment): downloads the tarball and runs `npm publish <tarball> --provenance --ignore-scripts`. No checkout, no install, no lifecycle scripts. Auth is OIDC trusted publishing — no `NPM_TOKEN` secret. The publish step stays on the npm CLI because `bun publish` doesn't yet support npm Trusted Publisher OIDC.
+- **tag** (`contents: write`): pushes `vX.Y.Z` after a successful publish. Runs only git.
 
-**One-time setup (npm side):** Trusted Publishing must be configured at <https://www.npmjs.com/package/@openthink/think/access> → Publishing access → GitHub Actions → trusted publisher pointing at this repo + `publish.yml`. The first workflow run fails loudly if it isn't set.
+The dist-tag comes from the version: bare `X.Y.Z` → `latest`; `X.Y.Z-alpha.N` → `alpha` (likewise `beta`, `rc`, etc.) so prereleases never clobber `latest`. Bun is pinned to an exact version in both `publish.yml` and `test.yml` (AGT-2326); bump it in both files together.
+
+**One-time setup (repository + npm side; not workflow content):**
+
+1. **Environment.** GitHub → Settings → Environments → New environment `npm-publish`. Add yourself under *Required reviewers*, leave *Prevent self-review* unticked (solo maintainer), and set *Deployment branches and tags* → *Selected branches* → `main`. GitHub auto-creates an unprotected environment the first time the workflow references it, so until this is configured a version bump still publishes without approval.
+2. **npm Trusted Publisher.** <https://www.npmjs.com/package/@openthink/think/access> → Trusted Publisher → GitHub Actions: organization `OpenThinkAi`, repository `think-cli`, workflow `publish.yml`, environment `npm-publish`. Tokens minted outside that environment are then refused.
+3. **Mirror-only `main`.** GitHub → Settings → Rules → Rulesets → New branch ruleset `stamp-mirror-only`: enforcement Active, target the default branch, rules *Restrict updates*, *Restrict deletions* and *Block force pushes*, bypass list = **Deploy keys** only (the `stamp-mirror` key the stamp server pushes with). This stops a direct push or a GitHub PR merge from landing an unstamped commit on `main`, matching stamp-cli's ruleset of the same name.
 
 ## Adding a new pusher (future-team case)
 
