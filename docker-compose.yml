@@ -6,6 +6,10 @@ services:
     environment:
       PORT: "4823"
       THINK_DB_PATH: "/data/open-think.sqlite"
+      # think's own config/index/repo dirs live on the persistent volume, so
+      # they work under the read-only root fs below and survive recreating
+      # the container (AGT-2341).
+      THINK_HOME: "/data/think"
     # Loopback only (AGT-2340). The proxy speaks plain HTTP and authenticates
     # with a static bearer token, and Docker-published ports bypass host
     # firewalls such as ufw — so publishing on 0.0.0.0 would put the token
@@ -16,6 +20,21 @@ services:
       - "127.0.0.1:4823:4823"
     volumes:
       - open-think-data:/data
+    # Least privilege (AGT-2341): drop every Linux capability (the server
+    # binds an unprivileged port and runs as uid 1000, so it needs none),
+    # forbid privilege gain via setuid binaries, and make the root
+    # filesystem read-only. Writable paths: /data (the volume above: the
+    # SQLite DB and THINK_HOME), /tmp, and the node user's home as an
+    # ephemeral tmpfs for anything else written under $HOME (lost when the
+    # container restarts, as the old writable layer was on recreate).
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    read_only: true
+    tmpfs:
+      - /tmp
+      - /home/node:uid=1000,gid=1000,mode=0700
     # AGT-064 AC #5: restart policy + resource caps. `unless-stopped` keeps
     # the proxy alive across host reboots while still respecting an explicit
     # `docker compose down`. Caps are conservative single-tenant defaults

@@ -26,30 +26,27 @@ RUN bun install --frozen-lockfile
 COPY packages/cli ./packages/cli
 RUN bun run --cwd packages/cli build
 
-# Runtime stage: production-only install (no tsup, vitest, esbuild, rolldown,
+# Deps stage: production-only install (no tsup, vitest, esbuild, rolldown,
 # tsx, typescript, lightningcss, etc.) — AGT-064 AC #2. The builder needs
 # devDeps for tsup; the runtime only needs to run the bundled output, so we
 # do a fresh install with --production rather than copying the builder's
-# fat node_modules.
+# fat node_modules. It runs in its own bun stage (same alpine/musl base as
+# the runtime, so native bindings match) and only node_modules is copied
+# forward: the bun binary never lands in the runtime image (AGT-2341).
+FROM oven/bun:1-alpine@sha256:4de475389889577f346c636f956b42a5c31501b654664e9ae5726f94d7bb5349 AS deps
+WORKDIR /app
+COPY package.json bun.lock ./
+COPY packages/cli/package.json ./packages/cli/
+RUN bun install --frozen-lockfile --production
+
+# Runtime stage: node + production node_modules + the built dist only.
 FROM node:22-alpine@sha256:8ea2348b068a9544dae7317b4f3aafcdc032df1647bb7d768a05a5cad1a7683f
 WORKDIR /app
 ENV NODE_ENV=production
 
-# bun is needed only to run the production install. We copy the bun binary
-# from the builder image rather than pulling another distro. We DO NOT try
-# to `rm /usr/local/bin/bun` after the install: docker layers are
-# append-only, so a later RUN that deletes the file just marks it
-# whited-out in the overlay — the bytes stay in the image. The CMD runs
-# node, not bun, so bun's presence doesn't affect runtime behavior.
-COPY --from=builder /usr/local/bin/bun /usr/local/bin/bun
-
-# Install BEFORE copying dist, so a code change (which produces a new dist)
-# doesn't bust the install layer cache. Install only depends on package.json
-# + bun.lock + packages/cli/package.json.
-COPY --from=builder /app/package.json /app/bun.lock ./
-COPY --from=builder /app/packages/cli/package.json ./packages/cli/
-
-RUN bun install --frozen-lockfile --production
+# The whole deps tree (manifests, lockfile, root and any workspace
+# node_modules) so a change in bun's install layout can't drop a directory.
+COPY --from=deps /app ./
 
 COPY --from=builder /app/packages/cli/dist ./packages/cli/dist
 
@@ -66,7 +63,9 @@ COPY --from=builder /app/packages/cli/dist ./packages/cli/dist
 # UPGRADE NOTE for existing deployments: pre-AGT-064 images ran as root
 # and populated /data with root-owned files. After upgrading, running as
 # UID 1000 will hit EACCES on those pre-existing files. Migrate once with:
-#   docker compose run --rm --user root server chown -R 1000:1000 /data
+#   docker compose run --rm --user root --cap-add CHOWN server chown -R 1000:1000 /data
+# (--cap-add CHOWN is needed because the compose service drops all
+# capabilities, and `compose run` inherits that.)
 RUN mkdir -p /data && chown -R node:node /app /data
 USER node
 
