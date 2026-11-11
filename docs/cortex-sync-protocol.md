@@ -54,6 +54,13 @@ resolution is a server concern and does not change the wire shape.
 A missing or malformed header → `401`. A well-formed but unauthorized token →
 `401`/`403` (server's choice; not part of this contract).
 
+**`author` is not authenticated.** Each line's `author` field is supplied by the
+pushing client and the single-tenant `think serve` hub stores it as given: any
+holder of the shared token can push lines under any author name. Treat
+`author` as a label, not an identity, on a single-tenant hub. A multi-tenant hub
+must bind `author` to the seat the bearer token resolves to (reject or overwrite
+a mismatching value) rather than trusting the client.
+
 ## Two cursors
 
 There are two monotonic counters in play. Conflating them is the most likely

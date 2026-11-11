@@ -147,6 +147,11 @@ export class HubSyncAdapter implements SyncAdapter {
       result.errors.push('hub sync backend not configured (set cortex.hub.url + cortex.hub.token)');
       return result;
     }
+    const insecure = insecureHubUrlReason(hub.url);
+    if (insecure) {
+      result.errors.push(insecure);
+      return result;
+    }
 
     const cursorStr = getSyncCursor(cortex, this.name, 'push');
     const lastVersion = cursorStr ? parseInt(cursorStr, 10) : 0;
@@ -241,6 +246,11 @@ export class HubSyncAdapter implements SyncAdapter {
     const hub = this.getHub();
     if (!hub) {
       result.errors.push('hub sync backend not configured (set cortex.hub.url + cortex.hub.token)');
+      return result;
+    }
+    const insecure = insecureHubUrlReason(hub.url);
+    if (insecure) {
+      result.errors.push(insecure);
       return result;
     }
 
@@ -381,6 +391,47 @@ export class HubSyncAdapter implements SyncAdapter {
     }
     return `hub ${op} rejected (HTTP ${res.status})${detail}`;
   }
+}
+
+/**
+ * Transport guard: the bearer token rides every push/pull, so it must never
+ * cross an untrusted network in cleartext. Returns a refusal message for an
+ * `http:` hub URL whose host is not loopback or a Tailscale address (WireGuard
+ * already encrypts tailnet traffic), and for any non-http(s) scheme. Returns
+ * null when the URL is acceptable. `https:` is always accepted.
+ */
+export function insecureHubUrlReason(rawUrl: string): string | null {
+  let parsed: URL;
+  try {
+    parsed = new URL(rawUrl);
+  } catch {
+    return `hub url is not a valid URL: ${rawUrl}`;
+  }
+  if (parsed.protocol === 'https:') return null;
+  if (parsed.protocol !== 'http:') {
+    return `hub url must use https (got ${parsed.protocol})`;
+  }
+  if (isLoopbackOrTailnetHost(parsed.hostname)) return null;
+  return (
+    `refusing to send the hub token over plain http to ${parsed.hostname}: ` +
+    'set cortex.hub.url to an https:// url, or reach the hub over loopback or Tailscale'
+  );
+}
+
+function isLoopbackOrTailnetHost(hostname: string): boolean {
+  // URL.hostname keeps the brackets on IPv6 literals.
+  const host = hostname.toLowerCase().replace(/^\[|\]$/g, '');
+  if (host === 'localhost' || host.endsWith('.localhost')) return true;
+  if (host === '::1') return true;
+  if (host.endsWith('.ts.net')) return true; // Tailscale MagicDNS
+  if (/^fd7a:115c:a1e0:/.test(host)) return true; // Tailscale IPv6 ULA fd7a:115c:a1e0::/48
+  const v4 = host.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+  if (v4) {
+    const [a, b] = [Number(v4[1]), Number(v4[2])];
+    if (a === 127) return true; // 127.0.0.0/8 loopback
+    if (a === 100 && b >= 64 && b <= 127) return true; // 100.64.0.0/10 Tailscale CGNAT
+  }
+  return false;
 }
 
 function errMessage(err: unknown): string {

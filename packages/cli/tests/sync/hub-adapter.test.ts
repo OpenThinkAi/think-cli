@@ -5,7 +5,7 @@ import { createApp } from '../../src/serve/app.js';
 import { buildDefaultRegistry } from '../../src/serve/connectors/registry.js';
 import { openDb, type Database } from '../../src/serve/db.js';
 import { createVault } from '../../src/serve/vault/index.js';
-import { HubSyncAdapter, type FetchLike } from '../../src/sync/hub-adapter.js';
+import { HubSyncAdapter, insecureHubUrlReason, type FetchLike } from '../../src/sync/hub-adapter.js';
 import { saveConfig, getConfig } from '../../src/lib/config.js';
 import {
   insertMemory,
@@ -19,7 +19,7 @@ import { createPeerPair, type TestPeer, type PeerPair } from '../fixtures/peer-p
 // be set before createApp() runs. Match the token in the peers' hub config.
 const TOKEN = 'hub-test-token-' + randomBytes(6).toString('hex');
 process.env.THINK_TOKEN = TOKEN;
-const HUB_URL = 'http://hub.test.local';
+const HUB_URL = 'https://hub.test.local';
 
 /**
  * A fetch stub that drives the REAL cortex-sync routes (AGT-572) of an
@@ -291,5 +291,56 @@ describe('hub adapter isAvailable', () => {
 
     configureHub();
     expect(a.isAvailable()).toBe(true);
+  });
+});
+
+describe('hub adapter transport guard', () => {
+  it('accepts https anywhere, and http only on loopback or Tailscale hosts', () => {
+    for (const ok of [
+      'https://hub.example.com',
+      'https://203.0.113.5:4823',
+      'http://localhost:4823',
+      'http://127.0.0.1:4823',
+      'http://[::1]:4823',
+      'http://100.104.97.90:4823',
+      'http://mac-studio.tail1234.ts.net:4823',
+      'http://[fd7a:115c:a1e0::1]:4823',
+    ]) {
+      expect(insecureHubUrlReason(ok), ok).toBeNull();
+    }
+    for (const bad of [
+      'http://hub.example.com',
+      'http://192.168.1.20:4823',
+      'http://10.0.0.5:4823',
+      'http://100.200.0.1:4823',
+      'http://[fd00::1]:4823',
+      'ftp://hub.example.com',
+      'not a url',
+    ]) {
+      expect(insecureHubUrlReason(bad), bad).not.toBeNull();
+    }
+  });
+
+  it('refuses to push or pull over plain http to a non-loopback host, without sending the token', async () => {
+    pair.peerA.activate();
+    const existing = getConfig();
+    saveConfig({
+      ...existing,
+      cortex: { hub: { url: 'http://hub.example.com:4823', token: TOKEN }, author: 'test' },
+    });
+    let calls = 0;
+    const spy = ((input: RequestInfo | URL, init?: RequestInit) => {
+      calls++;
+      return hubFetch(input, init);
+    }) as FetchLike;
+    const a = new HubSyncAdapter(spy);
+    insertMemory(pair.cortexName, { ts: '2026-06-18T00:00:00Z', author: 'a', content: 'should not leave' });
+
+    const pushRes = await a.push(pair.cortexName);
+    const pullRes = await a.pull(pair.cortexName);
+    expect(pushRes.pushed).toBe(0);
+    expect(pushRes.errors.join(' ')).toMatch(/refusing to send the hub token over plain http/);
+    expect(pullRes.errors.join(' ')).toMatch(/refusing to send the hub token over plain http/);
+    expect(calls).toBe(0);
   });
 });
