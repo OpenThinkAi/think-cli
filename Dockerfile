@@ -44,9 +44,9 @@ FROM node:22-alpine@sha256:8ea2348b068a9544dae7317b4f3aafcdc032df1647bb7d768a05a
 WORKDIR /app
 ENV NODE_ENV=production
 
-COPY --from=deps /app/package.json ./
-COPY --from=deps /app/packages/cli/package.json ./packages/cli/
-COPY --from=deps /app/node_modules ./node_modules
+# The whole deps tree (manifests, lockfile, root and any workspace
+# node_modules) so a change in bun's install layout can't drop a directory.
+COPY --from=deps /app ./
 
 COPY --from=builder /app/packages/cli/dist ./packages/cli/dist
 
@@ -63,7 +63,9 @@ COPY --from=builder /app/packages/cli/dist ./packages/cli/dist
 # UPGRADE NOTE for existing deployments: pre-AGT-064 images ran as root
 # and populated /data with root-owned files. After upgrading, running as
 # UID 1000 will hit EACCES on those pre-existing files. Migrate once with:
-#   docker compose run --rm --user root server chown -R 1000:1000 /data
+#   docker compose run --rm --user root --cap-add CHOWN server chown -R 1000:1000 /data
+# (--cap-add CHOWN is needed because the compose service drops all
+# capabilities, and `compose run` inherits that.)
 RUN mkdir -p /data && chown -R node:node /app /data
 USER node
 
