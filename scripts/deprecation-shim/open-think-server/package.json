@@ -2,7 +2,7 @@
   "name": "open-think-server",
   "version": "0.5.1",
   "type": "module",
-  "description": "Deprecated. The proxy folded into the think CLI (@openthink/think) in v0.5.0; run `npx @openthink/think serve` instead.",
+  "description": "Deprecated. The proxy folded into the open-think CLI in v0.5.0; run `npx open-think serve` instead.",
   "bin": {
     "open-think-server": "bin/open-think-server.js"
   },
@@ -20,5 +20,5 @@
   "engines": {
     "node": ">=22.5.0"
   },
-  "deprecated": "Use 'think serve' from the @openthink/think package instead"
+  "deprecated": "open-think-server has been folded into the open-think CLI; run `npx open-think serve` instead. See README for migration."
 }

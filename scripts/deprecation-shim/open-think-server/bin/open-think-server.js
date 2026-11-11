@@ -1,12 +1,11 @@
 #!/usr/bin/env node
-// open-think-server is deprecated. The proxy was folded into the think CLI
-// (published as @openthink/think) in v0.5.0 — there is no separate package
-// anymore. Print a clear migration message and exit non-zero so
-// misconfigured deploys (Railway, docker, CI) fail fast instead of silently
-// doing nothing.
+// open-think-server is deprecated. The proxy was folded into the open-think
+// CLI in v0.5.0 — there is no separate package anymore. Print a clear
+// migration message and exit non-zero so misconfigured deploys (Railway,
+// docker, CI) fail fast instead of silently doing nothing.
 console.error('open-think-server is deprecated.');
-console.error('The proxy folded into the think CLI (@openthink/think) in v0.5.0.');
-console.error('Run `npx @openthink/think serve` (or `npm install -g @openthink/think && think serve`) instead.');
+console.error('The proxy folded into the open-think CLI in v0.5.0.');
+console.error('Run `npx open-think serve` (or `npm install -g open-think && think serve`) instead.');
 console.error('All env vars carry over verbatim; default port changed from 3000 → 4823 (set PORT=3000 to keep the old binding).');
 console.error('See https://github.com/OpenThinkAi/think-cli/blob/main/packages/cli/docs/serve.md for details.');
 process.exit(1);

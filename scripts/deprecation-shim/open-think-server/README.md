@@ -1,16 +1,16 @@
 # open-think-server (deprecated)
 
-The proxy server folded into the think CLI in v0.5.0. That CLI is published today as [`@openthink/think`](https://www.npmjs.com/package/@openthink/think); the old unscoped `open-think` package name is itself deprecated and gets no fixes. There is no separate `open-think-server` package anymore — running this binary prints a migration message and exits non-zero.
+The proxy server folded into the [open-think](https://www.npmjs.com/package/open-think) CLI in v0.5.0. There is no separate `open-think-server` package anymore — running this binary prints a migration message and exits non-zero.
 
 ## Migration
 
 Replace any deployment that ran `npx open-think-server` with:
 
 ```sh
-npx @openthink/think serve
+npx open-think serve
 ```
 
-or, after `npm install -g @openthink/think`:
+or, after `npm install -g open-think@>=0.5.0`:
 
 ```sh
 think serve
@@ -33,13 +33,13 @@ correct migration pointer rather than running a months-old binary.
 
 ## Republishing this shim
 
-This source lives in the `think-cli` repo (OpenThinkAi/think-cli) at
+This source lives in the `open-think` repo at
 `scripts/deprecation-shim/open-think-server/`. To republish:
 
 ```sh
 cd scripts/deprecation-shim/open-think-server
 npm publish
-npm deprecate open-think-server "Use 'think serve' from the @openthink/think package instead"
+npm deprecate open-think-server "Use 'open-think serve' from the open-think package instead"
 ```
 
 The directory is intentionally outside the workspaces glob so the main
