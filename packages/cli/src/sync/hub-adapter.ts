@@ -414,7 +414,7 @@ export function insecureHubUrlReason(rawUrl: string): string | null {
   if (isLoopbackOrTailnetHost(parsed.hostname)) return null;
   return (
     `refusing to send the hub token over plain http to ${parsed.hostname}: ` +
-    'use an https:// hub url, or reach the hub over loopback or Tailscale'
+    'set cortex.hub.url to an https:// url, or reach the hub over loopback or Tailscale'
   );
 }
 
@@ -424,6 +424,7 @@ function isLoopbackOrTailnetHost(hostname: string): boolean {
   if (host === 'localhost' || host.endsWith('.localhost')) return true;
   if (host === '::1') return true;
   if (host.endsWith('.ts.net')) return true; // Tailscale MagicDNS
+  if (/^fd7a:115c:a1e0:/.test(host)) return true; // Tailscale IPv6 ULA fd7a:115c:a1e0::/48
   const v4 = host.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
   if (v4) {
     const [a, b] = [Number(v4[1]), Number(v4[2])];

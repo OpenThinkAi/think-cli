@@ -64,8 +64,8 @@ manual steps are the same flow:
    ```
 
    The hub adapter refuses a plain `http://` url unless the host is loopback
-   (`localhost`, `127.0.0.1`, `::1`) or a Tailscale address (`100.64.0.0/10`
-   or a `*.ts.net` name), so `http://<tailscale-ip>:4823` also works.
+   (`localhost`, `*.localhost`, `127.0.0.0/8`, `::1`) or a Tailscale address
+   (`100.64.0.0/10`, `fd7a:115c:a1e0::/48`, or a `*.ts.net` name), so `http://<tailscale-ip>:4823` also works.
 
    Leave `cortex.fs` / `cortex.repo` unset — the registry prefers local
    backends over the hub, so a leftover fs/repo block would silently win.

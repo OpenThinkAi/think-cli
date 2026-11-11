@@ -304,6 +304,7 @@ describe('hub adapter transport guard', () => {
       'http://[::1]:4823',
       'http://100.104.97.90:4823',
       'http://mac-studio.tail1234.ts.net:4823',
+      'http://[fd7a:115c:a1e0::1]:4823',
     ]) {
       expect(insecureHubUrlReason(ok), ok).toBeNull();
     }
@@ -312,6 +313,7 @@ describe('hub adapter transport guard', () => {
       'http://192.168.1.20:4823',
       'http://10.0.0.5:4823',
       'http://100.200.0.1:4823',
+      'http://[fd00::1]:4823',
       'ftp://hub.example.com',
       'not a url',
     ]) {
