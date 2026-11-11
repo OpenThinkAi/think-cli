@@ -1,9 +1,9 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { getCortexDb, closeAllCortexDbs } from '../../src/db/engrams.js';
-import { getUsageDb, closeUsageDb, recordRetroSurfacings } from '../../src/db/usage-db.js';
+import { getUsageDb, closeUsageDb, recordRetroSurfacings, pruneRetroSurfacings } from '../../src/db/usage-db.js';
 import { getRetroUsageReport } from '../../src/db/usage-queries.js';
 
 const cortex = 'usage-test';
@@ -212,6 +212,37 @@ describe('usage telemetry', () => {
       expect(report.surfaced[0].retro_id).toBe('ghost');
       expect(report.surfaced[0].content).toBeNull();
       expect(report.dead).toHaveLength(0);
+    });
+  });
+
+  describe('pruneRetroSurfacings', () => {
+    const now = new Date('2026-11-11T00:00:00.000Z');
+
+    function remaining(): string[] {
+      return (getUsageDb().prepare('SELECT retro_id FROM retro_surfacings ORDER BY id').all() as { retro_id: string }[])
+        .map((r) => r.retro_id);
+    }
+
+    it('deletes rows older than the retention window and keeps newer ones', () => {
+      insertSurfacing({ retroId: 'old', surfacedAt: '2026-08-01T00:00:00.000Z' });
+      insertSurfacing({ retroId: 'edge-old', surfacedAt: '2026-08-12T23:59:59.000Z' });
+      insertSurfacing({ retroId: 'recent', surfacedAt: '2026-10-01T00:00:00.000Z' });
+
+      expect(pruneRetroSurfacings(90, now)).toBe(2);
+      expect(remaining()).toEqual(['recent']);
+    });
+
+    it('deletes nothing when retention is 0 or negative', () => {
+      insertSurfacing({ retroId: 'ancient', surfacedAt: '2020-01-01T00:00:00.000Z' });
+      expect(pruneRetroSurfacings(0, now)).toBe(0);
+      expect(pruneRetroSurfacings(-5, now)).toBe(0);
+      expect(remaining()).toEqual(['ancient']);
+    });
+
+    it('does not create usage.db when it does not exist', () => {
+      closeUsageDb();
+      expect(pruneRetroSurfacings(90, now)).toBe(0);
+      expect(existsSync(join(tmpHome, 'usage.db'))).toBe(false);
     });
   });
 });

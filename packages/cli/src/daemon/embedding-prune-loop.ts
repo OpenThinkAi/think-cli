@@ -38,6 +38,11 @@
  * "just happen" right after an update. The prune is cheap SQL; only the gated
  * VACUUM is heavy, and it runs at most once per cortex per pass.
  *
+ * Usage-log age-out: each pass also deletes `retro_surfacings` rows (local
+ * usage telemetry, which stores recall query text) older than
+ * `config.cortex.usageRetentionDays` (default {@link DEFAULT_USAGE_RETENTION_DAYS},
+ * ≤ 0 keeps rows forever) via {@link pruneRetroSurfacings}.
+ *
  * Test seam (mirrors CurationLoop): `_intervalMsOverride` injects a short
  * interval, `_firstDelayMsOverride` shrinks the settle delay, and `_pruneOverride`
  * replaces the real per-cortex work so tests assert scheduling without touching
@@ -49,6 +54,7 @@ import { getConfig } from '../lib/config.js';
 import { sanitizeForLog } from '../lib/sanitize.js';
 import { getCortexDb, listKnownCortexes } from '../db/engrams.js';
 import { pruneStaleEmbeddings } from '../db/memory-queries.js';
+import { DEFAULT_USAGE_RETENTION_DAYS, pruneRetroSurfacings } from '../db/usage-db.js';
 import { reindexingCortexes } from './embed-model-check.js';
 import { daemonLog } from './log.js';
 
@@ -92,6 +98,9 @@ export interface PruneLoopHandle {
  */
 export type PruneOneFn = (cortex: string, graceDays: number) => void;
 
+/** Signature of the usage-log age-out the loop runs once per pass. */
+export type UsagePruneFn = (retentionDays: number) => number;
+
 // ---------------------------------------------------------------------------
 // PruneLoop
 // ---------------------------------------------------------------------------
@@ -111,6 +120,10 @@ export class PruneLoop {
   /** @internal Test-only per-cortex runner override. */
   // eslint-disable-next-line @typescript-eslint/naming-convention
   private _pruneOverride?: PruneOneFn;
+
+  /** @internal Test-only usage-log age-out override. */
+  // eslint-disable-next-line @typescript-eslint/naming-convention
+  private _usagePruneOverride?: UsagePruneFn;
 
   // ---------------------------------------------------------------------------
   // Public API
@@ -184,6 +197,8 @@ export class PruneLoop {
   private cycle(): void {
     if (this.stopped) return;
 
+    this.pruneUsageLog();
+
     let cortexes: string[];
     try {
       cortexes = listKnownCortexes();
@@ -206,6 +221,22 @@ export class PruneLoop {
       } catch (err: unknown) {
         this.log(`WARN: prune failed for cortex '${sanitizeForLog(cortex)}': ${msg(err)}`);
       }
+    }
+  }
+
+  /**
+   * Age out old usage-telemetry rows. Independent of the per-cortex work, and
+   * like it, a failure is logged and never aborts the pass.
+   */
+  private pruneUsageLog(): void {
+    const raw = getConfig().cortex?.usageRetentionDays ?? DEFAULT_USAGE_RETENTION_DAYS;
+    const days = Number.isFinite(raw) ? raw : DEFAULT_USAGE_RETENTION_DAYS;
+    if (days <= 0) return;
+    try {
+      const deleted = (this._usagePruneOverride ?? pruneRetroSurfacings)(days);
+      if (deleted > 0) this.log(`usage log: deleted ${deleted} retro surfacing(s) older than ${days}d`);
+    } catch (err: unknown) {
+      this.log(`WARN: usage log age-out failed: ${msg(err)}`);
     }
   }
 

@@ -22,6 +22,17 @@
 /** The HuggingFace model identifier used for all embeddings in this project. */
 export const EMBEDDING_MODEL_NAME = 'Xenova/bge-small-en-v1.5';
 
+/**
+ * The exact model-repo commit the embedding pipeline loads. Pinned so a later
+ * push to the model repo (accidental or hostile) cannot silently change the
+ * weights or tokenizer every install downloads. This commit's onnx/model.onnx,
+ * config.json, tokenizer.json and tokenizer_config.json are byte-identical to
+ * the files think has been loading from `main`, so vectors are unchanged and no
+ * reindex is needed. Bump it deliberately (and re-check vector equivalence)
+ * when moving to a newer model revision. See docs/architecture.md.
+ */
+export const EMBEDDING_MODEL_REVISION = 'ea104dacec62c0de699686887e3f920caeb4f3e3';
+
 type FeatureExtractionPipeline = (
   input: string,
   opts: { pooling: 'mean'; normalize: boolean }
@@ -74,7 +85,7 @@ async function getPipeline(): Promise<FeatureExtractionPipeline> {
       const pipe = await transformers.pipeline(
         'feature-extraction',
         EMBEDDING_MODEL_NAME,
-        { progress_callback: onProgress }
+        { revision: EMBEDDING_MODEL_REVISION, progress_callback: onProgress }
       );
       return pipe as unknown as FeatureExtractionPipeline;
     })();

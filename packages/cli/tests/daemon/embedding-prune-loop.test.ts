@@ -18,7 +18,7 @@ vi.mock('../../src/db/engrams.js', () => ({
 }));
 
 // getConfig → controllable cadence + grace.
-let mockConfig: { cortex?: { pruneIntervalHours?: number; pruneSupersededGraceDays?: number } } = {};
+let mockConfig: { cortex?: { pruneIntervalHours?: number; pruneSupersededGraceDays?: number; usageRetentionDays?: number } } = {};
 vi.mock('../../src/lib/config.js', () => ({
   getConfig: vi.fn(() => mockConfig),
 }));
@@ -38,6 +38,7 @@ type Seams = {
   _intervalMsOverride: number;
   _firstDelayMsOverride: number;
   _pruneOverride: (cortex: string, graceDays: number) => void;
+  _usagePruneOverride?: (retentionDays: number) => number;
 };
 
 describe('PruneLoop', () => {
@@ -167,5 +168,61 @@ describe('PruneLoop', () => {
     await tick(40);
 
     expect(callCount).toBe(countAtStop);
+  });
+
+  it('ages out the usage log each pass with the default 90-day window, even with no cortexes', async () => {
+    const { PruneLoop } = await import('../../src/daemon/embedding-prune-loop.js');
+    const windows: number[] = [];
+    const loop = new PruneLoop();
+    const seams = loop as unknown as Seams;
+    seams._intervalMsOverride = 10;
+    seams._firstDelayMsOverride = 5;
+    seams._pruneOverride = () => {};
+    seams._usagePruneOverride = (days) => { windows.push(days); return 0; };
+
+    const handle = loop.start();
+    await tick(40);
+    handle.stop();
+
+    expect(windows.length).toBeGreaterThan(0);
+    expect(windows.every(d => d === 90)).toBe(true);
+  });
+
+  it('uses cortex.usageRetentionDays, and skips the age-out when it is 0', async () => {
+    const { PruneLoop } = await import('../../src/daemon/embedding-prune-loop.js');
+    for (const [configured, expected] of [[30, [30]], [0, []]] as const) {
+      mockConfig = { cortex: { usageRetentionDays: configured } };
+      const windows: number[] = [];
+      const loop = new PruneLoop();
+      const seams = loop as unknown as Seams;
+      seams._intervalMsOverride = 10;
+      seams._firstDelayMsOverride = 5;
+      seams._pruneOverride = () => {};
+      seams._usagePruneOverride = (days) => { windows.push(days); return 0; };
+
+      const handle = loop.start();
+      await tick(40);
+      handle.stop();
+
+      expect([...new Set(windows)]).toEqual(expected);
+    }
+  });
+
+  it('a failing usage age-out does not stop the cortex prune', async () => {
+    const { PruneLoop } = await import('../../src/daemon/embedding-prune-loop.js');
+    knownCortexes.push('personal');
+    const pruned: string[] = [];
+    const loop = new PruneLoop();
+    const seams = loop as unknown as Seams;
+    seams._intervalMsOverride = 10;
+    seams._firstDelayMsOverride = 5;
+    seams._pruneOverride = (cortex) => { pruned.push(cortex); };
+    seams._usagePruneOverride = () => { throw new Error('usage.db locked'); };
+
+    const handle = loop.start();
+    await tick(40);
+    handle.stop();
+
+    expect(pruned).toContain('personal');
   });
 });
