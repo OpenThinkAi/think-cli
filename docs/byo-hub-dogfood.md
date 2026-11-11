@@ -45,8 +45,11 @@ manual steps are the same flow:
 
 1. **Host:** pick a static token and start the hub —
    `THINK_TOKEN=<token> THINK_DB_PATH=~/hub.sqlite PORT=4823 think serve`
-   (set `THINK_VAULT_KEY` to a base64 32-byte key on a production host; expose
-   the port however you like — LAN, Tailscale, a reverse proxy).
+   (set `THINK_VAULT_KEY` to a base64 32-byte key on a production host). The
+   token rides every request, so never expose the port as plain http on a LAN
+   or the internet: put the hub behind an https reverse proxy (or
+   `tailscale serve`), or reach it only over Tailscale, which encrypts the
+   traffic itself.
 2. **Each peer:** in `~/.config/think/config.json` (or `$THINK_HOME/config/
    config.json`), set the hub backend on the shared cortex:
 
@@ -55,10 +58,14 @@ manual steps are the same flow:
      "cortex": {
        "active": "<shared-cortex>",
        "author": "<who-you-are>",
-       "hub": { "url": "http://<host>:4823", "token": "<token>" }
+       "hub": { "url": "https://<host>", "token": "<token>" }
      }
    }
    ```
+
+   The hub adapter refuses a plain `http://` url unless the host is loopback
+   (`localhost`, `127.0.0.1`, `::1`) or a Tailscale address (`100.64.0.0/10`
+   or a `*.ts.net` name), so `http://<tailscale-ip>:4823` also works.
 
    Leave `cortex.fs` / `cortex.repo` unset — the registry prefers local
    backends over the hub, so a leftover fs/repo block would silently win.
