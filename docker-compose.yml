@@ -16,6 +16,18 @@ services:
       - "127.0.0.1:4823:4823"
     volumes:
       - open-think-data:/data
+    # Least privilege (AGT-2341): drop every Linux capability (the server
+    # binds an unprivileged port and runs as uid 1000, so it needs none),
+    # forbid privilege gain via setuid binaries, and make the root
+    # filesystem read-only. /data (the volume above) stays writable for the
+    # SQLite DB, and /tmp is a tmpfs for scratch files.
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    read_only: true
+    tmpfs:
+      - /tmp
     # AGT-064 AC #5: restart policy + resource caps. `unless-stopped` keeps
     # the proxy alive across host reboots while still respecting an explicit
     # `docker compose down`. Caps are conservative single-tenant defaults
