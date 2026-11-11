@@ -11,7 +11,7 @@
  * Actual model download is never triggered — the mock resolves immediately.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { EMBEDDING_MODEL_NAME } from '../../src/lib/embed.js';
+import { EMBEDDING_MODEL_NAME, EMBEDDING_MODEL_REVISION } from '../../src/lib/embed.js';
 
 // ---------------------------------------------------------------------------
 // Mock @huggingface/transformers BEFORE any module under test is imported.
@@ -68,8 +68,13 @@ describe('embed singleton — concurrent load dedup', () => {
     expect(pipelineMock).toHaveBeenCalledWith(
       'feature-extraction',
       EMBEDDING_MODEL_NAME,
-      expect.objectContaining({ progress_callback: expect.any(Function) })
+      expect.objectContaining({
+        progress_callback: expect.any(Function),
+        revision: EMBEDDING_MODEL_REVISION,
+      })
     );
+    // The revision must be a full commit sha, never a moving ref like 'main'.
+    expect(EMBEDDING_MODEL_REVISION).toMatch(/^[0-9a-f]{40}$/);
   });
 
   it('does not call pipeline() again on a second warm batch after cold load', async () => {

@@ -14,6 +14,9 @@
  *     only ever touch the index DBs + JSONL; usage.db is never synced, so the
  *     "memories are immutable via sync" invariant is unaffected.
  *   - Append-only. Aggregation happens at read time; each surfacing is a fact.
+ *   - Aged out. Each row keeps the recall query text, so rows older than
+ *     `cortex.usageRetentionDays` (default 90) are deleted by the daemon's
+ *     scheduled prune loop (see pruneRetroSurfacings).
  *   - Best-effort. Recording must never break recall, so callers wrap writes
  *     in try/catch and swallow failures (see recordRetroSurfacings).
  */
@@ -137,4 +140,22 @@ export function recordRetroSurfacings(call: RetroSurfacingCall): void {
   } catch {
     /* best-effort: telemetry must never break recall */
   }
+}
+
+/** Default retention window (days) for retro_surfacings rows. */
+export const DEFAULT_USAGE_RETENTION_DAYS = 90;
+
+/**
+ * Delete retro_surfacings rows whose surfaced_at is older than `retentionDays`
+ * days before `now`. Each row stores the recall query text, so keeping rows
+ * forever would retain every prompt that ever surfaced a retro. A value <= 0
+ * (or non-finite) disables the age-out and deletes nothing. Does not create
+ * usage.db when it does not exist yet. Returns the number of rows deleted.
+ */
+export function pruneRetroSurfacings(retentionDays: number, now: Date = new Date()): number {
+  if (!Number.isFinite(retentionDays) || retentionDays <= 0) return 0;
+  if (!db && !fs.existsSync(getUsageDbPath())) return 0;
+  const cutoff = new Date(now.getTime() - retentionDays * 24 * 60 * 60 * 1000).toISOString();
+  const res = getUsageDb().prepare('DELETE FROM retro_surfacings WHERE surfaced_at < ?').run(cutoff);
+  return Number(res.changes);
 }

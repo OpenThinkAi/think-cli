@@ -224,6 +224,7 @@ shutdown                             → graceful stop
 ## Embeddings + vector search
 
 - **Model**: `bge-small-en-v1.5` via `@huggingface/transformers` (33M params, 384-dim, MIT-licensed). Auto-downloaded + cached on first daemon start.
+- **Pinned revision**: the pipeline loads `Xenova/bge-small-en-v1.5` at commit `ea104dacec62c0de699686887e3f920caeb4f3e3` (`EMBEDDING_MODEL_REVISION` in `packages/cli/src/lib/embed.ts`), not the moving `main` branch, so a later push to the model repo cannot change what installs download. Its model and tokenizer files are byte-identical to what `main` served before the pin, so existing vectors stay valid. transformers.js keys its cache by revision, so the first load after the pin downloads the files once more into a revision-specific cache path. Changing the revision is a deliberate act: confirm vector equivalence (or bump `EMBEDDING_MODEL_NAME` to force a reindex) in the same change.
 - **Index**: `sqlite-vec` extension loaded into `better-sqlite3`. Sub-10ms cosine search up to ~100K vectors. Brute-force cosine in SQL is the fallback (handles up to ~50K with acceptable latency).
 - **Determinism**: same model + same text = same vector. Vectors never sync between peers (always recomputed locally). Different peers running the same model produce equivalent indexes.
 

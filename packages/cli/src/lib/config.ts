@@ -147,6 +147,15 @@ export interface CortexConfig {
    */
   pruneSupersededGraceDays?: number;
   /**
+   * Retention window, in days, for the local usage-telemetry log
+   * (`~/.think/usage.db`, table `retro_surfacings`, which stores each recall
+   * query that surfaced a retro). The daemon's scheduled prune loop deletes
+   * rows older than this on every pass. Default: 90. Set to `0` (or any value
+   * ≤ 0) to keep rows forever. Runs on the `pruneIntervalHours` cadence, so
+   * `pruneIntervalHours = 0` also stops the age-out.
+   */
+  usageRetentionDays?: number;
+  /**
    * Minimum trimmed-character length for a `kind=retro` write (AGT-455).
    * Retros below this are rejected at intake unless `--force` is set.
    * Default 40 (see `DEFAULT_RETRO_MIN_LENGTH`).
