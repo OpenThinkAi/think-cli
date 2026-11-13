@@ -3,7 +3,7 @@
  *
  * Records an append-only event log of *retro surfacings* — every time a
  * retro (a kind='retro' memory) is returned by the daemon `recall` handler,
- * one row lands here. This is the data behind `think usage`.
+ * one row lands here. This is the data behind `think retro-usage`.
  *
  * Each row answers: which retro (retro_id), from which repo/cortex (cortex),
  * how it was pulled in (source), and where in the session (session_id +
