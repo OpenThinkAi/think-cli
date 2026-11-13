@@ -3,7 +3,7 @@
  *
  * Joins the append-only surfacing log (usage.db) against the live retro rows
  * (kind='retro' memories in each cortex's index DB) to produce the dataset
- * behind `think usage`:
+ * behind `think retro-usage`:
  *   - which retros surface, how often, via what queries, on what days
  *   - which retros are "dead" — they exist but have never once been recalled
  */
