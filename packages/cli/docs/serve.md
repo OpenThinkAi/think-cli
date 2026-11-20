@@ -22,6 +22,8 @@ All success responses wrap the resource in an envelope (`{ subscription }`, `{ s
 | `POST` | `/v1/subscriptions/:id/credential/test` | Bearer | Verify the stored credential by calling the connector's `verifyCredential`. Connector throws are caught and surfaced as `{ ok: false, detail: 'verify failed: ...' }` — the credential never escapes into a response or log. | `200 { ok: boolean, detail?: string }` | `404` unknown subscription **or** no credential stored (`{ error: 'no credential stored' }`); `501` connector has no `verifyCredential` |
 | `PUT` | `/v1/subscriptions/:id/redact` | Bearer | Replace the subscription's redact selectors, applied by the terminal-event curator after the baseline PII strip (see [Third-party content data flow](#third-party-content-data-flow--redact-agt-066)). Body `{ selectors: string[] }` — at most 64, each at most 256 characters, each in the supported JSONPath subset; `[]` clears them. | `200 { id, redact_selectors }` | `400` invalid body or unsupported selector; `404` unknown subscription |
 
+The cortex-sync hub routes (`POST /v1/cortex-sync/push`, `GET /v1/cortex-sync/pull`, and since 3.3.0 `POST` / `GET /v1/cortex-sync/tombstones` for `think forget`) are specified in [`docs/cortex-sync-protocol.md`](../../../docs/cortex-sync-protocol.md). A tombstone push deletes the hub's stored copy of the memory line and stops it being stored again.
+
 Two non-route status codes are reachable:
 
 - **`410 Gone`** for any `/v1/cortexes/*` path — the retired 0.1.x cortex storage routes. Returned **without auth** so operators upgrading from 0.1.x can see the migration pointer without configuring a token first. Body: `{ error: "cortex storage retired", detail: "..." }`.

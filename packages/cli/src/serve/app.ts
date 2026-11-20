@@ -65,7 +65,7 @@ export function createApp(deps: {
         error: 'endpoint not found',
         detail:
           `open-think serve v${VERSION} serves /v1/health, /v1/events, /v1/subscriptions, ` +
-          '/v1/subscriptions/:id/credential, /v1/cortex-sync/push, and /v1/cortex-sync/pull.',
+          '/v1/subscriptions/:id/credential, /v1/cortex-sync/push, /v1/cortex-sync/pull, and /v1/cortex-sync/tombstones.',
       },
       404,
     ),

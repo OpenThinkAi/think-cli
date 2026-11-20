@@ -2,10 +2,17 @@ import { Hono } from 'hono';
 import type { Database } from '../db.js';
 import {
   appendCortexLine,
+  appendCortexTombstone,
   readCortexLines,
+  readCortexTombstones,
   maxCortexSeq,
 } from '../cortex-lines-store.js';
 import {
+  TOMBSTONES_ROUTE,
+  tombstonePushRequestSchema,
+  tombstonePullRequestSchema,
+  type TombstonePushResponse,
+  type TombstonePullResponse,
   pushRequestSchema,
   pullRequestSchema,
   type PushResponse,
@@ -102,6 +109,51 @@ export function cortexSyncRoute(db: Database): Hono {
     const hasMore = lines.length === limit;
 
     const body: PullResponse = { lines, nextCursor, hasMore };
+    return c.json(body);
+  });
+
+  // --- TOMBSTONES (AGT-2331, `think forget`) -------------------------------
+  // Separate route pair so clients that predate tombstones never receive one
+  // (see the TOMBSTONES section of sync/hub-protocol.ts).
+  route.post(TOMBSTONES_ROUTE, async (c) => {
+    let raw: unknown;
+    try {
+      raw = await c.req.json();
+    } catch {
+      return c.json({ error: 'invalid JSON body' }, 400);
+    }
+    const parsed = tombstonePushRequestSchema.safeParse(raw);
+    if (!parsed.success) {
+      return c.json({ error: 'invalid body', detail: parsed.error.issues }, 400);
+    }
+    const { cortex, tombstones } = parsed.data;
+    let accepted = 0;
+    let duplicates = 0;
+    let removedLines = 0;
+    for (const t of tombstones) {
+      const r = appendCortexTombstone(db, cortex, t);
+      if (r.inserted) accepted += 1;
+      else duplicates += 1;
+      removedLines += r.removedLines;
+    }
+    const body: TombstonePushResponse = { accepted, duplicates, removedLines };
+    return c.json(body);
+  });
+
+  route.get(TOMBSTONES_ROUTE, (c) => {
+    const parsed = tombstonePullRequestSchema.safeParse(c.req.query());
+    if (!parsed.success) {
+      return c.json({ error: 'invalid query', detail: parsed.error.issues }, 400);
+    }
+    const { cortex, cursor, limit } = parsed.data;
+    const tombstones = readCortexTombstones(db, cortex, cursor, limit);
+    const nextCursor =
+      tombstones.length > 0 ? tombstones[tombstones.length - 1].server_seq : cursor;
+    const body: TombstonePullResponse = {
+      tombstones,
+      nextCursor,
+      hasMore: tombstones.length === limit,
+    };
     return c.json(body);
   });
 

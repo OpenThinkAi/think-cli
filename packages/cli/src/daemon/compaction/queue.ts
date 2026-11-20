@@ -28,6 +28,7 @@ import { searchVectors } from '../../lib/search-vectors.js';
 import { gateSupersedes } from '../../lib/supersession-guard.js';
 import { parseTopicsJson } from '../../lib/topics.js';
 import { daemonLog } from '../log.js';
+import { isForgotten } from '../../lib/memory-tombstones.js';
 import type { NewEntry, CandidateEntry } from './call.js';
 
 /**
@@ -611,6 +612,10 @@ export function scanAndEnqueueUncompacted(
 
         // Skip tombstoned entries.
         if (parsed.deleted_at !== null && parsed.deleted_at !== undefined) continue;
+
+        // Skip forgotten entries (`think forget`, AGT-2331): the original line
+        // stays in L1, but its content must never be compacted again.
+        if (isForgotten(getCortexDb(safeCortex), id)) continue;
 
         candidates.push(id);
         if (candidates.length >= BACKFILL_CAP) break outer;

@@ -3,6 +3,7 @@ import { v7 as uuidv7 } from 'uuid';
 import { getCortexDb } from './engrams.js';
 import { getPeerId } from '../lib/config.js';
 import { validateEngramContent } from '../lib/sanitize.js';
+import { isForgotten } from '../lib/memory-tombstones.js';
 
 /**
  * Result shape for `insertMemoryIfNotExists`. AGT-059 moved
@@ -96,6 +97,9 @@ export function insertMemoryIfNotExists(cortexName: string, params: InsertMemory
   const db = getCortexDb(cortexName);
   const existing = db.prepare('SELECT id FROM memories WHERE id = ?').get(params.id);
   if (existing) return { inserted: false, warnings: [] };
+  // A forgotten memory (AGT-2331) is never re-ingested, whichever peer or
+  // backend re-delivers it.
+  if (isForgotten(db, params.id)) return { inserted: false, warnings: [] };
 
   // Centralized validation chokepoint (AGT-059). `migrate-data` historically
   // bypassed validation; routing through here closes that gap. Sync-adapter

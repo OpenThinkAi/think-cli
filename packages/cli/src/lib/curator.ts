@@ -68,6 +68,9 @@ export function parseMemoriesJsonl(content: string): MemoryEntry[] {
     if (!line.trim()) continue;
     try {
       const parsed = JSON.parse(line);
+      // Memory tombstones (`think forget`, AGT-2331) are not memories: their
+      // `content` is a placeholder. Callers read them via parseTombstonesJsonl.
+      if (parsed && parsed.kind === 'tombstone') continue;
       if (parsed && typeof parsed.content === 'string') {
         const decisions = Array.isArray(parsed.decisions)
           ? parsed.decisions.filter((d: unknown): d is string => typeof d === 'string' && d.length > 0)

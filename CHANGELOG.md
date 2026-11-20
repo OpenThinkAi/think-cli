@@ -2,6 +2,30 @@
 
 ## [Unreleased]
 
+## [3.3.0] — 2026-11-19
+
+Adds `think forget`, a way to erase a memory on every peer (AGT-2331). Nothing changes
+for existing setups; a cortex index gains one table through an automatic migration.
+
+### Upgrading — behaviour changes
+
+- **Hub sync reports when the hub can't take a forget.** After you run `think forget`, a sync against a hub without tombstone support (`think serve` before 3.3.0, or the hosted think-hub until it adds the route) prints `hub does not support memory tombstones yet` until the hub is upgraded. It is an error line only; the exit status is unchanged. The tombstone stays queued and goes out then. **Do:** upgrade the `think serve` hub; nothing else.
+- **A hub token now carries delete rights.** Any holder of a `think serve` hub's bearer token can erase memories from the hub and from every peer that syncs through it, with no undo; before, a token could only add lines. **Do:** treat the hub token (and write access to a git remote or fs-sync folder) as delete rights. See `SECURITY.md`.
+- **Peers keep a forgotten entry's text until they upgrade.** A peer on a version before 3.3.0 hides a forgotten entry but keeps its text in its index. **Do:** upgrade every peer, then run `think reindex` on any peer that pulled a forget while it was still on an older version.
+
+### Added
+
+- **`think forget <id>` (AGT-2331).** Removes an entry's text, embedding, search-index entry and compaction links from this machine, drops the entry from the outbox if it was never pushed, and sends a memory tombstone (`kind: "tombstone"`) that carries only the entry's ids. Peers on 3.3.0 or later remove their copy when they pull it, through the daemon pull loop, `think reindex`, or the git, local-fs and hub sync backends, and no sync path re-ingests a forgotten id. It also lists any compacted entries that summarise the forgotten one, since those keep their own text. Requires the daemon, like `think delete`.
+- **Hub protocol: memory tombstones (AGT-2331).** `think serve` adds `POST` / `GET /v1/cortex-sync/tombstones`. A pushed tombstone deletes the hub's stored copy of the line, the hub refuses to store it again, and other clients pull the tombstone on their own cursor. The extension is optional and additive: older clients never call it and never see a tombstone, and newer clients degrade against an older hub as described above. Spec: [`docs/cortex-sync-protocol.md`](docs/cortex-sync-protocol.md#tombstones).
+
+### Not changed
+
+- **Git history is not rewritten.** The original line stays in the cortex's L1 files, the remote's git history, every clone and fs-synced folders until someone rewrites them by hand; [Forgetting a memory](docs/cortex-sync-protocol.md#forgetting-a-memory) describes how. `think delete` is still a soft delete whose tombstone line repeats the content.
+
+### Documentation
+
+- `SECURITY.md`, `docs/cortex-sync-protocol.md` and `docs/architecture.md` now agree on what deletion does: `think delete` hides, `think forget` erases from every index, and neither rewrites history. This replaces the statements that memory tombstones never travel through the sync backends (AGT-2338).
+
 ## [3.2.0] — 2026-11-12
 
 A security-hardening release (the AGT-2333…AGT-2341 audit fixes). Most installs need

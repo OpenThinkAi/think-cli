@@ -24,9 +24,10 @@
  *   is a no-op on the server (dedup via the content id), so a push is safely
  *   replayable. This is what makes AC4 (no duplicate / no reorder on replay)
  *   true by construction rather than by an at-most-once delivery guarantee.
- * - **Memories are immutable via sync.** No `deleted_at` is serialized or
- *   applied for memories. The wire line shape below therefore has no tombstone
- *   field — a deliberate omission, matching git/fs adapter serialization.
+ * - **Memory lines are immutable via sync.** No `deleted_at` is serialized or
+ *   applied for memories, so the line shape below has no tombstone field.
+ *   Removal (`think forget`, AGT-2331) rides a separate, optional route pair —
+ *   see the TOMBSTONES section at the end of this file.
  * - **Two distinct cursors, do not conflate:**
  *     - `memories.sync_version` is the per-cortex **local push cursor**. It is
  *       NOT sent across the wire — the client uses it only to decide which
@@ -140,8 +141,8 @@ export type CortexName = z.infer<typeof cortexNameSchema>;
  * Notably ABSENT, by design:
  *   - `id` — recomputed by the server/client as `deterministicId(ts, author,
  *     content)`; never trusted from the wire for memories.
- *   - `deleted_at` — memories are immutable via sync; tombstones are never
- *     serialized for memories.
+ *   - `deleted_at` — memory lines are immutable via sync; removal is a
+ *     separate tombstone (see TOMBSTONES below), never a line field.
  *   - `server_seq` — assigned by the server on pull responses, not part of the
  *     pushed line (see {@link StoredLine}).
  */
@@ -333,3 +334,74 @@ export const pullResponseSchema = z.object({
   hasMore: z.boolean(),
 });
 export type PullResponse = z.infer<typeof pullResponseSchema>;
+
+// ---------------------------------------------------------------------------
+// TOMBSTONES (AGT-2331, `think forget`) — an optional, additive extension
+// ---------------------------------------------------------------------------
+//
+// Memory tombstones travel on their own route pair, NOT inside push/pull
+// lines, so neither side of an older deployment ever sees an unknown shape:
+//
+//   - an older client never calls these routes, so it never receives a
+//     tombstone (a tombstone line inside `PullResponse.lines` would fail its
+//     strict schema and stall its pull forever);
+//   - a newer client talking to an older hub gets a 404/405 from these routes
+//     and degrades: pull skips tombstones silently (an older hub has none),
+//     push reports that forgets cannot reach that hub and keeps them queued.
+//
+// Tombstones share the cortex's `server_seq` space with lines (so deleting a
+// stored line can never let a later line reuse its seq) but have their own
+// client cursor, `sync_cursors(cortex, 'hub', 'pull_tombstones')`.
+
+/** Route for both tombstone push (POST) and pull (GET). */
+export const TOMBSTONES_ROUTE = '/v1/cortex-sync/tombstones' as const;
+
+/** Max target ids per tombstone (own id + content-derived id, with headroom). */
+export const TOMBSTONE_MAX_IDS = 16;
+
+/**
+ * A memory tombstone on the wire. `ids` lists every id the forgotten memory
+ * may be stored under; the hub deletes any stored line whose content-derived
+ * id is in the list and refuses to store such a line again. Carries no
+ * content.
+ */
+export const wireTombstoneSchema = z.object({
+  ids: z.array(z.string().min(1).max(200)).min(1).max(TOMBSTONE_MAX_IDS),
+  /** ISO-8601 forget time. */
+  ts: z.string().min(1),
+  author: z.string().min(1).optional(),
+  origin_peer_id: z.string().min(1).optional(),
+});
+export type WireTombstone = z.infer<typeof wireTombstoneSchema>;
+
+/** A tombstone as stored and returned by the hub. */
+export const storedTombstoneSchema = wireTombstoneSchema.extend({
+  server_seq: z.number().int().positive(),
+});
+export type StoredTombstone = z.infer<typeof storedTombstoneSchema>;
+
+/** POST body. */
+export const tombstonePushRequestSchema = z.object({
+  cortex: cortexNameSchema,
+  tombstones: z.array(wireTombstoneSchema).max(PULL_MAX_LIMIT),
+});
+export type TombstonePushRequest = z.infer<typeof tombstonePushRequestSchema>;
+
+/** POST response: tombstones newly stored, and stored lines removed by them. */
+export const tombstonePushResponseSchema = z.object({
+  accepted: z.number().int().min(0),
+  duplicates: z.number().int().min(0),
+  removedLines: z.number().int().min(0),
+});
+export type TombstonePushResponse = z.infer<typeof tombstonePushResponseSchema>;
+
+/** GET query: same shape and limits as {@link pullRequestSchema}. */
+export const tombstonePullRequestSchema = pullRequestSchema;
+
+/** GET response: same pagination rules as {@link pullResponseSchema}. */
+export const tombstonePullResponseSchema = z.object({
+  tombstones: z.array(storedTombstoneSchema),
+  nextCursor: z.number().int().min(0),
+  hasMore: z.boolean(),
+});
+export type TombstonePullResponse = z.infer<typeof tombstonePullResponseSchema>;

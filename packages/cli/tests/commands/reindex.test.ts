@@ -135,6 +135,32 @@ describe('reindexOneCortex (AGT-276)', () => {
     rmSync(tmpHome, { recursive: true, force: true });
   });
 
+  it('applies memory tombstones and never resurrects a forgotten entry (AGT-2331)', async () => {
+    const forgotten = makeL1Line('2026-01-01T00:00:00Z', 'alice', 'secret entry');
+    const kept = makeL1Line('2026-01-02T00:00:00Z', 'alice', 'kept entry');
+    const forgottenId = deterministicId('2026-01-01T00:00:00Z', 'alice', 'secret entry');
+    const tombstone = JSON.stringify({
+      kind: 'tombstone', id: forgottenId, ids: [forgottenId], ts: '2026-02-01T00:00:00Z',
+      author: 'alice', content: '[forgotten]', deleted_at: '2026-02-01T00:00:00Z',
+    });
+    mockL1Pages([[forgotten, kept, tombstone].join('\n')]);
+
+    // First run: forgotten entry was live in L2 before the reindex.
+    getCortexDb(cortex).prepare(
+      `INSERT INTO memories (id, ts, author, content, source_ids, created_at, sync_version)
+       VALUES (?, '2026-01-01T00:00:00Z', 'alice', 'secret entry', '[]', 'x', 1)`,
+    ).run(forgottenId);
+
+    const { total } = await reindexOneCortex(cortex, /* force= */ true);
+    expect(total).toBe(1);
+    expect(countRows(cortex)).toBe(1);
+    expect(getEmbedding(cortex, forgottenId)).toBeNull();
+
+    // A second forced rebuild still skips it (memory_tombstones survives --force).
+    await reindexOneCortex(cortex, true);
+    expect(countRows(cortex)).toBe(1);
+  });
+
   it('inserts rows with embedding and embedding_model for each L1 entry', async () => {
     const page = [
       makeL1Line('2026-01-01T00:00:00Z', 'alice', 'first entry'),

@@ -22,6 +22,13 @@ import { getConfig, getPeerId } from '../lib/config.js';
 import { deterministicId, deterministicEventId } from '../lib/deterministic-id.js';
 import { validateEngramContent } from '../lib/sanitize.js';
 import { sanitizeName } from '../lib/paths.js';
+import { getCortexDb } from '../db/engrams.js';
+import {
+  applyMemoryTombstone,
+  getLocalTombstonesSince,
+  parseTombstonesJsonl,
+  serializeTombstoneLine,
+} from '../lib/memory-tombstones.js';
 import type { SyncAdapter, SyncResult } from './types.js';
 
 const BUCKET_PAD = 4;
@@ -110,6 +117,7 @@ export class LocalFsSyncAdapter implements SyncAdapter {
 
     // Each path is independent — a failure in one must not starve the others.
     this.pushMemories(cortex, result);
+    this.pushTombstones(cortex, result);
     this.pushLongTermEvents(cortex, result);
     this.pushRetros(cortex, result);
     return result;
@@ -156,8 +164,8 @@ export class LocalFsSyncAdapter implements SyncAdapter {
     const newMemories = getMemoriesBySyncVersion(cortex, lastVersion);
     if (newMemories.length === 0) return;
 
-    // Memories are immutable via sync — local tombstones are intentionally
-    // not emitted. The contract test `enforceImmutableMemories` locks this in.
+    // Soft-deleted rows are intentionally not emitted (memory tombstones from
+    // `think forget` go out via pushTombstones). The contract test `enforceImmutableMemories` locks this in.
     // source_ids and decisions are both written by us via JSON.stringify on
     // insert, so we trust them as parseable here without try/catch.
     //
@@ -203,6 +211,26 @@ export class LocalFsSyncAdapter implements SyncAdapter {
       // correct because deterministic ids + INSERT OR IGNORE make it safe.
       setSyncCursor(cortex, this.name, 'push', String(maxVersion));
       result.pushed += newLines.length;
+    } catch (err) {
+      result.errors.push(err instanceof Error ? err.message : String(err));
+    }
+  }
+
+  // Memory tombstones (`think forget`, AGT-2331): appended to this peer's
+  // memory bucket files as `kind: "tombstone"` lines, which carry ids only.
+  // Older peers skip them (they have `deleted_at`). Own cursor so a tombstone
+  // is written once; only tombstones this peer issued are written.
+  private pushTombstones(cortex: string, result: SyncResult): void {
+    const cursorStr = getSyncCursor(cortex, this.name, 'push_tombstones');
+    const lastSeq = cursorStr ? parseInt(cursorStr, 10) || 0 : 0;
+    const { tombstones, maxSeq } = getLocalTombstonesSince(getCortexDb(cortex), lastSeq);
+    if (tombstones.length === 0) return;
+    const dir = this.cortexDir(cortex);
+    try {
+      fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+      this.appendMemoryLines(dir, tombstones.map(serializeTombstoneLine));
+      setSyncCursor(cortex, this.name, 'push_tombstones', String(maxSeq));
+      result.pushed += tombstones.length;
     } catch (err) {
       result.errors.push(err instanceof Error ? err.message : String(err));
     }
@@ -470,9 +498,17 @@ export class LocalFsSyncAdapter implements SyncAdapter {
       const tail = nonEmpty.slice(consumed).join('\n');
       const writerPeer = inferPeerFromFilename(file);
 
+      // Tombstones first (AGT-2331): recording the forgotten ids before the
+      // memory pass means a memory line in the same tail is refused rather
+      // than inserted and deleted.
+      const db = getCortexDb(cortex);
+      for (const t of parseTombstonesJsonl(tail)) {
+        applyMemoryTombstone(db, t);
+      }
+
       const memories = parseMemoriesJsonl(tail);
       for (const m of memories) {
-        if (m.deleted_at) continue; // memories immutable via sync
+        if (m.deleted_at) continue; // soft-delete lines are not applied via adapter sync
         const id = deterministicId(m.ts, m.author, m.content);
         const { content: sanitizedContent, warnings } = validateEngramContent(m.content);
         if (warnings.length > 0) {

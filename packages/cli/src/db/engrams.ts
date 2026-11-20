@@ -496,6 +496,46 @@ export const migrations: Migration[] = [
       `);
     },
   },
+  {
+    version: 21,
+    up: (db) => {
+      // AGT-2331: memory tombstones (`think forget`). One row per forgotten
+      // memory id. A forget records every id the memory can be keyed under on
+      // any peer (its own id plus the content-derived id the git/fs/hub
+      // adapters key pulled copies on), all sharing one `tombstone_seq` so the
+      // push side can re-assemble them into a single tombstone line.
+      //
+      //   id              forgotten memory id — every sync ingest path checks
+      //                   this table and refuses to re-insert a listed id.
+      //   tombstone_seq   local monotonic counter; the fs/hub adapters push
+      //                   tombstones with tombstone_seq > their push cursor.
+      //   forgotten_at    ISO-8601 time of the forget.
+      //   author          who forgot it (label only, like memories.author).
+      //   origin_peer_id  peer that issued the forget, as carried on the line
+      //                   (informational; it is client-supplied).
+      //   local           1 only for tombstones `think forget` created on
+      //                   this machine. Adapters push only local=1 rows, so a
+      //                   pulled tombstone is never re-emitted — even one
+      //                   that claims this peer's id.
+      //
+      // Unlike the rest of L2 this table is not purely derived from L1: the
+      // hub/fs adapters receive tombstones that never touch L1. It holds ids
+      // only (never content), and `reindex --force` leaves it in place.
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS memory_tombstones (
+          id TEXT PRIMARY KEY NOT NULL,
+          tombstone_seq INTEGER NOT NULL,
+          forgotten_at TEXT NOT NULL,
+          author TEXT,
+          origin_peer_id TEXT,
+          local INTEGER NOT NULL DEFAULT 0
+        ) STRICT;
+      `);
+      db.exec(
+        'CREATE INDEX IF NOT EXISTS idx_memory_tombstones_seq ON memory_tombstones(tombstone_seq);',
+      );
+    },
+  },
 ];
 
 /** Returns the per-cortex SQLite connection (holds engrams, memories, and sync_cursors tables) */

@@ -67,6 +67,8 @@ import { deterministicId } from '../lib/deterministic-id.js';
 import {
   type WireMemoryLine,
   type StoredLine,
+  type WireTombstone,
+  type StoredTombstone,
   PULL_DEFAULT_LIMIT,
 } from '../sync/hub-protocol.js';
 
@@ -123,12 +125,17 @@ export function appendCortexLine(
 
   db.exec('BEGIN IMMEDIATE');
   try {
-    const maxRow = db
-      .prepare(
-        'SELECT COALESCE(MAX(server_seq), 0) AS max_seq FROM cortex_lines WHERE cortex = ?',
-      )
-      .get(cortex) as { max_seq: number };
-    const nextSeq = maxRow.max_seq + 1;
+    // A forgotten id (AGT-2331) is never stored again; report it as a
+    // duplicate carrying the tombstone's seq so replaying clients settle.
+    const forgotten = db
+      .prepare('SELECT server_seq FROM cortex_forgotten_ids WHERE cortex = ? AND id = ?')
+      .get(cortex, id) as { server_seq: number } | undefined;
+    if (forgotten) {
+      db.exec('COMMIT');
+      return { server_seq: forgotten.server_seq, id, inserted: false };
+    }
+
+    const nextSeq = maxCortexSeq(db, cortex) + 1;
 
     // INSERT OR IGNORE: a replayed (cortex, id) collides on the UNIQUE index
     // and is silently dropped, so `changes` tells us whether we stored it.
@@ -235,10 +242,120 @@ export function readCortexLines(
  * from it). Exposed here so the route doesn't reach into the table directly.
  */
 export function maxCortexSeq(db: Database, cortex: string): number {
+  // Lines and tombstones share one per-cortex seq space (AGT-2331). Taking the
+  // max over both means deleting the newest line (via a tombstone, which is
+  // itself stamped higher) can never let a later line reuse a seq a client has
+  // already advanced past.
   const row = db
     .prepare(
-      'SELECT COALESCE(MAX(server_seq), 0) AS max_seq FROM cortex_lines WHERE cortex = ?',
+      `SELECT MAX(
+         (SELECT COALESCE(MAX(server_seq), 0) FROM cortex_lines WHERE cortex = ?),
+         (SELECT COALESCE(MAX(server_seq), 0) FROM cortex_tombstones WHERE cortex = ?)
+       ) AS max_seq`,
     )
-    .get(cortex) as { max_seq: number };
+    .get(cortex, cortex) as { max_seq: number };
   return row.max_seq;
+}
+
+// ---------------------------------------------------------------------------
+// Memory tombstones (AGT-2331, `think forget`)
+// ---------------------------------------------------------------------------
+
+export interface AppendTombstoneResult {
+  /** True when at least one id was newly forgotten by this call. */
+  inserted: boolean;
+  /** Stored lines deleted by this tombstone. */
+  removedLines: number;
+  server_seq: number;
+}
+
+/**
+ * Store a memory tombstone: delete every stored line in `cortex` whose id is
+ * listed, record the ids so they are never stored again, and stamp the
+ * tombstone with the next per-cortex `server_seq` so pullers learn of it.
+ * Idempotent: a tombstone whose ids are all already forgotten is a duplicate
+ * and writes nothing.
+ */
+export function appendCortexTombstone(
+  db: Database,
+  cortex: string,
+  tombstone: WireTombstone,
+  now: () => string = () => new Date().toISOString(),
+): AppendTombstoneResult {
+  const ids = [...new Set(tombstone.ids)];
+  db.exec('BEGIN IMMEDIATE');
+  try {
+    const known = db.prepare(
+      'SELECT server_seq FROM cortex_forgotten_ids WHERE cortex = ? AND id = ?',
+    );
+    const fresh = ids.filter((id) => known.get(cortex, id) === undefined);
+    if (fresh.length === 0) {
+      const first = known.get(cortex, ids[0]) as { server_seq: number };
+      db.exec('COMMIT');
+      return { inserted: false, removedLines: 0, server_seq: first.server_seq };
+    }
+
+    const seq = maxCortexSeq(db, cortex) + 1;
+    const ph = ids.map(() => '?').join(', ');
+    const del = db
+      .prepare(`DELETE FROM cortex_lines WHERE cortex = ? AND id IN (${ph})`)
+      .run(cortex, ...ids);
+    db.prepare(
+      `INSERT INTO cortex_tombstones
+         (cortex, server_seq, ids, ts, author, origin_peer_id, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    ).run(
+      cortex,
+      seq,
+      JSON.stringify(ids),
+      tombstone.ts,
+      tombstone.author ?? null,
+      tombstone.origin_peer_id ?? null,
+      now(),
+    );
+    const ins = db.prepare(
+      'INSERT OR IGNORE INTO cortex_forgotten_ids (cortex, id, server_seq) VALUES (?, ?, ?)',
+    );
+    for (const id of fresh) ins.run(cortex, id, seq);
+    db.exec('COMMIT');
+    return { inserted: true, removedLines: Number(del.changes), server_seq: seq };
+  } catch (err) {
+    try {
+      db.exec('ROLLBACK');
+    } catch {
+      /* best effort */
+    }
+    throw err;
+  }
+}
+
+/** Range-read tombstones with `server_seq > cursor`, ascending, capped at `limit`. */
+export function readCortexTombstones(
+  db: Database,
+  cortex: string,
+  cursor = 0,
+  limit: number = PULL_DEFAULT_LIMIT,
+): StoredTombstone[] {
+  const rows = db
+    .prepare(
+      `SELECT server_seq, ids, ts, author, origin_peer_id
+         FROM cortex_tombstones
+        WHERE cortex = ? AND server_seq > ?
+        ORDER BY server_seq ASC
+        LIMIT ?`,
+    )
+    .all(cortex, cursor, limit) as unknown as {
+      server_seq: number;
+      ids: string;
+      ts: string;
+      author: string | null;
+      origin_peer_id: string | null;
+    }[];
+  return rows.map((r) => ({
+    server_seq: r.server_seq,
+    ids: JSON.parse(r.ids) as string[],
+    ts: r.ts,
+    ...(r.author !== null ? { author: r.author } : {}),
+    ...(r.origin_peer_id !== null ? { origin_peer_id: r.origin_peer_id } : {}),
+  }));
 }

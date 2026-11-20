@@ -4,6 +4,7 @@ import { syncCommand } from './commands/log.js';
 import { listCommand } from './commands/list.js';
 import { summaryCommand } from './commands/summary.js';
 import { deleteCommand } from './commands/delete.js';
+import { forgetCommand } from './commands/forget.js';
 import { supersessionCommand } from './commands/supersession.js';
 import { exportCommand } from './commands/export.js';
 import { importCommand } from './commands/import.js';
@@ -57,6 +58,7 @@ export function buildProgram(): Command {
   program.addCommand(listCommand);
   program.addCommand(summaryCommand);
   program.addCommand(deleteCommand);
+  program.addCommand(forgetCommand);
   program.addCommand(supersessionCommand);
   program.addCommand(exportCommand);
   program.addCommand(importCommand);
