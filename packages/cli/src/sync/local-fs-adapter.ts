@@ -223,12 +223,8 @@ export class LocalFsSyncAdapter implements SyncAdapter {
   private pushTombstones(cortex: string, result: SyncResult): void {
     const cursorStr = getSyncCursor(cortex, this.name, 'push_tombstones');
     const lastSeq = cursorStr ? parseInt(cursorStr, 10) || 0 : 0;
-    const { tombstones, maxSeq } = getLocalTombstonesSince(getCortexDb(cortex), lastSeq, getPeerId());
-    if (maxSeq === lastSeq) return;
-    if (tombstones.length === 0) {
-      setSyncCursor(cortex, this.name, 'push_tombstones', String(maxSeq));
-      return;
-    }
+    const { tombstones, maxSeq } = getLocalTombstonesSince(getCortexDb(cortex), lastSeq);
+    if (tombstones.length === 0) return;
     const dir = this.cortexDir(cortex);
     try {
       fs.mkdirSync(dir, { recursive: true, mode: 0o700 });

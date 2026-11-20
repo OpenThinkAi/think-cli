@@ -9,7 +9,8 @@ for existing setups; a cortex index gains one table through an automatic migrati
 
 ### Upgrading — behaviour changes
 
-- **Hub sync reports when the hub can't take a forget.** After you run `think forget`, a sync against a hub without tombstone support (`think serve` before 3.3.0, or the hosted think-hub until it adds the route) prints `hub does not support memory tombstones yet` until the hub is upgraded. The tombstone stays queued and goes out then. **Do:** upgrade the `think serve` hub; nothing else.
+- **Hub sync reports when the hub can't take a forget.** After you run `think forget`, a sync against a hub without tombstone support (`think serve` before 3.3.0, or the hosted think-hub until it adds the route) prints `hub does not support memory tombstones yet` until the hub is upgraded. It is an error line only; the exit status is unchanged. The tombstone stays queued and goes out then. **Do:** upgrade the `think serve` hub; nothing else.
+- **A hub token now carries delete rights.** Any holder of a `think serve` hub's bearer token can erase memories from the hub and from every peer that syncs through it, with no undo; before, a token could only add lines. **Do:** treat the hub token (and write access to a git remote or fs-sync folder) as delete rights. See `SECURITY.md`.
 - **Peers keep a forgotten entry's text until they upgrade.** A peer on a version before 3.3.0 hides a forgotten entry but keeps its text in its index. **Do:** upgrade every peer, then run `think reindex` on any peer that pulled a forget while it was still on an older version.
 
 ### Added

@@ -19,14 +19,7 @@ import { Command } from 'commander';
 import chalk from 'chalk';
 import { getConfig } from '../lib/config.js';
 import { connectDaemon, DaemonUnavailableError } from '../lib/daemon-client.js';
-
-interface ForgetRpcResult {
-  forgotten: boolean;
-  id: string;
-  ids: string[];
-  derived: { id: string; content: string }[];
-  alreadyForgotten: boolean;
-}
+import type { ForgetResult } from '../daemon/delete-handler.js';
 
 function snippet(content: string): string {
   const oneLine = content.replace(/\s+/g, ' ').trim();
@@ -58,11 +51,11 @@ them by hand.`,
       return;
     }
 
-    let result: ForgetRpcResult;
+    let result: ForgetResult;
     try {
       const client = await connectDaemon();
       try {
-        result = (await client.call('forget', { cortex, id })) as ForgetRpcResult;
+        result = (await client.call('forget', { cortex, id })) as ForgetResult;
       } finally {
         try { client.close(); } catch { /* best-effort */ }
       }

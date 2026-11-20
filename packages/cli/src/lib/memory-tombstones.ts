@@ -39,21 +39,25 @@
  *   - older hub clients never see tombstones: the hub serves them on a
  *     separate route they don't call.
  *
- * Trust: like the existing soft-delete tombstone, a tombstone is accepted from
- * anyone who can write to the sync surface. A peer with push access could
- * already push a soft-delete for any id; forget does not widen that.
+ * Trust: a tombstone is accepted from anyone who can write to the sync
+ * surface. On git/fs that matches the existing soft-delete line, except that a
+ * tombstone removes rows instead of hiding them. On the hub it is a real
+ * widening: before 3.3.0 a bearer-token holder could only append; now any
+ * token holder can erase lines from the hub and from every peer that syncs
+ * through it, with no undo (SECURITY.md, "Known trade-offs").
  */
 
 import type { DatabaseSync } from 'node:sqlite';
 import { deterministicId } from './deterministic-id.js';
 import { tryLoadSqliteVec } from './search-vectors.js';
+import { TOMBSTONE_MAX_IDS } from '../sync/hub-protocol.js';
 
 export const TOMBSTONE_KIND = 'tombstone' as const;
 /** Fixed placeholder content: never the forgotten text. See module header. */
 export const TOMBSTONE_PLACEHOLDER = '[forgotten]';
 export const TOMBSTONE_REASON = 'forget';
-/** Upper bound on target ids in one tombstone line (defensive parse cap). */
-export const MAX_TOMBSTONE_IDS = 16;
+/** Upper bound on target ids in one tombstone line (the wire contract's cap). */
+export const MAX_TOMBSTONE_IDS = TOMBSTONE_MAX_IDS;
 
 export interface MemoryTombstone {
   /** Every id the forgotten memory may be keyed under. Never empty. */
@@ -168,7 +172,11 @@ export interface ApplyTombstoneResult {
  * (the forget handler's outbox enqueue) wrap it. Use
  * {@link applyMemoryTombstone} for a standalone, transactional apply.
  */
-export function applyMemoryTombstoneNoTx(db: DatabaseSync, t: MemoryTombstone): ApplyTombstoneResult {
+export function applyMemoryTombstoneNoTx(
+  db: DatabaseSync,
+  t: MemoryTombstone,
+  opts: { local?: boolean } = {},
+): ApplyTombstoneResult {
   const ids = [...new Set(t.ids)].slice(0, MAX_TOMBSTONE_IDS);
   if (ids.length === 0) return { removed: 0, recorded: false };
   const ph = ids.map(() => '?').join(', ');
@@ -196,12 +204,13 @@ export function applyMemoryTombstoneNoTx(db: DatabaseSync, t: MemoryTombstone): 
     .prepare('SELECT COALESCE(MAX(tombstone_seq), 0) AS s FROM memory_tombstones')
     .get() as { s: number };
   const insert = db.prepare(
-    `INSERT OR IGNORE INTO memory_tombstones (id, tombstone_seq, forgotten_at, author, origin_peer_id)
-     VALUES (?, ?, ?, ?, ?)`,
+    `INSERT OR IGNORE INTO memory_tombstones
+       (id, tombstone_seq, forgotten_at, author, origin_peer_id, local)
+     VALUES (?, ?, ?, ?, ?, ?)`,
   );
   let recorded = false;
   for (const id of ids) {
-    const r = insert.run(id, seqRow.s + 1, t.ts, t.author, t.origin_peer_id);
+    const r = insert.run(id, seqRow.s + 1, t.ts, t.author, t.origin_peer_id, opts.local ? 1 : 0);
     if (Number(r.changes) > 0) recorded = true;
   }
   return { removed: Number(del.changes), recorded };
@@ -229,20 +238,13 @@ export function applyMemoryTombstone(db: DatabaseSync, t: MemoryTombstone): Appl
  * hold old page images until the next checkpoint.
  */
 export function withSecureDelete<T>(db: DatabaseSync, fn: () => T): T {
-  let prev: number | null = null;
-  try {
-    const row = db.prepare('PRAGMA secure_delete').get() as Record<string, number> | undefined;
-    prev = row ? Number(Object.values(row)[0]) : null;
-    db.exec('PRAGMA secure_delete = ON');
-  } catch {
-    prev = null;
-  }
+  const row = db.prepare('PRAGMA secure_delete').get() as Record<string, number>;
+  const prev = Number(Object.values(row)[0]);
+  db.exec('PRAGMA secure_delete = ON');
   try {
     return fn();
   } finally {
-    if (prev !== null && prev !== 1) {
-      try { db.exec(`PRAGMA secure_delete = ${prev === 2 ? 'FAST' : 'OFF'}`); } catch { /* ignore */ }
-    }
+    if (prev !== 1) db.exec(`PRAGMA secure_delete = ${prev === 2 ? 'FAST' : 'OFF'}`);
   }
 }
 
@@ -268,24 +270,28 @@ function deleteFromVecIndex(db: DatabaseSync, rowids: number[]): void {
 
 export interface LocalTombstoneBatch {
   tombstones: MemoryTombstone[];
-  /** Highest tombstone_seq scanned (local and foreign); the next push cursor. */
+  /** Highest tombstone_seq in this batch; the push cursor after sending it. */
   maxSeq: number;
 }
 
 /**
- * Tombstones recorded after `sinceSeq`, grouped back into one tombstone per
- * forget, restricted to those this peer issued (a pulled tombstone is not
- * re-emitted — the same guard memories use, AGT-250).
+ * Tombstones created on this machine by `think forget` (local = 1) after
+ * `sinceSeq`, grouped back into one tombstone per forget, oldest first, at
+ * most `limit` of them. A pulled tombstone is never returned, so it is never
+ * re-emitted to another sync surface. `maxSeq` is `sinceSeq` when there is
+ * nothing to send.
  */
 export function getLocalTombstonesSince(
   db: DatabaseSync,
   sinceSeq: number,
-  localPeer: string,
+  limit = Number.MAX_SAFE_INTEGER,
 ): LocalTombstoneBatch {
   const rows = db
     .prepare(
       `SELECT id, tombstone_seq, forgotten_at, author, origin_peer_id
-         FROM memory_tombstones WHERE tombstone_seq > ? ORDER BY tombstone_seq ASC, rowid ASC`,
+         FROM memory_tombstones
+        WHERE tombstone_seq > ? AND local = 1
+        ORDER BY tombstone_seq ASC, rowid ASC`,
     )
     .all(sinceSeq) as {
       id: string;
@@ -297,19 +303,19 @@ export function getLocalTombstonesSince(
   let maxSeq = sinceSeq;
   const groups = new Map<number, MemoryTombstone>();
   for (const r of rows) {
-    if (r.tombstone_seq > maxSeq) maxSeq = r.tombstone_seq;
-    if (r.origin_peer_id !== localPeer) continue;
     const g = groups.get(r.tombstone_seq);
     if (g) {
       g.ids.push(r.id);
-    } else {
-      groups.set(r.tombstone_seq, {
-        ids: [r.id],
-        ts: r.forgotten_at,
-        author: r.author ?? 'unknown',
-        origin_peer_id: r.origin_peer_id,
-      });
+      continue;
     }
+    if (groups.size >= limit) break;
+    groups.set(r.tombstone_seq, {
+      ids: [r.id],
+      ts: r.forgotten_at,
+      author: r.author ?? 'unknown',
+      origin_peer_id: r.origin_peer_id,
+    });
+    maxSeq = r.tombstone_seq;
   }
   return { tombstones: [...groups.values()], maxSeq };
 }

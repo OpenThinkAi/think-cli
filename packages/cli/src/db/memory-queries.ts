@@ -1,9 +1,9 @@
-import { isForgotten } from '../lib/memory-tombstones.js';
 import type { DatabaseSync } from 'node:sqlite';
 import { v7 as uuidv7 } from 'uuid';
 import { getCortexDb } from './engrams.js';
 import { getPeerId } from '../lib/config.js';
 import { validateEngramContent } from '../lib/sanitize.js';
+import { isForgotten } from '../lib/memory-tombstones.js';
 
 /**
  * Result shape for `insertMemoryIfNotExists`. AGT-059 moved

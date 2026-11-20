@@ -254,7 +254,7 @@ export function handleForget(params: Record<string, unknown>): ForgetResult {
   withSecureDelete(db, () => {
     db.exec('BEGIN');
     try {
-      applyMemoryTombstoneNoTx(db, tombstone);
+      applyMemoryTombstoneNoTx(db, tombstone, { local: true });
       enqueueL1Outbox(db, row.id, serializeTombstoneLine(tombstone), now);
       db.exec('COMMIT');
     } catch (err) {

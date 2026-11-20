@@ -35,6 +35,7 @@ import { deterministicId } from '../../src/lib/deterministic-id.js';
 import {
   TOMBSTONE_PLACEHOLDER,
   applyMemoryTombstone,
+  applyMemoryTombstoneNoTx,
   getLocalTombstonesSince,
   isForgotten,
   parseTombstone,
@@ -140,16 +141,23 @@ describe('applyMemoryTombstone', () => {
     expect(rowCount('gone')).toBe(0);
   });
 
-  it('getLocalTombstonesSince groups ids per forget and skips foreign tombstones', () => {
+  it('getLocalTombstonesSince returns only forgets made here, grouped, never pulled ones', () => {
     pair.peerA.activate();
     const db = getCortexDb(pair.cortexName);
     const me = getPeerId();
-    applyMemoryTombstone(db, { ids: ['a1', 'a2'], ts: 't1', author: 'me', origin_peer_id: me });
-    applyMemoryTombstone(db, { ids: ['f1'], ts: 't2', author: 'them', origin_peer_id: 'other' });
-    const batch = getLocalTombstonesSince(db, 0, me);
-    expect(batch.tombstones).toEqual([{ ids: ['a1', 'a2'], ts: 't1', author: 'me', origin_peer_id: me }]);
-    expect(batch.maxSeq).toBe(2);
-    expect(getLocalTombstonesSince(db, batch.maxSeq, me).tombstones).toEqual([]);
+    applyMemoryTombstoneNoTx(db, { ids: ['a1', 'a2'], ts: 't1', author: 'me', origin_peer_id: me }, { local: true });
+    // A pulled tombstone that claims this peer's id must not be re-emitted.
+    applyMemoryTombstone(db, { ids: ['f1'], ts: 't2', author: 'them', origin_peer_id: me });
+    applyMemoryTombstoneNoTx(db, { ids: ['a3'], ts: 't3', author: 'me', origin_peer_id: me }, { local: true });
+    const batch = getLocalTombstonesSince(db, 0);
+    expect(batch.tombstones.map((t) => t.ids)).toEqual([['a1', 'a2'], ['a3']]);
+    expect(batch.maxSeq).toBe(3);
+    expect(getLocalTombstonesSince(db, batch.maxSeq).tombstones).toEqual([]);
+
+    // limit caps the batch and maxSeq follows the last included forget.
+    const first = getLocalTombstonesSince(db, 0, 1);
+    expect(first.tombstones.map((t) => t.ids)).toEqual([['a1', 'a2']]);
+    expect(first.maxSeq).toBe(1);
   });
 });
 
@@ -310,22 +318,31 @@ describe('hub propagation', () => {
     expect(getSyncCursor(pair.cortexName, 'hub', 'pull_tombstones')).not.toBeNull();
   });
 
-  it('refuses to store a forgotten line again and never reuses a seq', () => {
+  it('refuses to store a forgotten line again and never reuses a seq', async () => {
     const line = { ts: 't', author: 'a', content: 'x', source_ids: [], kind: 'memory' as const };
-    const first = appendCortexLine(serveDb, 'c', line);
-    const id = first.id;
-    return app.fetch(new Request(`${HUB_URL}/v1/cortex-sync/tombstones`, {
+    const { id } = appendCortexLine(serveDb, 'c', line);
+    const res = await app.fetch(new Request(`${HUB_URL}/v1/cortex-sync/tombstones`, {
       method: 'POST',
       headers: { Authorization: `Bearer ${TOKEN}`, 'Content-Type': 'application/json' },
       body: JSON.stringify({ cortex: 'c', tombstones: [{ ids: [id], ts: 'now' }] }),
-    })).then(async (res) => {
-      expect(await res.json()).toEqual({ accepted: 1, duplicates: 0, removedLines: 1 });
-      expect(maxCortexSeq(serveDb, 'c')).toBe(2);
-      const replay = appendCortexLine(serveDb, 'c', line);
-      expect(replay.inserted).toBe(false);
-      const next = appendCortexLine(serveDb, 'c', { ...line, content: 'y' });
-      expect(next.server_seq).toBe(3);
-    });
+    }));
+    expect(await res.json()).toEqual({ accepted: 1, duplicates: 0, removedLines: 1 });
+    expect(maxCortexSeq(serveDb, 'c')).toBe(2);
+    expect(appendCortexLine(serveDb, 'c', line).inserted).toBe(false);
+    expect(appendCortexLine(serveDb, 'c', { ...line, content: 'y' }).server_seq).toBe(3);
+  });
+
+  it('drains a tombstone backlog larger than the per-request cap in chunks', async () => {
+    pair.peerA.activate();
+    const a = useHub();
+    const db = getCortexDb(pair.cortexName);
+    for (let i = 0; i < 1001; i++) {
+      applyMemoryTombstoneNoTx(db, { ids: [`id-${i}`], ts: 't', author: 'a', origin_peer_id: null }, { local: true });
+    }
+    const res = await a.push(pair.cortexName);
+    expect(res.errors).toEqual([]);
+    expect(res.pushed).toBe(1001);
+    expect((serveDb.prepare('SELECT COUNT(*) AS n FROM cortex_tombstones').get() as { n: number }).n).toBe(1001);
   });
 
   it('an older hub without the route: push reports it and keeps the tombstone queued; pull is silent', async () => {

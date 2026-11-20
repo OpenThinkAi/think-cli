@@ -331,8 +331,15 @@ Peers on 3.3.0 or later apply the line wherever they read it (daemon pull loop,
 `think reindex`, git and local-fs adapter pull): delete the rows, their
 embeddings and search-index entries, and record the ids in `memory_tombstones`.
 
-Trust: a tombstone is accepted from anyone who can write to the sync surface,
-the same as the existing soft-delete line.
+Trust: a tombstone is accepted from anyone who can write to the sync surface.
+On git and fs that is who could already push a soft-delete line, but a
+tombstone removes rows where the soft delete only hid them. On the hub it is a
+widening: before 3.3.0 a bearer-token holder could only append lines; now any
+token holder can erase lines from the hub and from every peer that syncs
+through it, and nothing undoes a tombstone. A peer re-emits only tombstones
+made on that machine by `think forget` (never pulled ones, whatever
+`origin_peer_id` they claim), so a forged tombstone does not hop from one sync
+surface to another.
 
 ### Forgetting a memory
 
@@ -370,3 +377,7 @@ doesn't over-constrain the implementations:
 - Long-term-event / retro line kinds over the hub (future revision).
 - History purge on the hub's own backups or on git remotes (see
   [Forgetting a memory](#forgetting-a-memory)).
+- Who may forget what. The single-tenant `think serve` hub lets any token
+  holder push a tombstone for any line. A multi-tenant hub (think-hub) should
+  scope the tombstone route per seat (for example, only the seat that pushed a
+  line may forget it) before adopting it.

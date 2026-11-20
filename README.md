@@ -112,7 +112,7 @@ To take something back after it was written:
 
 ```bash
 think delete --id <id>   # soft delete: hidden on every peer, text kept
-think forget <id>        # erase: text and embedding removed on every peer and the hub
+think forget <id>        # erase: text and embedding removed on every up-to-date peer and hub
 ```
 
 `think forget` sends a tombstone that carries only the entry's ids; peers remove their copy when they pull it. It does not rewrite git history: the original line stays in the cortex's git repo, its remote and clones, and in fs-sync folders until you rewrite them by hand. Details: [Forgetting a memory](docs/cortex-sync-protocol.md#forgetting-a-memory).

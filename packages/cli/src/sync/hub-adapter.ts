@@ -386,52 +386,57 @@ export class HubSyncAdapter implements SyncAdapter {
     // Config/transport problems were already reported by pushLines.
     if (!hub || insecureHubUrlReason(hub.url)) return;
 
+    const db = getCortexDb(cortex);
     const cursorStr = getSyncCursor(cortex, this.name, 'push_tombstones');
-    const lastSeq = cursorStr ? parseInt(cursorStr, 10) || 0 : 0;
-    const { tombstones, maxSeq } = getLocalTombstonesSince(getCortexDb(cortex), lastSeq, getPeerId());
-    if (maxSeq === lastSeq) return;
-    if (tombstones.length === 0) {
-      setSyncCursor(cortex, this.name, 'push_tombstones', String(maxSeq));
-      return;
-    }
+    let cursor = cursorStr ? parseInt(cursorStr, 10) || 0 : 0;
 
-    const wire: WireTombstone[] = tombstones.map((t) => ({
-      ids: t.ids.slice(0, TOMBSTONE_MAX_IDS),
-      ts: t.ts,
-      ...(t.author ? { author: t.author } : {}),
-      ...(t.origin_peer_id ? { origin_peer_id: t.origin_peer_id } : {}),
-    }));
+    // Chunked to the server's per-request cap, cursor advanced per accepted
+    // chunk, so a backlog (e.g. queued while the hub was old) still drains.
+    for (;;) {
+      const { tombstones, maxSeq } = getLocalTombstonesSince(db, cursor, PULL_MAX_LIMIT);
+      if (tombstones.length === 0) return;
 
-    try {
-      const res = await this.fetchImpl(this.url(hub, TOMBSTONES_ROUTE), {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: bearerHeader(hub.token),
-        },
-        body: JSON.stringify({ cortex: hub.cortex ?? cortex, tombstones: wire }),
-      });
-      if (res.status === 404 || res.status === 405) {
-        result.errors.push(
-          `hub does not support memory tombstones yet: ${wire.length} forgotten ` +
-            `${wire.length === 1 ? 'memory was' : 'memories were'} not removed from the hub ` +
-            '(queued; sent once the hub is upgraded)',
-        );
+      const wire: WireTombstone[] = tombstones.map((t) => ({
+        ids: t.ids.slice(0, TOMBSTONE_MAX_IDS),
+        ts: t.ts,
+        ...(t.author ? { author: t.author } : {}),
+        ...(t.origin_peer_id ? { origin_peer_id: t.origin_peer_id } : {}),
+      }));
+
+      try {
+        const res = await this.fetchImpl(this.url(hub, TOMBSTONES_ROUTE), {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: bearerHeader(hub.token),
+          },
+          body: JSON.stringify({ cortex: hub.cortex ?? cortex, tombstones: wire }),
+        });
+        if (res.status === 404 || res.status === 405) {
+          const queued = getLocalTombstonesSince(db, cursor).tombstones.length;
+          result.errors.push(
+            `hub does not support memory tombstones yet: ${queued} forgotten ` +
+              `${queued === 1 ? 'memory was' : 'memories were'} not removed from the hub ` +
+              '(queued; sent once the hub is upgraded)',
+          );
+          return;
+        }
+        if (!res.ok) {
+          result.errors.push(await this.httpError('tombstone push', res));
+          return;
+        }
+        const parsed = tombstonePushResponseSchema.safeParse(await res.json());
+        if (!parsed.success) {
+          result.errors.push('hub tombstone push: malformed response from server');
+          return;
+        }
+        cursor = maxSeq;
+        setSyncCursor(cortex, this.name, 'push_tombstones', String(cursor));
+        result.pushed += wire.length;
+      } catch (err) {
+        result.errors.push(`hub tombstone push failed: ${errMessage(err)}`);
         return;
       }
-      if (!res.ok) {
-        result.errors.push(await this.httpError('push', res));
-        return;
-      }
-      const parsed = tombstonePushResponseSchema.safeParse(await res.json());
-      if (!parsed.success) {
-        result.errors.push('hub tombstone push: malformed response from server');
-        return;
-      }
-      setSyncCursor(cortex, this.name, 'push_tombstones', String(maxSeq));
-      result.pushed += wire.length;
-    } catch (err) {
-      result.errors.push(`hub tombstone push failed: ${errMessage(err)}`);
     }
   }
 
@@ -464,7 +469,7 @@ export class HubSyncAdapter implements SyncAdapter {
       // Older hub without the extension: nothing to apply, not an error.
       if (res.status === 404 || res.status === 405) return;
       if (!res.ok) {
-        errors.push(await this.httpError('pull', res));
+        errors.push(await this.httpError('tombstone pull', res));
         return;
       }
       const parsed = tombstonePullResponseSchema.safeParse(await res.json());
@@ -523,7 +528,7 @@ export class HubSyncAdapter implements SyncAdapter {
   // including the bearer token. We surface the status (so auth rejections
   // read as "401", clearly distinct from "unreachable") and a short snippet
   // of the body if present.
-  private async httpError(op: 'push' | 'pull', res: Response): Promise<string> {
+  private async httpError(op: string, res: Response): Promise<string> {
     let detail = '';
     try {
       const text = await res.text();

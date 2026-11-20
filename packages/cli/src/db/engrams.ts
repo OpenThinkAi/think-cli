@@ -511,8 +511,12 @@ export const migrations: Migration[] = [
       //                   tombstones with tombstone_seq > their push cursor.
       //   forgotten_at    ISO-8601 time of the forget.
       //   author          who forgot it (label only, like memories.author).
-      //   origin_peer_id  peer that issued the forget; adapters push only
-      //                   their own (a pulled tombstone is not re-emitted).
+      //   origin_peer_id  peer that issued the forget, as carried on the line
+      //                   (informational; it is client-supplied).
+      //   local           1 only for tombstones `think forget` created on
+      //                   this machine. Adapters push only local=1 rows, so a
+      //                   pulled tombstone is never re-emitted — even one
+      //                   that claims this peer's id.
       //
       // Unlike the rest of L2 this table is not purely derived from L1: the
       // hub/fs adapters receive tombstones that never touch L1. It holds ids
@@ -523,7 +527,8 @@ export const migrations: Migration[] = [
           tombstone_seq INTEGER NOT NULL,
           forgotten_at TEXT NOT NULL,
           author TEXT,
-          origin_peer_id TEXT
+          origin_peer_id TEXT,
+          local INTEGER NOT NULL DEFAULT 0
         ) STRICT;
       `);
       db.exec(
