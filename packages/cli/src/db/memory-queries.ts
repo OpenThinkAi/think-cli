@@ -1,3 +1,4 @@
+import { isForgotten } from '../lib/memory-tombstones.js';
 import type { DatabaseSync } from 'node:sqlite';
 import { v7 as uuidv7 } from 'uuid';
 import { getCortexDb } from './engrams.js';
@@ -96,6 +97,9 @@ export function insertMemoryIfNotExists(cortexName: string, params: InsertMemory
   const db = getCortexDb(cortexName);
   const existing = db.prepare('SELECT id FROM memories WHERE id = ?').get(params.id);
   if (existing) return { inserted: false, warnings: [] };
+  // A forgotten memory (AGT-2331) is never re-ingested, whichever peer or
+  // backend re-delivers it.
+  if (isForgotten(db, params.id)) return { inserted: false, warnings: [] };
 
   // Centralized validation chokepoint (AGT-059). `migrate-data` historically
   // bypassed validation; routing through here closes that gap. Sync-adapter

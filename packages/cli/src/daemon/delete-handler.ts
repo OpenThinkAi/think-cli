@@ -34,6 +34,14 @@ import { getCortexDb } from '../db/engrams.js';
 import { enqueueL1Outbox } from '../lib/l1-page.js';
 import { getIndexDbPath, sanitizeName } from '../lib/paths.js';
 import { pushDebouncer } from './push-debouncer.js';
+import { getConfig, getPeerId } from '../lib/config.js';
+import {
+  applyMemoryTombstoneNoTx,
+  isForgotten,
+  serializeTombstoneLine,
+  tombstoneIdsFor,
+  withSecureDelete,
+} from '../lib/memory-tombstones.js';
 
 /** Above this many `--match` hits, deletion requires `force: true`. */
 export const MAX_UNFORCED_MATCH = 20;
@@ -165,4 +173,97 @@ export function handleDelete(params: Record<string, unknown>): DeleteResult {
     deleted: targets.length,
     entries: targets.map((t) => ({ id: t.id, content: t.content })),
   };
+}
+
+// ---------------------------------------------------------------------------
+// `forget` — AGT-2331
+// ---------------------------------------------------------------------------
+
+export interface ForgetResult {
+  /** True when a memory was removed from this peer. */
+  forgotten: boolean;
+  /** The id that was forgotten (echo of the request). */
+  id: string;
+  /** Every id the tombstone targets (own id + content-derived id). */
+  ids: string[];
+  /** Live entries derived from the forgotten one by compaction; not removed. */
+  derived: { id: string; content: string }[];
+  /** True when the id was already forgotten (no-op). */
+  alreadyForgotten: boolean;
+}
+
+/**
+ * Daemon `forget` endpoint (AGT-2331). Hard-deletes one memory from the
+ * cortex index (row, embedding, FTS entry, compaction links, any undrained
+ * outbox line) and enqueues a `kind: "tombstone"` L1 line so every peer does
+ * the same on pull. Unlike `delete` (a soft retraction whose tombstone line
+ * repeats the content), the forget tombstone carries ids only.
+ *
+ * Works on soft-deleted rows too, so `think delete` followed by
+ * `think forget` purges the content.
+ *
+ * Params: cortex (string, required), id (string, required).
+ */
+export function handleForget(params: Record<string, unknown>): ForgetResult {
+  const cortexRaw = params['cortex'];
+  if (typeof cortexRaw !== 'string' || cortexRaw.length === 0) {
+    throw new Error("invalid field 'cortex': must be a non-empty string");
+  }
+  const id = params['id'];
+  if (typeof id !== 'string' || id.length === 0) {
+    throw new Error("invalid field 'id': must be a non-empty string");
+  }
+  const safeCortex = sanitizeName(cortexRaw);
+  if (!fs.existsSync(getIndexDbPath(safeCortex))) {
+    throw new Error(`cortex '${safeCortex}' not found`);
+  }
+
+  const db = getCortexDb(safeCortex);
+  const row = db
+    .prepare('SELECT id, ts, author, content FROM memories WHERE id = ?')
+    .get(id) as { id: string; ts: string; author: string; content: string } | undefined;
+
+  if (!row) {
+    return {
+      forgotten: false,
+      id,
+      ids: [],
+      derived: [],
+      alreadyForgotten: isForgotten(db, id),
+    };
+  }
+
+  // Compacted entries summarising this one are separate memories with their
+  // own content; report them so the caller can forget them too.
+  const derived = db
+    .prepare(
+      `SELECT m.id, m.content FROM compaction_links l
+         JOIN memories m ON m.id = l.compacted_id
+        WHERE l.raw_id = ? AND m.deleted_at IS NULL`,
+    )
+    .all(id) as { id: string; content: string }[];
+
+  const now = new Date().toISOString();
+  const tombstone = {
+    ids: tombstoneIdsFor(row),
+    ts: now,
+    author: getConfig().cortex?.author ?? 'unknown',
+    origin_peer_id: getPeerId(),
+  };
+
+  withSecureDelete(db, () => {
+    db.exec('BEGIN');
+    try {
+      applyMemoryTombstoneNoTx(db, tombstone);
+      enqueueL1Outbox(db, row.id, serializeTombstoneLine(tombstone), now);
+      db.exec('COMMIT');
+    } catch (err) {
+      db.exec('ROLLBACK');
+      throw err;
+    }
+  });
+
+  pushDebouncer.notify(safeCortex);
+
+  return { forgotten: true, id, ids: tombstone.ids, derived, alreadyForgotten: false };
 }

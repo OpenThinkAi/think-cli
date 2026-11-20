@@ -41,6 +41,7 @@ import { getCortexDb } from '../db/engrams.js';
 import { getSyncCursor, setSyncCursor } from '../db/memory-queries.js';
 import embed, { EMBEDDING_MODEL_NAME } from '../lib/embed.js';
 import { assignNextSeq } from '../db/activity-seq.js';
+import { applyMemoryTombstone, isForgotten, parseTombstone } from '../lib/memory-tombstones.js';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -462,6 +463,17 @@ export class PullLoop {
           const entry = parseEntryLine(line);
           if (entry === null) continue;
 
+          // Memory tombstone (`think forget`, AGT-2331): hard-delete the
+          // targeted rows and record the ids so they are never re-ingested.
+          const tombstone = parseTombstone(entry);
+          if (tombstone) {
+            const r = applyMemoryTombstone(getCortexDb(safeCortex), tombstone);
+            if (r.removed > 0) {
+              this.log(`applied memory tombstone: removed ${r.removed} ${r.removed === 1 ? 'entry' : 'entries'}`);
+            }
+            continue;
+          }
+
           const entryId = typeof entry.id === 'string' ? entry.id : null;
           if (!entryId) continue;
 
@@ -506,6 +518,10 @@ export class PullLoop {
     if (!content) return;
 
     const db = getCortexDb(safeCortex);
+
+    // Forgotten (AGT-2331): never re-ingest, even if an older line or a
+    // soft-delete tombstone for the same id arrives later.
+    if (isForgotten(db, entryId)) return;
 
     // Fast-path dedup check before the embed call (avoid embedding content
     // that's already indexed).

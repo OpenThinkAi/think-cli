@@ -29,8 +29,9 @@ mechanics below.
 
 - **Memory ids are content-derived.** `id = deterministicId(ts, author,
   content)`. There is no last-writer-wins; dedup is `INSERT OR IGNORE` on `id`.
-- **Memories are immutable via sync.** `deleted_at` is never serialized or
-  applied for memories — the wire line has no tombstone field.
+- **Memory lines are immutable via sync.** A line's fields never change and
+  the push/pull line shape has no `deleted_at`. Removal travels separately, as
+  a memory tombstone on its own route pair — see [Tombstones](#tombstones).
 - **`memories.sync_version` ≠ `server_seq`.** They are different cursors with
   different owners. See [Two cursors](#two-cursors).
 
@@ -135,7 +136,8 @@ Append a batch of memory lines to a cortex.
 The line shape is **identical** to what the git/fs adapters already serialize
 and what `parseMemoriesJsonl` consumes — the client reuses that serializer. Note
 the deliberate omissions: no `id` (server derives it), no `deleted_at`
-(memories are immutable via sync), no `server_seq` (server assigns it).
+(removal is a [tombstone](#tombstones), not a line field), no `server_seq`
+(server assigns it).
 
 **Response** (`PushResponse`):
 
@@ -243,6 +245,119 @@ The "next cursor / more remain" representation was chosen deliberately:
   mutable memory state. Every peer's local cortex converges to the same memory
   set.
 
+## Tombstones
+
+> Added in 3.3.0 (AGT-2331). An optional, additive extension: a hub or client
+> without it keeps working against one that has it.
+
+`think forget <id>` removes a memory everywhere it is indexed. Over the hub it
+travels as a **memory tombstone** on its own route, `/v1/cortex-sync/tombstones`
+(`TOMBSTONES_ROUTE`), never inside push/pull `lines`:
+
+**Push** — `POST /v1/cortex-sync/tombstones`, bearer auth as above:
+
+```jsonc
+{
+  "cortex": "team-shared",
+  "tombstones": [
+    {
+      "ids": ["0193…local-id", "5f1c…content-derived-id"],
+      "ts": "2026-11-19T12:00:00Z",       // forget time
+      "author": "matt",                    // optional, label only
+      "origin_peer_id": "peer-1"           // optional
+    }
+  ]
+}
+```
+
+Response: `{ "accepted": 1, "duplicates": 0, "removedLines": 1 }`.
+
+`ids` lists every id the memory may be stored under (1–16 entries): the
+forgetting peer's own row id and the content-derived
+`deterministicId(ts, author, content)` that the hub and the git/fs adapters key
+on. A tombstone carries no content. The hub:
+
+1. deletes every stored line in the cortex whose id is listed;
+2. records the ids, so a later push of the same line returns `duplicate` and
+   stores nothing;
+3. stamps the tombstone with the next `server_seq`. Lines and tombstones share
+   one per-cortex sequence space, so deleting the newest line can never let a
+   later line reuse a `server_seq` that a client has already advanced past.
+
+A tombstone whose ids are all already recorded is a `duplicate` and changes
+nothing, so pushes stay replay-safe.
+
+**Pull** — `GET /v1/cortex-sync/tombstones?cortex=&cursor=&limit=`, the same
+query rules and pagination as line pull, returning
+`{ "tombstones": [{ "ids", "ts", "author"?, "origin_peer_id"?, "server_seq" }], "nextCursor", "hasMore" }`.
+The client keeps a separate cursor, `sync_cursors(backend='hub',
+direction='pull_tombstones')`, pulls tombstones before lines, and applies each
+one by deleting the matching local rows and recording the ids so no sync path
+re-ingests them.
+
+**Compatibility.**
+
+- An older client never calls the tombstone routes, so its strict line schema
+  never meets an unknown shape. It keeps any copy it already pulled; a fresh
+  pull no longer returns the deleted line.
+- A newer client against an older hub (a `think serve` before 3.3.0, or the
+  hosted think-hub until it adds these routes) gets `404`/`405`. Pull skips
+  tombstones silently. Push reports `hub does not support memory tombstones
+  yet` in the sync errors and leaves the tombstone queued (its push cursor,
+  `direction='push_tombstones'`, does not advance), so it goes out once the hub
+  is upgraded.
+
+### Tombstones in L1 and the git/fs adapters
+
+Outside the hub, a tombstone is a JSONL line of `kind: "tombstone"` in the same
+files memories live in: the daemon writes it to L1 through the outbox (so it
+reaches the git remote and survives `think reindex`), and the local-fs adapter
+appends it to the peer's bucket file.
+
+```jsonc
+{"kind":"tombstone","id":"<own id>","ids":["<own id>","<content-derived id>"],
+ "ts":"…","author":"matt","origin_peer_id":"peer-1",
+ "content":"[forgotten]","deleted_at":"…","tombstone_reason":"forget",
+ "source_ids":[],"topics":[],"supersedes":[],"compacted_from":null}
+```
+
+The fixed `content` placeholder and `deleted_at` are there for peers older than
+3.3.0, which don't know the kind: their daemon treats the line as a soft-delete
+of `id` and hides the row from recall, and their adapters, reindex and
+compaction backfill skip any line with `deleted_at`. Nothing errors. Such a peer
+keeps the text in its index until it upgrades and runs `think reindex`.
+
+Peers on 3.3.0 or later apply the line wherever they read it (daemon pull loop,
+`think reindex`, git and local-fs adapter pull): delete the rows, their
+embeddings and search-index entries, and record the ids in `memory_tombstones`.
+
+Trust: a tombstone is accepted from anyone who can write to the sync surface,
+the same as the existing soft-delete line.
+
+### Forgetting a memory
+
+`think forget <id>` (daemon required, like `think delete`):
+
+- removes the entry's row from the local index: text, embedding, full-text
+  index entry and compaction links (SQLite `secure_delete` is on for the
+  delete; the WAL may hold old pages until its next checkpoint);
+- drops the entry's line from the outbox if it was never pushed, so it never
+  leaves the machine;
+- queues the tombstone for every sync surface above;
+- lists any compacted entries that summarise the forgotten one. Those are
+  separate memories with their own text; forget them too if needed.
+
+It does **not** rewrite history. The original line stays in the cortex's L1
+JSONL files, in the git remote's history and in every clone, and in fs-synced
+folders, until someone rewrites them by hand. To purge it from git, rewrite
+the cortex branch (for example with `git filter-repo`, or by squashing the
+branch into one fresh commit after removing the line), force-push, and have
+every peer re-clone. Backups need the same treatment.
+
+`think delete` is different: it is a soft delete (the row is hidden, not
+removed) and its tombstone line repeats the entry's content. Use `think forget`
+when the text itself must go.
+
 ## What this contract does NOT specify
 
 These are downstream / server concerns intentionally left open so the contract
@@ -253,3 +368,5 @@ doesn't over-constrain the implementations:
 - The storage schema and how `server_seq` is allocated in Postgres (AGT-571).
 - Tenancy/authorization mapping from token → seat → cortex (think-hub).
 - Long-term-event / retro line kinds over the hub (future revision).
+- History purge on the hub's own backups or on git remotes (see
+  [Forgetting a memory](#forgetting-a-memory)).

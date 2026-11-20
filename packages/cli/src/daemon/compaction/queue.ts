@@ -557,6 +557,7 @@ export function scanAndEnqueueUncompacted(
 
     // Per-id checker for permanently-skipped status (AGT-302).
     const isPermanentlySkipped = makePermanentlySkippedChecker(safeCortex);
+    const isForgottenId = makeForgottenChecker(safeCortex);
 
     // Read all L1 JSONL pages for this cortex (sorted ascending = oldest first).
     let pages: string[] = [];
@@ -611,6 +612,10 @@ export function scanAndEnqueueUncompacted(
 
         // Skip tombstoned entries.
         if (parsed.deleted_at !== null && parsed.deleted_at !== undefined) continue;
+
+        // Skip forgotten entries (`think forget`, AGT-2331): the original line
+        // stays in L1, but its content must never be compacted again.
+        if (isForgottenId !== null && isForgottenId(id)) continue;
 
         candidates.push(id);
         if (candidates.length >= BACKFILL_CAP) break outer;
@@ -676,6 +681,20 @@ function makePermanentlySkippedChecker(cortexName: string): ((id: string) => boo
 // ---------------------------------------------------------------------------
 // DB helpers for compaction_links
 // ---------------------------------------------------------------------------
+
+/**
+ * Returns a checker for forgotten memory ids (`memory_tombstones`, AGT-2331).
+ * Returns `null` when the DB is unavailable.
+ */
+function makeForgottenChecker(cortexName: string): ((id: string) => boolean) | null {
+  try {
+    const db = getCortexDb(cortexName);
+    const stmt = db.prepare('SELECT 1 FROM memory_tombstones WHERE id = ? LIMIT 1');
+    return (id: string): boolean => stmt.get(id) !== undefined;
+  } catch {
+    return null;
+  }
+}
 
 /**
  * Returns a prepared-statement checker for the `compaction_links` table.

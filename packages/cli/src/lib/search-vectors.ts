@@ -60,7 +60,7 @@ const sqliteVecLoadCache = new Map<DatabaseSync, boolean>();
  * failure (with a warning logged to stderr). Results are cached per db
  * instance so the load attempt only happens once per process per DB.
  */
-function tryLoadSqliteVec(db: DatabaseSync): boolean {
+export function tryLoadSqliteVec(db: DatabaseSync): boolean {
   const cached = sqliteVecLoadCache.get(db);
   if (cached !== undefined) return cached;
 

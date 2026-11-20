@@ -28,6 +28,7 @@ import {
   fetchBranch,
 } from '../lib/git.js';
 import { parseMemoriesJsonl } from '../lib/curator.js';
+import { applyMemoryTombstone, forgottenIdSet, parseTombstonesJsonl } from '../lib/memory-tombstones.js';
 import { resolveMemoryId } from '../lib/deterministic-id.js';
 import { getCortexDb, closeCortexDb } from '../db/engrams.js';
 import { recomputeActivitySeq } from '../db/activity-seq.js';
@@ -142,6 +143,16 @@ export async function reindexOneCortex(
     )
   `);
 
+  // Memory tombstones (`think forget`, AGT-2331): apply every tombstone line
+  // in L1 before rebuilding, then skip any entry whose id is forgotten —
+  // including ids recorded from hub/fs tombstones that never touched L1
+  // (memory_tombstones survives --force). Without this a reindex would
+  // resurrect forgotten content from the original L1 line.
+  for (const page of pages) {
+    for (const t of parseTombstonesJsonl(page)) applyMemoryTombstone(db, t);
+  }
+  const forgotten = forgottenIdSet(db);
+
   // Parse all entries across pages
   for (const page of pages) {
     const entries = parseMemoriesJsonl(page);
@@ -151,6 +162,7 @@ export async function reindexOneCortex(
       // lines (see resolveMemoryId). Keeps reindex idempotent against the
       // daemon pull-loop rather than duplicating rows under a second key.
       const id = resolveMemoryId(entry);
+      if (forgotten.has(id)) continue;
       total++;
 
       // Embed — errors are non-fatal; log and continue

@@ -108,6 +108,15 @@ think pause    # think sync and think event silently skip until resumed
 think resume
 ```
 
+To take something back after it was written:
+
+```bash
+think delete --id <id>   # soft delete: hidden on every peer, text kept
+think forget <id>        # erase: text and embedding removed on every peer and the hub
+```
+
+`think forget` sends a tombstone that carries only the entry's ids; peers remove their copy when they pull it. It does not rewrite git history: the original line stays in the cortex's git repo, its remote and clones, and in fs-sync folders until you rewrite them by hand. Details: [Forgetting a memory](docs/cortex-sync-protocol.md#forgetting-a-memory).
+
 ## Instruction blocks for your agents
 
 `think init` writes a managed block into `CLAUDE.md` (and `AGENTS.md` if present) that teaches agents to log outcomes with `think sync` and decisions with `think event`, and to read and write retros.
@@ -307,7 +316,8 @@ Every repair `--fix` applies is a function self-heal already calls, and none of 
 | `think sync` | `<message>` | Record a memory entry to the active cortex (or local think.db) |
 | `think list` |  | List entries with optional filters |
 | `think summary` |  | Generate a summary of entries (AI-powered or raw) |
-| `think delete` |  | Soft-delete entries from the active cortex (tombstoned, propagated to peers) |
+| `think delete` |  | Soft-delete entries (hidden on every peer; `think forget` erases) |
+| `think forget` | `<id>` | Erase a memory here, on every peer and on the hub (git history keeps it) |
 | `think supersession` |  | Inspect and revert supersession links (hidden entries can be restored) |
 | `think supersession list` |  | List superseded (hidden) entries in the active cortex, most recent first |
 | `think supersession show` | `<id>` | Show the supersession state of an entry: what hid it, and what it hid |

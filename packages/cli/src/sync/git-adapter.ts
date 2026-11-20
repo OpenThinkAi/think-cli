@@ -34,6 +34,8 @@ import { serializeRetroForSync, parseRetrosJsonl } from '../lib/retro-jsonl.js';
 import { getConfig, getPeerId } from '../lib/config.js';
 import { deterministicEventId, resolveMemoryId } from '../lib/deterministic-id.js';
 import { validateEngramContent } from '../lib/sanitize.js';
+import { getCortexDb } from '../db/engrams.js';
+import { applyMemoryTombstone, parseTombstonesJsonl } from '../lib/memory-tombstones.js';
 import type { SyncAdapter, SyncResult } from './types.js';
 
 const LONG_TERM_FILE = 'long-term.jsonl';
@@ -130,8 +132,10 @@ export class GitSyncAdapter implements SyncAdapter {
     const targetFile = this.determineBucketFile(cortex, currentFiles);
 
     // Format as JSONL lines (include episode_key and decisions when present).
-    // Memories are immutable via sync — local tombstones are intentionally not
-    // emitted here. See SyncAdapter docs for the invariant.
+    // Soft-deleted rows are intentionally not emitted here. Memory tombstones
+    // (`think forget`) are not emitted by this adapter either: the daemon's L1
+    // outbox already appends them to these same bucket files on the cortex
+    // branch, so writing them here too would duplicate the line.
     //
     // The origin_peer_id guard prevents pulled rows from being re-emitted on
     // the next push (AGT-250). Pull-side `insertMemoryIfNotExists` bumps
@@ -341,11 +345,19 @@ export class GitSyncAdapter implements SyncAdapter {
   }
 
   private processMemories(cortex: string, memoriesRaw: string, result: SyncResult): void {
+    // Memory tombstones (`think forget`, AGT-2331) live in the same bucket
+    // files (written by the daemon's L1 outbox). Apply them first so a
+    // forgotten memory in the same file is refused rather than re-inserted.
+    const db = getCortexDb(cortex);
+    for (const t of parseTombstonesJsonl(memoriesRaw)) {
+      applyMemoryTombstone(db, t);
+    }
+
     const memories = parseMemoriesJsonl(memoriesRaw);
 
     for (const m of memories) {
-      // Memories are immutable via sync — any `deleted_at` field on a pulled
-      // line is from a pre-BLOOM-122 emitter and must be ignored. Engram
+      // Soft-delete lines (`deleted_at`, from `think delete` / supersession)
+      // are applied by the daemon pull-loop, not by this adapter. Engram
       // deletes are local-only and do not propagate.
       if (m.deleted_at) continue;
 

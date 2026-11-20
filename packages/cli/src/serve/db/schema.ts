@@ -299,4 +299,30 @@ export function ensureSchema(db: DatabaseSync): void {
     CREATE UNIQUE INDEX IF NOT EXISTS cortex_lines_cortex_id_unique
       ON cortex_lines(cortex, id);
   `);
+  // Memory tombstones (AGT-2331, `think forget`). One row per accepted
+  // tombstone, sharing the cortex's server_seq space with cortex_lines (see
+  // serve/cortex-lines-store.ts). `ids` is a JSON TEXT array; no content.
+  // Additive: existing DBs gain the empty tables on next boot.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS cortex_tombstones (
+      cortex TEXT NOT NULL,
+      server_seq INTEGER NOT NULL,
+      ids TEXT NOT NULL,
+      ts TEXT NOT NULL,
+      author TEXT,
+      origin_peer_id TEXT,
+      created_at TEXT NOT NULL,
+      PRIMARY KEY (cortex, server_seq)
+    ) STRICT;
+  `);
+  // Every forgotten id per cortex: the append path refuses these, and a
+  // replayed tombstone whose ids are all present is a duplicate.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS cortex_forgotten_ids (
+      cortex TEXT NOT NULL,
+      id TEXT NOT NULL,
+      server_seq INTEGER NOT NULL,
+      PRIMARY KEY (cortex, id)
+    ) STRICT;
+  `);
 }

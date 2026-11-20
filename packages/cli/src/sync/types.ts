@@ -8,10 +8,14 @@
  *   and `INSERT OR IGNORE` is the dedup mechanism. There is no LWW conflict
  *   to resolve and adapters do not need a logical clock.
  *
- * - **Memories are immutable via sync**. Once a memory is created, its fields
- *   never change through sync. Adapters never serialize or apply `deleted_at`
- *   on memories. Engram deletes are strictly local and never leave the
- *   machine — this is enforced by the `engrams never propagate` contract test.
+ * - **Memory lines are immutable via sync**. Once a memory is created, its
+ *   fields never change through sync. Adapters never serialize or apply
+ *   `deleted_at` (soft delete) on memories. Removal travels only as a memory
+ *   tombstone (`think forget`, AGT-2331, `lib/memory-tombstones.ts`): a
+ *   `kind: "tombstone"` line carrying ids, which every adapter applies on pull
+ *   by deleting the rows and recording the ids so they are never re-ingested.
+ *   Engram deletes are strictly local and never leave the machine — this is
+ *   enforced by the `engrams never propagate` contract test.
  *
  * - **`memories.sync_version` is the per-cortex local push cursor.** It is a
  *   monotonic counter assigned on every local insert, used by the push side

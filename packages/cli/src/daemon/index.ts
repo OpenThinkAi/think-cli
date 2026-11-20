@@ -38,7 +38,7 @@ import { reapStaleLaunchAgents } from '../lib/launch-agent.js';
 import { DEFAULT_DAEMON_TCP_PORT } from '../lib/daemon-constants.js';
 import { parseLineFraming, dispatchRequest } from './protocol.js';
 import { handleSync } from './sync-handler.js';
-import { handleDelete } from './delete-handler.js';
+import { handleDelete, handleForget } from './delete-handler.js';
 import { handleRetroMigrate } from './retro-migrate-handler.js';
 import { handleStatus } from './status.js';
 import { compactionQueue, scanAndEnqueueUncompacted } from './compaction/queue.js';
@@ -742,6 +742,7 @@ export async function runDaemon(options: DaemonOptions): Promise<void> {
     ],
     ['sync', handleSync],
     ['delete', handleDelete],
+    ['forget', handleForget],
     ['retro_migrate', handleRetroMigrate],
     ['status', handleStatus],
   ]);

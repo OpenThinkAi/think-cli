@@ -26,7 +26,7 @@
  * ---------------------------------------------------------------------------
  * - **push** uses `memories.sync_version` as the local push cursor, keyed
  *   `(cortex, 'hub', 'push')` in `sync_cursors`. It serializes only rows this
- *   peer authored (the origin_peer_id guard, AGT-250), skips tombstones, and
+ *   peer authored (the origin_peer_id guard, AGT-250), skips soft-deleted rows, and
  *   advances the cursor to `maxVersion` ONLY after the POST succeeds. Replay
  *   on crash is safe: ids are content-derived and the server dedups via
  *   INSERT-OR-IGNORE, so re-pushing an already-stored line is a no-op.
@@ -37,6 +37,11 @@
  *   response's `nextCursor`, and loops while `hasMore` so one run drains the
  *   backlog. The cursor persists between runs, so a later run resumes
  *   incrementally (no full re-pull).
+ *
+ * Memory tombstones (`think forget`, AGT-2331) use the optional
+ * TOMBSTONES_ROUTE with their own cursors (`push_tombstones` /
+ * `pull_tombstones`); a hub without that route degrades as described at
+ * `pushTombstones` below.
  *
  * The token is transport-level auth: it rides the `Authorization` header
  * (`bearerHeader`), never the JSON body, and is NEVER logged. Network and auth
@@ -57,8 +62,15 @@ import {
   pushResponseSchema,
   pullResponseSchema,
   PULL_MAX_LIMIT,
+  TOMBSTONES_ROUTE,
+  TOMBSTONE_MAX_IDS,
+  tombstonePushResponseSchema,
+  tombstonePullResponseSchema,
   type WireMemoryLine,
+  type WireTombstone,
 } from './hub-protocol.js';
+import { getCortexDb } from '../db/engrams.js';
+import { applyMemoryTombstone, getLocalTombstonesSince } from '../lib/memory-tombstones.js';
 import type { SyncAdapter, SyncResult } from './types.js';
 
 /** Page size requested on each pull. Stays at/under the server's hard cap. */
@@ -140,6 +152,12 @@ export class HubSyncAdapter implements SyncAdapter {
   // ---------------------------------------------------------------------------
 
   async push(cortex: string): Promise<SyncResult> {
+    const result = await this.pushLines(cortex);
+    await this.pushTombstones(cortex, result);
+    return result;
+  }
+
+  private async pushLines(cortex: string): Promise<SyncResult> {
     const result: SyncResult = { pushed: 0, pulled: 0, errors: [] };
 
     const hub = this.getHub();
@@ -160,7 +178,7 @@ export class HubSyncAdapter implements SyncAdapter {
     if (newMemories.length === 0) return result;
 
     // Identical serialization + guards to local-fs-adapter.pushMemories:
-    //   - skip tombstones (memories are immutable via sync)
+    //   - skip soft-deleted rows (forgets go out via pushTombstones)
     //   - skip rows not authored by this peer (origin_peer_id guard, AGT-250):
     //     a pulled row's sync_version bumps on ingest, so without this filter
     //     it would be re-emitted on the next push.
@@ -241,6 +259,16 @@ export class HubSyncAdapter implements SyncAdapter {
   // ---------------------------------------------------------------------------
 
   async pull(cortex: string): Promise<SyncResult> {
+    // Tombstones first: recording forgotten ids before the line pass means a
+    // forgotten memory still in the stream is refused rather than re-inserted.
+    const tombstoneErrors: string[] = [];
+    await this.pullTombstones(cortex, tombstoneErrors);
+    const result = await this.pullLines(cortex);
+    result.errors.unshift(...tombstoneErrors);
+    return result;
+  }
+
+  private async pullLines(cortex: string): Promise<SyncResult> {
     const result: SyncResult = { pushed: 0, pulled: 0, errors: [] };
 
     const hub = this.getHub();
@@ -307,8 +335,6 @@ export class HubSyncAdapter implements SyncAdapter {
       for (const line of lines) {
         // Self-echo guard — see the localPeer note above.
         if (line.origin_peer_id === localPeer) continue;
-        // Memories are immutable via sync — the wire shape carries no
-        // tombstone, but guard defensively in case a future field appears.
         const { content: sanitizedContent, warnings } = validateEngramContent(line.content);
         if (warnings.length > 0) {
           result.errors.push(`Pulled memory from ${line.author} flagged: ${warnings.join(', ')}`);
@@ -342,6 +368,122 @@ export class HubSyncAdapter implements SyncAdapter {
     }
 
     return result;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Memory tombstones (AGT-2331, `think forget`)
+  // ---------------------------------------------------------------------------
+  //
+  // Optional protocol extension on its own route (TOMBSTONES_ROUTE). A hub
+  // without it (think serve < 3.3.0, or the private think-hub until it adds
+  // the route) answers 404/405:
+  //   - push: report that forgets can't reach this hub and keep them queued
+  //     (cursor not advanced), so they go out once the hub supports them;
+  //   - pull: skip silently — such a hub has no tombstones to give.
+
+  private async pushTombstones(cortex: string, result: SyncResult): Promise<void> {
+    const hub = this.getHub();
+    // Config/transport problems were already reported by pushLines.
+    if (!hub || insecureHubUrlReason(hub.url)) return;
+
+    const cursorStr = getSyncCursor(cortex, this.name, 'push_tombstones');
+    const lastSeq = cursorStr ? parseInt(cursorStr, 10) || 0 : 0;
+    const { tombstones, maxSeq } = getLocalTombstonesSince(getCortexDb(cortex), lastSeq, getPeerId());
+    if (maxSeq === lastSeq) return;
+    if (tombstones.length === 0) {
+      setSyncCursor(cortex, this.name, 'push_tombstones', String(maxSeq));
+      return;
+    }
+
+    const wire: WireTombstone[] = tombstones.map((t) => ({
+      ids: t.ids.slice(0, TOMBSTONE_MAX_IDS),
+      ts: t.ts,
+      ...(t.author ? { author: t.author } : {}),
+      ...(t.origin_peer_id ? { origin_peer_id: t.origin_peer_id } : {}),
+    }));
+
+    try {
+      const res = await this.fetchImpl(this.url(hub, TOMBSTONES_ROUTE), {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: bearerHeader(hub.token),
+        },
+        body: JSON.stringify({ cortex: hub.cortex ?? cortex, tombstones: wire }),
+      });
+      if (res.status === 404 || res.status === 405) {
+        result.errors.push(
+          `hub does not support memory tombstones yet: ${wire.length} forgotten ` +
+            `${wire.length === 1 ? 'memory was' : 'memories were'} not removed from the hub ` +
+            '(queued; sent once the hub is upgraded)',
+        );
+        return;
+      }
+      if (!res.ok) {
+        result.errors.push(await this.httpError('push', res));
+        return;
+      }
+      const parsed = tombstonePushResponseSchema.safeParse(await res.json());
+      if (!parsed.success) {
+        result.errors.push('hub tombstone push: malformed response from server');
+        return;
+      }
+      setSyncCursor(cortex, this.name, 'push_tombstones', String(maxSeq));
+      result.pushed += wire.length;
+    } catch (err) {
+      result.errors.push(`hub tombstone push failed: ${errMessage(err)}`);
+    }
+  }
+
+  private async pullTombstones(cortex: string, errors: string[]): Promise<void> {
+    const hub = this.getHub();
+    if (!hub || insecureHubUrlReason(hub.url)) return; // pullLines reports these
+
+    const remoteCortex = hub.cortex ?? cortex;
+    const db = getCortexDb(cortex);
+    const cursorStr = getSyncCursor(cortex, this.name, 'pull_tombstones');
+    let cursor = cursorStr ? parseInt(cursorStr, 10) : 0;
+    if (!Number.isFinite(cursor) || cursor < 0) cursor = 0;
+
+    for (;;) {
+      let res: Response;
+      try {
+        const params = new URLSearchParams({
+          cortex: remoteCortex,
+          cursor: String(cursor),
+          limit: String(PULL_PAGE_LIMIT),
+        });
+        res = await this.fetchImpl(this.url(hub, `${TOMBSTONES_ROUTE}?${params.toString()}`), {
+          method: 'GET',
+          headers: { Authorization: bearerHeader(hub.token) },
+        });
+      } catch (err) {
+        errors.push(`hub tombstone pull failed: ${errMessage(err)}`);
+        return;
+      }
+      // Older hub without the extension: nothing to apply, not an error.
+      if (res.status === 404 || res.status === 405) return;
+      if (!res.ok) {
+        errors.push(await this.httpError('pull', res));
+        return;
+      }
+      const parsed = tombstonePullResponseSchema.safeParse(await res.json());
+      if (!parsed.success) {
+        errors.push('hub tombstone pull: malformed response from server');
+        return;
+      }
+      for (const t of parsed.data.tombstones) {
+        applyMemoryTombstone(db, {
+          ids: t.ids,
+          ts: t.ts,
+          author: t.author ?? 'unknown',
+          origin_peer_id: t.origin_peer_id ?? null,
+        });
+      }
+      cursor = parsed.data.nextCursor;
+      setSyncCursor(cortex, this.name, 'pull_tombstones', String(cursor));
+      if (!parsed.data.hasMore) break;
+    }
   }
 
   // ---------------------------------------------------------------------------

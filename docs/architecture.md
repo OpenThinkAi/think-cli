@@ -69,7 +69,7 @@ Single unified L1 entry shape across all kinds:
   "topics": ["..."],                // LLM-extracted at write time; user can override via --topic
   "supersedes": [],                 // ids this entry replaces; set by compaction (memory) or supersession check (retro)
   "compacted_from": null,           // for memory only: raw entry ids this compaction folds; null = raw entry
-  "deleted_at": null                // tombstone
+  "deleted_at": null                // soft-delete tombstone (`think delete`, supersession)
 }
 ```
 
@@ -82,6 +82,7 @@ L1 entries migrated from the pre-daemon tool may carry `decisions` and `source_i
 | `memory` | Freeform observation, the sync stream | **Yes** (LLM rewrites with trajectory) | Implicit via compaction |
 | `retro` | Durable wisdom about a codebase | No (text preserved exactly) | Yes (LLM marks conflicts) |
 | `event` | Notable thing happened — milestone, decision, incident | No | No (events accumulate, don't conflict) |
+| `tombstone` | Not an entry: `think forget` erasure marker carrying only target `ids`. Peers delete the targeted rows and never re-ingest them. See [cortex-sync-protocol.md](cortex-sync-protocol.md#tombstones-in-l1-and-the-gitfs-adapters) | No | No |
 
 No sub-kinds. Topics carry orthogonal structure when needed.
 
